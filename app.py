@@ -87,7 +87,7 @@ def openai_chat_json(system: str, user: str) -> Dict[str, Any]:
             "name": None,
             "phone": None,
             "need_human": True,
-            "reply_ru": "Извините, сервис временно недоступен. Мы отправим SMS со ссылкой для записи.",
+            "reply_short": "Service unavailable.",
         }
 
     url = "https://api.openai.com/v1/chat/completions"
@@ -100,7 +100,6 @@ def openai_chat_json(system: str, user: str) -> Dict[str, Any]:
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
-        # Ask for strict JSON
         "response_format": {"type": "json_object"},
     }
 
@@ -148,6 +147,8 @@ async def voice_incoming(request: Request):
     """
     Entry point for incoming calls.
     Step 1: choose language by keypad (DTMF).
+    IMPORTANT: No recovery SMS is sent here to avoid spamming during the call.
+    Recovery is handled by /voice/status only (if enabled in Twilio).
     """
     cleanup_sessions()
     form = await request.form()
@@ -162,10 +163,7 @@ async def voice_incoming(request: Request):
     g.say("Hello. For English press 1. For Russian press 2. For Latvian press 3.")
     vr.append(g)
 
-    # If no input -> fallback + recovery SMS (only once)
     vr.say("We did not receive your choice. Goodbye.")
-    if caller:
-        send_sms_once(call_sid, "recovery", caller, f"{BUSINESS['name']}: Booking link: {RECOVERY_BOOKING_LINK}")
     return twiml(vr)
 
 
@@ -174,6 +172,7 @@ async def voice_lang(request: Request):
     """
     Save language choice.
     Then gather speech: service + time.
+    IMPORTANT: No recovery SMS is sent here.
     """
     form = await request.form()
     call_sid = str(form.get("CallSid", ""))
@@ -196,7 +195,7 @@ async def voice_lang(request: Request):
 
     vr = VoiceResponse()
 
-    # IMPORTANT: to avoid ugly Twilio RU voice, keep spoken prompt short + neutral
+    # Keep voice prompts short to avoid ugly Twilio RU/LV TTS.
     prompt = "Please say: service and preferred time."
 
     g = Gather(
@@ -210,9 +209,7 @@ async def voice_lang(request: Request):
     g.say(prompt)
     vr.append(g)
 
-    vr.say("Sorry, I couldn't hear you. We will send you an SMS to book.")
-    if caller:
-        send_sms_once(call_sid, "recovery", caller, f"{BUSINESS['name']}: Booking link: {RECOVERY_BOOKING_LINK}")
+    vr.say("Sorry, I couldn't hear you. Goodbye.")
     return twiml(vr)
 
 
@@ -221,7 +218,8 @@ async def voice_intent(request: Request):
     """
     Parse speech with LLM to extract booking fields.
     Ask missing fields one by one.
-    If collected: confirm + send SMS (Calendar integration later).
+    If collected: confirm + send SMS.
+    IMPORTANT: No recovery SMS is sent during the conversation.
     """
     form = await request.form()
     call_sid = str(form.get("CallSid", ""))
@@ -247,6 +245,7 @@ name: string|null
 phone: string|null
 need_human: boolean
 reply_short: string  (short, neutral)
+
 Rules:
 - Ask ONE missing item at a time (service OR time OR name OR phone).
 - If time is vague, ask for exact time like 15:30.
@@ -257,7 +256,6 @@ Rules:
     try:
         data = openai_chat_json(system, user)
     except Exception:
-        # Fallback: minimal capture attempt without LLM
         data = {
             "intent": "book",
             "service": None,
@@ -288,7 +286,7 @@ Rules:
 
     if missing:
         field = missing[0]
-        # Keep voice prompts short to avoid bad TTS. We handle language details in SMS later.
+        # Keep voice prompts short and neutral (English) to avoid bad TTS.
         if field == "service":
             q = "Please say the service. For example: men's haircut."
         elif field == "time":
@@ -304,14 +302,12 @@ Rules:
             method="POST",
             timeout=7,
             speech_timeout="auto",
-            language="en-US",  # neutral prompt
+            language="en-US",
         )
         g.say(q)
         vr.append(g)
 
-        vr.say("We will also send an SMS to finish booking.")
-        if caller:
-            send_sms_once(call_sid, "recovery", caller, f"{BUSINESS['name']}: Booking link: {RECOVERY_BOOKING_LINK}")
+        vr.say("Please continue.")
         return twiml(vr)
 
     # All fields collected -> capture request + SMS confirmation
@@ -356,7 +352,9 @@ async def voice_fill(request: Request):
 @app.post("/voice/status")
 async def voice_status(request: Request):
     """
-    Optional Twilio status callback: if call ends without captured booking -> recovery SMS (only once).
+    Twilio status callback:
+    - If call ends without captured booking -> send ONE recovery SMS.
+    IMPORTANT: Enable this webhook in Twilio number settings.
     """
     form = await request.form()
     call_sid = str(form.get("CallSid", ""))
