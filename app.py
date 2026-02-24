@@ -25,6 +25,21 @@ BUSINESS = {
 
 RECOVERY_BOOKING_LINK = os.getenv("RECOVERY_BOOKING_LINK", "https://google.com")
 
+SMS_TEMPLATES = {
+    "en": {
+        "confirm": "{name}, request received: {service} / {time}. Hours: {hours}. Link: {link}",
+        "recovery": "Missed us? Reply with time and service or use: {link}",
+    },
+    "ru": {
+        "confirm": "{name}, заявка принята: {service} / {time}. Часы: {hours}. Ссылка: {link}",
+        "recovery": "Не дозвонились? Напишите услугу и время или используйте: {link}",
+    },
+    "lv": {
+        "confirm": "{name}, pieprasījums saņemts: {service} / {time}. Darba laiks: {hours}. Saite: {link}",
+        "recovery": "Neizdevās sazvanīt? Atsūti pakalpojumu un laiku vai izmanto: {link}",
+    },
+}
+
 # OpenAI
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
@@ -68,6 +83,10 @@ def get_session(call_sid: str) -> Dict[str, Any]:
         }
         SESSIONS[call_sid] = s
     return s
+
+
+def get_lang(s: Dict[str, Any]) -> str:
+    return s.get("lang") if s.get("lang") in ("en", "ru", "lv") else "en"
 
 
 def twiml(vr: VoiceResponse) -> Response:
@@ -218,7 +237,7 @@ async def voice_intent(request: Request):
     """
     Parse speech with LLM to extract booking fields.
     Ask missing fields one by one.
-    If collected: confirm + send SMS.
+    If collected: confirm + send SMS (localized).
     IMPORTANT: No recovery SMS is sent during the conversation.
     """
     form = await request.form()
@@ -310,16 +329,21 @@ Rules:
         vr.say("Please continue.")
         return twiml(vr)
 
-    # All fields collected -> capture request + SMS confirmation
+    # All fields collected -> capture request + SMS confirmation (localized)
     vr.say("Thank you. We will confirm by SMS.")
     if s.get("phone"):
-        send_sms_once(
-            call_sid,
-            "confirm",
-            s["phone"],
-            f"{BUSINESS['name']}: Request received — {s['service']} / {s['time_text']}. "
-            f"We work {BUSINESS['hours']}. If you need to change, use: {RECOVERY_BOOKING_LINK}"
+        lang = get_lang(s)
+        name = s.get("name") or ("Hello" if lang == "en" else ("Sveiki" if lang == "lv" else "Здравствуйте"))
+
+        body = f"{BUSINESS['name']}: " + SMS_TEMPLATES[lang]["confirm"].format(
+            name=name,
+            service=s.get("service"),
+            time=s.get("time_text"),
+            hours=BUSINESS["hours"],
+            link=RECOVERY_BOOKING_LINK,
         )
+        send_sms_once(call_sid, "confirm", s["phone"], body)
+
     s["status"] = "captured"
     return twiml(vr)
 
@@ -353,7 +377,7 @@ async def voice_fill(request: Request):
 async def voice_status(request: Request):
     """
     Twilio status callback:
-    - If call ends without captured booking -> send ONE recovery SMS.
+    - If call ends without captured booking -> send ONE recovery SMS (localized).
     IMPORTANT: Enable this webhook in Twilio number settings.
     """
     form = await request.form()
@@ -365,7 +389,9 @@ async def voice_status(request: Request):
 
     if call_status in ("completed", "busy", "failed", "no-answer", "canceled"):
         if s.get("status") not in ("captured", "booked") and caller:
-            send_sms_once(call_sid, "recovery", caller, f"{BUSINESS['name']}: Book here: {RECOVERY_BOOKING_LINK}")
+            lang = get_lang(s)
+            body = f"{BUSINESS['name']}: " + SMS_TEMPLATES[lang]["recovery"].format(link=RECOVERY_BOOKING_LINK)
+            send_sms_once(call_sid, "recovery", caller, body)
             s["status"] = "recovery_sms_sent"
 
     return Response(content="ok", media_type="text/plain")
