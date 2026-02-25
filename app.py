@@ -26,31 +26,31 @@ BUSINESS = {
     "services": os.getenv("BIZ_SERVICES", "мужские и женские стрижки"),
 }
 
-RECOVERY_BOOKING_LINK = os.getenv("RECOVERY_BOOKING_LINK", "https://google.com")
+# IMPORTANT: set to your short link e.g. https://repliq.app/book
+RECOVERY_BOOKING_LINK = os.getenv("RECOVERY_BOOKING_LINK", "https://repliq.app/book")
 
 # Appointment defaults
 APPT_MINUTES = int(os.getenv("APPT_MINUTES", "30"))
 WORK_START_HHMM = os.getenv("WORK_START_HHMM", "09:00")
 WORK_END_HHMM = os.getenv("WORK_END_HHMM", "18:00")
 
+# Short SMS templates (Twilio Trial length safe). We ALWAYS include RECOVERY_BOOKING_LINK (short),
+# never the long Google Calendar htmlLink.
 SMS_TEMPLATES = {
     "en": {
-        "request": "{name}, request received: {service} / {time}. We will confirm shortly.",
-        "confirmed": "{name}, booking CONFIRMED: {service} / {time}. Address: {addr}. Link: {link}",
-        "busy": "That time is busy. Available: {opt1} or {opt2}. Reply 1 or 2. Link: {link}",
-        "recovery": "Missed us? Reply with time and service or use: {link}",
+        "confirmed": "Booked: {service} {time}. Addr: {addr}. {link}",
+        "busy": "Busy. 1){opt1} 2){opt2}. Reply 1/2. {link}",
+        "recovery": "Book via: {link}",
     },
     "ru": {
-        "request": "{name}, заявка принята: {service} / {time}. Сейчас подтвердим.",
-        "confirmed": "{name}, ЗАПИСЬ ПОДТВЕРЖДЕНА: {service} / {time}. Адрес: {addr}. Ссылка: {link}",
-        "busy": "Это время занято. Есть варианты: {opt1} или {opt2}. Ответьте 1 или 2. Ссылка: {link}",
-        "recovery": "Не дозвонились? Напишите услугу и время или используйте: {link}",
+        "confirmed": "Запись: {service} {time}. Адрес: {addr}. {link}",
+        "busy": "Занято. 1){opt1} 2){opt2}. Ответ 1/2. {link}",
+        "recovery": "Запись: {link}",
     },
     "lv": {
-        "request": "{name}, pieprasījums saņemts: {service} / {time}. Drīz apstiprināsim.",
-        "confirmed": "{name}, REZERVĀCIJA APSTIPRINĀTA: {service} / {time}. Adrese: {addr}. Saite: {link}",
-        "busy": "Šis laiks ir aizņemts. Varianti: {opt1} vai {opt2}. Atbildi 1 vai 2. Saite: {link}",
-        "recovery": "Neizdevās sazvanīt? Atsūti pakalpojumu un laiku vai izmanto: {link}",
+        "confirmed": "Pieraksts: {service} {time}. Adrese: {addr}. {link}",
+        "busy": "Aizņemts. 1){opt1} 2){opt2}. Atbildi 1/2. {link}",
+        "recovery": "Pieraksts: {link}",
     },
 }
 
@@ -100,8 +100,7 @@ def get_session(call_sid: str) -> Dict[str, Any]:
             "service": None,
             "time_text": None,
             "status": "new",
-            "sms_flags": {},
-            "last_offer": None,  # for future SMS dialog options
+            "sms_flags": {},  # anti-duplicate per call
         }
         SESSIONS[call_sid] = s
     return s
@@ -116,17 +115,22 @@ def twiml(vr: VoiceResponse) -> Response:
 
 
 def openai_chat_json(system: str, user: str) -> Dict[str, Any]:
+    """
+    Returns parsed JSON dict.
+    """
     if not OPENAI_API_KEY:
-        return {"intent": "book", "service": None, "time_text": None, "name": None, "phone": None}
+        return {"service": None, "time_text": None, "name": None, "phone": None}
 
     url = "https://api.openai.com/v1/chat/completions"
     headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+
     payload = {
         "model": OPENAI_MODEL,
         "temperature": 0.2,
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
         "response_format": {"type": "json_object"},
     }
+
     r = requests.post(url, headers=headers, json=payload, timeout=25)
     r.raise_for_status()
     content = r.json()["choices"][0]["message"]["content"]
@@ -139,13 +143,23 @@ def parse_phone(text: str) -> Optional[str]:
 
 
 def send_sms(to_number: str, body: str):
+    # Helpful logs for debugging Twilio trial issues
     if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_FROM_NUMBER):
+        print("SMS skipped: Twilio env vars missing")
         return
-    client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-    client.messages.create(from_=TWILIO_FROM_NUMBER, to=to_number, body=body)
+    try:
+        client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+        msg = client.messages.create(from_=TWILIO_FROM_NUMBER, to=to_number, body=body)
+        print("SMS sent:", {"to": to_number, "sid": msg.sid, "status": msg.status})
+    except Exception as e:
+        print("SMS send error:", {"to": to_number, "err": repr(e)})
 
 
 def send_sms_once(call_sid: str, key: str, to_number: str, body: str):
+    """
+    Prevent duplicate SMS per call session.
+    key: 'recovery' | 'confirm'
+    """
     s = get_session(call_sid)
     flags = s.setdefault("sms_flags", {})
     if flags.get(key):
@@ -166,9 +180,9 @@ def _parse_hhmm(hhmm: str) -> Tuple[int, int]:
 def parse_time_text_to_dt(time_text: str) -> Optional[datetime]:
     """
     MVP parser:
-    - expects a HH:MM somewhere in the text
-    - date: today/tomorrow/послезавтра keywords (EN/RU/LV)
-    If no date keyword -> assumes today (for MVP).
+    - looks for HH:MM (or HH MM / HH.MM) in text
+    - date keywords: today/tomorrow/послезавтра (EN/RU/LV)
+    default date: today
     """
     if not time_text:
         return None
@@ -180,8 +194,8 @@ def parse_time_text_to_dt(time_text: str) -> Optional[datetime]:
     mm = int(m.group(2))
 
     t = time_text.lower()
-
     d = date.today()
+
     if any(k in t for k in ["tomorrow", "завтра", "rīt", "rit"]):
         d = d + timedelta(days=1)
     elif any(k in t for k in ["day after tomorrow", "послезавтра", "parīt", "parit"]):
@@ -209,37 +223,42 @@ def get_gcal():
     if not (GOOGLE_SERVICE_ACCOUNT_JSON and GOOGLE_CALENDAR_ID):
         return None
 
-    info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
-    creds = service_account.Credentials.from_service_account_info(
-        info,
-        scopes=["https://www.googleapis.com/auth/calendar"],
-    )
-    _GCAL = build("calendar", "v3", credentials=creds, cache_discovery=False)
-    return _GCAL
+    try:
+        info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
+        creds = service_account.Credentials.from_service_account_info(
+            info,
+            scopes=["https://www.googleapis.com/auth/calendar"],
+        )
+        _GCAL = build("calendar", "v3", credentials=creds, cache_discovery=False)
+        return _GCAL
+    except Exception as e:
+        print("GCAL init error:", repr(e))
+        return None
 
 
 def is_slot_busy(dt_start: datetime, dt_end: datetime) -> bool:
     svc = get_gcal()
     if svc is None:
-        return False  # if calendar not configured, don't block
-    body = {
-        "timeMin": dt_start.isoformat(),
-        "timeMax": dt_end.isoformat(),
-        "items": [{"id": GOOGLE_CALENDAR_ID}],
-    }
-    fb = svc.freebusy().query(body=body).execute()
-    busy = fb["calendars"][GOOGLE_CALENDAR_ID].get("busy", [])
-    return len(busy) > 0
+        return False
+    try:
+        body = {
+            "timeMin": dt_start.isoformat(),
+            "timeMax": dt_end.isoformat(),
+            "items": [{"id": GOOGLE_CALENDAR_ID}],
+        }
+        fb = svc.freebusy().query(body=body).execute()
+        busy = fb["calendars"][GOOGLE_CALENDAR_ID].get("busy", [])
+        return len(busy) > 0
+    except Exception as e:
+        print("GCAL freebusy error:", repr(e))
+        return False
 
 
 def find_next_two_slots(dt_start: datetime, duration_min: int) -> Optional[Tuple[datetime, datetime]]:
-    """
-    Looks for next two free slots in 30-min steps within business hours, same day.
-    """
     step = 30
     candidate = dt_start
     found: List[datetime] = []
-    for _ in range(40):  # up to ~20 hours scanning max (safe)
+    for _ in range(40):
         if in_business_hours(candidate, duration_min):
             if not is_slot_busy(candidate, candidate + timedelta(minutes=duration_min)):
                 found.append(candidate)
@@ -250,6 +269,10 @@ def find_next_two_slots(dt_start: datetime, duration_min: int) -> Optional[Tuple
 
 
 def create_calendar_event(dt_start: datetime, duration_min: int, summary: str, description: str) -> Optional[str]:
+    """
+    Creates event and returns htmlLink (NOT used in SMS to avoid trial length issues).
+    Never raises.
+    """
     svc = get_gcal()
     if svc is None:
         return None
@@ -261,8 +284,17 @@ def create_calendar_event(dt_start: datetime, duration_min: int, summary: str, d
         "start": {"dateTime": dt_start.isoformat(), "timeZone": "Europe/Riga"},
         "end": {"dateTime": dt_end.isoformat(), "timeZone": "Europe/Riga"},
     }
-    created = svc.events().insert(calendarId=GOOGLE_CALENDAR_ID, body=event).execute()
-    return created.get("htmlLink")
+
+    try:
+        created = svc.events().insert(calendarId=GOOGLE_CALENDAR_ID, body=event).execute()
+        return created.get("htmlLink")
+    except Exception as e:
+        print("GCAL insert error:", repr(e))
+        return None
+
+
+def _short(s: Optional[str], n: int) -> str:
+    return (s or "").strip()[:n]
 
 
 # ====== ROUTES ======
@@ -296,6 +328,7 @@ async def voice_lang(request: Request):
     s = get_session(call_sid)
     s["caller"] = caller
 
+    # 1=EN, 2=RU, 3=LV
     if digit == "1":
         s["lang"] = "en"
         stt_lang = "en-US"
@@ -307,6 +340,8 @@ async def voice_lang(request: Request):
         stt_lang = "ru-RU"
 
     vr = VoiceResponse()
+
+    # Keep voice prompts short to avoid ugly Twilio RU/LV TTS.
     prompt = "Please say: service and preferred time."
 
     g = Gather(
@@ -358,6 +393,7 @@ Rules:
     except Exception:
         data = {"service": None, "time_text": None, "name": None, "phone": caller if caller else None}
 
+    # Fill session from LLM
     s["service"] = data.get("service") or s.get("service")
     s["time_text"] = data.get("time_text") or s.get("time_text")
     s["name"] = data.get("name") or s.get("name")
@@ -380,7 +416,7 @@ Rules:
         if field == "service":
             q = "Please say the service."
         elif field == "time":
-            q = "Please say exact time, like 15 30."
+            q = "Please say exact time, like 15 10."
         elif field == "name":
             q = "Please say your name."
         else:
@@ -400,18 +436,20 @@ Rules:
         vr.say("Please continue.")
         return twiml(vr)
 
-    # We have all fields -> attempt booking in Google Calendar
+    # All fields collected -> attempt booking
     lang = get_lang(s)
     name = s.get("name") or ("Hello" if lang == "en" else ("Sveiki" if lang == "lv" else "Здравствуйте"))
 
     dt_start = parse_time_text_to_dt(s.get("time_text") or "")
     if dt_start is None or not in_business_hours(dt_start, APPT_MINUTES):
-        # Can't parse / outside hours -> treat as request, send link
+        # Can't parse / outside hours -> send recovery link
         vr.say("Thank you. We will confirm by SMS.")
         if s.get("phone"):
-            body = f"{BUSINESS['name']}: " + SMS_TEMPLATES[lang]["request"].format(
-                name=name, service=s.get("service"), time=s.get("time_text"), hours=BUSINESS["hours"], link=RECOVERY_BOOKING_LINK
-            )
+            service_short = _short(s.get("service"), 40)
+            time_short = _short(s.get("time_text"), 25)
+            addr_short = _short(BUSINESS.get("address"), 35)
+            body = f"{BUSINESS['name']}: " + SMS_TEMPLATES[lang]["recovery"].format(link=RECOVERY_BOOKING_LINK)
+            # Keep "confirm" key to avoid sending another SMS later for this call
             send_sms_once(call_sid, "confirm", s["phone"], body)
         s["status"] = "captured"
         return twiml(vr)
@@ -419,16 +457,17 @@ Rules:
     dt_end = dt_start + timedelta(minutes=APPT_MINUTES)
 
     if is_slot_busy(dt_start, dt_end):
-        # Offer next 2 slots
         opts = find_next_two_slots(dt_start, APPT_MINUTES)
         vr.say("Thank you. We will confirm by SMS.")
         if s.get("phone"):
             if opts:
                 opt1, opt2 = opts
-                fmt1 = opt1.strftime("%Y-%m-%d %H:%M")
-                fmt2 = opt2.strftime("%Y-%m-%d %H:%M")
+                fmt1 = opt1.strftime("%m-%d %H:%M")
+                fmt2 = opt2.strftime("%m-%d %H:%M")
                 body = f"{BUSINESS['name']}: " + SMS_TEMPLATES[lang]["busy"].format(
-                    opt1=fmt1, opt2=fmt2, link=RECOVERY_BOOKING_LINK
+                    opt1=fmt1,
+                    opt2=fmt2,
+                    link=RECOVERY_BOOKING_LINK,
                 )
             else:
                 body = f"{BUSINESS['name']}: " + SMS_TEMPLATES[lang]["recovery"].format(link=RECOVERY_BOOKING_LINK)
@@ -436,22 +475,23 @@ Rules:
         s["status"] = "captured"
         return twiml(vr)
 
-    # Create event
-    summary = f"{BUSINESS['name']} — {s.get('service')}"
+    # Create event (ignore returned htmlLink in SMS to avoid trial length)
+    summary = f"{BUSINESS['name']} — {_short(s.get('service'), 60)}"
     desc = f"Name: {s.get('name')}\nPhone: {s.get('phone')}\nService: {s.get('service')}\nRequested: {s.get('time_text')}\nSource: call"
-    link = create_calendar_event(dt_start, APPT_MINUTES, summary, desc) or RECOVERY_BOOKING_LINK
+    create_calendar_event(dt_start, APPT_MINUTES, summary, desc)
 
     vr.say("Thank you. Booking confirmed by SMS.")
 
     if s.get("phone"):
-        when_str = dt_start.strftime("%Y-%m-%d %H:%M")
+        when_str = dt_start.strftime("%m-%d %H:%M")
+        service_short = _short(s.get("service"), 40)
+        addr_short = _short(BUSINESS.get("address"), 35)
+
         body = f"{BUSINESS['name']}: " + SMS_TEMPLATES[lang]["confirmed"].format(
-            name=name,
-            service=s.get("service"),
+            service=service_short,
             time=when_str,
-            hours=BUSINESS["hours"],
-            addr=BUSINESS["address"],
-            link=link,
+            addr=addr_short,
+            link=RECOVERY_BOOKING_LINK,
         )
         send_sms_once(call_sid, "confirm", s["phone"], body)
 
