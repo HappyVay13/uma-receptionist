@@ -1,12 +1,13 @@
 import os
 import json
 import re
+import urllib.parse
 from datetime import datetime, timedelta, timezone, date
 from typing import Dict, Any, Optional, Tuple, List
 
 import requests
-from fastapi import FastAPI, Request
-from fastapi.responses import Response
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import Response, StreamingResponse
 from twilio.twiml.voice_response import VoiceResponse, Gather
 from twilio.rest import Client as TwilioClient
 
@@ -48,6 +49,12 @@ TWILIO_FROM_NUMBER = os.getenv("TWILIO_FROM_NUMBER", "")
 # Google Calendar
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
 GOOGLE_CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID", "")
+
+# ElevenLabs
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
+ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "")
+# Your public base URL, e.g. https://repliq.onrender.com (NO trailing slash)
+SERVER_BASE_URL = os.getenv("SERVER_BASE_URL", "").strip().rstrip("/")
 
 # Short SMS templates (trial-safe). Always uses RECOVERY_BOOKING_LINK (short).
 SMS_TEMPLATES = {
@@ -321,6 +328,80 @@ def parse_dt_from_iso_or_fallback(datetime_iso: Optional[str], time_text: Option
 
 
 # =========================
+# ELEVENLABS TTS
+# =========================
+
+def eleven_enabled() -> bool:
+    return bool(ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID and SERVER_BASE_URL)
+
+
+def generate_eleven_audio(text: str) -> bytes:
+    """
+    Returns MP3 bytes (or b'' on error).
+    Keep text short to reduce latency.
+    """
+    if not (ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID):
+        return b""
+
+    safe_text = (text or "").strip()
+    if not safe_text:
+        return b""
+    if len(safe_text) > 240:
+        safe_text = safe_text[:240]
+
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}"
+    headers = {
+        "xi-api-key": ELEVENLABS_API_KEY,
+        "Content-Type": "application/json",
+        "Accept": "audio/mpeg",
+    }
+    payload = {
+        "text": safe_text,
+        "model_id": "eleven_multilingual_v2",
+        "voice_settings": {"stability": 0.4, "similarity_boost": 0.7},
+    }
+
+    try:
+        r = requests.post(url, headers=headers, json=payload, timeout=25)
+        if r.status_code == 200 and r.content:
+            return r.content
+        print("ElevenLabs error:", r.status_code, r.text[:300])
+        return b""
+    except Exception as e:
+        print("ElevenLabs request error:", repr(e))
+        return b""
+
+
+@app.get("/tts")
+def tts(text: str):
+    """
+    Twilio <Play> endpoint. Returns audio/mpeg.
+    """
+    if not (ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID):
+        raise HTTPException(status_code=503, detail="ElevenLabs not configured")
+
+    audio = generate_eleven_audio(text)
+    if not audio:
+        raise HTTPException(status_code=500, detail="TTS generation failed")
+
+    return StreamingResponse(iter([audio]), media_type="audio/mpeg")
+
+
+def say_or_play(vr: VoiceResponse, text: str):
+    """
+    If ElevenLabs is configured and SERVER_BASE_URL is set -> use <Play>.
+    Otherwise fallback to Twilio <Say>.
+    """
+    t = (text or "").strip() or "OK."
+    if eleven_enabled():
+        q = urllib.parse.quote_plus(t)
+        tts_url = f"{SERVER_BASE_URL}/tts?text={q}"
+        vr.play(tts_url)
+    else:
+        vr.say(t)
+
+
+# =========================
 # GOOGLE CALENDAR
 # =========================
 
@@ -423,7 +504,6 @@ def get_conv(user_key: str, default_lang: str) -> Dict[str, Any]:
             "pending": None,  # {"opt1_iso":..., "opt2_iso":..., "service":..., "name":...}
         }
         CONV[user_key] = c
-    # keep lang sticky unless explicitly changed later
     if default_lang in ("en", "ru", "lv"):
         c["lang"] = get_lang(default_lang)
     c["updated_at"] = now_ts().isoformat()
@@ -440,8 +520,8 @@ def handle_user_text(user_key: str, text: str, channel: str, lang_hint: str, raw
     """
     Returns dict:
       - status: 'need_more'|'booked'|'busy'|'recovery'
-      - reply_voice: short text for Twilio Say (English-ish)
-      - sms_out: optional SMS text to send
+      - reply_voice: short text for TTS
+      - sms_out: optional SMS text to send (WITHOUT business prefix)
     """
     c = get_conv(user_key, lang_hint)
     lang = get_lang(c.get("lang"))
@@ -469,7 +549,6 @@ def handle_user_text(user_key: str, text: str, channel: str, lang_hint: str, raw
         service = pending.get("service") or c.get("service")
         name = pending.get("name") or c.get("name") or "Client"
 
-        # book
         summary = f"{BUSINESS['name']} — {_short(service, 60)}"
         desc = (
             f"Name: {name}\n"
@@ -537,7 +616,7 @@ Rules:
         print("OpenAI error:", repr(e))
         data = {"service": None, "time_text": None, "datetime_iso": None, "name": None, "phone": None}
 
-    # Merge into conversation memory (keep previous if new is null)
+    # Merge into conversation memory
     if data.get("service"):
         c["service"] = data["service"]
     if data.get("name"):
@@ -547,12 +626,12 @@ Rules:
     if data.get("time_text"):
         c["time_text"] = data["time_text"]
 
-    # 2) Determine dt_start (model ISO -> fallback parse from time_text + raw)
+    # 2) Determine dt_start (model ISO -> fallback)
     dt_start = parse_dt_from_iso_or_fallback(c.get("datetime_iso"), c.get("time_text"), msg)
     if dt_start:
         c["datetime_iso"] = dt_start.isoformat()
 
-    # 3) Ask missing fields (one at a time)
+    # 3) Ask missing fields
     if not c.get("service"):
         return {
             "status": "need_more",
@@ -574,9 +653,8 @@ Rules:
             "sms_out": render_sms(lang, "ask_name", link=RECOVERY_BOOKING_LINK),
         }
 
-    # 4) Business hours check
+    # 4) Business hours
     if not in_business_hours(dt_start, APPT_MINUTES):
-        # Ask for another time (and provide link)
         return {
             "status": "need_more",
             "reply_voice": "Sorry, outside working hours. Please choose another time.",
@@ -607,7 +685,6 @@ Rules:
                 "reply_voice": "That time is busy. I sent options by SMS.",
                 "sms_out": sms_out,
             }
-        # if no options found -> recovery
         return {
             "status": "recovery",
             "reply_voice": "Sorry. Please book via link.",
@@ -664,6 +741,8 @@ async def voice_incoming(request: Request):
     g = Gather(num_digits=1, action="/voice/lang", method="POST", timeout=6)
     g.say("Hello. For English press 1. For Russian press 2. For Latvian press 3.")
     vr.append(g)
+    g2 = Gather(num_digits=1, action="/voice/lang", method="POST", timeout=6)
+    vr.append(g2)
     vr.say("We did not receive your choice. Goodbye.")
     return twiml(vr)
 
@@ -689,7 +768,6 @@ async def voice_lang(request: Request):
         stt_lang = "ru-RU"
 
     vr = VoiceResponse()
-    # Keep voice prompts short (Twilio TTS for RU/LV may sound bad)
     g = Gather(
         input="speech",
         action="/voice/intent",
@@ -724,13 +802,19 @@ async def voice_intent(request: Request):
     )
 
     vr = VoiceResponse()
-    vr.say(result.get("reply_voice") or "OK.")
+
+    # ElevenLabs (Play) or fallback (Say)
+    say_or_play(vr, result.get("reply_voice") or "OK.")
 
     # Send SMS if we have something to send
     sms_out = result.get("sms_out")
     if sms_out and caller and caller != "unknown":
-        # key by status to avoid duplicates in the same call
-        send_sms_once_for_call(call_sid, f"sms_{result.get('status','x')}", caller, f"{BUSINESS['name']}: {sms_out}")
+        send_sms_once_for_call(
+            call_sid,
+            f"sms_{result.get('status','x')}",
+            caller,
+            f"{BUSINESS['name']}: {sms_out}",
+        )
 
     return twiml(vr)
 
@@ -751,12 +835,9 @@ async def voice_status(request: Request):
     lang = get_lang(cs.get("lang"))
 
     if call_status in ("completed", "busy", "failed", "no-answer", "canceled"):
-        # If no conversation state exists or no booking happened, send recovery.
         user_key = norm_user_key(caller)
         c = CONV.get(user_key, {})
-        # If last action wasn't booked recently, push recovery.
         if caller and caller != "unknown":
-            # lightweight: if user has no datetime_iso recorded, treat as not booked
             if not c.get("datetime_iso"):
                 body = f"{BUSINESS['name']}: " + render_sms(lang, "recovery", link=RECOVERY_BOOKING_LINK)
                 send_sms_once_for_call(call_sid, "recovery", caller, body)
@@ -780,8 +861,7 @@ async def sms_incoming(request: Request):
 
     user_key = norm_user_key(from_number)
 
-    # If we don't have lang yet, default to RU for Latvia MVP, but keep safe:
-    # (You can set it later via profile settings; for now we'll infer by script.)
+    # Simple lang hint (MVP)
     lang_hint = "ru"
     if re.search(r"[a-zA-Z]", body_in) and not re.search(r"[а-яА-Я]", body_in):
         lang_hint = "en"
@@ -798,7 +878,6 @@ async def sms_incoming(request: Request):
     if sms_out:
         send_sms(from_number, f"{BUSINESS['name']}: {sms_out}")
     else:
-        # If handler didn't request SMS, send minimal guidance
         lang = get_lang(CONV.get(user_key, {}).get("lang") or lang_hint)
         send_sms(from_number, f"{BUSINESS['name']}: " + render_sms(lang, "recovery", link=RECOVERY_BOOKING_LINK))
 
@@ -822,7 +901,6 @@ async def whatsapp_incoming(request: Request):
 
     user_key = norm_user_key(from_number)
 
-    # Rough language hint:
     lang_hint = "ru"
     if re.search(r"[a-zA-Z]", body_in) and not re.search(r"[а-яА-Я]", body_in):
         lang_hint = "en"
@@ -836,10 +914,8 @@ async def whatsapp_incoming(request: Request):
     )
 
     sms_out = result.get("sms_out")
-    # For WhatsApp, we also send via Twilio messages (same API, From must be WhatsApp-enabled).
-    # Easiest MVP: just reuse send_sms; Twilio will route if From is whatsapp:+...
-    # If your TWILIO_FROM_NUMBER is not whatsapp-enabled, skip for now.
     if sms_out:
+        # For WhatsApp you need TWILIO_FROM_NUMBER configured as whatsapp:+...
         send_sms(from_number, f"{BUSINESS['name']}: {sms_out}")
     else:
         lang = get_lang(CONV.get(user_key, {}).get("lang") or lang_hint)
