@@ -9,10 +9,12 @@ import requests
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import Response, StreamingResponse
 from twilio.twiml.voice_response import VoiceResponse, Gather
+from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client as TwilioClient
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from google.cloud import texttospeech
 
 app = FastAPI()
 
@@ -45,40 +47,32 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
 
-# SMS sender (regular phone number, e.g. +371... or +1...)
+# SMS sender (regular phone number, e.g. +1... or +371...)
 TWILIO_FROM_NUMBER = os.getenv("TWILIO_FROM_NUMBER", "")
 
 # WhatsApp sender (must be like "whatsapp:+14155238886" for sandbox or approved WA sender)
 TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM", "")
 
-# Google Calendar
+# Google Calendar + Google TTS (reuse same Service Account JSON)
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
 GOOGLE_CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID", "")
 
-# ElevenLabs
+# ElevenLabs (for RU/EN)
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "")
+
 # Your public base URL, e.g. https://repliq.onrender.com (NO trailing slash)
 SERVER_BASE_URL = os.getenv("SERVER_BASE_URL", "").strip().rstrip("/")
 
 # -------------------------
 # Minimal Trial / Active / Inactive
 # -------------------------
+# CLIENT_STATUS: trial | active | inactive
 CLIENT_STATUS = os.getenv("CLIENT_STATUS", "trial").strip().lower()
+# TRIAL_END_ISO: e.g. "2026-03-15T00:00:00+02:00" or "...Z"
 TRIAL_END_ISO = os.getenv("TRIAL_END_ISO", "").strip()
 
 
-# =========================
-# STORAGE
-# =========================
-CALL_SESSIONS: Dict[str, Dict[str, Any]] = {}   # per-call session (voice)
-CONV: Dict[str, Dict[str, Any]] = {}            # per-user conversation state (phone-based)
-_GCAL = None
-
-
-# =========================
-# TIME / STATUS HELPERS
-# =========================
 def now_ts() -> datetime:
     return datetime.now(TZ)
 
@@ -112,51 +106,18 @@ def client_allowed() -> Tuple[bool, str]:
     return True, "ok"
 
 
-def get_lang(value: Optional[str]) -> str:
-    return value if value in ("en", "ru", "lv") else "en"
-
-
 def not_available_message(lang: str) -> str:
     lang = get_lang(lang)
     if lang == "lv":
-        # без диакритики — звучит нормально и безопасно
-        return "Atvainojiet, sis numurs paslaik nav pieejams."
+        return "Atvainojiet, šis numurs pašlaik nav pieejams."
     if lang == "ru":
         return "Извините, этот номер сейчас недоступен."
     return "Sorry, this number is currently unavailable."
 
 
-# =========================
-# LANGUAGE DETECTION
-# =========================
-def detect_language(text: str) -> str:
-    """
-    Lightweight detector:
-      - Latvian special letters -> lv
-      - Cyrillic -> ru
-      - otherwise -> en
-    """
-    t = text or ""
-    if re.search(r"[āēīūčšžģķļņĀĒĪŪČŠŽĢĶĻŅ]", t):
-        return "lv"
-    if re.search(r"[а-яА-Я]", t):
-        return "ru"
-    return "en"
-
-
-def stt_locale_for_lang(lang: str) -> str:
-    lang = get_lang(lang)
-    if lang == "ru":
-        return "ru-RU"
-    if lang == "lv":
-        return "lv-LV"
-    return "en-US"
-
-
-# =========================
-# SMS / WHATSAPP TEMPLATES
-# NOTE: Latvian texts are ASCII-only to avoid "K'ads" garbage on some routes
-# =========================
+# -------------------------
+# Short templates (trial-safe)
+# -------------------------
 SMS_TEMPLATES = {
     "en": {
         "confirmed": "Booked: {service} {time}. Addr: {addr}. {link}",
@@ -176,78 +137,67 @@ SMS_TEMPLATES = {
     },
     "lv": {
         "confirmed": "Pieraksts: {service} {time}. Adrese: {addr}. {link}",
-        "busy": "Aiznemts. 1){opt1} 2){opt2}. Atbildi 1/2. {link}",
-        "ask_service": "Kads pakalpojums? Piem: viriesu frizura. {link}",
-        "ask_time": "Kad? Piem: rit 15:10. {link}",
-        "ask_name": "Jusu vards? {link}",
+        "busy": "Aizņemts. 1){opt1} 2){opt2}. Atbildi 1/2. {link}",
+        "ask_service": "Kāds pakalpojums? Piem.: vīriešu frizūra. {link}",
+        "ask_time": "Kad? Piem.: rīt 15:10. {link}",
+        "ask_name": "Jūsu vārds? {link}",
         "recovery": "Pieraksts: {link}",
     },
 }
 
-VOICE_TEMPLATES = {
+VOICE_PROMPTS = {
     "en": {
-        "greet": "Hello. Please say the service and time.",
-        "ask_service": "What service do you need?",
-        "ask_time": "Please tell the date and time. For example: tomorrow 15 10.",
-        "ask_name": "What is your name?",
-        "busy": "That time is busy. I will send two options by message.",
-        "confirmed": "Thank you. I will confirm by message.",
-        "no_hear": "Sorry, I could not hear you. Goodbye.",
+        "greet": "Hello. Please say what you need. You can also press 1 for English, 2 for Russian, 3 for Latvian.",
         "continue": "Please continue.",
+        "bye": "Goodbye.",
+        "need_service": "Please say the service.",
+        "need_time": "Please say date and time.",
+        "need_name": "Please say your name.",
+        "outside": "Sorry, outside working hours. Please choose another time.",
+        "busy": "That time is busy. I sent options by message.",
+        "booked": "Thank you. Booking confirmed by message.",
+        "retry": "Sorry, I couldn't hear you.",
     },
     "ru": {
-        "greet": "Здравствуйте. Скажите услугу и время.",
-        "ask_service": "Какая услуга вам нужна?",
-        "ask_time": "Скажите дату и время. Например: завтра в 15 10.",
-        "ask_name": "Как вас зовут?",
-        "busy": "Это время занято. Я отправлю два варианта сообщением.",
-        "confirmed": "Спасибо. Подтверждение отправлю сообщением.",
-        "no_hear": "Извините, не расслышала. До свидания.",
+        "greet": "Здравствуйте. Скажите, пожалуйста, что вам нужно. Можно нажать 1 — английский, 2 — русский, 3 — латышский.",
         "continue": "Продолжайте, пожалуйста.",
+        "bye": "До свидания.",
+        "need_service": "Скажите, пожалуйста, услугу.",
+        "need_time": "Скажите, пожалуйста, дату и время.",
+        "need_name": "Скажите, пожалуйста, как вас зовут.",
+        "outside": "Мы не работаем в это время. Назовите другое время.",
+        "busy": "Это время занято. Я отправил варианты сообщением.",
+        "booked": "Спасибо. Подтверждение отправил сообщением.",
+        "retry": "Я вас не расслышал.",
     },
     "lv": {
-        # short, ASCII-safe (Twilio LV voice will read ok)
-        "greet": "Labdien! Sakiet, ludzu, pakalpojumu un laiku.",
-        "ask_service": "Kads pakalpojums jums vajadzigs?",
-        "ask_time": "Ludzu, nosauciet datumu un laiku. Piemeram: rit 15 10.",
-        "ask_name": "Kads ir jusu vards?",
-        "busy": "Sis laiks ir aiznemts. Es nosutisu divus variantus zinojuma.",
-        "confirmed": "Paldies. Apstiprinajumu nosutisu zinojuma.",
-        "no_hear": "Atvainojiet, es nedzirdeju. Uz redzesanos.",
-        "continue": "Turpiniet, ludzu.",
+        "greet": "Labdien! Sakiet, lūdzu, ko vēlaties. Var arī nospiest 1 angliski, 2 krieviski, 3 latviski.",
+        "continue": "Lūdzu, turpiniet.",
+        "bye": "Uz redzēšanos.",
+        "need_service": "Kādu pakalpojumu vēlaties?",
+        "need_time": "Lūdzu, sakiet datumu un laiku.",
+        "need_name": "Kā jūs sauc?",
+        "outside": "Mēs nestrādājam šajā laikā. Lūdzu, izvēlieties citu laiku.",
+        "busy": "Šis laiks ir aizņemts. Nosūtīju variantus ziņā.",
+        "booked": "Paldies. Apstiprinājumu nosūtīju ziņā.",
+        "retry": "Es jūs nesadzirdēju.",
     },
 }
 
-def voice_text(lang: str, key: str) -> str:
-    lang = get_lang(lang)
-    return VOICE_TEMPLATES.get(lang, VOICE_TEMPLATES["en"]).get(key, "OK.")
+# =========================
+# STORAGE
+# =========================
+CALL_SESSIONS: Dict[str, Dict[str, Any]] = {}  # per-call: lang + sms dedupe
+CONV: Dict[str, Dict[str, Any]] = {}           # per-user across channels
+_GCAL = None
+_TTS = None
 
 
 # =========================
-# BASIC UTILS
+# HELPERS
 # =========================
-def _short(s: Optional[str], n: int) -> str:
-    return (s or "").strip()[:n]
-
-
-def _parse_hhmm(hhmm: str) -> Tuple[int, int]:
-    hh, mm = hhmm.split(":")
-    return int(hh), int(mm)
-
-
 def today_local() -> date:
     return datetime.now(TZ).date()
-
-
-def in_business_hours(dt_start: datetime, duration_min: int) -> bool:
-    ws_h, ws_m = _parse_hhmm(WORK_START_HHMM)
-    we_h, we_m = _parse_hhmm(WORK_END_HHMM)
-
-    day_start = dt_start.replace(hour=ws_h, minute=ws_m, second=0, microsecond=0)
-    day_end = dt_start.replace(hour=we_h, minute=we_m, second=0, microsecond=0)
-    dt_end = dt_start + timedelta(minutes=duration_min)
-
-    return (dt_start >= day_start) and (dt_end <= day_end)
 
 
 def cleanup_call_sessions():
@@ -284,6 +234,66 @@ def norm_user_key(phone: str) -> str:
     return p or "unknown"
 
 
+def get_lang(value: Optional[str]) -> str:
+    return value if value in ("en", "ru", "lv") else "en"
+
+
+def detect_language(text: str) -> str:
+    """
+    Stronger detector:
+    - Cyrillic -> ru
+    - Latvian diacritics -> lv
+    - Latvian ASCII keywords (rit/parit/viriesu/frizura...) -> lv
+    - else -> en
+    """
+    t = (text or "").lower()
+
+    if re.search(r"[а-яА-Я]", t):
+        return "ru"
+
+    if re.search(r"[āēīūčšžģķļņ]", t):
+        return "lv"
+
+    lv_keywords = [
+        "rit", "parit", "pec", "dien", "pulksten",
+        "frizur", "viries", "sievies", "pakalpoj", "pierakst",
+        "labdien", "ludzu", "mans vards", "jusu vards",
+        "aiznem", "aizņem", "apstiprin", "apstiprinā",
+    ]
+    if any(k in t for k in lv_keywords):
+        return "lv"
+
+    return "en"
+
+
+def stt_locale_for_lang(lang: str) -> str:
+    lang = get_lang(lang)
+    if lang == "ru":
+        return "ru-RU"
+    if lang == "lv":
+        return "lv-LV"
+    return "en-US"
+
+
+def _short(s: Optional[str], n: int) -> str:
+    return (s or "").strip()[:n]
+
+
+def _parse_hhmm(hhmm: str) -> Tuple[int, int]:
+    hh, mm = hhmm.split(":")
+    return int(hh), int(mm)
+
+
+def in_business_hours(dt_start: datetime, duration_min: int) -> bool:
+    ws_h, ws_m = _parse_hhmm(WORK_START_HHMM)
+    we_h, we_m = _parse_hhmm(WORK_END_HHMM)
+
+    day_start = dt_start.replace(hour=ws_h, minute=ws_m, second=0, microsecond=0)
+    day_end = dt_start.replace(hour=we_h, minute=we_m, second=0, microsecond=0)
+    dt_end = dt_start + timedelta(minutes=duration_min)
+    return (dt_start >= day_start) and (dt_end <= day_end)
+
+
 # =========================
 # OPENAI
 # =========================
@@ -306,7 +316,7 @@ def openai_chat_json(system: str, user: str) -> Dict[str, Any]:
 
 
 # =========================
-# TWILIO MESSAGE SENDER (SMS + WhatsApp)
+# TWILIO MESSAGING (SMS/WA)
 # =========================
 def _twilio_client() -> Optional[TwilioClient]:
     if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN):
@@ -316,7 +326,7 @@ def _twilio_client() -> Optional[TwilioClient]:
 
 def send_message(to_number: str, body: str):
     """
-    Unified sender:
+    Unified sender via REST:
       - If to_number starts with 'whatsapp:' -> uses TWILIO_WHATSAPP_FROM
       - Else -> uses TWILIO_FROM_NUMBER (SMS)
     """
@@ -330,7 +340,7 @@ def send_message(to_number: str, body: str):
 
     from_number = TWILIO_WHATSAPP_FROM if is_wa else TWILIO_FROM_NUMBER
     if not from_number:
-        print("Message skipped: FROM number missing for", ("whatsapp" if is_wa else "sms"))
+        print("Message skipped: FROM number missing for", "whatsapp" if is_wa else "sms")
         return
 
     try:
@@ -350,12 +360,93 @@ def send_once_for_call(call_sid: str, key: str, to_number: str, body: str):
 
 
 # =========================
-# ELEVENLABS TTS
+# TIME PARSING (fallback)
 # =========================
-def eleven_enabled() -> bool:
-    return bool(ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID and SERVER_BASE_URL)
+def parse_time_text_to_dt(text: str) -> Optional[datetime]:
+    if not text:
+        return None
+
+    t = text.lower()
+
+    m = re.search(r"\b([01]?\d|2[0-3])[:. ]([0-5]\d)\b", t)
+    if not m:
+        return None
+    hh = int(m.group(1))
+    mm = int(m.group(2))
+
+    base = today_local()
+
+    # explicit ISO date
+    m_iso = re.search(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b", t)
+    if m_iso:
+        y, mo, d = int(m_iso.group(1)), int(m_iso.group(2)), int(m_iso.group(3))
+        try:
+            base = date(y, mo, d)
+        except ValueError:
+            return None
+    else:
+        # explicit dd.mm(.yyyy) or dd/mm(/yyyy)
+        m_dm = re.search(r"\b(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?\b", t)
+        if m_dm:
+            d = int(m_dm.group(1))
+            mo = int(m_dm.group(2))
+            y_raw = m_dm.group(3)
+            if y_raw:
+                y = int(y_raw)
+                if y < 100:
+                    y += 2000
+            else:
+                y = base.year
+                try:
+                    candidate = date(y, mo, d)
+                except ValueError:
+                    return None
+                if candidate < base:
+                    y += 1
+            try:
+                base = date(y, mo, d)
+            except ValueError:
+                return None
+        else:
+            # relative
+            m_ru = re.search(r"через\s+(\d{1,2})\s*(дн|дня|дней)", t)
+            m_en = re.search(r"\bin\s+(\d{1,2})\s+days\b", t)
+            m_lv = re.search(r"pēc\s+(\d{1,2})\s+dien", t)
+
+            if any(k in t for k in ["day after tomorrow", "послезавтра", "после завтра", "parīt", "parit"]):
+                base = today_local() + timedelta(days=2)
+            elif any(k in t for k in ["tomorrow", "завтра", "rīt", "rit"]):
+                base = base + timedelta(days=1)
+            elif m_ru:
+                base = base + timedelta(days=int(m_ru.group(1)))
+            elif m_en:
+                base = base + timedelta(days=int(m_en.group(1)))
+            elif m_lv:
+                base = base + timedelta(days=int(m_lv.group(1)))
+
+    return datetime(base.year, base.month, base.day, hh, mm, tzinfo=TZ)
 
 
+def parse_dt_from_iso_or_fallback(datetime_iso: Optional[str], time_text: Optional[str], raw_text: Optional[str]) -> Optional[datetime]:
+    iso = (datetime_iso or "").strip()
+    if iso:
+        try:
+            dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=TZ)
+            else:
+                dt = dt.astimezone(TZ)
+            return dt
+        except Exception as e:
+            print("datetime_iso parse error:", repr(e))
+
+    combined = f"{time_text or ''} {raw_text or ''}".strip()
+    return parse_time_text_to_dt(combined)
+
+
+# =========================
+# ELEVENLABS (RU/EN)
+# =========================
 def generate_eleven_audio(text: str) -> bytes:
     if not (ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID):
         return b""
@@ -389,35 +480,87 @@ def generate_eleven_audio(text: str) -> bytes:
         return b""
 
 
+# =========================
+# GOOGLE TTS (LV)
+# =========================
+def get_google_tts():
+    global _TTS
+    if _TTS is not None:
+        return _TTS
+
+    if not GOOGLE_SERVICE_ACCOUNT_JSON:
+        return None
+
+    info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
+    creds = service_account.Credentials.from_service_account_info(info)
+    _TTS = texttospeech.TextToSpeechClient(credentials=creds)
+    return _TTS
+
+
+def generate_google_lv_mp3(text: str) -> bytes:
+    client = get_google_tts()
+    if client is None:
+        return b""
+
+    t = (text or "").strip()
+    if not t:
+        return b""
+    if len(t) > 300:
+        t = t[:300]
+
+    synthesis_input = texttospeech.SynthesisInput(text=t)
+
+    voice = texttospeech.VoiceSelectionParams(
+        language_code="lv-LV",
+        ssml_gender=texttospeech.SsmlVoiceGender.NEUTRAL,
+        # later we can lock exact name="lv-LV-..." if you want
+    )
+
+    audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3)
+
+    resp = client.synthesize_speech(
+        input=synthesis_input,
+        voice=voice,
+        audio_config=audio_config,
+    )
+    return resp.audio_content or b""
+
+
 @app.get("/tts")
-def tts(text: str):
-    if not (ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID):
-        raise HTTPException(status_code=503, detail="ElevenLabs not configured")
+def tts(text: str, lang: str = "en"):
+    """
+    Twilio <Play> endpoint. Returns audio/mpeg.
+    - lv -> Google TTS
+    - ru/en -> ElevenLabs
+    """
+    lang = get_lang(lang)
+
+    if lang == "lv":
+        audio = generate_google_lv_mp3(text)
+        if not audio:
+            raise HTTPException(status_code=500, detail="Google LV TTS failed")
+        return StreamingResponse(iter([audio]), media_type="audio/mpeg")
+
     audio = generate_eleven_audio(text)
     if not audio:
-        raise HTTPException(status_code=500, detail="TTS generation failed")
+        raise HTTPException(status_code=500, detail="TTS failed (Eleven)")
     return StreamingResponse(iter([audio]), media_type="audio/mpeg")
 
 
-def say_or_play(vr: VoiceResponse, text: str, lang: str):
+def play_tts(vr: VoiceResponse, text: str, lang: str):
     """
-    LV -> Twilio TTS (better LV than Eleven in your case)
-    RU/EN -> ElevenLabs if configured
+    Always use /tts play when SERVER_BASE_URL set (so LV uses Google).
     """
     t = (text or "").strip() or "OK."
     lang = get_lang(lang)
 
-    if lang == "lv":
-        vr.say(t, language="lv-LV")
-        return
-
-    if eleven_enabled():
+    if SERVER_BASE_URL:
         q = urllib.parse.quote_plus(t)
-        tts_url = f"{SERVER_BASE_URL}/tts?text={q}"
-        vr.play(tts_url)
+        vr.play(f"{SERVER_BASE_URL}/tts?lang={lang}&text={q}")
         return
 
-    vr.say(t)
+    # emergency fallback (shouldn't happen in prod)
+    vr.say(t, language=stt_locale_for_lang(lang))
 
 
 # =========================
@@ -466,7 +609,7 @@ def find_next_two_slots(dt_start: datetime, duration_min: int) -> Optional[Tuple
     step = 30
     candidate = dt_start
     found: List[datetime] = []
-    for _ in range(96):  # up to 48 hours scan
+    for _ in range(48):  # ~24 hours by 30m
         if in_business_hours(candidate, duration_min):
             if not is_slot_busy(candidate, candidate + timedelta(minutes=duration_min)):
                 found.append(candidate)
@@ -498,96 +641,7 @@ def create_calendar_event(dt_start: datetime, duration_min: int, summary: str, d
 
 
 # =========================
-# PARSING TIME (fallback)
-# =========================
-def parse_time_text_to_dt(text: str) -> Optional[datetime]:
-    if not text:
-        return None
-
-    t = text.lower()
-
-    # time HH:MM / HH MM / HH.MM
-    m = re.search(r"\b([01]?\d|2[0-3])[:. ]([0-5]\d)\b", t)
-    if not m:
-        return None
-    hh = int(m.group(1))
-    mm = int(m.group(2))
-
-    base = today_local()
-
-    # explicit ISO date YYYY-MM-DD
-    m_iso = re.search(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b", t)
-    if m_iso:
-        y, mo, d = int(m_iso.group(1)), int(m_iso.group(2)), int(m_iso.group(3))
-        try:
-            base = date(y, mo, d)
-        except ValueError:
-            return None
-    else:
-        # explicit DD.MM(.YYYY)? or DD/MM(/YYYY)?
-        m_dm = re.search(r"\b(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?\b", t)
-        if m_dm:
-            d = int(m_dm.group(1))
-            mo = int(m_dm.group(2))
-            y_raw = m_dm.group(3)
-            if y_raw:
-                y = int(y_raw)
-                if y < 100:
-                    y += 2000
-            else:
-                y = base.year
-                try:
-                    candidate = date(y, mo, d)
-                except ValueError:
-                    return None
-                if candidate < base:
-                    y = y + 1
-            try:
-                base = date(y, mo, d)
-            except ValueError:
-                return None
-        else:
-            # relative days
-            if any(k in t for k in ["day after tomorrow", "послезавтра", "parit", "parīt"]):
-                base = today_local() + timedelta(days=2)
-            elif any(k in t for k in ["tomorrow", "завтра", "rit", "rīt"]):
-                base = base + timedelta(days=1)
-            else:
-                m_ru = re.search(r"через\s+(\d{1,2})\s*(дн|дня|дней)", t)
-                m_en = re.search(r"\bin\s+(\d{1,2})\s+days\b", t)
-                m_lv = re.search(r"pec\s+(\d{1,2})\s+dien|pēc\s+(\d{1,2})\s+dien", t)
-
-                if m_ru:
-                    base = base + timedelta(days=int(m_ru.group(1)))
-                elif m_en:
-                    base = base + timedelta(days=int(m_en.group(1)))
-                elif m_lv:
-                    # m_lv может матчить одну из групп
-                    n = m_lv.group(1) or m_lv.group(2)
-                    base = base + timedelta(days=int(n))
-
-    return datetime(base.year, base.month, base.day, hh, mm, tzinfo=TZ)
-
-
-def parse_dt_from_iso_or_fallback(datetime_iso: Optional[str], time_text: Optional[str], raw_text: Optional[str]) -> Optional[datetime]:
-    iso = (datetime_iso or "").strip()
-    if iso:
-        try:
-            dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=TZ)
-            else:
-                dt = dt.astimezone(TZ)
-            return dt
-        except Exception as e:
-            print("datetime_iso parse error:", repr(e))
-
-    combined = f"{time_text or ''} {raw_text or ''}".strip()
-    return parse_time_text_to_dt(combined)
-
-
-# =========================
-# CORE CONVERSATION LOGIC
+# CORE (UNIFIED)
 # =========================
 def get_conv(user_key: str, default_lang: str) -> Dict[str, Any]:
     c = CONV.get(user_key)
@@ -601,8 +655,7 @@ def get_conv(user_key: str, default_lang: str) -> Dict[str, Any]:
             "name": None,
             "datetime_iso": None,
             "time_text": None,
-            "pending": None,           # busy options: {"opt1_iso":..., "opt2_iso":...}
-            "pending_sent_at": None,   # when we last sent options (so we can resend)
+            "pending": None,  # {"opt1_iso":..., "opt2_iso":..., "service":..., "name":...}
         }
         CONV[user_key] = c
 
@@ -613,7 +666,7 @@ def get_conv(user_key: str, default_lang: str) -> Dict[str, Any]:
     return c
 
 
-def render_sms(lang: str, key: str, **kwargs) -> str:
+def render_msg(lang: str, key: str, **kwargs) -> str:
     lang = get_lang(lang)
     tmpl = SMS_TEMPLATES[lang].get(key) or SMS_TEMPLATES["en"][key]
     return tmpl.format(**kwargs)
@@ -622,10 +675,10 @@ def render_sms(lang: str, key: str, **kwargs) -> str:
 def handle_user_text(user_key: str, text: str, channel: str, lang_hint: str, raw_phone: str) -> Dict[str, Any]:
     """
     Returns:
-      status: need_more | booked | busy | recovery
-      reply_voice: text for voice TTS
-      msg_out: text for SMS/WhatsApp (no prefix)
-      lang: en|ru|lv
+      - status: need_more|booked|busy|recovery
+      - voice_key: key for VOICE_PROMPTS
+      - msg_out: message text to send (already localized, without BUSINESS prefix)
+      - lang: chosen language
     """
     if not lang_hint or lang_hint not in ("en", "ru", "lv"):
         lang_hint = detect_language(text)
@@ -636,14 +689,7 @@ def handle_user_text(user_key: str, text: str, channel: str, lang_hint: str, raw
     msg = (text or "").strip()
     c["history"].append({"ts": now_ts().isoformat(), "channel": channel, "text": msg})
 
-    # If user sends a new request that includes ANY time, we should clear previous pending
-    # to avoid "stale options".
-    if re.search(r"\b([01]?\d|2[0-3])[:. ]([0-5]\d)\b", msg):
-        # user mentioned a time -> reset pending (new intention)
-        c["pending"] = None
-        c["pending_sent_at"] = None
-
-    # 0) If user replied 1/2 and we have pending offer -> book it
+    # 0) option reply 1/2
     if msg in ("1", "2") and c.get("pending"):
         pending = c["pending"]
         chosen_iso = pending["opt1_iso"] if msg == "1" else pending["opt2_iso"]
@@ -656,8 +702,8 @@ def handle_user_text(user_key: str, text: str, channel: str, lang_hint: str, raw
             c["pending"] = None
             return {
                 "status": "need_more",
-                "reply_voice": voice_text(lang, "ask_time"),
-                "msg_out": render_sms(lang, "ask_time", link=RECOVERY_BOOKING_LINK),
+                "voice_key": "need_time",
+                "msg_out": render_msg(lang, "ask_time", link=RECOVERY_BOOKING_LINK),
                 "lang": lang,
             }
 
@@ -665,38 +711,26 @@ def handle_user_text(user_key: str, text: str, channel: str, lang_hint: str, raw
         name = pending.get("name") or c.get("name") or "Client"
 
         summary = f"{BUSINESS['name']} — {_short(service, 60)}"
-        desc = (
-            f"Name: {name}\n"
-            f"Phone: {raw_phone}\n"
-            f"Service: {service}\n"
-            f"Source: {channel} (option {msg})\n"
-        )
+        desc = f"Name: {name}\nPhone: {raw_phone}\nService: {service}\nSource: {channel} (option {msg})\n"
         create_calendar_event(dt_start, APPT_MINUTES, summary, desc)
 
         c["pending"] = None
-        c["pending_sent_at"] = None
         c["service"] = service
         c["name"] = name
         c["datetime_iso"] = dt_start.isoformat()
         c["time_text"] = dt_start.strftime("%Y-%m-%d %H:%M")
 
         when_str = dt_start.strftime("%m-%d %H:%M")
-        out = render_sms(
-            lang,
-            "confirmed",
+        out = render_msg(
+            lang, "confirmed",
             service=_short(service, 40),
             time=when_str,
             addr=_short(BUSINESS.get("address"), 35),
             link=RECOVERY_BOOKING_LINK,
         )
-        return {
-            "status": "booked",
-            "reply_voice": voice_text(lang, "confirmed"),
-            "msg_out": out,
-            "lang": lang,
-        }
+        return {"status": "booked", "voice_key": "booked", "msg_out": out, "lang": lang}
 
-    # 1) Extract fields using OpenAI
+    # 1) Extract via OpenAI
     system = f"""
 You are Repliq, an AI receptionist for a small business.
 
@@ -708,15 +742,13 @@ Business:
 Return STRICT JSON with keys:
 service: string|null
 time_text: string|null
-datetime_iso: string|null   # ISO 8601 with timezone offset, e.g. 2026-02-27T15:10:00+02:00
+datetime_iso: string|null   # ISO 8601 with timezone offset, Europe/Riga
 name: string|null
+phone: string|null
 
 Rules:
-- If customer provides a date (explicit like 12.03 or 2026-03-12) OR relative date (tomorrow / day after tomorrow / in 2 days),
-  convert to datetime_iso in Europe/Riga timezone (+02:00) when possible.
-- If only time is provided, keep time_text and set datetime_iso = null.
-- Do not invent dates; if unclear set datetime_iso = null.
-- Keep values short.
+- Convert explicit/relative dates (tomorrow/day after tomorrow/in N days/weekday) if possible.
+- If unclear, set datetime_iso = null and keep time_text if present.
 """
     user = (
         f"Today (Europe/Riga) is {now_ts().strftime('%Y-%m-%d')}.\n"
@@ -730,7 +762,7 @@ Rules:
         data = openai_chat_json(system, user)
     except Exception as e:
         print("OpenAI error:", repr(e))
-        data = {"service": None, "time_text": None, "datetime_iso": None, "name": None}
+        data = {"service": None, "time_text": None, "datetime_iso": None, "name": None, "phone": None}
 
     if data.get("service"):
         c["service"] = data["service"]
@@ -741,46 +773,30 @@ Rules:
     if data.get("time_text"):
         c["time_text"] = data["time_text"]
 
-    # 2) Determine dt_start (model ISO -> fallback)
+    # 2) dt_start
     dt_start = parse_dt_from_iso_or_fallback(c.get("datetime_iso"), c.get("time_text"), msg)
     if dt_start:
         c["datetime_iso"] = dt_start.isoformat()
 
-    # 3) Ask missing
+    # 3) missing fields
     if not c.get("service"):
-        return {
-            "status": "need_more",
-            "reply_voice": voice_text(lang, "ask_service"),
-            "msg_out": render_sms(lang, "ask_service", link=RECOVERY_BOOKING_LINK),
-            "lang": lang,
-        }
+        return {"status": "need_more", "voice_key": "need_service",
+                "msg_out": render_msg(lang, "ask_service", link=RECOVERY_BOOKING_LINK), "lang": lang}
 
     if not dt_start:
-        return {
-            "status": "need_more",
-            "reply_voice": voice_text(lang, "ask_time"),
-            "msg_out": render_sms(lang, "ask_time", link=RECOVERY_BOOKING_LINK),
-            "lang": lang,
-        }
+        return {"status": "need_more", "voice_key": "need_time",
+                "msg_out": render_msg(lang, "ask_time", link=RECOVERY_BOOKING_LINK), "lang": lang}
 
     if not c.get("name"):
-        return {
-            "status": "need_more",
-            "reply_voice": voice_text(lang, "ask_name"),
-            "msg_out": render_sms(lang, "ask_name", link=RECOVERY_BOOKING_LINK),
-            "lang": lang,
-        }
+        return {"status": "need_more", "voice_key": "need_name",
+                "msg_out": render_msg(lang, "ask_name", link=RECOVERY_BOOKING_LINK), "lang": lang}
 
-    # 4) Business hours
+    # 4) business hours
     if not in_business_hours(dt_start, APPT_MINUTES):
-        return {
-            "status": "need_more",
-            "reply_voice": voice_text(lang, "ask_time"),
-            "msg_out": render_sms(lang, "ask_time", link=RECOVERY_BOOKING_LINK),
-            "lang": lang,
-        }
+        return {"status": "need_more", "voice_key": "outside",
+                "msg_out": render_msg(lang, "ask_time", link=RECOVERY_BOOKING_LINK), "lang": lang}
 
-    # 5) Busy check -> ALWAYS offer options (and resend if needed)
+    # 5) busy check
     dt_end = dt_start + timedelta(minutes=APPT_MINUTES)
     if is_slot_busy(dt_start, dt_end):
         opts = find_next_two_slots(dt_start, APPT_MINUTES)
@@ -792,66 +808,42 @@ Rules:
                 "service": c.get("service"),
                 "name": c.get("name"),
             }
-            c["pending_sent_at"] = now_ts().isoformat()
-
-            out = render_sms(
-                lang,
-                "busy",
+            out = render_msg(
+                lang, "busy",
                 opt1=opt1.strftime("%m-%d %H:%M"),
                 opt2=opt2.strftime("%m-%d %H:%M"),
                 link=RECOVERY_BOOKING_LINK,
             )
-            return {
-                "status": "busy",
-                "reply_voice": voice_text(lang, "busy"),
-                "msg_out": out,
-                "lang": lang,
-            }
+            return {"status": "busy", "voice_key": "busy", "msg_out": out, "lang": lang}
 
-        # If cannot find options, still guide to link (do not silently "ok")
-        out = render_sms(lang, "recovery", link=RECOVERY_BOOKING_LINK)
-        return {
-            "status": "recovery",
-            "reply_voice": voice_text(lang, "ask_time"),
-            "msg_out": out,
-            "lang": lang,
-        }
+        out = render_msg(lang, "recovery", link=RECOVERY_BOOKING_LINK)
+        return {"status": "recovery", "voice_key": "need_time", "msg_out": out, "lang": lang}
 
-    # 6) Book
+    # 6) book
     service = c.get("service")
     name = c.get("name") or "Client"
 
     summary = f"{BUSINESS['name']} — {_short(service, 60)}"
     desc = (
-        f"Name: {name}\n"
-        f"Phone: {raw_phone}\n"
-        f"Service: {service}\n"
-        f"Original: {msg}\n"
-        f"Model time_text: {c.get('time_text')}\n"
-        f"Model datetime_iso: {c.get('datetime_iso')}\n"
+        f"Name: {name}\nPhone: {raw_phone}\nService: {service}\n"
+        f"Original: {msg}\nModel time_text: {c.get('time_text')}\nModel datetime_iso: {c.get('datetime_iso')}\n"
         f"Source: {channel}\n"
     )
     create_calendar_event(dt_start, APPT_MINUTES, summary, desc)
 
     when_str = dt_start.strftime("%m-%d %H:%M")
-    out = render_sms(
-        lang,
-        "confirmed",
+    out = render_msg(
+        lang, "confirmed",
         service=_short(service, 40),
         time=when_str,
         addr=_short(BUSINESS.get("address"), 35),
         link=RECOVERY_BOOKING_LINK,
     )
-    return {
-        "status": "booked",
-        "reply_voice": voice_text(lang, "confirmed"),
-        "msg_out": out,
-        "lang": lang,
-    }
+    return {"status": "booked", "voice_key": "booked", "msg_out": out, "lang": lang}
 
 
 # =========================
-# HEALTH (Render)
+# HEALTH
 # =========================
 @app.get("/health")
 async def health():
@@ -863,20 +855,14 @@ async def health():
         "trial_end": TRIAL_END_DT.isoformat() if TRIAL_END_DT else None,
         "allowed": allowed,
         "reason": reason,
-        "has_whatsapp_from": bool(TWILIO_WHATSAPP_FROM),
     }
 
 
 # =========================
-# VOICE (AUTO LANGUAGE, NO DTMF)
+# VOICE (auto + DTMF override)
 # =========================
 @app.post("/voice/incoming")
 async def voice_incoming(request: Request):
-    """
-    No DTMF menu.
-    First STT language: LV (good for Latvia).
-    After first speech we auto-detect and switch.
-    """
     cleanup_call_sessions()
     form = await request.form()
     call_sid = str(form.get("CallSid", ""))
@@ -889,23 +875,31 @@ async def voice_incoming(request: Request):
 
     allowed, _ = client_allowed()
     if not allowed:
-        say_or_play(vr, not_available_message("lv"), "lv")
+        play_tts(vr, not_available_message("lv"), "lv")
         vr.hangup()
         return twiml(vr)
 
+    # Gather speech + optional dtmf 1/2/3
     g = Gather(
-        input="speech",
+        input="speech dtmf",
+        num_digits=1,
         action="/voice/intent",
         method="POST",
         timeout=7,
         speech_timeout="auto",
-        language="lv-LV",
+        language="lv-LV",  # start LV-friendly STT
     )
-    # short LV greeting (no long instructions)
-    g.say(voice_text("lv", "greet"), language="lv-LV")
+
+    # greet in LV (Google)
+    if SERVER_BASE_URL:
+        play_tts(g, VOICE_PROMPTS["lv"]["greet"], "lv")  # (Gather supports nested verbs)
+    else:
+        g.say(VOICE_PROMPTS["lv"]["greet"], language="lv-LV")
+
     vr.append(g)
 
-    vr.say(voice_text("lv", "no_hear"), language="lv-LV")
+    play_tts(vr, VOICE_PROMPTS["lv"]["retry"], "lv")
+    vr.hangup()
     return twiml(vr)
 
 
@@ -915,6 +909,7 @@ async def voice_intent(request: Request):
     call_sid = str(form.get("CallSid", ""))
     caller = str(form.get("From", ""))
     speech = str(form.get("SpeechResult", "")).strip()
+    digits = str(form.get("Digits", "")).strip()
 
     cs = get_call_session(call_sid)
     user_key = norm_user_key(caller)
@@ -922,11 +917,15 @@ async def voice_intent(request: Request):
     allowed, _ = client_allowed()
     if not allowed:
         vr = VoiceResponse()
-        say_or_play(vr, not_available_message("lv"), "lv")
+        play_tts(vr, not_available_message("lv"), "lv")
         vr.hangup()
         return twiml(vr)
 
-    # detect language from first user speech
+    # DTMF override (force language)
+    if digits in ("1", "2", "3"):
+        cs["lang"] = "en" if digits == "1" else ("ru" if digits == "2" else "lv")
+
+    # auto-detect if not forced
     if not cs.get("lang"):
         cs["lang"] = detect_language(speech)
 
@@ -940,12 +939,15 @@ async def voice_intent(request: Request):
         raw_phone=caller,
     )
 
-    # keep session lang in sync
-    cs["lang"] = get_lang(result.get("lang") or lang)
+    lang = get_lang(result.get("lang") or lang)
+    cs["lang"] = lang
 
     vr = VoiceResponse()
-    say_or_play(vr, result.get("reply_voice") or "OK.", cs["lang"])
 
+    voice_key = result.get("voice_key") or "booked"
+    play_tts(vr, VOICE_PROMPTS[lang].get(voice_key, "OK."), lang)
+
+    # If we need more, gather again
     if result.get("status") == "need_more":
         g = Gather(
             input="speech",
@@ -953,20 +955,23 @@ async def voice_intent(request: Request):
             method="POST",
             timeout=7,
             speech_timeout="auto",
-            language=stt_locale_for_lang(cs["lang"]),
+            language=stt_locale_for_lang(lang),
         )
-        # continue phrase in the same language
-        cont = voice_text(cs["lang"], "continue")
-        g.say(cont, language=stt_locale_for_lang(cs["lang"]))
+        # short continue prompt
+        if SERVER_BASE_URL:
+            play_tts(g, VOICE_PROMPTS[lang]["continue"], lang)
+        else:
+            g.say(VOICE_PROMPTS[lang]["continue"], language=stt_locale_for_lang(lang))
         vr.append(g)
-        vr.say(voice_text(cs["lang"], "no_hear"), language=stt_locale_for_lang(cs["lang"]))
+        play_tts(vr, VOICE_PROMPTS[lang]["bye"], lang)
+        vr.hangup()
     else:
         vr.hangup()
 
-    # send SMS confirmation/options (to caller number)
+    # Send ONE confirmation/busy/recovery SMS per call step (short link)
     out = result.get("msg_out")
     if out and caller and caller != "unknown":
-        send_once_for_call(call_sid, f"msg_{result.get('status','x')}", caller, f"{BUSINESS['name']}: {out}")
+        send_once_for_call(call_sid, f"confirm_{result.get('status','x')}", caller, f"{BUSINESS['name']}: {out}")
 
     return twiml(vr)
 
@@ -975,7 +980,7 @@ async def voice_intent(request: Request):
 async def voice_status(request: Request):
     """
     Optional: Twilio status callback.
-    If call ends without booking, send recovery message ONCE.
+    If call ends without booking, send recovery ONCE.
     """
     form = await request.form()
     call_sid = str(form.get("CallSid", ""))
@@ -990,14 +995,14 @@ async def voice_status(request: Request):
         c = CONV.get(user_key, {})
         if caller and caller != "unknown":
             if not c.get("datetime_iso"):
-                body = f"{BUSINESS['name']}: " + render_sms(lang, "recovery", link=RECOVERY_BOOKING_LINK)
+                body = f"{BUSINESS['name']}: " + render_msg(lang, "recovery", link=RECOVERY_BOOKING_LINK)
                 send_once_for_call(call_sid, "recovery", caller, body)
 
     return Response(content="ok", media_type="text/plain")
 
 
 # =========================
-# SMS INCOMING
+# SMS (incoming) - REST reply (no TwiML)
 # =========================
 @app.post("/sms/incoming")
 async def sms_incoming(request: Request):
@@ -1022,13 +1027,13 @@ async def sms_incoming(request: Request):
         raw_phone=from_number,
     )
 
-    out = result.get("msg_out") or render_sms(get_lang(lang_hint), "recovery", link=RECOVERY_BOOKING_LINK)
+    out = result.get("msg_out") or render_msg(get_lang(lang_hint), "recovery", link=RECOVERY_BOOKING_LINK)
     send_message(from_number, f"{BUSINESS['name']}: {out}")
     return Response(content="ok", media_type="text/plain")
 
 
 # =========================
-# WHATSAPP INCOMING
+# WHATSAPP (incoming) - TwiML reply (prevents "ok" + duplicate)
 # =========================
 @app.post("/whatsapp/incoming")
 async def whatsapp_incoming(request: Request):
@@ -1036,11 +1041,13 @@ async def whatsapp_incoming(request: Request):
     from_number = str(form.get("From", ""))  # e.g. 'whatsapp:+371...'
     body_in = str(form.get("Body", "")).strip()
 
+    resp = MessagingResponse()
+
     allowed, _ = client_allowed()
     if not allowed:
         lang = detect_language(body_in) or "en"
-        send_message(from_number, f"{BUSINESS['name']}: {not_available_message(lang)}")
-        return Response(content="ok", media_type="text/plain")
+        resp.message(f"{BUSINESS['name']}: {not_available_message(lang)}")
+        return Response(str(resp), media_type="application/xml")
 
     user_key = norm_user_key(from_number)
     lang_hint = detect_language(body_in)
@@ -1053,7 +1060,6 @@ async def whatsapp_incoming(request: Request):
         raw_phone=from_number,
     )
 
-    # IMPORTANT: always send something back (no silent OK)
-    out = result.get("msg_out") or render_sms(get_lang(lang_hint), "recovery", link=RECOVERY_BOOKING_LINK)
-    send_message(from_number, f"{BUSINESS['name']}: {out}")
-    return Response(content="ok", media_type="text/plain")
+    out = result.get("msg_out") or render_msg(get_lang(lang_hint), "recovery", link=RECOVERY_BOOKING_LINK)
+    resp.message(f"{BUSINESS['name']}: {out}")
+    return Response(str(resp), media_type="application/xml")
