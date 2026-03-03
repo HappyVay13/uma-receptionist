@@ -1095,8 +1095,8 @@ async def voice_incoming(request: Request):
         language="lv-LV",
     )
     say_or_play(g, f"Labdien! Jūs sazvanījāt {settings_lv['biz_name']}.", "lv")
-    say_or_play(g, "Ja vēlaties: 1 angliski, 2 krieviski, 3 latviski.", language="lv-LV")
-    say_or_play(g, "Lūdzu, pasakiet, ko vēlaties pierakstīt.", language="lv-LV")
+    say_or_play(g, "Ja vēlaties: 1 angliski, 2 krieviski, 3 latviski.", "lv")
+    say_or_play(g, "Lūdzu, pasakiet, ko vēlaties pierakstīt.", "lv")
     vr.append(g)
 
     say_or_play(vr, "Atvainojiet, es jūs nedzirdēju. Uz redzēšanos!", "lv")
@@ -1153,11 +1153,11 @@ async def voice_intent(request: Request):
             language=stt_locale_for_lang(cs["lang"]),
         )
         if cs["lang"] == "lv":
-            say_or_play(g, "Turpiniet, lūdzu.", language="lv-LV")
+            say_or_play(g, "Turpiniet, lūdzu.", "lv")
         elif cs["lang"] == "ru":
-            say_or_play(g, "Продолжайте, пожалуйста.", language="ru-RU")
+            say_or_play(g, "Продолжайте, пожалуйста.", "ru")
         else:
-            say_or_play(g, "Please continue.", language="en-US")
+            say_or_play(g, "Please continue.", "en")
         vr.append(g)
         say_or_play(vr, "Atvainojiet, es jūs nedzirdēju. Uz redzēšanos!", cs["lang"])
     else:
