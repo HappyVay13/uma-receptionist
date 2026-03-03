@@ -14,12 +14,10 @@ from twilio.twiml.voice_response import VoiceResponse, Gather
 from twilio.rest import Client as TwilioClient
 from sqlalchemy import text
 
-# Google APIs
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
-# DB (your existing module)
-from db.database import engine, SessionLocal  # noqa
+from db.database import engine  # expects engine in db/database.py
 
 
 # -------------------------
@@ -28,39 +26,32 @@ from db.database import engine, SessionLocal  # noqa
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("repliq")
 
-
 app = FastAPI()
 
 # -------------------------
-# GLOBAL CONFIG
+# CONFIG
 # -------------------------
 TZ = timezone(timedelta(hours=2))  # Europe/Riga
 
 TENANT_ID_DEFAULT = (os.getenv("DEFAULT_CLIENT_ID", "default") or "default").strip()
-
 RECOVERY_BOOKING_LINK = os.getenv("RECOVERY_BOOKING_LINK", "https://repliq.app/book").strip()
 
 APPT_MINUTES = int(os.getenv("APPT_MINUTES", "30"))
 WORK_START_HHMM_DEFAULT = os.getenv("WORK_START_HHMM", "09:00").strip()
 WORK_END_HHMM_DEFAULT = os.getenv("WORK_END_HHMM", "18:00").strip()
 
-# OpenAI
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
 
-# Twilio
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "").strip()
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "").strip()
 TWILIO_FROM_NUMBER = os.getenv("TWILIO_FROM_NUMBER", "").strip()
 TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM", "").strip()
 
-# Server base URL for TTS <Play>
 SERVER_BASE_URL = os.getenv("SERVER_BASE_URL", "").strip().rstrip("/")
 
-# Google auth (Calendar + TTS using SA JSON)
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
 
-# Google TTS default voice
 GOOGLE_TTS_VOICE_NAME = (
     os.getenv("GOOGLE_TTS_VOICE_NAME", "").strip()
     or os.getenv("GOOGLE_TTS_VOICE", "").strip()
@@ -68,28 +59,27 @@ GOOGLE_TTS_VOICE_NAME = (
 )
 GOOGLE_TTS_LANGUAGE_CODE = os.getenv("GOOGLE_TTS_LANGUAGE_CODE", "lv-LV").strip()
 
-# ElevenLabs
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "").strip()
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "").strip()
 
-# Optional fallback calendar id (if tenant has no calendar field)
 GOOGLE_CALENDAR_ID_FALLBACK = os.getenv("GOOGLE_CALENDAR_ID", "").strip()
-
-# SaaS status (global fallback; tenant can override in DB)
 CLIENT_STATUS_FALLBACK = (os.getenv("CLIENT_STATUS", "trial") or "trial").strip().lower()
 TRIAL_END_ISO_FALLBACK = (os.getenv("TRIAL_END_ISO", "") or "").strip()
 
 BUSINESS_FALLBACK = {
     "business_name": os.getenv("BIZ_NAME", "Repliq").strip(),
     "address": os.getenv("BIZ_ADDRESS", "Rēzekne").strip(),
-    "services": os.getenv("BIZ_SERVICES", "vīriešu frizūra").strip(),
+    # лучше держать это LV, иначе будет смешение в LV-шаблонах
+    "services_lv": os.getenv("BIZ_SERVICES_LV", "").strip() or os.getenv("BIZ_SERVICES", "vīriešu frizūra").strip(),
+    "services_ru": os.getenv("BIZ_SERVICES_RU", "").strip() or os.getenv("BIZ_SERVICES", "мужская стрижка").strip(),
+    "services_en": os.getenv("BIZ_SERVICES_EN", "").strip() or os.getenv("BIZ_SERVICES", "men's haircut").strip(),
     "work_start": WORK_START_HHMM_DEFAULT,
     "work_end": WORK_END_HHMM_DEFAULT,
 }
 
 
 # -------------------------
-# BASIC TIME
+# TIME HELPERS
 # -------------------------
 def now_ts() -> datetime:
     return datetime.now(TZ)
@@ -110,18 +100,8 @@ def parse_dt_any_tz(iso: str) -> Optional[datetime]:
 
 
 # -------------------------
-# UTIL
+# TEXT / LANG HELPERS
 # -------------------------
-def twiml(vr: VoiceResponse) -> Response:
-    return Response(content=str(vr), media_type="application/xml")
-
-def _short(s: Optional[str], n: int) -> str:
-    return (s or "").strip()[:n]
-
-def _parse_hhmm(hhmm: str) -> Tuple[int, int]:
-    hh, mm = hhmm.split(":")
-    return int(hh), int(mm)
-
 def get_lang(value: Optional[str]) -> str:
     return value if value in ("en", "ru", "lv") else "lv"
 
@@ -140,18 +120,32 @@ def norm_user_key(phone: str) -> str:
     return p or "unknown"
 
 def detect_language(text_: str) -> str:
+    """
+    Lightweight heuristic; used ONLY for initial lock.
+    After first lock, we do NOT re-detect unless explicit user switch (future feature).
+    """
     t = (text_ or "").strip().lower()
     if re.search(r"[āēīūčšžģķļņĀĒĪŪČŠŽĢĶĻŅ]", t):
         return "lv"
     if re.search(r"[а-яА-Я]", t):
         return "ru"
-    lv_tokens = ["labdien", "sveiki", "ludzu", "paldies", "pierakst", "rit", "parit", "sodien", "cikos", "kad", "gribu", "velos", "vajag"]
+    lv_tokens = ["labdien", "sveiki", "ludzu", "paldies", "pierakst", "rit", "parit", "sodien", "cikos", "kad"]
     score = sum(1 for tok in lv_tokens if tok in t)
     return "lv" if score >= 2 else "en"
 
+def _short(s: Optional[str], n: int) -> str:
+    return (s or "").strip()[:n]
+
+def _parse_hhmm(hhmm: str) -> Tuple[int, int]:
+    hh, mm = hhmm.split(":")
+    return int(hh), int(mm)
+
+def twiml(vr: VoiceResponse) -> Response:
+    return Response(content=str(vr), media_type="application/xml")
+
 
 # -------------------------
-# DB: Schema Introspection (tenants)
+# DB: Tenants schema introspection + safe ensure
 # -------------------------
 def tenants_columns() -> List[Dict[str, Any]]:
     with engine.connect() as conn:
@@ -166,7 +160,7 @@ def tenants_columns() -> List[Dict[str, Any]]:
         cols.append({
             "name": r[0],
             "nullable": (r[1] == "YES"),
-            "default": r[2],  # may be None
+            "default": r[2],
             "type": r[3],
         })
     return cols
@@ -182,15 +176,24 @@ def tenants_pk(cols: List[Dict[str, Any]]) -> str:
 def default_value_for_tenant_column(col_name: str, data_type: str) -> Any:
     n = col_name.lower()
 
-    # Strong known business fields
-    if n == "business_name":
-        return BUSINESS_FALLBACK["business_name"]
-    if n in ("name",):
+    # Business
+    if n in ("business_name", "name"):
         return BUSINESS_FALLBACK["business_name"]
     if n in ("address", "business_address"):
         return BUSINESS_FALLBACK["address"]
+
+    # Services variants
+    if n in ("services_lv",):
+        return BUSINESS_FALLBACK["services_lv"]
+    if n in ("services_ru",):
+        return BUSINESS_FALLBACK["services_ru"]
+    if n in ("services_en",):
+        return BUSINESS_FALLBACK["services_en"]
     if n in ("services", "business_services"):
-        return BUSINESS_FALLBACK["services"]
+        # fallback: make LV-ish as default to avoid mixed language in LV templates
+        return BUSINESS_FALLBACK["services_lv"]
+
+    # Work hours
     if n in ("work_start", "work_start_hhmm"):
         return BUSINESS_FALLBACK["work_start"]
     if n in ("work_end", "work_end_hhmm"):
@@ -211,8 +214,7 @@ def default_value_for_tenant_column(col_name: str, data_type: str) -> Any:
     if n in ("created_at", "updated_at"):
         return now_ts()
 
-    # Type-based fallback
-    dt = data_type.lower()
+    dt = (data_type or "").lower()
     if "timestamp" in dt:
         return now_ts()
     if dt == "date":
@@ -226,7 +228,6 @@ def default_value_for_tenant_column(col_name: str, data_type: str) -> Any:
     if dt in ("json", "jsonb"):
         return {}
 
-    # default string
     return ""
 
 def ensure_tenant_row(tenant_id: str) -> None:
@@ -234,7 +235,6 @@ def ensure_tenant_row(tenant_id: str) -> None:
     cols = tenants_columns()
     pk = tenants_pk(cols)
 
-    # Build insert for all NOT NULL columns without default
     insert_cols = [pk]
     params: Dict[str, Any] = {"tid": tenant_id}
 
@@ -250,7 +250,6 @@ def ensure_tenant_row(tenant_id: str) -> None:
     val_sql = ", ".join([":tid" if x == pk else f":{x}" for x in insert_cols])
 
     sql = f"INSERT INTO tenants ({col_sql}) VALUES ({val_sql}) ON CONFLICT ({pk}) DO NOTHING"
-
     with engine.begin() as conn:
         conn.execute(text(sql), params)
 
@@ -260,16 +259,17 @@ def get_tenant(tenant_id: str) -> Dict[str, Any]:
 
     cols = tenants_columns()
     pk = tenants_pk(cols)
-    # Select all columns (safe)
     col_names = [c["name"] for c in cols]
     select_cols = ", ".join(col_names)
 
     with engine.connect() as conn:
-        row = conn.execute(text(f"SELECT {select_cols} FROM tenants WHERE {pk}=:tid LIMIT 1"), {"tid": tenant_id}).fetchone()
+        row = conn.execute(
+            text(f"SELECT {select_cols} FROM tenants WHERE {pk}=:tid LIMIT 1"),
+            {"tid": tenant_id},
+        ).fetchone()
 
     out: Dict[str, Any] = {"_id": tenant_id}
     if not row:
-        # should not happen (we ensured)
         return out
 
     for i, name in enumerate(col_names):
@@ -278,7 +278,7 @@ def get_tenant(tenant_id: str) -> Dict[str, Any]:
 
 
 # -------------------------
-# DB: Conversations (stable)
+# DB: Conversations (sticky lang + stable state)
 # -------------------------
 def db_get_or_create_conversation(tenant_id: str, user_key: str, default_lang: str) -> Dict[str, Any]:
     tenant_id = (tenant_id or "").strip() or TENANT_ID_DEFAULT
@@ -367,7 +367,6 @@ def db_save_conversation(tenant_id: str, user_key: str, c: Dict[str, Any]) -> No
 # SaaS Access Control
 # -------------------------
 def tenant_allowed(tenant: Dict[str, Any]) -> Tuple[bool, str]:
-    # tenant can have 'status' and 'trial_end' (we treat if exist), else fallback globals
     st = (tenant.get("status") or tenant.get("client_status") or CLIENT_STATUS_FALLBACK or "trial").lower()
     if st == "inactive":
         return False, "inactive"
@@ -386,6 +385,52 @@ def tenant_allowed(tenant: Dict[str, Any]) -> Tuple[bool, str]:
             return False, "trial_expired"
 
     return True, "ok"
+
+
+# -------------------------
+# Tenant settings (services per lang)
+# -------------------------
+def tenant_calendar_id(tenant: Dict[str, Any]) -> str:
+    for key in ("calendar_id", "google_calendar_id", "calendarId", "calendarID"):
+        v = tenant.get(key)
+        if v:
+            return str(v)
+    return GOOGLE_CALENDAR_ID_FALLBACK or ""
+
+def tenant_services_for_lang(tenant: Dict[str, Any], lang: str) -> str:
+    lang = get_lang(lang)
+    # Prefer explicit per-lang fields if present
+    if lang == "lv" and tenant.get("services_lv"):
+        return str(tenant.get("services_lv"))
+    if lang == "ru" and tenant.get("services_ru"):
+        return str(tenant.get("services_ru"))
+    if lang == "en" and tenant.get("services_en"):
+        return str(tenant.get("services_en"))
+    # Fallback single field
+    if tenant.get("services"):
+        return str(tenant.get("services"))
+    # Fallback env
+    if lang == "lv":
+        return BUSINESS_FALLBACK["services_lv"]
+    if lang == "ru":
+        return BUSINESS_FALLBACK["services_ru"]
+    return BUSINESS_FALLBACK["services_en"]
+
+def tenant_settings(tenant: Dict[str, Any], lang: str) -> Dict[str, Any]:
+    biz_name = str(tenant.get("business_name") or tenant.get("name") or BUSINESS_FALLBACK["business_name"])
+    addr = str(tenant.get("address") or BUSINESS_FALLBACK["address"])
+    work_start = str(tenant.get("work_start") or WORK_START_HHMM_DEFAULT)
+    work_end = str(tenant.get("work_end") or WORK_END_HHMM_DEFAULT)
+    calendar_id = tenant_calendar_id(tenant)
+    services_hint = tenant_services_for_lang(tenant, lang)
+    return {
+        "biz_name": biz_name,
+        "addr": addr,
+        "services_hint": services_hint,
+        "work_start": work_start,
+        "work_end": work_end,
+        "calendar_id": calendar_id,
+    }
 
 
 # -------------------------
@@ -459,14 +504,6 @@ def get_gcal():
     except Exception as e:
         log.exception("GCAL init error: %s", repr(e))
         return None
-
-def tenant_calendar_id(tenant: Dict[str, Any]) -> str:
-    # try common column names, fallback env
-    for key in ("calendar_id", "google_calendar_id", "calendarId", "calendarID"):
-        v = tenant.get(key)
-        if v:
-            return str(v)
-    return GOOGLE_CALENDAR_ID_FALLBACK or ""
 
 def is_slot_busy(calendar_id: str, dt_start: datetime, dt_end: datetime) -> bool:
     svc = get_gcal()
@@ -632,7 +669,7 @@ def say_or_play(vr: VoiceResponse, text_: str, lang: str):
 
 
 # -------------------------
-# Date/Time parsing
+# Date parsing
 # -------------------------
 def parse_time_text_to_dt(text_: str) -> Optional[datetime]:
     if not text_:
@@ -645,52 +682,19 @@ def parse_time_text_to_dt(text_: str) -> Optional[datetime]:
 
     hh = int(m.group(1))
     mm = int(m.group(2))
-
     base = today_local()
 
-    m_iso = re.search(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b", t)
-    if m_iso:
-        y, mo, d = int(m_iso.group(1)), int(m_iso.group(2)), int(m_iso.group(3))
-        try:
-            base = date(y, mo, d)
-        except ValueError:
-            return None
-    else:
-        m_dm = re.search(r"\b(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?\b", t)
-        if m_dm:
-            d = int(m_dm.group(1))
-            mo = int(m_dm.group(2))
-            y_raw = m_dm.group(3)
-            if y_raw:
-                y = int(y_raw)
-                if y < 100:
-                    y += 2000
-            else:
-                y = base.year
-                try:
-                    candidate = date(y, mo, d)
-                except ValueError:
-                    return None
-                if candidate < base:
-                    y += 1
-            try:
-                base = date(y, mo, d)
-            except ValueError:
-                return None
-        else:
-            if any(k in t for k in ["day after tomorrow", "послезавтра", "parīt", "parit"]):
-                base = today_local() + timedelta(days=2)
-            elif any(k in t for k in ["tomorrow", "завтра", "rīt", "rit"]):
-                base = today_local() + timedelta(days=1)
+    if any(k in t for k in ["day after tomorrow", "послезавтра", "parīt", "parit"]):
+        base = today_local() + timedelta(days=2)
+    elif any(k in t for k in ["tomorrow", "завтра", "rīt", "rit"]):
+        base = today_local() + timedelta(days=1)
 
     return datetime(base.year, base.month, base.day, hh, mm, tzinfo=TZ)
 
 def parse_dt_from_iso_or_fallback(datetime_iso: Optional[str], time_text: Optional[str], raw_text: Optional[str]) -> Optional[datetime]:
-    iso = (datetime_iso or "").strip()
-    if iso:
-        dt = parse_dt_any_tz(iso)
-        if dt:
-            return dt
+    dt = parse_dt_any_tz((datetime_iso or "").strip())
+    if dt:
+        return dt
     combined = f"{time_text or ''} {raw_text or ''}".strip()
     return parse_time_text_to_dt(combined)
 
@@ -712,7 +716,7 @@ SMS_TEMPLATES = {
         "confirmed": "Запись: {service} {time}. Адрес: {addr}. {link}",
         "busy": "Занято. 1){opt1} 2){opt2}. Ответ 1/2. {link}",
         "ask_service": "Какая услуга? Пример: мужская стрижка. {link}",
-        "ask_time": "Когда? Пример: завтра 15:10. {link}",
+        "ask_time": "Когда и во сколько? Пример: завтра 15:10. {link}",
         "ask_name": "Как вас зовут? {link}",
         "recovery": "Запись: {link}",
         "unavailable": "Извините, сервис сейчас недоступен.",
@@ -741,7 +745,7 @@ VOICE_TEXT = {
     },
     "ru": {
         "need_service": "Какая услуга вам нужна?",
-        "need_time": "Когда вам удобно?",
+        "need_time": "Когда и во сколько вам удобно?",
         "need_name": "Как вас зовут?",
         "confirmed": "Спасибо! Запись подтверждена.",
         "busy": "Это время занято. Я отправлю альтернативы сообщением.",
@@ -768,49 +772,37 @@ def render_sms(lang: str, key: str, **kwargs) -> str:
 
 
 # -------------------------
-# CORE LOGIC
+# CORE LOGIC (STRICT STICKY LANG + KEEP CONTEXT)
 # -------------------------
-def tenant_settings(tenant: Dict[str, Any]) -> Dict[str, Any]:
-    biz_name = str(tenant.get("business_name") or tenant.get("name") or BUSINESS_FALLBACK["business_name"])
-    addr = str(tenant.get("address") or BUSINESS_FALLBACK["address"])
-    services_hint = str(tenant.get("services") or BUSINESS_FALLBACK["services"])
-    work_start = str(tenant.get("work_start") or WORK_START_HHMM_DEFAULT)
-    work_end = str(tenant.get("work_end") or WORK_END_HHMM_DEFAULT)
-    calendar_id = tenant_calendar_id(tenant)
-    return {
-        "biz_name": biz_name,
-        "addr": addr,
-        "services_hint": services_hint,
-        "work_start": work_start,
-        "work_end": work_end,
-        "calendar_id": calendar_id,
-    }
-
 def handle_user_text(tenant_id: str, raw_phone: str, text_in: str, channel: str, lang_hint: str) -> Dict[str, Any]:
     msg = (text_in or "").strip()
-    tenant = get_tenant(tenant_id)
-    settings = tenant_settings(tenant)
 
-    # Access check
+    tenant = get_tenant(tenant_id)
     allowed, reason = tenant_allowed(tenant)
     if not allowed:
-        lang = detect_language(msg) if msg else "lv"
+        lang0 = get_lang(detect_language(msg) if msg else "lv")
         return {
             "status": "blocked",
-            "reply_voice": VOICE_TEXT[get_lang(lang)]["unavailable"],
-            "msg_out": render_sms(get_lang(lang), "unavailable"),
-            "lang": get_lang(lang),
+            "reply_voice": VOICE_TEXT[lang0]["unavailable"],
+            "msg_out": render_sms(lang0, "unavailable"),
+            "lang": lang0,
         }
 
-    # Language
-    if not lang_hint or lang_hint not in ("en", "ru", "lv"):
-        lang_hint = detect_language(msg) if msg else "lv"
-
     user_key = norm_user_key(raw_phone)
-    c = db_get_or_create_conversation(tenant_id, user_key, lang_hint)
-    lang = get_lang(c.get("lang") or lang_hint)
+    c = db_get_or_create_conversation(tenant_id, user_key, get_lang(lang_hint))
 
-    # If user selects option 1/2 for pending
+    # ✅ STRICT STICKY LANG:
+    # if already locked -> never re-detect
+    if c.get("lang"):
+        lang = get_lang(c["lang"])
+    else:
+        lang = get_lang(lang_hint or (detect_language(msg) if msg else "lv"))
+        c["lang"] = lang
+        db_save_conversation(tenant_id, user_key, c)
+
+    settings = tenant_settings(tenant, lang)
+
+    # 1/2 option selection
     if msg in ("1", "2") and c.get("pending"):
         pending = c.get("pending") or {}
         chosen_iso = pending.get("opt1_iso") if msg == "1" else pending.get("opt2_iso")
@@ -833,6 +825,7 @@ def handle_user_text(tenant_id: str, raw_phone: str, text_in: str, channel: str,
         create_calendar_event(settings["calendar_id"], dt_start, APPT_MINUTES, summary, desc)
 
         c["pending"] = None
+        c["state"] = "BOOKED"
         c["service"] = service
         c["name"] = name
         c["datetime_iso"] = dt_start.isoformat()
@@ -847,7 +840,9 @@ def handle_user_text(tenant_id: str, raw_phone: str, text_in: str, channel: str,
             "lang": lang,
         }
 
-    # Extract
+    # --------
+    # Extraction (but DO NOT erase existing context)
+    # --------
     data = {"service": None, "time_text": None, "datetime_iso": None, "name": None, "phone": None}
     if msg:
         system = f"""
@@ -868,50 +863,60 @@ phone: string|null
 Rules:
 - Convert relative dates (rīt/parīt/tomorrow/day after tomorrow) if possible.
 - If unclear, set datetime_iso=null.
+- Do NOT invent missing fields.
 """
         user = (
             f"Today (Europe/Riga) is {now_ts().strftime('%Y-%m-%d')}.\n"
             f"User said: {msg}\n"
             f"Channel: {channel}\n"
             f"User phone: {raw_phone}\n"
-            f"Language hint: {lang}\n"
+            f"Language locked: {lang}\n"
         )
         try:
             data = openai_chat_json(system, user)
         except Exception as e:
             log.exception("OpenAI error: %s", repr(e))
 
-    # Update convo fields
+    # Update only if extracted values exist (never overwrite with None)
     if data.get("service"):
         c["service"] = data["service"]
     if data.get("name"):
         c["name"] = data["name"]
 
-    dt_start = parse_dt_from_iso_or_fallback(data.get("datetime_iso"), data.get("time_text"), msg)
+    # Keep previously known datetime if user just sent a name/service
+    # Only parse/overwrite datetime if we actually got something related to time
+    dt_from_model = parse_dt_any_tz((data.get("datetime_iso") or "").strip())
+    dt_from_text = None
+    if not dt_from_model:
+        # parse from time_text/raw only if message likely contains time/date tokens
+        # (prevents wiping context when msg is just "Jānis")
+        if re.search(r"\b([01]?\d|2[0-3])[:. ]([0-5]\d)\b", msg.lower()) or any(
+            k in msg.lower() for k in ["rīt", "rit", "parīt", "parit", "tomorrow", "завтра", "послезавтра"]
+        ):
+            dt_from_text = parse_dt_from_iso_or_fallback(None, data.get("time_text"), msg)
+
+    dt_start = dt_from_model or dt_from_text or parse_dt_any_tz((c.get("datetime_iso") or "").strip())
+
+    # Save computed time only if we have it
     if dt_start:
         c["datetime_iso"] = dt_start.isoformat()
         c["time_text"] = dt_start.strftime("%Y-%m-%d %H:%M")
 
-    # Ask missing fields
+    # Persist conversation state after updates
+    db_save_conversation(tenant_id, user_key, c)
+
+    # Ask missing fields in natural order
     if not c.get("service"):
-        c["lang"] = lang
-        db_save_conversation(tenant_id, user_key, c)
         return {"status": "need_more", "reply_voice": VOICE_TEXT[lang]["need_service"], "msg_out": render_sms(lang, "ask_service", link=RECOVERY_BOOKING_LINK), "lang": lang}
 
     if not dt_start:
-        c["lang"] = lang
-        db_save_conversation(tenant_id, user_key, c)
         return {"status": "need_more", "reply_voice": VOICE_TEXT[lang]["need_time"], "msg_out": render_sms(lang, "ask_time", link=RECOVERY_BOOKING_LINK), "lang": lang}
 
     if not c.get("name"):
-        c["lang"] = lang
-        db_save_conversation(tenant_id, user_key, c)
         return {"status": "need_more", "reply_voice": VOICE_TEXT[lang]["need_name"], "msg_out": render_sms(lang, "ask_name", link=RECOVERY_BOOKING_LINK), "lang": lang}
 
     # Business hours
     if not in_business_hours(dt_start, APPT_MINUTES, settings["work_start"], settings["work_end"]):
-        c["lang"] = lang
-        db_save_conversation(tenant_id, user_key, c)
         return {"status": "need_more", "reply_voice": VOICE_TEXT[lang]["outside_hours"], "msg_out": render_sms(lang, "ask_time", link=RECOVERY_BOOKING_LINK), "lang": lang}
 
     # Busy check
@@ -921,7 +926,7 @@ Rules:
         if opts:
             opt1, opt2 = opts
             c["pending"] = {"opt1_iso": opt1.isoformat(), "opt2_iso": opt2.isoformat(), "service": c.get("service"), "name": c.get("name")}
-            c["lang"] = lang
+            c["state"] = "PENDING"
             db_save_conversation(tenant_id, user_key, c)
             return {
                 "status": "busy",
@@ -930,11 +935,9 @@ Rules:
                 "lang": lang,
             }
 
-        c["lang"] = lang
-        db_save_conversation(tenant_id, user_key, c)
         return {"status": "recovery", "reply_voice": VOICE_TEXT[lang]["recovery"], "msg_out": render_sms(lang, "recovery", link=RECOVERY_BOOKING_LINK), "lang": lang}
 
-    # Book
+    # Book final
     service = c.get("service") or settings["services_hint"]
     name = c.get("name") or ("Klients" if lang == "lv" else ("Клиент" if lang == "ru" else "Client"))
 
@@ -942,7 +945,6 @@ Rules:
     desc = f"Name: {name}\nPhone: {raw_phone}\nService: {service}\nOriginal: {msg}\nSource: {channel}\n"
     create_calendar_event(settings["calendar_id"], dt_start, APPT_MINUTES, summary, desc)
 
-    c["lang"] = lang
     c["state"] = "BOOKED"
     c["datetime_iso"] = dt_start.isoformat()
     c["time_text"] = dt_start.strftime("%Y-%m-%d %H:%M")
@@ -958,18 +960,12 @@ Rules:
 
 
 # -------------------------
-# Startup (critical)
+# STARTUP
 # -------------------------
 @app.on_event("startup")
 def _startup():
-    # This must NEVER crash deployment. We handle errors and log them.
-    try:
-        ensure_tenant_row(TENANT_ID_DEFAULT)
-        log.info("Startup OK: ensured tenant=%s", TENANT_ID_DEFAULT)
-    except Exception as e:
-        # If this fails, app cannot work. But we still want a clear log:
-        log.exception("Startup FAILED ensuring tenant: %s", repr(e))
-        raise
+    ensure_tenant_row(TENANT_ID_DEFAULT)
+    log.info("Startup OK: ensured tenant=%s", TENANT_ID_DEFAULT)
 
 
 # -------------------------
@@ -1019,7 +1015,6 @@ def debug_tenants():
 
 @app.get("/debug/conversation")
 def debug_conversation(user: str = ""):
-    # quick view
     try:
         uk = norm_user_key(user)
         with engine.connect() as conn:
@@ -1076,8 +1071,7 @@ async def voice_incoming(request: Request):
     caller = str(form.get("From", ""))
 
     tenant = get_tenant(TENANT_ID_DEFAULT)
-    allowed, _reason = tenant_allowed(tenant)
-    settings = tenant_settings(tenant)
+    allowed, _ = tenant_allowed(tenant)
 
     cs = get_call_session(call_sid)
     cs["caller"] = caller
@@ -1088,6 +1082,9 @@ async def voice_incoming(request: Request):
         vr.hangup()
         return twiml(vr)
 
+    # Always greet in Latvian (per your design)
+    settings_lv = tenant_settings(tenant, "lv")
+
     g = Gather(
         input="speech dtmf",
         num_digits=1,
@@ -1097,7 +1094,7 @@ async def voice_incoming(request: Request):
         speech_timeout="auto",
         language="lv-LV",
     )
-    say_or_play(g, f"Labdien! Jūs sazvanījāt {settings['biz_name']}.", "lv")
+    say_or_play(g, f"Labdien! Jūs sazvanījāt {settings_lv['biz_name']}.", "lv")
     g.say("Ja vēlaties: 1 angliski, 2 krieviski, 3 latviski.", language="lv-LV")
     g.say("Lūdzu, pasakiet, ko vēlaties pierakstīt.", language="lv-LV")
     vr.append(g)
@@ -1117,7 +1114,7 @@ async def voice_intent(request: Request):
     user_phone = caller or "unknown"
 
     tenant = get_tenant(TENANT_ID_DEFAULT)
-    allowed, _reason = tenant_allowed(tenant)
+    allowed, _ = tenant_allowed(tenant)
 
     vr = VoiceResponse()
     if not allowed:
@@ -1125,9 +1122,11 @@ async def voice_intent(request: Request):
         vr.hangup()
         return twiml(vr)
 
-    # DTMF language selection
+    # DTMF language selection overrides lock for this call
     if digits in ("1", "2", "3"):
         cs["lang"] = "en" if digits == "1" else ("ru" if digits == "2" else "lv")
+
+    # If no selection, keep call lang or detect from speech once
     if not cs.get("lang"):
         cs["lang"] = detect_language(speech) if speech else "lv"
 
@@ -1166,13 +1165,14 @@ async def voice_intent(request: Request):
 
     msg_out = result.get("msg_out")
     if msg_out and user_phone and user_phone != "unknown":
-        send_sms_once_for_call(call_sid, f"{result.get('status','x')}", user_phone, f"{tenant_settings(get_tenant(TENANT_ID_DEFAULT))['biz_name']}: {msg_out}")
+        biz = tenant_settings(get_tenant(TENANT_ID_DEFAULT), cs["lang"])["biz_name"]
+        send_sms_once_for_call(call_sid, f"{result.get('status','x')}", user_phone, f"{biz}: {msg_out}")
 
     return twiml(vr)
 
 
 # -------------------------
-# SMS
+# SMS (NO "ok" responses)
 # -------------------------
 @app.post("/sms/incoming")
 async def sms_incoming(request: Request):
@@ -1180,18 +1180,21 @@ async def sms_incoming(request: Request):
     from_number = str(form.get("From", ""))
     body_in = str(form.get("Body", "")).strip()
 
+    # initial hint only; language will lock on first convo creation
     lang_hint = detect_language(body_in) if body_in else "lv"
+
     result = handle_user_text(TENANT_ID_DEFAULT, from_number, body_in, "sms", lang_hint)
 
-    biz = tenant_settings(get_tenant(TENANT_ID_DEFAULT))["biz_name"]
+    biz = tenant_settings(get_tenant(TENANT_ID_DEFAULT), result.get("lang") or "lv")["biz_name"]
     msg_out = result.get("msg_out") or render_sms(get_lang(result.get("lang")), "recovery", link=RECOVERY_BOOKING_LINK)
     send_message(from_number, f"{biz}: {msg_out}")
 
-    return Response(content="ok", media_type="text/plain")
+    # ✅ critical: do NOT return "ok"
+    return Response(status_code=204)
 
 
 # -------------------------
-# WHATSAPP
+# WHATSAPP (NO "ok" responses)
 # -------------------------
 @app.post("/whatsapp/incoming")
 async def whatsapp_incoming(request: Request):
@@ -1199,7 +1202,7 @@ async def whatsapp_incoming(request: Request):
     from_number = str(form.get("From", ""))  # whatsapp:+371...
     body_in = str(form.get("Body", "")).strip()
 
-    # Sticky lang for short replies "1"/"2"
+    # For "1/2" keep locked lang from DB (no re-detect)
     if body_in in ("1", "2"):
         c = db_get_or_create_conversation(TENANT_ID_DEFAULT, norm_user_key(from_number), "lv")
         lang_hint = c.get("lang") or "lv"
@@ -1208,8 +1211,9 @@ async def whatsapp_incoming(request: Request):
 
     result = handle_user_text(TENANT_ID_DEFAULT, from_number, body_in, "whatsapp", get_lang(lang_hint))
 
-    biz = tenant_settings(get_tenant(TENANT_ID_DEFAULT))["biz_name"]
+    biz = tenant_settings(get_tenant(TENANT_ID_DEFAULT), result.get("lang") or "lv")["biz_name"]
     msg_out = result.get("msg_out") or render_sms(get_lang(result.get("lang")), "recovery", link=RECOVERY_BOOKING_LINK)
     send_message(from_number, f"{biz}: {msg_out}")
 
-    return Response(content="ok", media_type="text/plain")
+    # ✅ critical: do NOT return "ok"
+    return Response(status_code=204)
