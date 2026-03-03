@@ -17,76 +17,76 @@ from sqlalchemy import text
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
-# Local DB (Postgres via SQLAlchemy)
+# Postgres
 from db.database import engine, SessionLocal
-try:
-    from db.database import Base
-except Exception:
-    # fallback if Base is defined in db.models in your project
-    from db.models import Base
 
-from db.models import Conversation
 
 app = FastAPI()
-
-# =========================
-# DB bootstrap
-# =========================
-@app.on_event("startup")
-def _startup_db():
-    # Create tables (MVP). Later we’ll move to Alembic migrations.
-    Base.metadata.create_all(bind=engine)
 
 # =========================
 # CONFIG
 # =========================
 TZ = timezone(timedelta(hours=2))  # Europe/Riga (+02:00)
 
+# Multi-tenant MVP: one default tenant id
+TENANT_ID_DEFAULT = (os.getenv("DEFAULT_CLIENT_ID", "default") or "default").strip()
+
+# Business defaults (can be overridden per-tenant later)
 BUSINESS = {
-    "name": os.getenv("BIZ_NAME", "Repliq"),
-    "address": os.getenv("BIZ_ADDRESS", "Rēzekne"),
-    "hours": os.getenv("BIZ_HOURS", "09:00 - 18:00"),
-    "services": os.getenv("BIZ_SERVICES", "vīriešu un sieviešu frizūra"),
+    "name": os.getenv("BIZ_NAME", "Repliq").strip(),
+    "address": os.getenv("BIZ_ADDRESS", "Rēzekne").strip(),
+    "hours": os.getenv("BIZ_HOURS", "09:00 - 18:00").strip(),
+    "services": os.getenv("BIZ_SERVICES", "vīriešu un sieviešu frizūra").strip(),
 }
 
+# Recovery link
 RECOVERY_BOOKING_LINK = os.getenv("RECOVERY_BOOKING_LINK", "https://repliq.app/book").strip()
 
+# Appointments
 APPT_MINUTES = int(os.getenv("APPT_MINUTES", "30"))
-WORK_START_HHMM = os.getenv("WORK_START_HHMM", "09:00")
-WORK_END_HHMM = os.getenv("WORK_END_HHMM", "18:00")
+WORK_START_HHMM = os.getenv("WORK_START_HHMM", "09:00").strip()
+WORK_END_HHMM = os.getenv("WORK_END_HHMM", "18:00").strip()
 
+# OpenAI
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
 
+# Twilio
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "").strip()
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "").strip()
 TWILIO_FROM_NUMBER = os.getenv("TWILIO_FROM_NUMBER", "").strip()
 TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM", "").strip()
 
+# Google Calendar
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
 GOOGLE_CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID", "").strip()
 
-# Google TTS (Latvian)
+# Google TTS
 GOOGLE_TTS_VOICE_NAME = (
     os.getenv("GOOGLE_TTS_VOICE_NAME", "").strip()
     or os.getenv("GOOGLE_TTS_VOICE", "").strip()
     or "lv-LV-Standard-A"
 )
 GOOGLE_TTS_LANGUAGE_CODE = os.getenv("GOOGLE_TTS_LANGUAGE_CODE", "lv-LV").strip()
+SERVER_BASE_URL = os.getenv("SERVER_BASE_URL", "").strip().rstrip("/")
 
 # ElevenLabs (optional)
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "").strip()
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "").strip()
-SERVER_BASE_URL = os.getenv("SERVER_BASE_URL", "").strip().rstrip("/")
 
-# Multi-tenant placeholder (single-tenant MVP)
-TENANT_ID = os.getenv("DEFAULT_CLIENT_ID", "default").strip() or "default"
+# Trial/active/inactive
+CLIENT_STATUS = (os.getenv("CLIENT_STATUS", "trial") or "trial").strip().lower()  # trial|active|inactive
+TRIAL_END_ISO = (os.getenv("TRIAL_END_ISO", "") or "").strip()
 
-# -------------------------
-# Minimal Trial / Active / Inactive
-# -------------------------
-CLIENT_STATUS = os.getenv("CLIENT_STATUS", "trial").strip().lower()  # trial | active | inactive
-TRIAL_END_ISO = os.getenv("TRIAL_END_ISO", "").strip()              # e.g. 2026-03-15T00:00:00+02:00
+
+# =========================
+# TIME HELPERS
+# =========================
+def now_ts() -> datetime:
+    return datetime.now(TZ)
+
+def today_local() -> date:
+    return now_ts().date()
 
 def parse_dt_any_tz(iso: str) -> Optional[datetime]:
     if not iso:
@@ -101,12 +101,6 @@ def parse_dt_any_tz(iso: str) -> Optional[datetime]:
 
 TRIAL_END_DT = parse_dt_any_tz(TRIAL_END_ISO)
 
-def now_ts() -> datetime:
-    return datetime.now(TZ)
-
-def today_local() -> date:
-    return now_ts().date()
-
 def client_allowed() -> Tuple[bool, str]:
     st = (CLIENT_STATUS or "trial").lower()
     if st == "inactive":
@@ -116,8 +110,9 @@ def client_allowed() -> Tuple[bool, str]:
             return False, "trial_expired"
     return True, "ok"
 
+
 # =========================
-# Utils
+# BASIC UTILS
 # =========================
 def twiml(vr: VoiceResponse) -> Response:
     return Response(content=str(vr), media_type="application/xml")
@@ -130,7 +125,7 @@ def _parse_hhmm(hhmm: str) -> Tuple[int, int]:
     return int(hh), int(mm)
 
 def get_lang(value: Optional[str]) -> str:
-    return value if value in ("en", "ru", "lv") else "en"
+    return value if value in ("en", "ru", "lv") else "lv"
 
 def stt_locale_for_lang(lang: str) -> str:
     lang = get_lang(lang)
@@ -152,19 +147,147 @@ def detect_language(text_: str) -> str:
         return "lv"
     if re.search(r"[а-яА-Я]", t):
         return "ru"
-    lv_tokens = ["labdien", "sveiki", "ludzu", "paldies", "gribu", "velos", "vajag", "pierakst", "cikos", "rit", "parit", "sodien"]
+    # LV without diacritics (common)
+    lv_tokens = [
+        "labdien", "sveiki", "ludzu", "paldies", "pierakst", "pieraksts",
+        "rit", "parit", "sodien", "cikos", "kad", "diena", "gribu", "velos", "vajag"
+    ]
     score = sum(1 for tok in lv_tokens if tok in t)
     return "lv" if score >= 2 else "en"
 
-def is_cyrillic(s: str) -> bool:
-    return bool(re.search(r"[а-яА-Я]", s or ""))
-
-def looks_like_lv_service_text(msg: str) -> bool:
-    m = (msg or "").lower()
-    return any(k in m for k in ["friz", "griez", "manik", "pedik", "uzac", "krās", "masāž", "masaž", "skropst"])
 
 # =========================
-# Twilio Messaging
+# DB: TENANT SEED (FIX FOR FK)
+# =========================
+def _tenants_pk_column() -> Optional[str]:
+    """
+    Detects PK-like column name in tenants table.
+    Returns "id" or "tenant_id" if exists, else None.
+    """
+    with engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema='public' AND table_name='tenants'
+        """)).fetchall()
+    cols = {r[0] for r in rows}
+    if "id" in cols:
+        return "id"
+    if "tenant_id" in cols:
+        return "tenant_id"
+    return None
+
+def ensure_tenant(tenant_id: str):
+    """
+    Ensures row exists in tenants for FK integrity.
+    Works even if tenants PK column is id or tenant_id.
+    """
+    tenant_id = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    pk = _tenants_pk_column()
+    if not pk:
+        # If table tenants exists but unknown pk naming, do nothing (safer) — but FK would still fail.
+        # Better to raise a clear error:
+        raise RuntimeError("Cannot detect tenants PK column (expected id or tenant_id).")
+
+    sql = f"INSERT INTO tenants ({pk}) VALUES (:tid) ON CONFLICT ({pk}) DO NOTHING"
+    with engine.begin() as conn:
+        conn.execute(text(sql), {"tid": tenant_id})
+
+
+@app.on_event("startup")
+def _startup():
+    # Ensure default tenant exists to satisfy FK: conversations.tenant_id -> tenants
+    ensure_tenant(TENANT_ID_DEFAULT)
+
+
+# =========================
+# DB: CONVERSATIONS (RAW SQL, matches your schema)
+# =========================
+def db_get_or_create_conv(tenant_id: str, user_key: str, default_lang: str) -> Dict[str, Any]:
+    tenant_id = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    ensure_tenant(tenant_id)
+
+    user_key = norm_user_key(user_key)
+    default_lang = get_lang(default_lang)
+
+    with engine.begin() as conn:
+        row = conn.execute(text("""
+            SELECT tenant_id, user_key, lang_lock, state, service, name, datetime_iso, time_text, pending_json
+            FROM conversations
+            WHERE tenant_id=:tid AND user_key=:uk
+            LIMIT 1
+        """), {"tid": tenant_id, "uk": user_key}).fetchone()
+
+        if row:
+            pending = None
+            if row[8]:
+                try:
+                    pending = json.loads(row[8])
+                except Exception:
+                    pending = None
+            return {
+                "lang": get_lang(row[2]),
+                "state": row[3],
+                "service": row[4],
+                "name": row[5],
+                "datetime_iso": row[6],
+                "time_text": row[7],
+                "pending": pending,
+            }
+
+        conn.execute(text("""
+            INSERT INTO conversations
+            (tenant_id, user_key, lang_lock, state, service, name, datetime_iso, time_text, pending_json, updated_at)
+            VALUES (:tid, :uk, :lang, 'NEW', NULL, NULL, NULL, NULL, NULL, NOW())
+        """), {"tid": tenant_id, "uk": user_key, "lang": default_lang})
+
+    return {
+        "lang": default_lang,
+        "state": "NEW",
+        "service": None,
+        "name": None,
+        "datetime_iso": None,
+        "time_text": None,
+        "pending": None,
+    }
+
+def db_save_conv(tenant_id: str, user_key: str, c: Dict[str, Any]):
+    tenant_id = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    ensure_tenant(tenant_id)
+
+    user_key = norm_user_key(user_key)
+
+    pending_json = None
+    if c.get("pending"):
+        pending_json = json.dumps(c["pending"], ensure_ascii=False)
+
+    with engine.begin() as conn:
+        conn.execute(text("""
+            UPDATE conversations
+            SET lang_lock=:lang,
+                state=:state,
+                service=:service,
+                name=:name,
+                datetime_iso=:dtiso,
+                time_text=:tt,
+                pending_json=:pj,
+                updated_at=NOW()
+            WHERE tenant_id=:tid AND user_key=:uk
+        """), {
+            "tid": tenant_id,
+            "uk": user_key,
+            "lang": get_lang(c.get("lang")),
+            "state": c.get("state") or "NEW",
+            "service": c.get("service"),
+            "name": c.get("name"),
+            "dtiso": c.get("datetime_iso"),
+            "tt": c.get("time_text"),
+            "pj": pending_json,
+        })
+
+
+# =========================
+# TWILIO MESSAGING
 # =========================
 def _twilio_client() -> Optional[TwilioClient]:
     if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN):
@@ -190,8 +313,9 @@ def send_message(to_number: str, body: str):
     except Exception as e:
         print("Message send error:", {"to": to_number, "err": repr(e)})
 
+
 # =========================
-# OpenAI extraction
+# OPENAI
 # =========================
 def openai_chat_json(system: str, user: str) -> Dict[str, Any]:
     if not OPENAI_API_KEY:
@@ -210,8 +334,9 @@ def openai_chat_json(system: str, user: str) -> Dict[str, Any]:
     content = r.json()["choices"][0]["message"]["content"]
     return json.loads(content)
 
+
 # =========================
-# Google Calendar
+# GOOGLE CALENDAR
 # =========================
 _GCAL = None
 
@@ -245,6 +370,24 @@ def is_slot_busy(dt_start: datetime, dt_end: datetime) -> bool:
         print("GCAL freebusy error:", repr(e))
         return False
 
+def create_calendar_event(dt_start: datetime, duration_min: int, summary: str, description: str) -> Optional[str]:
+    svc = get_gcal()
+    if svc is None or not GOOGLE_CALENDAR_ID:
+        return None
+    dt_end = dt_start + timedelta(minutes=duration_min)
+    event = {
+        "summary": summary,
+        "description": description,
+        "start": {"dateTime": dt_start.isoformat(), "timeZone": "Europe/Riga"},
+        "end": {"dateTime": dt_end.isoformat(), "timeZone": "Europe/Riga"},
+    }
+    try:
+        created = svc.events().insert(calendarId=GOOGLE_CALENDAR_ID, body=event).execute()
+        return created.get("htmlLink")
+    except Exception as e:
+        print("GCAL insert error:", repr(e))
+        return None
+
 def in_business_hours(dt_start: datetime, duration_min: int) -> bool:
     ws_h, ws_m = _parse_hhmm(WORK_START_HHMM)
     we_h, we_m = _parse_hhmm(WORK_END_HHMM)
@@ -266,26 +409,9 @@ def find_next_two_slots(dt_start: datetime, duration_min: int) -> Optional[Tuple
         candidate = candidate + timedelta(minutes=step)
     return None
 
-def create_calendar_event(dt_start: datetime, duration_min: int, summary: str, description: str) -> Optional[str]:
-    svc = get_gcal()
-    if svc is None or not GOOGLE_CALENDAR_ID:
-        return None
-    dt_end = dt_start + timedelta(minutes=duration_min)
-    event = {
-        "summary": summary,
-        "description": description,
-        "start": {"dateTime": dt_start.isoformat(), "timeZone": "Europe/Riga"},
-        "end": {"dateTime": dt_end.isoformat(), "timeZone": "Europe/Riga"},
-    }
-    try:
-        created = svc.events().insert(calendarId=GOOGLE_CALENDAR_ID, body=event).execute()
-        return created.get("htmlLink")
-    except Exception as e:
-        print("GCAL insert error:", repr(e))
-        return None
 
 # =========================
-# Google TTS (LV)
+# GOOGLE TTS + ELEVEN
 # =========================
 _TTS = None
 
@@ -337,9 +463,6 @@ def tts_google(text: str):
         raise HTTPException(status_code=500, detail="Google TTS failed")
     return StreamingResponse(iter([audio]), media_type="audio/mpeg")
 
-# =========================
-# ElevenLabs (optional)
-# =========================
 def eleven_enabled() -> bool:
     return bool(ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID and SERVER_BASE_URL)
 
@@ -397,8 +520,9 @@ def say_or_play(vr: VoiceResponse, text_: str, lang: str):
     else:
         vr.say(t)
 
+
 # =========================
-# Date/time parsing
+# DATE PARSING
 # =========================
 def parse_time_text_to_dt(text_: str) -> Optional[datetime]:
     if not text_:
@@ -413,6 +537,7 @@ def parse_time_text_to_dt(text_: str) -> Optional[datetime]:
 
     base = today_local()
 
+    # explicit ISO YYYY-MM-DD
     m_iso = re.search(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b", t)
     if m_iso:
         y, mo, d = int(m_iso.group(1)), int(m_iso.group(2)), int(m_iso.group(3))
@@ -421,6 +546,7 @@ def parse_time_text_to_dt(text_: str) -> Optional[datetime]:
         except ValueError:
             return None
     else:
+        # explicit DD.MM(.YYYY)? or DD/MM(/YYYY)?
         m_dm = re.search(r"\b(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?\b", t)
         if m_dm:
             d = int(m_dm.group(1))
@@ -460,13 +586,14 @@ def parse_dt_from_iso_or_fallback(datetime_iso: Optional[str], time_text: Option
             else:
                 dt = dt.astimezone(TZ)
             return dt
-        except Exception as e:
-            print("datetime_iso parse error:", repr(e))
+        except Exception:
+            pass
     combined = f"{time_text or ''} {raw_text or ''}".strip()
     return parse_time_text_to_dt(combined)
 
+
 # =========================
-# Messaging templates
+# TEMPLATES
 # =========================
 MSG_TEMPLATES = {
     "lv": {
@@ -533,104 +660,39 @@ VOICE_TEXT = {
 
 def render_msg(lang: str, key: str, **kwargs) -> str:
     lang = get_lang(lang)
-    tmpl = MSG_TEMPLATES.get(lang, MSG_TEMPLATES["en"]).get(key) or MSG_TEMPLATES["en"][key]
+    tmpl = MSG_TEMPLATES.get(lang, MSG_TEMPLATES["lv"]).get(key) or MSG_TEMPLATES["lv"][key]
     return tmpl.format(**kwargs)
 
-def not_available_message(lang: str) -> str:
-    return render_msg(get_lang(lang), "unavailable")
-
-# =========================
-# Postgres conversation store
-# =========================
-def _db_get_or_create_conv(tenant_id: str, user_key: str, default_lang: str) -> Conversation:
-    with SessionLocal() as db:
-        conv = db.query(Conversation).filter_by(tenant_id=tenant_id, user_key=user_key).first()
-        if conv:
-            return conv
-        conv = Conversation(
-            tenant_id=tenant_id,
-            user_key=user_key,
-            lang_lock=get_lang(default_lang),
-            state="NEW",
-            service=None,
-            name=None,
-            datetime_iso=None,
-            time_text=None,
-            pending_json=None,
-        )
-        db.add(conv)
-        db.commit()
-        db.refresh(conv)
-        return conv
-
-def _db_load_conv_dict(tenant_id: str, user_key: str, default_lang: str) -> Dict[str, Any]:
-    conv = _db_get_or_create_conv(tenant_id, user_key, default_lang)
-    pending = None
-    if conv.pending_json:
-        try:
-            pending = json.loads(conv.pending_json)
-        except Exception:
-            pending = None
-    return {
-        "lang": get_lang(conv.lang_lock),
-        "service": conv.service,
-        "name": conv.name,
-        "datetime_iso": conv.datetime_iso,
-        "time_text": conv.time_text,
-        "pending": pending,
-    }
-
-def _db_save_conv_dict(tenant_id: str, user_key: str, c: Dict[str, Any]) -> None:
-    with SessionLocal() as db:
-        conv = db.query(Conversation).filter_by(tenant_id=tenant_id, user_key=user_key).first()
-        if not conv:
-            conv = Conversation(tenant_id=tenant_id, user_key=user_key, lang_lock=get_lang(c.get("lang") or "en"), state="NEW")
-            db.add(conv)
-            db.commit()
-            db.refresh(conv)
-
-        conv.lang_lock = get_lang(c.get("lang") or conv.lang_lock or "en")
-        conv.service = c.get("service")
-        conv.name = c.get("name")
-        conv.datetime_iso = c.get("datetime_iso")
-        conv.time_text = c.get("time_text")
-        pending = c.get("pending")
-        conv.pending_json = json.dumps(pending, ensure_ascii=False) if pending else None
-
-        db.add(conv)
-        db.commit()
 
 # =========================
 # CORE LOGIC
 # =========================
-def handle_user_text(user_key: str, text_: str, channel: str, lang_hint: str, raw_phone: str) -> Dict[str, Any]:
+def handle_user_text(tenant_id: str, raw_phone: str, text_: str, channel: str, lang_hint: str) -> Dict[str, Any]:
     msg = (text_ or "").strip()
+    user_key = norm_user_key(raw_phone)
 
     if not lang_hint or lang_hint not in ("en", "ru", "lv"):
-        lang_hint = detect_language(msg) if msg else "en"
+        lang_hint = detect_language(msg) if msg else "lv"
 
-    c = _db_load_conv_dict(TENANT_ID, user_key, lang_hint)
+    c = db_get_or_create_conv(tenant_id, user_key, lang_hint)
     lang = get_lang(c.get("lang") or lang_hint)
 
     def finalize(result: Dict[str, Any]) -> Dict[str, Any]:
-        try:
-            c["lang"] = get_lang(result.get("lang") or c.get("lang") or lang)
-            _db_save_conv_dict(TENANT_ID, user_key, c)
-        except Exception as e:
-            print("DB save error:", repr(e))
+        c["lang"] = get_lang(result.get("lang") or c.get("lang") or lang)
+        db_save_conv(tenant_id, user_key, c)
         return result
 
-    # Explicit language switch
+    # explicit language switch (simple)
     if msg:
         low = msg.lower()
         if any(x in low for x in ["latviski", "latviešu", "latviesu"]):
             lang = "lv"; c["lang"] = "lv"
         elif any(x in low for x in ["по-русски", "по русски", "русский", "krieviski"]):
             lang = "ru"; c["lang"] = "ru"
-        elif any(x in low for x in ["in english", "english", "angliski"]):
+        elif any(x in low for x in ["english", "in english", "angliski"]):
             lang = "en"; c["lang"] = "en"
 
-    # Option pick 1/2
+    # option 1/2 flow
     if msg in ("1", "2") and c.get("pending"):
         pending = c["pending"] or {}
         chosen_iso = pending.get("opt1_iso") if msg == "1" else pending.get("opt2_iso")
@@ -656,7 +718,7 @@ def handle_user_text(user_key: str, text_: str, channel: str, lang_hint: str, ra
             })
 
         service = pending.get("service") or c.get("service") or BUSINESS["services"]
-        name = pending.get("name") or c.get("name") or "Client"
+        name = pending.get("name") or c.get("name") or ("Klients" if lang == "lv" else ("Клиент" if lang == "ru" else "Client"))
 
         summary = f"{BUSINESS['name']} — {_short(service, 60)}"
         desc = f"Name: {name}\nPhone: {raw_phone}\nService: {service}\nSource: {channel} (option {msg})\n"
@@ -672,7 +734,7 @@ def handle_user_text(user_key: str, text_: str, channel: str, lang_hint: str, ra
         return finalize({
             "status": "booked",
             "reply_voice": VOICE_TEXT[lang]["confirmed"],
-            "msg_out": render_msg(lang, "confirmed", service=_short(service, 40), time=when_str, addr=_short(BUSINESS.get("address"), 35), link=RECOVERY_BOOKING_LINK),
+            "msg_out": render_msg(lang, "confirmed", service=_short(service, 40), time=when_str, addr=_short(BUSINESS["address"], 35), link=RECOVERY_BOOKING_LINK),
             "lang": lang,
         })
 
@@ -680,7 +742,7 @@ def handle_user_text(user_key: str, text_: str, channel: str, lang_hint: str, ra
     data = {"service": None, "time_text": None, "datetime_iso": None, "name": None, "phone": None}
     if msg:
         system = f"""
-You are Repliq, an AI receptionist for a small business.
+You are Repliq, an AI receptionist.
 
 Business:
 - Name: {BUSINESS['name']}
@@ -690,19 +752,15 @@ Business:
 Return STRICT JSON with keys:
 service: string|null
 time_text: string|null
-datetime_iso: string|null   # ISO 8601 with timezone offset, e.g. 2026-03-04T15:20:00+02:00
+datetime_iso: string|null   # ISO 8601 with Europe/Riga timezone (+02:00)
 name: string|null
 phone: string|null
-
 Rules:
-- If user provides date (explicit like 04.03 or 2026-03-04) OR relative date (rīt / parīt / tomorrow / day after tomorrow),
-  convert to datetime_iso in Europe/Riga (+02:00) when possible.
-- If only time is provided, keep time_text and set datetime_iso = null.
-- Do NOT invent dates; if unclear set datetime_iso = null.
-- Keep values short.
+- Convert relative dates (rīt/parīt/tomorrow/day after tomorrow) when possible.
+- If unclear, set datetime_iso=null.
 """
         user = (
-            f"Today (Europe/Riga) is {now_ts().strftime('%Y-%m-%d')}\n"
+            f"Today (Europe/Riga) is {now_ts().strftime('%Y-%m-%d')}.\n"
             f"User said: {msg}\n"
             f"Channel: {channel}\n"
             f"User phone: {raw_phone}\n"
@@ -713,12 +771,8 @@ Rules:
         except Exception as e:
             print("OpenAI error:", repr(e))
 
-    extracted_service = (data.get("service") or "").strip() if data.get("service") else None
-    if lang == "lv" and extracted_service and is_cyrillic(extracted_service) and looks_like_lv_service_text(msg):
-        extracted_service = msg
-
-    if extracted_service:
-        c["service"] = extracted_service
+    if data.get("service"):
+        c["service"] = data["service"]
     if data.get("name"):
         c["name"] = data["name"]
 
@@ -727,7 +781,6 @@ Rules:
         c["datetime_iso"] = dt_start.isoformat()
         c["time_text"] = dt_start.strftime("%Y-%m-%d %H:%M")
 
-    # Ask missing
     if not c.get("service"):
         return finalize({
             "status": "need_more",
@@ -760,7 +813,6 @@ Rules:
             "lang": lang,
         })
 
-    # Busy check
     dt_end = dt_start + timedelta(minutes=APPT_MINUTES)
     if is_slot_busy(dt_start, dt_end):
         opts = find_next_two_slots(dt_start, APPT_MINUTES)
@@ -780,9 +832,9 @@ Rules:
             "lang": lang,
         })
 
-    # Book
     service = c.get("service") or BUSINESS["services"]
-    name = c.get("name") or "Client"
+    name = c.get("name") or ("Klients" if lang == "lv" else ("Клиент" if lang == "ru" else "Client"))
+
     summary = f"{BUSINESS['name']} — {_short(service, 60)}"
     desc = f"Name: {name}\nPhone: {raw_phone}\nService: {service}\nOriginal: {msg}\nSource: {channel}\n"
     create_calendar_event(dt_start, APPT_MINUTES, summary, desc)
@@ -791,12 +843,13 @@ Rules:
     return finalize({
         "status": "booked",
         "reply_voice": VOICE_TEXT[lang]["confirmed"],
-        "msg_out": render_msg(lang, "confirmed", service=_short(service, 40), time=when_str, addr=_short(BUSINESS.get("address"), 35), link=RECOVERY_BOOKING_LINK),
+        "msg_out": render_msg(lang, "confirmed", service=_short(service, 40), time=when_str, addr=_short(BUSINESS["address"], 35), link=RECOVERY_BOOKING_LINK),
         "lang": lang,
     })
 
+
 # =========================
-# HEALTH + DB DEBUG
+# HEALTH / DEBUG
 # =========================
 @app.get("/health")
 async def health():
@@ -811,6 +864,7 @@ async def health():
         "google_tts_enabled": google_tts_enabled(),
         "google_tts_voice": GOOGLE_TTS_VOICE_NAME,
         "eleven_enabled": eleven_enabled(),
+        "tenant_default": TENANT_ID_DEFAULT,
     }
 
 @app.get("/debug/db")
@@ -828,6 +882,19 @@ def debug_db():
         return {"db_connected": True, "tables": tables}
     except Exception as e:
         return {"db_connected": False, "error": str(e)}
+
+@app.get("/debug/tenants")
+def debug_tenants():
+    try:
+        pk = _tenants_pk_column()
+        if not pk:
+            return {"ok": False, "error": "cannot detect tenants pk"}
+        with engine.connect() as conn:
+            rows = conn.execute(text(f"SELECT {pk} FROM tenants ORDER BY {pk} LIMIT 50")).fetchall()
+        return {"ok": True, "pk": pk, "tenants": [r[0] for r in rows]}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
 
 # =========================
 # ROUTES: VOICE
@@ -869,7 +936,7 @@ async def voice_incoming(request: Request):
     call_sid = str(form.get("CallSid", ""))
     caller = str(form.get("From", ""))
 
-    allowed, reason = client_allowed()
+    allowed, _reason = client_allowed()
     cs = get_call_session(call_sid)
     cs["caller"] = caller
 
@@ -889,7 +956,6 @@ async def voice_incoming(request: Request):
         speech_timeout="auto",
         language="lv-LV",
     )
-
     say_or_play(g, f"Labdien! Jūs sazvanījāt {BUSINESS['name']}.", "lv")
     g.say("Ja vēlaties: 1 angliski, 2 krieviski, 3 latviski.", language="lv-LV")
     g.say("Lūdzu, pasakiet, ko vēlaties pierakstīt.", language="lv-LV")
@@ -906,12 +972,11 @@ async def voice_intent(request: Request):
     speech = str(form.get("SpeechResult", "")).strip()
     digits = str(form.get("Digits", "")).strip()
 
-    allowed, reason = client_allowed()
+    allowed, _reason = client_allowed()
     cs = get_call_session(call_sid)
     user_phone = caller or "unknown"
 
     vr = VoiceResponse()
-
     if not allowed:
         say_or_play(vr, VOICE_TEXT["lv"]["unavailable"], "lv")
         vr.hangup()
@@ -924,18 +989,16 @@ async def voice_intent(request: Request):
         cs["lang"] = detect_language(speech) if speech else "lv"
 
     lang = get_lang(cs.get("lang"))
-    user_key = norm_user_key(user_phone)
 
     result = handle_user_text(
-        user_key=user_key,
+        tenant_id=TENANT_ID_DEFAULT,
+        raw_phone=user_phone,
         text_=speech,
         channel="voice",
         lang_hint=lang,
-        raw_phone=user_phone,
     )
 
     cs["lang"] = get_lang(result.get("lang") or lang)
-
     say_or_play(vr, result.get("reply_voice") or "Labi.", cs["lang"])
 
     if result.get("status") == "need_more":
@@ -964,26 +1027,6 @@ async def voice_intent(request: Request):
 
     return twiml(vr)
 
-@app.post("/voice/status")
-async def voice_status(request: Request):
-    form = await request.form()
-    call_sid = str(form.get("CallSid", ""))
-    call_status = str(form.get("CallStatus", ""))
-    caller = str(form.get("From", ""))
-
-    allowed, reason = client_allowed()
-    cs = get_call_session(call_sid)
-    lang = get_lang(cs.get("lang") or "lv")
-
-    if call_status in ("completed", "busy", "failed", "no-answer", "canceled"):
-        if allowed and caller and caller != "unknown":
-            user_key = norm_user_key(caller)
-            c = _db_load_conv_dict(TENANT_ID, user_key, lang)
-            if not c.get("datetime_iso"):
-                body = f"{BUSINESS['name']}: " + render_msg(lang, "recovery", link=RECOVERY_BOOKING_LINK)
-                send_sms_once_for_call(call_sid, "recovery", caller, body)
-
-    return Response(content="ok", media_type="text/plain")
 
 # =========================
 # ROUTES: SMS
@@ -994,27 +1037,19 @@ async def sms_incoming(request: Request):
     from_number = str(form.get("From", ""))
     body_in = str(form.get("Body", "")).strip()
 
-    allowed, reason = client_allowed()
+    allowed, _reason = client_allowed()
     if not allowed:
-        lang = detect_language(body_in) if body_in else "en"
-        send_message(from_number, f"{BUSINESS['name']}: {not_available_message(lang)}")
+        lang = detect_language(body_in) if body_in else "lv"
+        send_message(from_number, f"{BUSINESS['name']}: {MSG_TEMPLATES[get_lang(lang)]['unavailable']}")
         return Response(content="ok", media_type="text/plain")
 
-    user_key = norm_user_key(from_number)
-    lang_hint = detect_language(body_in) if body_in else "en"
-
-    result = handle_user_text(
-        user_key=user_key,
-        text_=body_in,
-        channel="sms",
-        lang_hint=lang_hint,
-        raw_phone=from_number,
-    )
+    lang_hint = detect_language(body_in) if body_in else "lv"
+    result = handle_user_text(TENANT_ID_DEFAULT, from_number, body_in, "sms", lang_hint)
 
     msg_out = result.get("msg_out") or render_msg(get_lang(result.get("lang")), "recovery", link=RECOVERY_BOOKING_LINK)
     send_message(from_number, f"{BUSINESS['name']}: {msg_out}")
-
     return Response(content="ok", media_type="text/plain")
+
 
 # =========================
 # ROUTES: WHATSAPP
@@ -1022,33 +1057,24 @@ async def sms_incoming(request: Request):
 @app.post("/whatsapp/incoming")
 async def whatsapp_incoming(request: Request):
     form = await request.form()
-    from_number = str(form.get("From", ""))  # e.g. whatsapp:+371...
+    from_number = str(form.get("From", ""))  # whatsapp:+371...
     body_in = str(form.get("Body", "")).strip()
 
-    allowed, reason = client_allowed()
+    allowed, _reason = client_allowed()
     if not allowed:
-        lang = detect_language(body_in) if body_in else "en"
-        send_message(from_number, f"{BUSINESS['name']}: {not_available_message(lang)}")
+        lang = detect_language(body_in) if body_in else "lv"
+        send_message(from_number, f"{BUSINESS['name']}: {MSG_TEMPLATES[get_lang(lang)]['unavailable']}")
         return Response(content="ok", media_type="text/plain")
 
-    user_key = norm_user_key(from_number)
-
-    # Keep language sticky for short replies like "1"/"2"
+    # keep lang sticky for "1"/"2"
     if body_in in ("1", "2"):
-        existing = _db_load_conv_dict(TENANT_ID, user_key, "en")
-        lang_hint = existing.get("lang") or "en"
+        c = db_get_or_create_conv(TENANT_ID_DEFAULT, norm_user_key(from_number), "lv")
+        lang_hint = c.get("lang") or "lv"
     else:
-        lang_hint = detect_language(body_in) if body_in else "en"
+        lang_hint = detect_language(body_in) if body_in else "lv"
 
-    result = handle_user_text(
-        user_key=user_key,
-        text_=body_in,
-        channel="whatsapp",
-        lang_hint=lang_hint,
-        raw_phone=from_number,
-    )
+    result = handle_user_text(TENANT_ID_DEFAULT, from_number, body_in, "whatsapp", get_lang(lang_hint))
 
     msg_out = result.get("msg_out") or render_msg(get_lang(result.get("lang")), "recovery", link=RECOVERY_BOOKING_LINK)
     send_message(from_number, f"{BUSINESS['name']}: {msg_out}")
-
     return Response(content="ok", media_type="text/plain")
