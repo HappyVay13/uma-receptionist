@@ -1153,11 +1153,11 @@ async def voice_intent(request: Request):
             language=stt_locale_for_lang(cs["lang"]),
         )
         if cs["lang"] == "lv":
-            g.say("Turpiniet, lūdzu.", language="lv-LV")
+            say_or_play(g, "Turpiniet, lūdzu.", language="lv-LV")
         elif cs["lang"] == "ru":
-            g.say("Продолжайте, пожалуйста.", language="ru-RU")
+            say_or_play(g, "Продолжайте, пожалуйста.", language="ru-RU")
         else:
-            g.say("Please continue.", language="en-US")
+            say_or_play(g, "Please continue.", language="en-US")
         vr.append(g)
         say_or_play(vr, "Atvainojiet, es jūs nedzirdēju. Uz redzēšanos!", cs["lang"])
     else:
