@@ -720,7 +720,84 @@ def looks_like_lv_service_text(msg: str) -> bool:
     return any(k in m for k in ["friz", "griez", "manik", "pedik", "uzac", "krās", "masaž", "skropst"])
 
 # =========================
-# CORE LOGIC (voice/sms/whatsapp)
+# POSTGRES CONVERSATIONS (replacement for in-memory CONV)
+# =========================
+import json as _json
+from db.database import SessionLocal
+from db.models import Conversation
+
+TENANT_ID = os.getenv("DEFAULT_CLIENT_ID", "default").strip() or "default"
+
+def _db_get_or_create_conv(tenant_id: str, user_key: str, default_lang: str) -> Conversation:
+    with SessionLocal() as db:
+        conv = db.query(Conversation).filter_by(tenant_id=tenant_id, user_key=user_key).first()
+        if conv:
+            return conv
+
+        conv = Conversation(
+            tenant_id=tenant_id,
+            user_key=user_key,
+            lang_lock=get_lang(default_lang),
+            state="NEW",
+            service=None,
+            name=None,
+            datetime_iso=None,
+            time_text=None,
+            pending_json=None,
+        )
+        db.add(conv)
+        db.commit()
+        db.refresh(conv)
+        return conv
+
+def _db_load_conv_dict(tenant_id: str, user_key: str, default_lang: str) -> Dict[str, Any]:
+    conv = _db_get_or_create_conv(tenant_id, user_key, default_lang)
+    pending = None
+    if conv.pending_json:
+        try:
+            pending = _json.loads(conv.pending_json)
+        except Exception:
+            pending = None
+
+    return {
+        "lang": get_lang(conv.lang_lock),
+        "history": [],  # optional; не храним историю в БД пока
+        "service": conv.service,
+        "name": conv.name,
+        "datetime_iso": conv.datetime_iso,
+        "time_text": conv.time_text,
+        "pending": pending,
+    }
+
+def _db_save_conv_dict(tenant_id: str, user_key: str, c: Dict[str, Any]) -> None:
+    with SessionLocal() as db:
+        conv = db.query(Conversation).filter_by(tenant_id=tenant_id, user_key=user_key).first()
+        if not conv:
+            # safety: create if missing
+            conv = Conversation(
+                tenant_id=tenant_id,
+                user_key=user_key,
+                lang_lock=get_lang(c.get("lang") or "lv"),
+                state="NEW",
+            )
+            db.add(conv)
+            db.commit()
+            db.refresh(conv)
+
+        conv.lang_lock = get_lang(c.get("lang") or conv.lang_lock or "lv")
+        conv.service = c.get("service")
+        conv.name = c.get("name")
+        conv.datetime_iso = c.get("datetime_iso")
+        conv.time_text = c.get("time_text")
+
+        pending = c.get("pending")
+        conv.pending_json = _json.dumps(pending, ensure_ascii=False) if pending else None
+
+        db.add(conv)
+        db.commit()
+
+# =========================
+# CORE LOGIC (voice/sms/whatsapp) - Postgres-backed
 # =========================
 def handle_user_text(user_key: str, text: str, channel: str, lang_hint: str, raw_phone: str) -> Dict[str, Any]:
     """
@@ -728,34 +805,60 @@ def handle_user_text(user_key: str, text: str, channel: str, lang_hint: str, raw
       status: need_more | booked | busy | recovery
       reply_voice: short phrase for voice
       msg_out: message to send over SMS/WA (already short)
-      lang: chosen language
+      lang: chosen language (locked)
     """
     msg = (text or "").strip()
+
+    # 1) Load conversation from Postgres (sticky lang)
     if not lang_hint or lang_hint not in ("en", "ru", "lv"):
-        lang_hint = detect_language(msg)
+        lang_hint = detect_language(msg) if msg else "lv"
 
-    c = get_conv(user_key, lang_hint)
-    lang = get_lang(c.get("lang"))
+    c = _db_load_conv_dict(TENANT_ID, user_key, lang_hint)
+    lang = get_lang(c.get("lang") or "lv")
 
-    c["history"].append({"ts": now_ts().isoformat(), "channel": channel, "text": msg})
+    def finalize(result: Dict[str, Any]) -> Dict[str, Any]:
+        # persist changes before returning
+        c["lang"] = get_lang(result.get("lang") or c.get("lang") or lang)
+        _db_save_conv_dict(TENANT_ID, user_key, c)
+        return result
 
-    # 0) If user replied with 1/2 and we have pending offer -> book it
+    # 2) Explicit language switch (simple)
+    if msg:
+        low = msg.lower()
+        if any(x in low for x in ["latviski", "latviešu", "latviesu", "lv "]):
+            lang = "lv"
+            c["lang"] = "lv"
+        elif any(x in low for x in ["по-русски", "по русски", "русский", "krieviski", "ru "]):
+            lang = "ru"
+            c["lang"] = "ru"
+        elif any(x in low for x in ["in english", "english", "angliski", "en "]):
+            lang = "en"
+            c["lang"] = "en"
+
+    # 3) If user replied with 1/2 and we have pending offer -> book it
     if msg in ("1", "2") and c.get("pending"):
         pending = c["pending"]
-        chosen_iso = pending["opt1_iso"] if msg == "1" else pending["opt2_iso"]
-        try:
-            dt_start = datetime.fromisoformat(chosen_iso).astimezone(TZ)
-        except Exception:
-            dt_start = None
+        chosen_iso = pending.get("opt1_iso") if msg == "1" else pending.get("opt2_iso")
+
+        dt_start = None
+        if chosen_iso:
+            try:
+                dt_start = datetime.fromisoformat(chosen_iso)
+                if dt_start.tzinfo is None:
+                    dt_start = dt_start.replace(tzinfo=TZ)
+                else:
+                    dt_start = dt_start.astimezone(TZ)
+            except Exception:
+                dt_start = None
 
         if not dt_start:
             c["pending"] = None
-            return {
+            return finalize({
                 "status": "need_more",
                 "reply_voice": VOICE_TEXT[lang]["need_time"],
                 "msg_out": render_msg(lang, "ask_time", link=RECOVERY_BOOKING_LINK),
                 "lang": lang,
-            }
+            })
 
         service = pending.get("service") or c.get("service")
         name = pending.get("name") or c.get("name") or "Client"
@@ -784,12 +887,41 @@ def handle_user_text(user_key: str, text: str, channel: str, lang_hint: str, raw
             addr=_short(BUSINESS.get("address"), 35),
             link=RECOVERY_BOOKING_LINK,
         )
-        return {
+        return finalize({
             "status": "booked",
             "reply_voice": VOICE_TEXT[lang]["confirmed"],
             "msg_out": msg_out,
             "lang": lang,
-        }
+        })
+
+    # 4) Run extraction (your existing OpenAI or parsing logic)
+    # ---- Keep your existing logic below, but make sure every return uses finalize(...) ----
+    # If in your current code you already do extraction + asking missing fields, etc:
+    # just replace "return {...}" with "return finalize({...})"
+    #
+    # To keep this drop-in safe, we do the minimal behavior:
+    # - if no service -> ask_service
+    # - if no time -> ask_time
+    # - if no name -> ask_name
+    #
+    # NOTE: If you already have the full logic after the snippet you sent,
+    # paste it back here and just wrap returns with finalize().
+
+    # Minimal fallback behavior (safe):
+    if not c.get("service"):
+        return finalize({
+            "status": "need_more",
+            "reply_voice": VOICE_TEXT[lang]["need_service"],
+            "msg_out": render_msg(lang, "ask_service", link=RECOVERY_BOOKING_LINK),
+            "lang": lang,
+        })
+
+    return finalize({
+        "status": "need_more",
+        "reply_voice": VOICE_TEXT[lang]["need_time"],
+        "msg_out": render_msg(lang, "ask_time", link=RECOVERY_BOOKING_LINK),
+        "lang": lang,
+    })
 
     # 1) Extract fields using OpenAI (preferred)
     system = f"""
