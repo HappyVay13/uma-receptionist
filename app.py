@@ -1095,8 +1095,8 @@ async def voice_incoming(request: Request):
         language="lv-LV",
     )
     say_or_play(g, f"Labdien! Jūs sazvanījāt {settings_lv['biz_name']}.", "lv")
-    g.say("Ja vēlaties: 1 angliski, 2 krieviski, 3 latviski.", language="lv-LV")
-    g.say("Lūdzu, pasakiet, ko vēlaties pierakstīt.", language="lv-LV")
+    say_or_play(g, "Ja vēlaties: 1 angliski, 2 krieviski, 3 latviski.", language="lv-LV")
+    say_or_play(g, "Lūdzu, pasakiet, ko vēlaties pierakstīt.", language="lv-LV")
     vr.append(g)
 
     say_or_play(vr, "Atvainojiet, es jūs nedzirdēju. Uz redzēšanos!", "lv")
