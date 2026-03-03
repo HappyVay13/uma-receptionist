@@ -17,7 +17,12 @@ from googleapiclient.discovery import build
 from google.auth.transport.requests import Request as GoogleAuthRequest
 
 app = FastAPI()
+from db.database import engine
+from db.models import Base
 
+@app.on_event("startup")
+def _startup_db():
+    Base.metadata.create_all(bind=engine)
 # =========================
 # CONFIG
 # =========================
