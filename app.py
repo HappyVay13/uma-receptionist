@@ -961,6 +961,34 @@ Rules:
 # HEALTH (Render)
 # =========================
 @app.get("/health")
+from sqlalchemy import text
+from db.database import engine
+
+@app.get("/debug/db")
+def debug_db():
+    try:
+        with engine.connect() as conn:
+            # простой тест соединения
+            conn.execute(text("SELECT 1"))
+
+            # получаем список таблиц
+            result = conn.execute(text("""
+                SELECT table_name 
+                FROM information_schema.tables 
+                WHERE table_schema='public'
+            """))
+
+            tables = [row[0] for row in result]
+
+        return {
+            "db_connected": True,
+            "tables": tables
+        }
+    except Exception as e:
+        return {
+            "db_connected": False,
+            "error": str(e)
+        }
 async def health():
     allowed, reason = client_allowed()
     return {
