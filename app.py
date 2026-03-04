@@ -939,14 +939,17 @@ if not in_business_hours(dt_start, APPT_MINUTES, work_start, work_end):
             "service": c.get("service"),
             "name": c.get("name"),
         }
-            return {
+        c["state"] = "PENDING"
+        db_save_conversation(tenant_id, user_key, c)
+
+        return {
             "status": "busy",
             "reply_voice": (
                 "Šajā laikā mēs nestrādājam. Nosūtu tuvākos brīvos laikus."
                 if lang == "lv"
                 else ("В это время мы не работаем. Отправляю ближайшие свободные варианты."
                       if lang == "ru"
-                      else "We are closed at that time. Sending the ближайшие available options.")
+                      else "We are closed at that time. Sending the nearest available options.")
             ),
             "msg_out": render_sms(
                 lang,
@@ -966,7 +969,7 @@ if not in_business_hours(dt_start, APPT_MINUTES, work_start, work_end):
             if lang == "lv"
             else ("В это время мы не работаем. Пожалуйста, используйте ссылку для записи."
                   if lang == "ru"
-                  else "We are closed at that time. Sending the nearest available options.")
+                  else "We are closed at that time. Please use the booking link.")
         ),
         "msg_out": render_sms(lang, "recovery", link=RECOVERY_BOOKING_LINK),
         "lang": lang,
