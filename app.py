@@ -1119,11 +1119,11 @@ async def voice_incoming(request: Request):
     saved_name = db_get_saved_name(TENANT_ID_DEFAULT, caller)
 
     if saved_name:
-    say_or_play(g, f"Labdien, {saved_name}! Jūs sazvanījāt {settings_lv['biz_name']}.", "lv")
+        say_or_play(g, f"Labdien, {saved_name}! Jūs sazvanījāt {settings_lv['biz_name']}.", "lv")
     else:
-    say_or_play(g, f"Labdien! Jūs sazvanījāt {settings_lv['biz_name']}.", "lv")
-    say_or_play(g, "Ja vēlaties: 1 angliski, 2 krieviski, 3 latviski.", "lv")
-    say_or_play(g, "Lūdzu, pasakiet, ko vēlaties pierakstīt.", "lv")
+        say_or_play(g, f"Labdien! Jūs sazvanījāt {settings_lv['biz_name']}.", "lv")
+        say_or_play(g, "Ja vēlaties: 1 angliski, 2 krieviski, 3 latviski.", "lv")
+        say_or_play(g, "Lūdzu, pasakiet, ko vēlaties pierakstīt.", "lv")
     vr.append(g)
 
     say_or_play(vr, "Atvainojiet, es jūs nedzirdēju. Uz redzēšanos!", "lv")
