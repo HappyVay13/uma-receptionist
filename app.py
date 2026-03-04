@@ -792,11 +792,11 @@ def handle_user_text(tenant_id: str, raw_phone: str, text_in: str, channel: str,
     c = db_get_or_create_conversation(tenant_id, user_key, get_lang(lang_hint))
 
     # ✅ STRICT STICKY LANG
-    if c.get("lang_lock"):
-        lang = get_lang(c["lang_lock"])
+    if c.get("lang"):
+        lang = get_lang(c["lang"])
     else:
         lang = get_lang(lang_hint or (detect_language(msg) if msg else "lv"))
-        c["lang_lock"] = lang
+        c["lang"] = lang
         db_save_conversation(tenant_id, user_key, c)
 
     settings = tenant_settings(tenant, lang)
@@ -914,110 +914,110 @@ Rules:
     if not c.get("name"):
         return {"status": "need_more", "reply_voice": VOICE_TEXT[lang]["need_name"], "msg_out": render_sms(lang, "ask_name", link=RECOVERY_BOOKING_LINK), "lang": lang}
 
-   # Business hours (if outside -> offer next 2 available slots inside working window)
-if not in_business_hours(dt_start, APPT_MINUTES, work_start, work_end):
-    # move to next valid working start
-    ws_h, ws_m = _parse_hhmm(work_start)
+       # Business hours (if outside -> offer next 2 available slots inside working window)
+    if not in_business_hours(dt_start, APPT_MINUTES, work_start, work_end):
+        # move to next valid working start
+        ws_h, ws_m = _parse_hhmm(work_start)
 
-    # if time is before opening today -> use today at work_start
-    candidate_day = dt_start.date()
-    candidate = datetime(candidate_day.year, candidate_day.month, candidate_day.day, ws_h, ws_m, tzinfo=TZ)
+        # if time is before opening today -> use today at work_start
+        candidate_day = dt_start.date()
+        candidate = datetime(candidate_day.year, candidate_day.month, candidate_day.day, ws_h, ws_m, tzinfo=TZ)
 
-    # if already after opening today, or requested time is outside -> go to next day work_start
-    # (also covers "after closing" case)
-    if dt_start >= candidate:
-        candidate = candidate + timedelta(days=1)
+        # if already after opening today, or requested time is outside -> go to next day work_start
+        # (also covers "after closing" case)
+        if dt_start >= candidate:
+            candidate = candidate + timedelta(days=1)
 
-    # ensure candidate is within business hours (start of day)
-    opts = find_next_two_slots(calendar_id, candidate, APPT_MINUTES, work_start, work_end)
+        # ensure candidate is within business hours (start of day)
+        opts = find_next_two_slots(calendar_id, candidate, APPT_MINUTES, work_start, work_end)
 
-    if opts:
-        opt1, opt2 = opts
-        c["pending"] = {
-            "opt1_iso": opt1.isoformat(),
-            "opt2_iso": opt2.isoformat(),
-            "service": c.get("service"),
-            "name": c.get("name"),
-        }
-        c["state"] = "PENDING"
-        db_save_conversation(tenant_id, user_key, c)
-
-        return {
-            "status": "busy",
-            "reply_voice": (
-                "Šajā laikā mēs nestrādājam. Nosūtu tuvākos brīvos laikus."
-                if lang == "lv"
-                else ("В это время мы не работаем. Отправляю ближайшие свободные варианты."
-                      if lang == "ru"
-                      else "We are closed at that time. Sending the nearest available options.")
-            ),
-            "msg_out": render_sms(
-                lang,
-                "busy",
-                opt1=opt1.strftime("%d.%m %H:%M"),
-                opt2=opt2.strftime("%d.%m %H:%M"),
-                link=RECOVERY_BOOKING_LINK,
-            ),
-            "lang": lang,
-        }
-
-    # no slots found soon -> recovery
-    return {
-        "status": "recovery",
-        "reply_voice": (
-            "Šajā laikā mēs nestrādājam. Lūdzu, izmantojiet saiti pierakstam."
-            if lang == "lv"
-            else ("В это время мы не работаем. Пожалуйста, используйте ссылку для записи."
-                  if lang == "ru"
-                  else "We are closed at that time. Please use the booking link.")
-        ),
-        "msg_out": render_sms(lang, "recovery", link=RECOVERY_BOOKING_LINK),
-        "lang": lang,
-    }
-
-    # Busy check
-    dt_end = dt_start + timedelta(minutes=APPT_MINUTES)
-    if is_slot_busy(settings["calendar_id"], dt_start, dt_end):
-        opts = find_next_two_slots(settings["calendar_id"], dt_start, APPT_MINUTES, settings["work_start"], settings["work_end"])
         if opts:
             opt1, opt2 = opts
-            c["pending"] = {"opt1_iso": opt1.isoformat(), "opt2_iso": opt2.isoformat(), "service": c.get("service"), "name": c.get("name")}
+            c["pending"] = {
+                "opt1_iso": opt1.isoformat(),
+                "opt2_iso": opt2.isoformat(),
+                "service": c.get("service"),
+                "name": c.get("name"),
+            }
             c["state"] = "PENDING"
             db_save_conversation(tenant_id, user_key, c)
+
             return {
                 "status": "busy",
-                "reply_voice": VOICE_TEXT[lang]["busy"],
-                "msg_out": render_sms(lang, "busy", opt1=opt1.strftime("%d.%m %H:%M"), opt2=opt2.strftime("%d.%m %H:%M"), link=RECOVERY_BOOKING_LINK),
+                "reply_voice": (
+                    "Šajā laikā mēs nestrādājam. Nosūtu tuvākos brīvos laikus."
+                    if lang == "lv"
+                    else ("В это время мы не работаем. Отправляю ближайшие свободные варианты."
+                          if lang == "ru"
+                          else "We are closed at that time. Sending the nearest available options.")
+                ),
+                "msg_out": render_sms(
+                    lang,
+                    "busy",
+                    opt1=opt1.strftime("%d.%m %H:%M"),
+                    opt2=opt2.strftime("%d.%m %H:%M"),
+                    link=RECOVERY_BOOKING_LINK,
+                ),
                 "lang": lang,
             }
 
-        return {"status": "recovery", "reply_voice": VOICE_TEXT[lang]["recovery"], "msg_out": render_sms(lang, "recovery", link=RECOVERY_BOOKING_LINK), "lang": lang}
+        # no slots found soon -> recovery
+        return {
+            "status": "recovery",
+            "reply_voice": (
+                "Šajā laikā mēs nestrādājam. Lūdzu, izmantojiet saiti pierakstam."
+                if lang == "lv"
+                else ("В это время мы не работаем. Пожалуйста, используйте ссылку для записи."
+                      if lang == "ru"
+                      else "We are closed at that time. Please use the booking link.")
+            ),
+            "msg_out": render_sms(lang, "recovery", link=RECOVERY_BOOKING_LINK),
+            "lang": lang,
+        }
 
-    # Book final
-    service = c.get("service") or settings["services_hint"]
-    name = c.get("name") or ("Klients" if lang == "lv" else ("Клиент" if lang == "ru" else "Client"))
+        # Busy check
+        dt_end = dt_start + timedelta(minutes=APPT_MINUTES)
+        if is_slot_busy(settings["calendar_id"], dt_start, dt_end):
+            opts = find_next_two_slots(settings["calendar_id"], dt_start, APPT_MINUTES, settings["work_start"], settings["work_end"])
+            if opts:
+                opt1, opt2 = opts
+                c["pending"] = {"opt1_iso": opt1.isoformat(), "opt2_iso": opt2.isoformat(), "service": c.get("service"), "name": c.get("name")}
+                c["state"] = "PENDING"
+                db_save_conversation(tenant_id, user_key, c)
+                return {
+                    "status": "busy",
+                    "reply_voice": VOICE_TEXT[lang]["busy"],
+                    "msg_out": render_sms(lang, "busy", opt1=opt1.strftime("%d.%m %H:%M"), opt2=opt2.strftime("%d.%m %H:%M"), link=RECOVERY_BOOKING_LINK),
+                    "lang": lang,
+                }
 
-    summary = f"{settings['biz_name']} — {_short(service, 60)}"
-    desc = f"Name: {name}\nPhone: {raw_phone}\nService: {service}\nOriginal: {msg}\nSource: {channel}\n"
-    create_calendar_event(settings["calendar_id"], dt_start, APPT_MINUTES, summary, desc)
+            return {"status": "recovery", "reply_voice": VOICE_TEXT[lang]["recovery"], "msg_out": render_sms(lang, "recovery", link=RECOVERY_BOOKING_LINK), "lang": lang}
 
-    c["state"] = "BOOKED"
-    c["datetime_iso"] = dt_start.isoformat()
-    c["time_text"] = dt_start.strftime("%Y-%m-%d %H:%M")
-    db_save_conversation(tenant_id, user_key, c)
+        # Book final
+        service = c.get("service") or settings["services_hint"]
+        name = c.get("name") or ("Klients" if lang == "lv" else ("Клиент" if lang == "ru" else "Client"))
 
-    when_str = dt_start.strftime("%d.%m %H:%M")
-    return {
-        "status": "booked",
-        "reply_voice": VOICE_TEXT[lang]["confirmed"],
-        "msg_out": render_sms(lang, "confirmed_nolink", service=_short(service, 40), time=when_str, addr=_short(settings["addr"], 35), link=RECOVERY_BOOKING_LINK),
-        "lang": lang,
-    }
+        summary = f"{settings['biz_name']} — {_short(service, 60)}"
+        desc = f"Name: {name}\nPhone: {raw_phone}\nService: {service}\nOriginal: {msg}\nSource: {channel}\n"
+        create_calendar_event(settings["calendar_id"], dt_start, APPT_MINUTES, summary, desc)
+
+        c["state"] = "BOOKED"
+        c["datetime_iso"] = dt_start.isoformat()
+        c["time_text"] = dt_start.strftime("%Y-%m-%d %H:%M")
+        db_save_conversation(tenant_id, user_key, c)
+
+        when_str = dt_start.strftime("%d.%m %H:%M")
+        return {
+            "status": "booked",
+            "reply_voice": VOICE_TEXT[lang]["confirmed"],
+            "msg_out": render_sms(lang, "confirmed_nolink", service=_short(service, 40), time=when_str, addr=_short(settings["addr"], 35), link=RECOVERY_BOOKING_LINK),
+            "lang": lang,
+        }
 
 
-# -------------------------
+    # -------------------------
 # STARTUP
-# -------------------------
+    # -------------------------
 @app.on_event("startup")
 def _startup():
     ensure_tenant_row(TENANT_ID_DEFAULT)
