@@ -791,13 +791,12 @@ def handle_user_text(tenant_id: str, raw_phone: str, text_in: str, channel: str,
     user_key = norm_user_key(raw_phone)
     c = db_get_or_create_conversation(tenant_id, user_key, get_lang(lang_hint))
 
-    # ✅ STRICT STICKY LANG:
-    # if already locked -> never re-detect
-    if c.get("lang"):
-        lang = get_lang(c["lang"])
+    # ✅ STRICT STICKY LANG
+    if c.get("lang_lock"):
+        lang = get_lang(c["lang_lock"])
     else:
         lang = get_lang(lang_hint or (detect_language(msg) if msg else "lv"))
-        c["lang"] = lang
+        c["lang_lock"] = lang
         db_save_conversation(tenant_id, user_key, c)
 
     settings = tenant_settings(tenant, lang)
