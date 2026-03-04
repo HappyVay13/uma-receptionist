@@ -914,9 +914,63 @@ Rules:
     if not c.get("name"):
         return {"status": "need_more", "reply_voice": VOICE_TEXT[lang]["need_name"], "msg_out": render_sms(lang, "ask_name", link=RECOVERY_BOOKING_LINK), "lang": lang}
 
-    # Business hours
-    if not in_business_hours(dt_start, APPT_MINUTES, settings["work_start"], settings["work_end"]):
-        return {"status": "need_more", "reply_voice": VOICE_TEXT[lang]["outside_hours"], "msg_out": render_sms(lang, "ask_time", link=RECOVERY_BOOKING_LINK), "lang": lang}
+   # Business hours (if outside -> offer next 2 available slots inside working window)
+if not in_business_hours(dt_start, APPT_MINUTES, work_start, work_end):
+    # move to next valid working start
+    ws_h, ws_m = _parse_hhmm(work_start)
+
+    # if time is before opening today -> use today at work_start
+    candidate_day = dt_start.date()
+    candidate = datetime(candidate_day.year, candidate_day.month, candidate_day.day, ws_h, ws_m, tzinfo=TZ)
+
+    # if already after opening today, or requested time is outside -> go to next day work_start
+    # (also covers "after closing" case)
+    if dt_start >= candidate:
+        candidate = candidate + timedelta(days=1)
+
+    # ensure candidate is within business hours (start of day)
+    opts = find_next_two_slots(calendar_id, candidate, APPT_MINUTES, work_start, work_end)
+
+    if opts:
+        opt1, opt2 = opts
+        c["pending"] = {
+            "opt1_iso": opt1.isoformat(),
+            "opt2_iso": opt2.isoformat(),
+            "service": c.get("service"),
+            "name": c.get("name"),
+        }
+        return {
+            "status": "busy",
+            "reply_voice": (
+                "Šajā laikā mēs nestrādājam. Nosūtu tuvākos brīvos laikus."
+                if lang == "lv"
+                else ("В это время мы не работаем. Отправляю ближайшие свободные варианты."
+                      if lang == "ru"
+                      else "We are closed at that time. Sending the ближайшие available options.")
+            ),
+            "msg_out": render_sms(
+                lang,
+                "busy",
+                opt1=opt1.strftime("%d.%m %H:%M"),
+                opt2=opt2.strftime("%d.%m %H:%M"),
+                link=RECOVERY_BOOKING_LINK,
+            ),
+            "lang": lang,
+        }
+
+    # no slots found soon -> recovery
+    return {
+        "status": "recovery",
+        "reply_voice": (
+            "Šajā laikā mēs nestrādājam. Lūdzu, izmantojiet saiti pierakstam."
+            if lang == "lv"
+            else ("В это время мы не работаем. Пожалуйста, используйте ссылку для записи."
+                  if lang == "ru"
+                  else "We are closed at that time. Sending the nearest available options.")
+        ),
+        "msg_out": render_sms(lang, "recovery", link=RECOVERY_BOOKING_LINK),
+        "lang": lang,
+    }
 
     # Busy check
     dt_end = dt_start + timedelta(minutes=APPT_MINUTES)
