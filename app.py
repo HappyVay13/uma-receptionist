@@ -704,7 +704,7 @@ def parse_dt_from_iso_or_fallback(datetime_iso: Optional[str], time_text: Option
 # -------------------------
 SMS_TEMPLATES = {
     "lv": {
-        "confirmed": "Pieraksts: {service} {time}. Adrese: {addr}. {link}",
+        "confirmed_nolink": "Pieraksts: {service} {time}. Adrese: {addr}. {link}",
         "busy": "Aizņemts. 1){opt1} 2){opt2}. Atbildi 1/2. {link}",
         "ask_service": "Kāds pakalpojums? Piem.: vīriešu frizūra. {link}",
         "ask_time": "Kad un cikos? Piem.: rīt 15:10. {link}",
@@ -713,7 +713,7 @@ SMS_TEMPLATES = {
         "unavailable": "Atvainojiet, serviss pašlaik nav pieejams.",
     },
     "ru": {
-        "confirmed": "Запись: {service} {time}. Адрес: {addr}. {link}",
+        "confirmed_nolink": "Запись: {service} {time}. Адрес: {addr}. {link}",
         "busy": "Занято. 1){opt1} 2){opt2}. Ответ 1/2. {link}",
         "ask_service": "Какая услуга? Пример: мужская стрижка. {link}",
         "ask_time": "Когда и во сколько? Пример: завтра 15:10. {link}",
@@ -722,7 +722,7 @@ SMS_TEMPLATES = {
         "unavailable": "Извините, сервис сейчас недоступен.",
     },
     "en": {
-        "confirmed": "Booked: {service} {time}. Addr: {addr}. {link}",
+        "confirmed_nolink": "Booked: {service} {time}. Addr: {addr}. {link}",
         "busy": "Busy. 1){opt1} 2){opt2}. Reply 1/2. {link}",
         "ask_service": "Which service? Example: men's haircut. {link}",
         "ask_time": "When? Example: tomorrow 15:10. {link}",
@@ -836,7 +836,7 @@ def handle_user_text(tenant_id: str, raw_phone: str, text_in: str, channel: str,
         return {
             "status": "booked",
             "reply_voice": VOICE_TEXT[lang]["confirmed"],
-            "msg_out": render_sms(lang, "confirmed", service=_short(service, 40), time=when_str, addr=_short(settings["addr"], 35), link=RECOVERY_BOOKING_LINK),
+            "msg_out": render_sms(lang, "confirmed_nolink", service=_short(service, 40), time=when_str, addr=_short(settings["addr"], 35)),
             "lang": lang,
         }
 
@@ -954,7 +954,7 @@ Rules:
     return {
         "status": "booked",
         "reply_voice": VOICE_TEXT[lang]["confirmed"],
-        "msg_out": render_sms(lang, "confirmed", service=_short(service, 40), time=when_str, addr=_short(settings["addr"], 35), link=RECOVERY_BOOKING_LINK),
+        "msg_out": render_sms(lang, "confirmed_nolink", service=_short(service, 40), time=when_str, addr=_short(settings["addr"], 35)),
         "lang": lang,
     }
 
@@ -1043,6 +1043,28 @@ def debug_conversation(user: str = ""):
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+def db_get_saved_name(tenant_id: str, raw_phone: str) -> Optional[str]:
+    try:
+        uk = norm_user_key(raw_phone)
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("""
+                    SELECT name
+                    FROM conversations
+                    WHERE tenant_id=:tid AND user_key=:uk
+                    LIMIT 1
+                """),
+                {"tid": tenant_id, "uk": uk},
+            ).fetchone()
+
+        if not row:
+            return None
+
+        name = (row[0] or "").strip()
+        return name if name else None
+
+    except Exception:
+        return None
 
 # -------------------------
 # VOICE
@@ -1094,6 +1116,11 @@ async def voice_incoming(request: Request):
         speech_timeout="auto",
         language="lv-LV",
     )
+    saved_name = db_get_saved_name(TENANT_ID_DEFAULT, caller)
+
+if saved_name:
+    say_or_play(g, f"Labdien, {saved_name}! Jūs sazvanījāt {settings_lv['biz_name']}.", "lv")
+else:
     say_or_play(g, f"Labdien! Jūs sazvanījāt {settings_lv['biz_name']}.", "lv")
     say_or_play(g, "Ja vēlaties: 1 angliski, 2 krieviski, 3 latviski.", "lv")
     say_or_play(g, "Lūdzu, pasakiet, ko vēlaties pierakstīt.", "lv")
