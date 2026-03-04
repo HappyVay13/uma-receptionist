@@ -801,6 +801,12 @@ def handle_user_text(tenant_id: str, raw_phone: str, text_in: str, channel: str,
 
     settings = tenant_settings(tenant, lang)
 
+    # Local shortcuts
+    calendar_id = settings["calendar_id"]
+    work_start = settings["work_start"]
+    work_end = settings["work_end"]
+
+
     # 1/2 option selection
     if msg in ("1", "2") and c.get("pending"):
         pending = c.get("pending") or {}
@@ -835,7 +841,7 @@ def handle_user_text(tenant_id: str, raw_phone: str, text_in: str, channel: str,
         return {
             "status": "booked",
             "reply_voice": VOICE_TEXT[lang]["confirmed"],
-            "msg_out": render_sms(lang, "confirmed_nolink", service=_short(service, 40), time=when_str, addr=_short(settings["addr"], 35)),
+            "msg_out": render_sms(lang, "confirmed_nolink", service=_short(service, 40), time=when_str, addr=_short(settings["addr"], 35), link=RECOVERY_BOOKING_LINK),
             "lang": lang,
         }
 
@@ -914,7 +920,7 @@ Rules:
     if not c.get("name"):
         return {"status": "need_more", "reply_voice": VOICE_TEXT[lang]["need_name"], "msg_out": render_sms(lang, "ask_name", link=RECOVERY_BOOKING_LINK), "lang": lang}
 
-       # Business hours (if outside -> offer next 2 available slots inside working window)
+    # Business hours (if outside -> offer next 2 available slots inside working window)
     if not in_business_hours(dt_start, APPT_MINUTES, work_start, work_end):
         # move to next valid working start
         ws_h, ws_m = _parse_hhmm(work_start)
