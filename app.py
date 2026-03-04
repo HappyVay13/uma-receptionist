@@ -939,7 +939,7 @@ if not in_business_hours(dt_start, APPT_MINUTES, work_start, work_end):
             "service": c.get("service"),
             "name": c.get("name"),
         }
-        return {
+            return {
             "status": "busy",
             "reply_voice": (
                 "Šajā laikā mēs nestrādājam. Nosūtu tuvākos brīvos laikus."
