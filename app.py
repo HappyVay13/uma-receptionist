@@ -768,7 +768,7 @@ VOICE_TEXT = {
 def render_sms(lang: str, key: str, **kwargs) -> str:
     lang = get_lang(lang)
     tmpl = SMS_TEMPLATES.get(lang, SMS_TEMPLATES["lv"]).get(key) or SMS_TEMPLATES["lv"][key]
-    return tmpl.format(**kwargs)
+    return tmpl.format(**{**{"link": "", "service": "", "time": "", "addr": ""}, **kwargs})
 
 
 # -------------------------
@@ -954,7 +954,7 @@ Rules:
     return {
         "status": "booked",
         "reply_voice": VOICE_TEXT[lang]["confirmed"],
-        "msg_out": render_sms(lang, "confirmed_nolink", service=_short(service, 40), time=when_str, addr=_short(settings["addr"], 35)),
+        "msg_out": render_sms(lang, "confirmed_nolink", service=_short(service, 40), time=when_str, addr=_short(settings["addr"], 35), link=RECOVERY_BOOKING_LINK),
         "lang": lang,
     }
 
