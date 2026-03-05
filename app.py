@@ -597,6 +597,20 @@ def delete_calendar_event(calendar_id: str, event_id: str):
         log.exception("GCAL delete error: %s", repr(e))
         return False
 
+
+def detect_reschedule_intent(text_: str) -> bool:
+    t = (text_ or "").lower()
+    words = [
+        "pārcelt",
+        "pārcelt pierakstu",
+        "перенести",
+        "перенести запись",
+        "reschedule",
+        "change booking"
+    ]
+    return any(w in t for w in words)
+
+
 def detect_cancel_intent(text_: str) -> bool:
     t = (text_ or "").lower()
     words = [
@@ -829,6 +843,44 @@ def render_sms(lang: str, key: str, **kwargs) -> str:
 def handle_user_text(tenant_id: str, raw_phone: str, text_in: str, channel: str, lang_hint: str) -> Dict[str, Any]:
     msg = (text_in or "").strip()
 
+
+    # Phase 2: reschedule booking intent
+    if detect_reschedule_intent(msg):
+        tenant = get_tenant(tenant_id)
+        settings = tenant_settings(tenant, get_lang(lang_hint))
+        calendar_id = settings["calendar_id"]
+
+        ev = find_next_event_by_phone(calendar_id, raw_phone)
+
+        if not ev:
+            return {
+                "status": "no_booking",
+                "reply_voice": "Jums nav aktīvu pierakstu.",
+                "msg_out": "Jums nav aktīvu pierakstu.",
+                "lang": get_lang(lang_hint),
+            }
+
+        start = ev["start"]["dateTime"]
+        dt = parse_dt_any_tz(start)
+        when_str = dt.strftime("%d.%m %H:%M") if dt else ""
+
+        # save event for reschedule
+        user_key = norm_user_key(raw_phone)
+        c = db_get_or_create_conversation(tenant_id, user_key, get_lang(lang_hint))
+        c["pending"] = {
+            "reschedule_event_id": ev["id"],
+            "reschedule_old_iso": start
+        }
+        db_save_conversation(tenant_id, user_key, c)
+
+        return {
+            "status": "reschedule_wait_time",
+            "reply_voice": f"Jūsu pieraksts ir {when_str}. Uz kuru laiku vēlaties pārcelt?",
+            "msg_out": f"Jūsu pieraksts ir {when_str}. Uz kuru laiku vēlaties pārcelt?",
+            "lang": get_lang(lang_hint),
+        }
+
+
     # Phase 2: cancel booking intent
     if detect_cancel_intent(msg):
         tenant = get_tenant(tenant_id)
@@ -1060,6 +1112,33 @@ Rules:
             "msg_out": render_sms(lang, "recovery", link=RECOVERY_BOOKING_LINK),
             "lang": lang,
         }
+
+    
+    # Handle reschedule time
+    if c.get("pending") and c["pending"].get("reschedule_event_id") and dt_start:
+        event_id = c["pending"]["reschedule_event_id"]
+        delete_calendar_event(settings["calendar_id"], event_id)
+
+        service = c.get("service") or settings["services_hint"]
+        name = c.get("name") or "Client"
+
+        summary = f"{settings['biz_name']} — {_short(service, 60)}"
+        desc = f"Name: {name}\nPhone: {raw_phone}\nService: {service}\nSource: reschedule\n"
+
+        create_calendar_event(settings["calendar_id"], dt_start, APPT_MINUTES, summary, desc)
+
+        c["pending"] = None
+        db_save_conversation(tenant_id, user_key, c)
+
+        when_str = dt_start.strftime("%d.%m %H:%M")
+
+        return {
+            "status": "rescheduled",
+            "reply_voice": "Pieraksts pārcelts.",
+            "msg_out": f"Pieraksts pārcelts uz {when_str}.",
+            "lang": lang,
+        }
+
 
     # Busy check
     dt_end = dt_start + timedelta(minutes=APPT_MINUTES)
