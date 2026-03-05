@@ -704,7 +704,8 @@ def parse_dt_from_iso_or_fallback(datetime_iso: Optional[str], time_text: Option
 # -------------------------
 SMS_TEMPLATES = {
     "lv": {
-        "confirmed_nolink": "Pieraksts: {service} {time}. Adrese: {addr}. {link}",
+        "confirmed_nolink": "Pieraksts: {service} {time}. Adrese: {addr}.",
+        "closed": "Ārpus darba laika ({work_start}-{work_end}). 1){opt1} 2){opt2}. Atbildi 1/2. {link}",
         "busy": "Aizņemts. 1){opt1} 2){opt2}. Atbildi 1/2. {link}",
         "ask_service": "Kāds pakalpojums? Piem.: vīriešu frizūra. {link}",
         "ask_time": "Kad un cikos? Piem.: rīt 15:10. {link}",
@@ -713,7 +714,8 @@ SMS_TEMPLATES = {
         "unavailable": "Atvainojiet, serviss pašlaik nav pieejams.",
     },
     "ru": {
-        "confirmed_nolink": "Запись: {service} {time}. Адрес: {addr}. {link}",
+        "confirmed_nolink": "Запись: {service} {time}. Адрес: {addr}.",
+        "closed": "Мы закрыты ({work_start}-{work_end}). 1){opt1} 2){opt2}. Ответ 1/2. {link}",
         "busy": "Занято. 1){opt1} 2){opt2}. Ответ 1/2. {link}",
         "ask_service": "Какая услуга? Пример: мужская стрижка. {link}",
         "ask_time": "Когда и во сколько? Пример: завтра 15:10. {link}",
@@ -768,7 +770,7 @@ VOICE_TEXT = {
 def render_sms(lang: str, key: str, **kwargs) -> str:
     lang = get_lang(lang)
     tmpl = SMS_TEMPLATES.get(lang, SMS_TEMPLATES["lv"]).get(key) or SMS_TEMPLATES["lv"][key]
-    return tmpl.format(**{**{"link": "", "service": "", "time": "", "addr": ""}, **kwargs})
+    return tmpl.format(**{**{"link": "", "service": "", "time": "", "addr": "", "opt1": "", "opt2": "", "work_start": "", "work_end": ""}, **kwargs})
 
 
 # -------------------------
@@ -921,22 +923,18 @@ Rules:
         return {"status": "need_more", "reply_voice": VOICE_TEXT[lang]["need_name"], "msg_out": render_sms(lang, "ask_name", link=RECOVERY_BOOKING_LINK), "lang": lang}
 
     # Business hours (if outside -> offer next 2 available slots inside working window)
-    if not in_business_hours(dt_start, APPT_MINUTES, work_start, work_end):
-        # move to next valid working start
-        ws_h, ws_m = _parse_hhmm(work_start)
+    if not in_business_hours(dt_start, APPT_MINUTES, settings["work_start"], settings["work_end"]):
+        # We are closed at requested time -> offer the next two free slots within business hours
+        work_start = settings["work_start"]
+        work_end = settings["work_end"]
 
-        # if time is before opening today -> use today at work_start
-        candidate_day = dt_start.date()
-        candidate = datetime(candidate_day.year, candidate_day.month, candidate_day.day, ws_h, ws_m, tzinfo=TZ)
-
-        # if already after opening today, or requested time is outside -> go to next day work_start
-        # (also covers "after closing" case)
-        if dt_start >= candidate:
+        # Candidate = same-day opening if requested before opening, else next-day opening
+        candidate = dt_start.replace(hour=work_start, minute=0, second=0, microsecond=0)
+        if dt_start.hour >= work_end:
             candidate = candidate + timedelta(days=1)
+        # if dt_start is before opening, candidate stays same day at work_start
 
-        # ensure candidate is within business hours (start of day)
-        opts = find_next_two_slots(calendar_id, candidate, APPT_MINUTES, work_start, work_end)
-
+        opts = find_next_two_slots(settings["calendar_id"], candidate, APPT_MINUTES, work_start, work_end)
         if opts:
             opt1, opt2 = opts
             c["pending"] = {
@@ -949,39 +947,36 @@ Rules:
             db_save_conversation(tenant_id, user_key, c)
 
             return {
-                "status": "busy",
+                "status": "closed",
                 "reply_voice": (
-                    "Šajā laikā mēs nestrādājam. Nosūtu tuvākos brīvos laikus."
+                    f"Šajā laikā mēs nestrādājam. Piedāvāju: viens — {opt1.strftime('%d.%m %H:%M')}, divi — {opt2.strftime('%d.%m %H:%M')}. Atbildiet ar 1 vai 2."
                     if lang == "lv"
-                    else ("В это время мы не работаем. Отправляю ближайшие свободные варианты."
-                          if lang == "ru"
-                          else "We are closed at that time. Sending the nearest available options.")
+                    else (
+                        f"В это время мы не работаем. Варианты: один — {opt1.strftime('%d.%m %H:%M')}, два — {opt2.strftime('%d.%m %H:%M')}. Ответьте 1 или 2."
+                        if lang == "ru"
+                        else f"We are closed then. Options: one — {opt1.strftime('%d.%m %H:%M')}, two — {opt2.strftime('%d.%m %H:%M')}. Reply 1 or 2."
+                    )
                 ),
                 "msg_out": render_sms(
                     lang,
-                    "busy",
+                    "closed",
                     opt1=opt1.strftime("%d.%m %H:%M"),
                     opt2=opt2.strftime("%d.%m %H:%M"),
+                    work_start=str(work_start),
+                    work_end=str(work_end),
                     link=RECOVERY_BOOKING_LINK,
                 ),
                 "lang": lang,
             }
 
-        # no slots found soon -> recovery
         return {
             "status": "recovery",
-            "reply_voice": (
-                "Šajā laikā mēs nestrādājam. Lūdzu, izmantojiet saiti pierakstam."
-                if lang == "lv"
-                else ("В это время мы не работаем. Пожалуйста, используйте ссылку для записи."
-                      if lang == "ru"
-                      else "We are closed at that time. Please use the booking link.")
-            ),
+            "reply_voice": VOICE_TEXT[lang]["recovery"],
             "msg_out": render_sms(lang, "recovery", link=RECOVERY_BOOKING_LINK),
             "lang": lang,
         }
 
-        # Busy check
+    # Busy check
         dt_end = dt_start + timedelta(minutes=APPT_MINUTES)
         if is_slot_busy(settings["calendar_id"], dt_start, dt_end):
             opts = find_next_two_slots(settings["calendar_id"], dt_start, APPT_MINUTES, settings["work_start"], settings["work_end"])
@@ -1184,8 +1179,10 @@ async def voice_incoming(request: Request):
         say_or_play(g, f"Labdien, {saved_name}! Jūs sazvanījāt {settings_lv['biz_name']}.", "lv")
     else:
         say_or_play(g, f"Labdien! Jūs sazvanījāt {settings_lv['biz_name']}.", "lv")
-        say_or_play(g, "Ja vēlaties: 1 angliski, 2 krieviski, 3 latviski.", "lv")
-        say_or_play(g, "Lūdzu, pasakiet, ko vēlaties pierakstīt.", "lv")
+
+    # Language selection + prompt (always, even if we know the caller name)
+    say_or_play(g, "Ja vēlaties: 1 angliski, 2 krieviski, 3 latviski.", "lv")
+    say_or_play(g, "Lūdzu, pasakiet, ko vēlaties pierakstīt.", "lv")
     vr.append(g)
 
     say_or_play(vr, "Atvainojiet, es jūs nedzirdēju. Uz redzēšanos!", "lv")
