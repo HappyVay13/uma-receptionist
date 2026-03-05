@@ -329,6 +329,12 @@ def db_get_or_create_conversation(tenant_id: str, user_key: str, default_lang: s
         "pending": None,
     }
 
+
+# Backwards-compat helper: older code used db_load_conversation()
+def db_load_conversation(tenant_id: str, user_key: str, default_lang: str = "lv") -> Dict[str, Any]:
+    """Load existing conversation (dict state) or create a new one."""
+    return db_get_or_create_conversation(tenant_id, user_key, default_lang)
+
 def db_save_conversation(tenant_id: str, user_key: str, c: Dict[str, Any]) -> None:
     tenant_id = (tenant_id or "").strip() or TENANT_ID_DEFAULT
     ensure_tenant_row(tenant_id)
@@ -1254,25 +1260,30 @@ async def sms_incoming(request: Request):
 # -------------------------
 @app.post("/whatsapp/incoming")
 async def whatsapp_incoming(request: Request):
-    form = await request.form()
-    from_number = str(form.get("From", ""))  # whatsapp:+371...
-    body_in = str(form.get("Body", "")).strip()
+    try:
+        form = await request.form()
+        from_number = str(form.get("From", ""))  # whatsapp:+371...
+        body_in = str(form.get("Body", "")).strip()
 
-    # For "1/2" keep locked lang from DB (no re-detect)
-    if body_in in ("1", "2"):
-        c = db_get_or_create_conversation(TENANT_ID_DEFAULT, norm_user_key(from_number), "lv")
-        lang_hint = c.get("lang") or "lv"
-    else:
-        lang_hint = detect_language(body_in) if body_in else "lv"
+        # For "1/2" keep locked lang from DB (no re-detect)
+        if body_in in ("1", "2"):
+            c = db_get_or_create_conversation(TENANT_ID_DEFAULT, norm_user_key(from_number), "lv")
+            lang_hint = c.get("lang") or "lv"
+        else:
+            lang_hint = detect_language(body_in) if body_in else "lv"
 
-    result = handle_user_text(TENANT_ID_DEFAULT, from_number, body_in, "whatsapp", get_lang(lang_hint))
-    if not isinstance(result, dict):
-        logger.error("handle_user_text returned non-dict: %r", result)
-        result = {"status": "recovery", "msg_out": render_sms("lv", "recovery", link=RECOVERY_BOOKING_LINK), "lang": "lv"}
+        result = handle_user_text(TENANT_ID_DEFAULT, from_number, body_in, "whatsapp", get_lang(lang_hint))
+        if not isinstance(result, dict):
+            logger.error("handle_user_text returned non-dict: %r", result)
+            result = {"status": "recovery", "msg_out": render_sms("lv", "recovery", link=RECOVERY_BOOKING_LINK), "lang": "lv"}
 
-    biz = tenant_settings(get_tenant(TENANT_ID_DEFAULT), result.get("lang") or "lv")["biz_name"]
-    msg_out = result.get("msg_out") or render_sms(get_lang(result.get("lang")), "recovery", link=RECOVERY_BOOKING_LINK)
-    send_message(from_number, f"{biz}: {msg_out}")
+        biz = tenant_settings(get_tenant(TENANT_ID_DEFAULT), result.get("lang") or "lv")["biz_name"]
+        msg_out = result.get("msg_out") or render_sms(get_lang(result.get("lang")), "recovery", link=RECOVERY_BOOKING_LINK)
+        send_message(from_number, f"{biz}: {msg_out}")
 
-    # ✅ critical: do NOT return "ok"
-    return Response(status_code=204)
+        # ✅ critical: do NOT return "ok"
+        return Response(status_code=204)
+    except Exception as e:
+        logger.exception("WhatsApp incoming failed: %s", e)
+        # Twilio treats any 2xx as success; we don't want webhook retries storm
+        return Response(status_code=204)
