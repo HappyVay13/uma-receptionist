@@ -560,6 +560,56 @@ def find_next_two_slots(calendar_id: str, dt_start: datetime, duration_min: int,
     return None
 
 
+
+# -------------------------
+# Phase 2: cancel booking helpers
+# -------------------------
+def find_next_event_by_phone(calendar_id: str, phone: str):
+    svc = get_gcal()
+    if svc is None or not calendar_id:
+        return None
+    try:
+        now = now_ts().isoformat()
+        events = svc.events().list(
+            calendarId=calendar_id,
+            timeMin=now,
+            singleEvents=True,
+            orderBy="startTime",
+            maxResults=20
+        ).execute()
+        for ev in events.get("items", []):
+            desc = (ev.get("description") or "")
+            if phone in desc:
+                return ev
+        return None
+    except Exception as e:
+        log.exception("GCAL search error: %s", repr(e))
+        return None
+
+def delete_calendar_event(calendar_id: str, event_id: str):
+    svc = get_gcal()
+    if svc is None or not calendar_id:
+        return False
+    try:
+        svc.events().delete(calendarId=calendar_id, eventId=event_id).execute()
+        return True
+    except Exception as e:
+        log.exception("GCAL delete error: %s", repr(e))
+        return False
+
+def detect_cancel_intent(text_: str) -> bool:
+    t = (text_ or "").lower()
+    words = [
+        "cancel",
+        "cancel booking",
+        "atcelt",
+        "atcelt pierakstu",
+        "отменить",
+        "отменить запись",
+        "удалить запись"
+    ]
+    return any(w in t for w in words)
+
 # -------------------------
 # Google TTS + ElevenLabs
 # -------------------------
@@ -778,6 +828,34 @@ def render_sms(lang: str, key: str, **kwargs) -> str:
 # -------------------------
 def handle_user_text(tenant_id: str, raw_phone: str, text_in: str, channel: str, lang_hint: str) -> Dict[str, Any]:
     msg = (text_in or "").strip()
+
+    # Phase 2: cancel booking intent
+    if detect_cancel_intent(msg):
+        tenant = get_tenant(tenant_id)
+        settings = tenant_settings(tenant, get_lang(lang_hint))
+        calendar_id = settings["calendar_id"]
+
+        ev = find_next_event_by_phone(calendar_id, raw_phone)
+        if not ev:
+            return {
+                "status": "no_booking",
+                "reply_voice": "Jums nav aktīvu pierakstu.",
+                "msg_out": "Jums nav aktīvu pierakstu.",
+                "lang": get_lang(lang_hint),
+            }
+
+        start = ev["start"]["dateTime"]
+        dt = parse_dt_any_tz(start)
+        delete_calendar_event(calendar_id, ev["id"])
+
+        when_str = dt.strftime("%d.%m %H:%M") if dt else ""
+        return {
+            "status": "cancelled",
+            "reply_voice": "Jūsu pieraksts ir atcelts.",
+            "msg_out": f"Pieraksts {when_str} ir atcelts.",
+            "lang": get_lang(lang_hint),
+        }
+
 
     tenant = get_tenant(tenant_id)
     allowed, reason = tenant_allowed(tenant)
