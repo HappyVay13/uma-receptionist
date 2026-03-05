@@ -929,7 +929,8 @@ Rules:
         work_end = settings["work_end"]
 
         # Candidate = same-day opening if requested before opening, else next-day opening
-        candidate = dt_start.replace(hour=work_start, minute=0, second=0, microsecond=0)
+        ws_h, ws_m = _parse_hhmm(work_start)
+        candidate = dt_start.replace(hour=ws_h, minute=ws_m, second=0, microsecond=0)
         if dt_start.hour >= work_end:
             candidate = candidate + timedelta(days=1)
         # if dt_start is before opening, candidate stays same day at work_start
