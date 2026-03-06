@@ -1341,7 +1341,7 @@ def voice_token(identity: str = 'demo'):
     )
     grant = VoiceGrant(outgoing_application_sid=TWILIO_TWIML_APP_SID, incoming_allow=True)
     token.add_grant(grant)
-    return {'identity': ident, 'token': token.to_jwt().decode('utf-8')}
+    return {'identity': ident, 'token': token.to_jwt()}
 
 CALL_SESSIONS: Dict[str, Dict[str, Any]] = {}
 
