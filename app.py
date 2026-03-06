@@ -9,7 +9,6 @@ from typing import Dict, Any, Optional, Tuple, List
 
 import requests
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from twilio.twiml.voice_response import VoiceResponse, Gather
@@ -31,14 +30,6 @@ logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("repliq")
 
 app = FastAPI()
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"',
-)
 
 # -------------------------
 # CORS (for Voice SDK / web demo)
