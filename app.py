@@ -10,8 +10,11 @@ from typing import Dict, Any, Optional, Tuple, List
 import requests
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import Response, StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
 from twilio.twiml.voice_response import VoiceResponse, Gather
 from twilio.rest import Client as TwilioClient
+from twilio.jwt.access_token import AccessToken
+from twilio.jwt.access_token.grants import VoiceGrant
 from sqlalchemy import text
 
 from google.oauth2 import service_account
@@ -27,6 +30,19 @@ logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("repliq")
 
 app = FastAPI()
+
+# -------------------------
+# CORS (for Voice SDK / web demo)
+# -------------------------
+VOICE_SDK_ORIGINS = os.getenv("VOICE_SDK_ORIGINS", "*").strip()
+origins = [o.strip() for o in VOICE_SDK_ORIGINS.split(',') if o.strip()] if VOICE_SDK_ORIGINS != '*' else ['*']
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=['*'],
+    allow_headers=['*'],
+)
 
 # -------------------------
 # CONFIG
@@ -47,6 +63,11 @@ TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "").strip()
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "").strip()
 TWILIO_FROM_NUMBER = os.getenv("TWILIO_FROM_NUMBER", "").strip()
 TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM", "").strip()
+
+# Twilio Voice SDK (WebRTC) token minting
+TWILIO_API_KEY_SID = os.getenv("TWILIO_API_KEY_SID", "").strip()
+TWILIO_API_KEY_SECRET = os.getenv("TWILIO_API_KEY_SECRET", "").strip()
+TWILIO_TWIML_APP_SID = os.getenv("TWILIO_TWIML_APP_SID", "").strip()
 
 SERVER_BASE_URL = os.getenv("SERVER_BASE_URL", "").strip().rstrip("/")
 
@@ -680,6 +701,9 @@ def tts_google(text: str):
 def eleven_enabled() -> bool:
     return bool(ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID and SERVER_BASE_URL)
 
+def voice_sdk_enabled() -> bool:
+    return bool(TWILIO_API_KEY_SID and TWILIO_API_KEY_SECRET and TWILIO_TWIML_APP_SID)
+
 def eleven_mp3(text_: str) -> bytes:
     if not (ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID):
         return b""
@@ -1205,6 +1229,8 @@ async def health():
         "google_tts_enabled": google_tts_enabled(),
         "google_tts_voice": GOOGLE_TTS_VOICE_NAME,
         "eleven_enabled": eleven_enabled(),
+        "voice_sdk_enabled": voice_sdk_enabled(),
+        "twiml_app_sid": TWILIO_TWIML_APP_SID,
     }
 
 @app.get("/debug/db")
@@ -1290,6 +1316,33 @@ def db_get_saved_name(tenant_id: str, raw_phone: str) -> Optional[str]:
 # -------------------------
 # VOICE
 # -------------------------
+
+# -------------------------
+# Voice SDK token (WebRTC / Twilio Client)
+# -------------------------
+@app.get('/voice/token')
+def voice_token(identity: str = 'demo'):
+    """Mint a short-lived Twilio Voice SDK token for browser/app calling.
+
+    Configure these env vars:
+    - TWILIO_API_KEY_SID / TWILIO_API_KEY_SECRET (API Key)
+    - TWILIO_TWIML_APP_SID (TwiML App SID with Voice URL pointing to /voice/incoming)
+    """
+    if not voice_sdk_enabled():
+        raise HTTPException(status_code=503, detail='Voice SDK is not configured')
+    # Keep identity simple; you can pass ?identity=janis
+    ident = (identity or 'demo').strip()[:64]
+    token = AccessToken(
+        TWILIO_ACCOUNT_SID,
+        TWILIO_API_KEY_SID,
+        TWILIO_API_KEY_SECRET,
+        identity=ident,
+        ttl=3600,
+    )
+    grant = VoiceGrant(outgoing_application_sid=TWILIO_TWIML_APP_SID, incoming_allow=True)
+    token.add_grant(grant)
+    return {'identity': ident, 'token': token.to_jwt().decode('utf-8')}
+
 CALL_SESSIONS: Dict[str, Dict[str, Any]] = {}
 
 def get_call_session(call_sid: str) -> Dict[str, Any]:
