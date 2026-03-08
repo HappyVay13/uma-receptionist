@@ -704,8 +704,10 @@ def delete_calendar_event(calendar_id: str, event_id: str):
     if svc and calendar_id:
         try:
             svc.events().delete(calendarId=calendar_id, eventId=event_id).execute()
+            log.info(f"Deleted calendar event: calendar_id={calendar_id}, event_id={event_id}")
             return True
-        except:
+        except Exception as e:
+            log.error(f"Delete calendar event failed: calendar_id={calendar_id}, event_id={event_id}, err={e}")
             return False
     return False
 
@@ -792,7 +794,16 @@ def handle_user_text(
                 "msg_out": "Jums nav aktīvu pierakstu.",
                 "lang": lang,
             }
-        delete_calendar_event(settings["calendar_id"], ev["id"])
+
+        deleted = delete_calendar_event(settings["calendar_id"], ev["id"])
+        if not deleted:
+            return {
+                "status": "cancel_failed",
+                "reply_voice": "Neizdevās atcelt pierakstu. Mēģiniet vēlreiz.",
+                "msg_out": "Neizdevās atcelt pierakstu. Mēģiniet vēlreiz.",
+                "lang": lang,
+            }
+
         return {
             "status": "cancelled",
             "reply_voice": "Pieraksts atcelts.",
