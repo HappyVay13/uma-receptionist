@@ -54,6 +54,7 @@ app.add_middleware(
 TZ = timezone(timedelta(hours=2))  # Europe/Riga
 
 TENANT_ID_DEFAULT = (os.getenv("DEFAULT_CLIENT_ID", "default") or "default").strip()
+TEST_TENANT_ID = (os.getenv("TEST_TENANT_ID", "") or "").strip()
 RECOVERY_BOOKING_LINK = os.getenv(
     "RECOVERY_BOOKING_LINK", "https://repliq.app/book"
 ).strip()
@@ -267,6 +268,18 @@ def get_tenant_by_phone(to_number: str) -> Dict[str, Any]:
         out[name] = row[i]
     out["_id"] = out.get(pk) or TENANT_ID_DEFAULT
     return out
+
+
+def resolve_tenant_for_incoming(to_number: str) -> Dict[str, Any]:
+    test_tenant_id = (TEST_TENANT_ID or "").strip()
+    if test_tenant_id:
+        tenant = get_tenant(test_tenant_id)
+        tenant["_resolved_via"] = "test_tenant_id"
+        return tenant
+
+    tenant = get_tenant_by_phone(to_number)
+    tenant["_resolved_via"] = "phone_number"
+    return tenant
 
 
 def default_value_for_tenant_column(col_name: str, data_type: str) -> Any:
@@ -1566,7 +1579,7 @@ async def voice_incoming(request: Request):
     form = await request.form()
     to_num = str(form.get("To", ""))
     caller = normalize_voice_caller(str(form.get("From", "")))
-    tenant = get_tenant_by_phone(to_num)
+    tenant = resolve_tenant_for_incoming(to_num)
     biz = tenant_settings(tenant, "lv")["biz_name"]
 
     c = db_get_or_create_conversation(tenant["_id"], caller, "lv")
@@ -1595,7 +1608,7 @@ async def voice_language(request: Request):
     speech = str(form.get("SpeechResult", "")).strip()
     digits = str(form.get("Digits", "")).strip()
 
-    tenant = get_tenant_by_phone(to_num)
+    tenant = resolve_tenant_for_incoming(to_num)
     c = db_get_or_create_conversation(tenant["_id"], caller, "lv")
     selected_lang = detect_language_choice(speech, digits) or get_lang(c.get("lang"))
     c["lang"] = selected_lang
@@ -1622,7 +1635,7 @@ async def voice_intent(request: Request):
     caller = normalize_voice_caller(str(form.get("From", "")))
     speech = str(form.get("SpeechResult", "")).strip()
 
-    tenant = get_tenant_by_phone(to_num)
+    tenant = resolve_tenant_for_incoming(to_num)
     c = db_get_or_create_conversation(tenant["_id"], caller, detect_language(speech))
     lang = resolve_reply_language(speech, c.get("lang") or detect_language(speech))
     result = handle_user_text(tenant["_id"], caller, speech, "voice", lang)
@@ -1657,7 +1670,7 @@ async def sms_incoming(request: Request):
     from_num = str(form.get("From", ""))
     body = str(form.get("Body", "")).strip()
 
-    tenant = get_tenant_by_phone(to_num)
+    tenant = resolve_tenant_for_incoming(to_num)
     result = handle_user_text(
         tenant["_id"], from_num, body, "sms", detect_language(body)
     )
@@ -1673,7 +1686,7 @@ async def whatsapp_incoming(request: Request):
     from_num = str(form.get("From", ""))
     body = str(form.get("Body", "")).strip()
 
-    tenant = get_tenant_by_phone(to_num)
+    tenant = resolve_tenant_for_incoming(to_num)
     result = handle_user_text(
         tenant["_id"], from_num, body, "whatsapp", detect_language(body)
     )
@@ -1715,4 +1728,8 @@ def _startup():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "tz": str(TZ)}
+    return {
+        "status": "ok",
+        "tz": str(TZ),
+        "test_tenant_id": TEST_TENANT_ID or None,
+    }
