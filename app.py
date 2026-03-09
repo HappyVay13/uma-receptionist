@@ -55,6 +55,10 @@ TZ = timezone(timedelta(hours=2))  # Europe/Riga
 
 TENANT_ID_DEFAULT = (os.getenv("DEFAULT_CLIENT_ID", "default") or "default").strip()
 TEST_TENANT_ID = (os.getenv("TEST_TENANT_ID", "") or "").strip()
+ALLOW_DEFAULT_TENANT_FALLBACK = (
+    (os.getenv("ALLOW_DEFAULT_TENANT_FALLBACK", "false") or "false").strip().lower()
+    in ("1", "true", "yes", "on")
+)
 RECOVERY_BOOKING_LINK = os.getenv(
     "RECOVERY_BOOKING_LINK", "https://repliq.app/book"
 ).strip()
@@ -246,7 +250,7 @@ def tenants_pk(cols: List[Dict[str, Any]]) -> str:
 def get_tenant_by_phone(to_number: str) -> Dict[str, Any]:
     to_number = (to_number or "").strip().replace("whatsapp:", "")
     if not to_number or to_number.lower() == "unknown":
-        return get_tenant(TENANT_ID_DEFAULT)
+        return {}
 
     cols = tenants_columns()
     col_names = [c["name"] for c in cols]
@@ -261,25 +265,53 @@ def get_tenant_by_phone(to_number: str) -> Dict[str, Any]:
         ).fetchone()
 
     if not row:
-        return get_tenant(TENANT_ID_DEFAULT)
+        return {}
 
     out: Dict[str, Any] = {}
     for i, name in enumerate(col_names):
         out[name] = row[i]
-    out["_id"] = out.get(pk) or TENANT_ID_DEFAULT
+    out["_id"] = out.get(pk)
     return out
 
 
+def tenant_is_resolved(tenant: Dict[str, Any]) -> bool:
+    return bool(tenant and tenant.get("_id") and not tenant.get("_unconfigured"))
+
+
+def log_tenant_resolution(channel: str, to_number: str, tenant: Dict[str, Any]) -> None:
+    log.info(
+        "tenant_resolution channel=%s to=%s via=%s tenant_id=%s",
+        channel,
+        (to_number or "").replace("whatsapp:", ""),
+        tenant.get("_resolved_via"),
+        tenant.get("_id"),
+    )
+
+
 def resolve_tenant_for_incoming(to_number: str) -> Dict[str, Any]:
+    cleaned_to = (to_number or "").strip().replace("whatsapp:", "")
     test_tenant_id = (TEST_TENANT_ID or "").strip()
     if test_tenant_id:
         tenant = get_tenant(test_tenant_id)
         tenant["_resolved_via"] = "test_tenant_id"
         return tenant
 
-    tenant = get_tenant_by_phone(to_number)
-    tenant["_resolved_via"] = "phone_number"
-    return tenant
+    tenant = get_tenant_by_phone(cleaned_to)
+    if tenant.get("_id"):
+        tenant["_resolved_via"] = "phone_number"
+        return tenant
+
+    if ALLOW_DEFAULT_TENANT_FALLBACK:
+        tenant = get_tenant(TENANT_ID_DEFAULT)
+        tenant["_resolved_via"] = "default_fallback"
+        return tenant
+
+    return {
+        "_id": None,
+        "_resolved_via": "unconfigured",
+        "_unconfigured": True,
+        "phone_number": cleaned_to,
+    }
 
 
 def default_value_for_tenant_column(col_name: str, data_type: str) -> Any:
@@ -813,6 +845,37 @@ def tenant_settings(tenant: Dict[str, Any], lang: str) -> Dict[str, Any]:
     }
 
 
+def calendar_is_configured(calendar_id: str) -> bool:
+    return bool((calendar_id or "").strip())
+
+
+def tenant_event_marker(tenant_id: str) -> str:
+    return f"Tenant ID: {tenant_id}"
+
+
+def build_event_description(tenant_id: str, client_name: str, raw_phone: str) -> str:
+    return f"Name: {client_name}\nPhone: {raw_phone}\n{tenant_event_marker(tenant_id)}"
+
+
+def event_belongs_to_tenant(ev: Dict[str, Any], tenant_id: str, phone: str) -> bool:
+    desc = ev.get("description") or ""
+    marker = tenant_event_marker(tenant_id)
+    phone_norm = norm_user_key(phone)
+    desc_norm = norm_user_key(desc)
+    if marker in desc:
+        return bool(phone_norm and phone_norm in desc_norm)
+    return bool((phone_norm and phone_norm in desc_norm) or (phone and phone in desc))
+
+
+def blocked_result_for_lang(lang: str) -> Dict[str, Any]:
+    return {
+        "status": "blocked",
+        "reply_voice": t(lang, "service_unavailable_voice"),
+        "msg_out": t(lang, "service_unavailable_text"),
+        "lang": lang,
+    }
+
+
 # -------------------------
 # TWILIO / OPENAI / GOOGLE
 # -------------------------
@@ -1076,12 +1139,11 @@ def find_next_two_slots(
     return None
 
 
-def find_next_event_by_phone(calendar_id: str, phone: str):
+def find_next_event_by_phone(calendar_id: str, phone: str, tenant_id: Optional[str] = None):
     svc = get_gcal()
     if not svc or not calendar_id:
         return None
     now = now_ts().isoformat()
-    phone_norm = norm_user_key(phone)
     try:
         events = (
             svc.events()
@@ -1095,11 +1157,16 @@ def find_next_event_by_phone(calendar_id: str, phone: str):
             .execute()
         )
         for ev in events.get("items", []):
-            desc = ev.get("description") or ""
-            if phone_norm and phone_norm in norm_user_key(desc):
-                return ev
-            if phone in desc:
-                return ev
+            if tenant_id:
+                if event_belongs_to_tenant(ev, tenant_id, phone):
+                    return ev
+            else:
+                desc = ev.get("description") or ""
+                phone_norm = norm_user_key(phone)
+                if phone_norm and phone_norm in norm_user_key(desc):
+                    return ev
+                if phone in desc:
+                    return ev
     except Exception as e:
         log.error("Find next event failed: %s", e)
     return None
@@ -1164,20 +1231,27 @@ def parse_dt_from_iso_or_fallback(
     return dt if dt else parse_time_text_to_dt(f"{time_text or ''} {raw_text or ''}")
 
 
-def has_explicit_time(text_: Optional[str]) -> bool:
+def parse_explicit_time_parts(text_: Optional[str]) -> Optional[Tuple[int, int]]:
     src = (text_ or "").lower().strip()
     if not src:
-        return False
-    if re.search(r"([01]?\d|2[0-3])[:. ]([0-5]\d)", src):
-        return True
-    return False
+        return None
+    m = re.search(r"\b([01]?\d|2[0-3])[:. ]([0-5]\d)\b", src)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    if re.fullmatch(r"([01]?\d|2[0-3])", src):
+        return int(src), 0
+    return None
+
+
+def has_explicit_time(text_: Optional[str]) -> bool:
+    return parse_explicit_time_parts(text_) is not None
 
 
 def has_date_reference(text_: Optional[str]) -> bool:
     src = (text_ or "").lower().strip()
     if not src:
         return False
-    if re.search(r"(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?", src):
+    if re.search(r"\b(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?\b", src):
         return True
     keywords = [
         "rīt", "rit", "parīt", "šodien", "sodien",
@@ -1189,12 +1263,10 @@ def has_date_reference(text_: Optional[str]) -> bool:
 
 def combine_date_with_explicit_time(base_iso: Optional[str], time_source: Optional[str]) -> Optional[datetime]:
     base_dt = parse_dt_any_tz((base_iso or "").strip())
-    if not base_dt or not has_explicit_time(time_source):
+    parts = parse_explicit_time_parts(time_source)
+    if not base_dt or not parts:
         return None
-    m = re.search(r"([01]?\d|2[0-3])[:. ]([0-5]\d)", (time_source or "").lower())
-    if not m:
-        return None
-    hh, mm = int(m.group(1)), int(m.group(2))
+    hh, mm = parts
     return base_dt.replace(hour=hh, minute=mm, second=0, microsecond=0)
 
 
@@ -1218,6 +1290,7 @@ def handle_user_text(
 
     lang = get_lang(c.get("lang"))
     settings = tenant_settings(tenant, lang)
+    calendar_ready = calendar_is_configured(settings["calendar_id"])
 
     if not allowed:
         return {
@@ -1271,7 +1344,9 @@ def handle_user_text(
 
     # Intent: cancel
     if any(w in t_low for w in ["atcelt", "отменить", "cancel"]):
-        ev = find_next_event_by_phone(settings["calendar_id"], raw_phone)
+        if not calendar_ready:
+            return blocked_result_for_lang(lang)
+        ev = find_next_event_by_phone(settings["calendar_id"], raw_phone, tenant_id)
         if not ev:
             return {
                 "status": "no_booking",
@@ -1302,7 +1377,9 @@ def handle_user_text(
 
     # Intent: reschedule
     if any(w in t_low for w in ["pārcelt", "перенести", "reschedule"]):
-        ev = find_next_event_by_phone(settings["calendar_id"], raw_phone)
+        if not calendar_ready:
+            return blocked_result_for_lang(lang)
+        ev = find_next_event_by_phone(settings["calendar_id"], raw_phone, tenant_id)
         if not ev:
             return {
                 "status": "no_booking",
@@ -1354,7 +1431,7 @@ def handle_user_text(
             dt_sel,
             APPT_MINUTES,
             f"{settings['biz_name']} - {svc_name}",
-            f"Name: {client_name}\nPhone: {raw_phone}",
+            build_event_description(tenant_id, client_name, raw_phone),
         )
         c["pending"] = None
         c["state"] = "BOOKED"
@@ -1452,6 +1529,8 @@ def handle_user_text(
             "msg_out": t(lang, "need_name"),
             "lang": lang,
         }
+    if not calendar_ready:
+        return blocked_result_for_lang(lang)
 
     # Business hours check
     if not in_business_hours(
@@ -1551,7 +1630,7 @@ def handle_user_text(
         dt_start,
         APPT_MINUTES,
         f"{settings['biz_name']} - {final_service}",
-        f"Name: {final_name}\nPhone: {raw_phone}",
+        build_event_description(tenant_id, final_name, raw_phone),
     )
     c["state"] = "BOOKED"
     c["name"] = final_name
@@ -1580,6 +1659,12 @@ async def voice_incoming(request: Request):
     to_num = str(form.get("To", ""))
     caller = normalize_voice_caller(str(form.get("From", "")))
     tenant = resolve_tenant_for_incoming(to_num)
+    log_tenant_resolution("voice", to_num, tenant)
+    if not tenant_is_resolved(tenant):
+        vr = VoiceResponse()
+        say_or_play(vr, t("lv", "service_unavailable_voice"), "lv")
+        vr.hangup()
+        return twiml(vr)
     biz = tenant_settings(tenant, "lv")["biz_name"]
 
     c = db_get_or_create_conversation(tenant["_id"], caller, "lv")
@@ -1609,6 +1694,12 @@ async def voice_language(request: Request):
     digits = str(form.get("Digits", "")).strip()
 
     tenant = resolve_tenant_for_incoming(to_num)
+    log_tenant_resolution("voice_language", to_num, tenant)
+    if not tenant_is_resolved(tenant):
+        vr = VoiceResponse()
+        say_or_play(vr, t("lv", "service_unavailable_voice"), "lv")
+        vr.hangup()
+        return twiml(vr)
     c = db_get_or_create_conversation(tenant["_id"], caller, "lv")
     selected_lang = detect_language_choice(speech, digits) or get_lang(c.get("lang"))
     c["lang"] = selected_lang
@@ -1636,6 +1727,12 @@ async def voice_intent(request: Request):
     speech = str(form.get("SpeechResult", "")).strip()
 
     tenant = resolve_tenant_for_incoming(to_num)
+    log_tenant_resolution("voice_intent", to_num, tenant)
+    if not tenant_is_resolved(tenant):
+        vr = VoiceResponse()
+        say_or_play(vr, t("lv", "service_unavailable_voice"), "lv")
+        vr.hangup()
+        return twiml(vr)
     c = db_get_or_create_conversation(tenant["_id"], caller, detect_language(speech))
     lang = resolve_reply_language(speech, c.get("lang") or detect_language(speech))
     result = handle_user_text(tenant["_id"], caller, speech, "voice", lang)
@@ -1671,6 +1768,10 @@ async def sms_incoming(request: Request):
     body = str(form.get("Body", "")).strip()
 
     tenant = resolve_tenant_for_incoming(to_num)
+    log_tenant_resolution("sms", to_num, tenant)
+    if not tenant_is_resolved(tenant):
+        send_message(from_num, t(detect_language(body), "service_unavailable_text"))
+        return Response(status_code=204)
     result = handle_user_text(
         tenant["_id"], from_num, body, "sms", detect_language(body)
     )
@@ -1687,6 +1788,10 @@ async def whatsapp_incoming(request: Request):
     body = str(form.get("Body", "")).strip()
 
     tenant = resolve_tenant_for_incoming(to_num)
+    log_tenant_resolution("whatsapp", to_num, tenant)
+    if not tenant_is_resolved(tenant):
+        send_message(from_num, t(detect_language(body), "service_unavailable_text"))
+        return Response(status_code=204)
     result = handle_user_text(
         tenant["_id"], from_num, body, "whatsapp", detect_language(body)
     )
@@ -1732,4 +1837,5 @@ def health():
         "status": "ok",
         "tz": str(TZ),
         "test_tenant_id": TEST_TENANT_ID or None,
+        "allow_default_tenant_fallback": ALLOW_DEFAULT_TENANT_FALLBACK,
     }
