@@ -1,7 +1,6 @@
 import os
 import json
 import re
-import urllib.parse
 import base64
 import logging
 from datetime import datetime, timedelta, timezone, date
@@ -87,6 +86,7 @@ GOOGLE_TTS_LANGUAGE_CODE = os.getenv("GOOGLE_TTS_LANGUAGE_CODE", "lv-LV").strip(
 
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "").strip()
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "").strip()
+ELEVENLABS_MODEL_ID = os.getenv("ELEVENLABS_MODEL_ID", "eleven_multilingual_v2").strip()
 
 GOOGLE_CALENDAR_ID_FALLBACK = os.getenv("GOOGLE_CALENDAR_ID", "").strip()
 CLIENT_STATUS_FALLBACK = (
@@ -107,11 +107,113 @@ BUSINESS_FALLBACK = {
     "work_end": WORK_END_HHMM_DEFAULT,
 }
 
+
+# -------------------------
+# I18N
+# -------------------------
+I18N: Dict[str, Dict[str, str]] = {
+    "lv": {
+        "service_unavailable_voice": "Atvainojiet, serviss nav pieejams.",
+        "service_unavailable_text": "Serviss nav pieejams.",
+        "no_active_booking": "Jums nav aktīvu pierakstu.",
+        "cancel_failed": "Neizdevās atcelt pierakstu. Mēģiniet vēlreiz.",
+        "cancelled": "Pieraksts atcelts.",
+        "reschedule_ask": "Pieraksts {when}. Uz kuru laiku pārcelt?",
+        "booking_confirmed": "Paldies! Pieraksts apstiprināts.",
+        "booking_confirmed_text": "Apstiprināts: {service} {when}",
+        "need_service": "Kādu pakalpojumu vēlaties?",
+        "need_time": "Kad un cikos jums būtu ērti?",
+        "need_name": "Kā jūs sauc?",
+        "closed_voice": "Šajā laikā nestrādājam. Nosūtu brīvos laikus ziņā.",
+        "closed_text": "Šajā laikā nestrādājam. Varianti: 1) {opt1} 2) {opt2}",
+        "busy_voice": "Šis laiks ir aizņemts. Nosūtu variantus ziņā.",
+        "busy_text": "Šis laiks ir aizņemts. Varianti: 1) {opt1} 2) {opt2}",
+        "all_busy_voice": "Atvainojiet, visi laiki ir aizņemti.",
+        "all_busy_text": "Visi laiki ir aizņemti. Mēģiniet vēlāk.",
+        "greeting": "Labdien! Jūs sazvanījāt {biz}. Izvēlieties valodu: latviešu spiediet vai sakiet viens, русский — divi, English — three.",
+        "how_help": "Kā varu palīdzēt?",
+        "lang_not_understood": "Nesapratu valodu. Lūdzu, sakiet vai nospiediet viens latviešu, divi krievu, trīs angļu.",
+        "voice_fallback": "Atvainojiet, nesadzirdēju. Lūdzu, mēģiniet vēlreiz.",
+        "identity_yes": "Jā, jūs sazvanījāt {biz}. Kā varu palīdzēt?",
+        "hours_info": "{biz} darba laiks ir no {start} līdz {end}. Kā varu palīdzēt?",
+        "greeting_only_reply": "Labdien! Kā varu palīdzēt?",
+        "unclear_reply": "Labdien! Precizējiet, lūdzu, kā varu palīdzēt — pieraksts, pārcelšana vai atcelšana?",
+        "ask_booking_service": "Protams. Uz kādu pakalpojumu vēlaties pierakstīties?",
+        "ask_booking_time": "Labi. Kurš datums un laiks jums būtu ērts?",
+    },
+    "ru": {
+        "service_unavailable_voice": "Извините, сервис недоступен.",
+        "service_unavailable_text": "Сервис недоступен.",
+        "no_active_booking": "У вас нет активных записей.",
+        "cancel_failed": "Не удалось отменить запись. Попробуйте ещё раз.",
+        "cancelled": "Запись отменена.",
+        "reschedule_ask": "Запись на {when}. На какое время перенести?",
+        "booking_confirmed": "Спасибо! Запись подтверждена.",
+        "booking_confirmed_text": "Подтверждено: {service} {when}",
+        "need_service": "Какую услугу вы хотите?",
+        "need_time": "На какую дату и время вам удобно?",
+        "need_name": "Как вас зовут?",
+        "closed_voice": "В это время мы не работаем. Отправляю свободные варианты сообщением.",
+        "closed_text": "В это время мы не работаем. Варианты: 1) {opt1} 2) {opt2}",
+        "busy_voice": "Это время занято. Отправляю варианты сообщением.",
+        "busy_text": "Это время занято. Варианты: 1) {opt1} 2) {opt2}",
+        "all_busy_voice": "Извините, все слоты заняты.",
+        "all_busy_text": "Свободных слотов нет. Попробуйте позже.",
+        "greeting": "Здравствуйте! Вы позвонили в {biz}. Выберите язык: латышский — один, русский — два, английский — три.",
+        "how_help": "Чем могу помочь?",
+        "lang_not_understood": "Не удалось определить язык. Пожалуйста, скажите или нажмите: один — латышский, два — русский, три — английский.",
+        "voice_fallback": "Извините, я не расслышал. Пожалуйста, повторите.",
+        "identity_yes": "Да, вы позвонили в {biz}. Чем могу помочь?",
+        "hours_info": "Часы работы {biz}: с {start} до {end}. Чем могу помочь?",
+        "greeting_only_reply": "Здравствуйте! Чем могу помочь?",
+        "unclear_reply": "Здравствуйте! Уточните, пожалуйста, чем помочь — запись, перенос или отмена?",
+        "ask_booking_service": "Конечно. На какую услугу вас записать?",
+        "ask_booking_time": "Хорошо. Какая дата и время вам подходят?",
+    },
+    "en": {
+        "service_unavailable_voice": "Sorry, the service is unavailable.",
+        "service_unavailable_text": "Service is unavailable.",
+        "no_active_booking": "You do not have any active appointments.",
+        "cancel_failed": "Could not cancel the appointment. Please try again.",
+        "cancelled": "Your appointment has been cancelled.",
+        "reschedule_ask": "Your appointment is on {when}. What time would you like to move it to?",
+        "booking_confirmed": "Thank you! Your appointment is confirmed.",
+        "booking_confirmed_text": "Confirmed: {service} {when}",
+        "need_service": "Which service would you like?",
+        "need_time": "What date and time would work for you?",
+        "need_name": "What is your name?",
+        "closed_voice": "We are closed at that time. I am sending available options by message.",
+        "closed_text": "We are closed at that time. Options: 1) {opt1} 2) {opt2}",
+        "busy_voice": "That time is already booked. I am sending available options by message.",
+        "busy_text": "That time is busy. Options: 1) {opt1} 2) {opt2}",
+        "all_busy_voice": "Sorry, all slots are busy.",
+        "all_busy_text": "No available slots right now. Please try later.",
+        "greeting": "Hello! You have reached {biz}. Choose a language: Latvian press or say one, Russian two, English three.",
+        "how_help": "How can I help you?",
+        "lang_not_understood": "I could not determine the language. Please say or press one for Latvian, two for Russian, three for English.",
+        "voice_fallback": "Sorry, I did not catch that. Please try again.",
+        "identity_yes": "Yes, you have reached {biz}. How can I help?",
+        "hours_info": "{biz} is open from {start} to {end}. How can I help?",
+        "greeting_only_reply": "Hello! How can I help?",
+        "unclear_reply": "Hello! Please clarify how I can help — booking, rescheduling, or cancellation?",
+        "ask_booking_service": "Of course. Which service would you like to book?",
+        "ask_booking_time": "Sure. What date and time would work for you?",
+    },
+}
+
+
+def t(lang: str, key: str, **kwargs: Any) -> str:
+    lang = get_lang(lang)
+    template = I18N.get(lang, I18N["lv"]).get(key, I18N["lv"].get(key, key))
+    try:
+        return template.format(**kwargs)
+    except Exception:
+        return template
+
+
 # -------------------------
 # NEW: MULTI-TENANT DB HELPERS
 # -------------------------
-
-
 def tenants_columns() -> List[Dict[str, Any]]:
     with engine.connect() as conn:
         rows = conn.execute(
@@ -268,7 +370,7 @@ def parse_dt_any_tz(iso: str) -> Optional[datetime]:
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=TZ)
         return dt.astimezone(TZ)
-    except:
+    except Exception:
         return None
 
 
@@ -288,6 +390,15 @@ def stt_locale_for_lang(lang: str) -> str:
     return "en-US"
 
 
+def tts_language_code_for_lang(lang: str) -> str:
+    lang = get_lang(lang)
+    if lang == "ru":
+        return "ru-RU"
+    if lang == "en":
+        return "en-US"
+    return "lv-LV"
+
+
 def norm_user_key(phone: str) -> str:
     p = (phone or "").strip().replace("whatsapp:", "")
     p = re.sub(r"[^\d+]", "", p)
@@ -301,26 +412,192 @@ def normalize_voice_caller(raw_from: str) -> str:
     return v
 
 
+def normalize_service(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, list):
+        parts = [str(x).strip() for x in value if str(x).strip()]
+        return ", ".join(parts) if parts else None
+    if isinstance(value, dict):
+        parts = [str(v).strip() for v in value.values() if str(v).strip()]
+        return ", ".join(parts) if parts else None
+    txt = str(value).strip()
+    return txt or None
+
+
+def normalize_name(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, list):
+        return str(value[0]).strip() if value else None
+    if isinstance(value, dict):
+        for k in ("name", "first_name", "full_name"):
+            if value.get(k):
+                return str(value[k]).strip()
+        vals = [str(v).strip() for v in value.values() if str(v).strip()]
+        return vals[0] if vals else None
+    txt = str(value).strip()
+    return txt or None
+
+
+
+LANG_HINTS = {
+    "lv": {
+        "strong": [
+            "labdien", "sveiki", "lūdzu", "ludzu", "paldies", "pieraksts", "pierakstīties",
+            "pierakstities", "frizētava", "frizetava", "barberšops", "bārda", "barda",
+            "rīt", "rit", "parīt", "šodien", "sodien", "cikos", "pārcelt", "atcelt",
+            "vai", "tas", "ir", "strādājat", "darba", "laiks"
+        ],
+        "weak": ["uz", "kad", "laiks", "diena", "meistars", "pakalpojums", "šodien", "rīt"],
+    },
+    "ru": {
+        "strong": [
+            "здравствуйте", "привет", "добрый", "запись", "записаться", "парикмахерская",
+            "барбершоп", "стрижка", "борода", "завтра", "послезавтра", "сегодня",
+            "перенести", "отменить", "время", "работаете", "это", "у вас", "можно"
+        ],
+        "weak": ["дата", "когда", "время", "мастер", "услуга", "запись", "сегодня", "завтра"],
+    },
+    "en": {
+        "strong": [
+            "hello", "hi", "appointment", "book", "booking", "cancel", "reschedule",
+            "tomorrow", "today", "barbershop", "salon", "clinic", "open", "working",
+            "hours", "service", "time", "name", "is this", "can i"
+        ],
+        "weak": ["when", "time", "date", "service", "today", "tomorrow"],
+    },
+}
+
+GREETING_PATTERNS = {
+    "lv": ["labdien", "sveiki", "čau", "cau", "halo", "alo"],
+    "ru": ["здравствуйте", "добрый день", "добрый вечер", "привет", "алло", "але"],
+    "en": ["hello", "hi", "good morning", "good afternoon", "hey"],
+}
+
+IDENTITY_CHECK_PATTERNS = [
+    "vai tas ir", "vai jūs esat", "это ", "is this", "did i reach",
+    "я туда попал", "это барбершоп", "это парикмахерская", "это клиника",
+]
+
+HOURS_PATTERNS = [
+    "работаете", "во сколько", "часы работы", "открыты", "открыто",
+    "strādājat", "darba laiks", "atvērts", "cikos strādājat",
+    "open", "working hours", "what time are you open", "are you open",
+]
+
+BOOKING_OPENERS = [
+    "можно записаться", "хочу записаться", "хотел записаться", "нужна запись",
+    "gribu pierakstīties", "vēlos pierakstīties", "vai var pierakstīties",
+    "i want to book", "i'd like to book", "can i book", "need an appointment",
+]
+
+def tokenize_lang_text(text_: str) -> List[str]:
+    return re.findall(r"[A-Za-zĀ-žа-яА-ЯёЁ]+", (text_ or "").lower(), flags=re.UNICODE)
+
+def detect_language_scores(text_: str) -> Dict[str, float]:
+    raw = (text_ or "").strip()
+    low = raw.lower()
+    scores: Dict[str, float] = {"lv": 0.0, "ru": 0.0, "en": 0.0}
+    if not low:
+        scores["lv"] = 1.0
+        return scores
+
+    if re.search(r"[а-яё]", low, flags=re.IGNORECASE):
+        scores["ru"] += 2.5
+    if re.search(r"[āēīūčšžģķļņ]", low):
+        scores["lv"] += 2.5
+    latin_words = len(re.findall(r"[A-Za-z]+", low))
+    if latin_words:
+        scores["en"] += 0.2 * latin_words
+
+    tokens = tokenize_lang_text(low)
+    joined = " ".join(tokens)
+
+    for lang_code, groups in LANG_HINTS.items():
+        for tok in groups["strong"]:
+            if tok in joined:
+                scores[lang_code] += 2.0
+        for tok in groups["weak"]:
+            if tok in joined:
+                scores[lang_code] += 0.7
+
+    if any(ch in low for ch in ["ā", "ē", "ī", "ū", "č", "š", "ž", "ģ", "ķ", "ļ", "ņ"]):
+        scores["lv"] += 1.2
+    if re.search(r"[ёыэъ]", low):
+        scores["ru"] += 1.0
+
+    if any(x in low for x in ["hello", "appointment", "reschedule", "cancel", "book"]):
+        scores["en"] += 2.5
+
+    return scores
+
 def detect_language(text_: str) -> str:
-    t = (text_ or "").strip().lower()
-    if re.search(r"[āēīūčšžģķļņĀĒĪŪČŠŽĢĶĻŅ]", t):
+    scores = detect_language_scores(text_)
+    lang, score = max(scores.items(), key=lambda x: x[1])
+    return lang if score > 0 else "lv"
+
+def resolve_reply_language(text_: str, current_lang: Optional[str]) -> str:
+    current = get_lang(current_lang)
+    scores = detect_language_scores(text_)
+    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    top_lang, top_score = ranked[0]
+    second_score = ranked[1][1] if len(ranked) > 1 else 0.0
+
+    if top_score <= 0:
+        return current
+    if top_lang == current:
+        return current
+
+    margin = top_score - second_score
+    if len(tokenize_lang_text(text_)) <= 2 and margin < 2.0:
+        return current
+    if margin >= 1.6:
+        return top_lang
+    if scores.get(current, 0.0) + 0.9 >= top_score:
+        return current
+    return top_lang
+
+def is_greeting_only(text_: str) -> bool:
+    low = (text_ or "").strip().lower()
+    if not low:
+        return False
+    if len(tokenize_lang_text(low)) > 6:
+        return False
+    if any(p in low for p in IDENTITY_CHECK_PATTERNS + HOURS_PATTERNS + BOOKING_OPENERS):
+        return False
+    return any(any(g in low for g in patterns) for patterns in GREETING_PATTERNS.values())
+
+def is_identity_check(text_: str) -> bool:
+    low = (text_ or "").strip().lower()
+    return any(p in low for p in IDENTITY_CHECK_PATTERNS)
+
+def is_hours_question(text_: str) -> bool:
+    low = (text_ or "").strip().lower()
+    return any(p in low for p in HOURS_PATTERNS)
+
+def is_booking_opener(text_: str) -> bool:
+    low = (text_ or "").strip().lower()
+    return any(p in low for p in BOOKING_OPENERS)
+
+def detect_language_choice(text_: str, digits: str = "") -> Optional[str]:
+    d = (digits or "").strip()
+    if d == "1":
         return "lv"
-    if re.search(r"[а-яА-Я]", t):
+    if d == "2":
         return "ru"
-    lv_tokens = [
-        "labdien",
-        "sveiki",
-        "ludzu",
-        "paldies",
-        "pierakst",
-        "rit",
-        "parit",
-        "sodien",
-        "cikos",
-        "kad",
-    ]
-    score = sum(1 for tok in lv_tokens if tok in t)
-    return "lv" if score >= 2 else "en"
+    if d == "3":
+        return "en"
+    t = (text_ or "").strip().lower()
+    if not t:
+        return None
+    if any(x in t for x in ["latv", "latvie", "latvian", "vien", "one"]):
+        return "lv"
+    if any(x in t for x in ["рус", "kriev", "russian", "два", "two"]):
+        return "ru"
+    if any(x in t for x in ["english", "англ", "trīs", "tris", "three", "три"]):
+        return "en"
+    return detect_language(t)
 
 
 def _short(s: Optional[str], n: int) -> str:
@@ -334,6 +611,18 @@ def _parse_hhmm(hhmm: str) -> Tuple[int, int]:
 
 def twiml(vr: VoiceResponse) -> Response:
     return Response(content=str(vr), media_type="application/xml")
+
+
+def format_dt_short(dt: Optional[datetime]) -> str:
+    return dt.strftime("%d.%m %H:%M") if dt else ""
+
+
+def ensure_lang_update(tenant_id: str, user_key: str, c: Dict[str, Any], lang: str) -> Dict[str, Any]:
+    lang = get_lang(lang)
+    if get_lang(c.get("lang")) != lang:
+        c["lang"] = lang
+        db_save_conversation(tenant_id, user_key, c)
+    return c
 
 
 # -------------------------
@@ -362,7 +651,7 @@ def db_get_or_create_conversation(
             if row[6]:
                 try:
                     pending = json.loads(row[6])
-                except:
+                except Exception:
                     pending = None
             return {
                 "lang": get_lang(row[0]),
@@ -496,11 +785,13 @@ def twilio_client():
 def send_message(to_number: str, body: str):
     client = twilio_client()
     if not client:
+        log.warning("Twilio client not configured; message skipped")
         return
     to_number = (to_number or "").strip()
     is_wa = to_number.startswith("whatsapp:")
     from_number = TWILIO_WHATSAPP_FROM if is_wa else TWILIO_FROM_NUMBER
     if not from_number:
+        log.warning("Twilio from number missing; message skipped")
         return
     try:
         client.messages.create(from_=from_number, to=to_number, body=body)
@@ -529,8 +820,9 @@ def openai_chat_json(system: str, user: str) -> Dict[str, Any]:
         r = requests.post(url, headers=headers, json=payload, timeout=25)
         if r.status_code == 200:
             return json.loads(r.json()["choices"][0]["message"]["content"])
-    except:
-        pass
+        log.error("OpenAI error status=%s body=%s", r.status_code, r.text[:500])
+    except Exception as e:
+        log.error("OpenAI request failed: %s", e)
     return {}
 
 
@@ -550,7 +842,8 @@ def get_gcal():
         )
         _GCAL = build("calendar", "v3", credentials=creds, cache_discovery=False)
         return _GCAL
-    except:
+    except Exception as e:
+        log.error("Google Calendar init failed: %s", e)
         return None
 
 
@@ -566,7 +859,8 @@ def is_slot_busy(calendar_id: str, dt_start: datetime, dt_end: datetime) -> bool
     try:
         fb = svc.freebusy().query(body=body).execute()
         return len(fb["calendars"][calendar_id].get("busy", [])) > 0
-    except:
+    except Exception as e:
+        log.error("Calendar freebusy failed: %s", e)
         return False
 
 
@@ -587,12 +881,16 @@ def create_calendar_event(
         "start": {"dateTime": dt_start.isoformat(), "timeZone": "Europe/Riga"},
         "end": {"dateTime": dt_end.isoformat(), "timeZone": "Europe/Riga"},
     }
-    return (
-        svc.events()
-        .insert(calendarId=calendar_id, body=event)
-        .execute()
-        .get("htmlLink")
-    )
+    try:
+        return (
+            svc.events()
+            .insert(calendarId=calendar_id, body=event)
+            .execute()
+            .get("htmlLink")
+        )
+    except Exception as e:
+        log.error("Create calendar event failed: %s", e)
+        return None
 
 
 # -------------------------
@@ -614,7 +912,8 @@ def get_google_tts():
         )
         _TTS = build("texttospeech", "v1", credentials=creds, cache_discovery=False)
         return _TTS
-    except:
+    except Exception as e:
+        log.error("Google TTS init failed: %s", e)
         return None
 
 
@@ -630,11 +929,74 @@ def google_tts_mp3(text_: str, lang_code: str, voice_name: str) -> bytes:
     try:
         resp = svc.text().synthesize(body=body).execute()
         return base64.b64decode(resp["audioContent"])
-    except:
+    except Exception as e:
+        log.error("Google TTS failed: %s", e)
         return b""
-    # -------------------------
 
 
+def elevenlabs_tts_mp3(text_: str, voice_id: str) -> bytes:
+    if not (ELEVENLABS_API_KEY and voice_id and text_):
+        return b""
+    try:
+        r = requests.post(
+            f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
+            headers={
+                "xi-api-key": ELEVENLABS_API_KEY,
+                "Content-Type": "application/json",
+                "Accept": "audio/mpeg",
+            },
+            json={
+                "text": text_[:500],
+                "model_id": ELEVENLABS_MODEL_ID,
+                "voice_settings": {
+                    "stability": 0.45,
+                    "similarity_boost": 0.75,
+                },
+            },
+            timeout=30,
+        )
+        if r.status_code == 200:
+            return r.content
+        log.error("ElevenLabs TTS failed status=%s body=%s", r.status_code, r.text[:500])
+    except Exception as e:
+        log.error("ElevenLabs TTS request failed: %s", e)
+    return b""
+
+
+def tts_bytes_for_lang(text_: str, lang: str) -> bytes:
+    lang = get_lang(lang)
+    if lang == "lv":
+        return google_tts_mp3(
+            text_,
+            tts_language_code_for_lang(lang),
+            GOOGLE_TTS_VOICE_NAME,
+        )
+    return elevenlabs_tts_mp3(text_, ELEVENLABS_VOICE_ID)
+
+def say_or_play(vr: VoiceResponse, text_: str, lang: str) -> None:
+    text_ = (text_ or "").strip()
+    if not text_:
+        return
+    lang = get_lang(lang)
+    if SERVER_BASE_URL:
+        try:
+            encoded = requests.utils.quote(text_)
+            vr.play(f"{SERVER_BASE_URL}/tts?lang={lang}&text={encoded}")
+            return
+        except Exception:
+            pass
+    vr.say(text_, language=stt_locale_for_lang(lang), voice="alice")
+
+
+@app.get("/tts")
+def tts_endpoint(text: str, lang: str = "lv"):
+    audio = tts_bytes_for_lang(text, lang)
+    if not audio:
+        raise HTTPException(status_code=500, detail="TTS unavailable")
+    return StreamingResponse(iter([audio]), media_type="audio/mpeg")
+
+
+# -------------------------
 # CALENDAR LOGIC (Business Hours & Slots)
 # -------------------------
 def in_business_hours(
@@ -649,7 +1011,7 @@ def in_business_hours(
             dt_start >= day_start
             and (dt_start + timedelta(minutes=duration_min)) <= day_end
         )
-    except:
+    except Exception:
         return False
 
 
@@ -662,7 +1024,7 @@ def find_next_two_slots(
 ):
     step, found = 30, []
     candidate = dt_start + timedelta(minutes=step)
-    for _ in range(48):
+    for _ in range(96):
         if in_business_hours(candidate, duration_min, work_start, work_end):
             if not is_slot_busy(
                 calendar_id, candidate, candidate + timedelta(minutes=duration_min)
@@ -679,6 +1041,7 @@ def find_next_event_by_phone(calendar_id: str, phone: str):
     if not svc or not calendar_id:
         return None
     now = now_ts().isoformat()
+    phone_norm = norm_user_key(phone)
     try:
         events = (
             svc.events()
@@ -692,10 +1055,13 @@ def find_next_event_by_phone(calendar_id: str, phone: str):
             .execute()
         )
         for ev in events.get("items", []):
-            if phone in (ev.get("description") or ""):
+            desc = ev.get("description") or ""
+            if phone_norm and phone_norm in norm_user_key(desc):
                 return ev
-    except:
-        pass
+            if phone in desc:
+                return ev
+    except Exception as e:
+        log.error("Find next event failed: %s", e)
     return None
 
 
@@ -704,10 +1070,19 @@ def delete_calendar_event(calendar_id: str, event_id: str):
     if svc and calendar_id:
         try:
             svc.events().delete(calendarId=calendar_id, eventId=event_id).execute()
-            log.info(f"Deleted calendar event: calendar_id={calendar_id}, event_id={event_id}")
+            log.info(
+                "Deleted calendar event: calendar_id=%s, event_id=%s",
+                calendar_id,
+                event_id,
+            )
             return True
         except Exception as e:
-            log.error(f"Delete calendar event failed: calendar_id={calendar_id}, event_id={event_id}, err={e}")
+            log.error(
+                "Delete calendar event failed: calendar_id=%s, event_id=%s, err=%s",
+                calendar_id,
+                event_id,
+                e,
+            )
             return False
     return False
 
@@ -716,16 +1091,29 @@ def delete_calendar_event(calendar_id: str, event_id: str):
 # DATE PARSING Fallbacks
 # -------------------------
 def parse_time_text_to_dt(text_: str) -> Optional[datetime]:
-    m = re.search(r"\b([01]?\d|2[0-3])[:. ]([0-5]\d)\b", (text_ or "").lower())
+    src = (text_ or "")
+    m = re.search(r"\b([01]?\d|2[0-3])[:. ]([0-5]\d)\b", src.lower())
     if not m:
         return None
     hh, mm = int(m.group(1)), int(m.group(2))
     base = today_local()
-    t_low = text_.lower()
+    t_low = src.lower()
+
     if any(k in t_low for k in ["parīt", "послезавтра", "day after tomorrow"]):
         base += timedelta(days=2)
     elif any(k in t_low for k in ["rīt", "rit", "завтра", "tomorrow"]):
         base += timedelta(days=1)
+
+    dm = re.search(r"\b(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?\b", src)
+    if dm:
+        dd, mo = int(dm.group(1)), int(dm.group(2))
+        yy = dm.group(3)
+        year = int(yy) + 2000 if yy and len(yy) == 2 else int(yy) if yy else base.year
+        try:
+            return datetime(year, mo, dd, hh, mm, tzinfo=TZ)
+        except Exception:
+            pass
+
     return datetime(base.year, base.month, base.day, hh, mm, tzinfo=TZ)
 
 
@@ -745,53 +1133,76 @@ def handle_user_text(
     msg = (text_in or "").strip()
     tenant = get_tenant(tenant_id)
     allowed, _ = tenant_allowed(tenant)
-    l_hint = get_lang(lang_hint)
+
+    detected_lang = get_lang(lang_hint or detect_language(msg))
+    user_key = norm_user_key(raw_phone)
+    c = db_get_or_create_conversation(tenant_id, user_key, detected_lang)
+
+    if msg:
+        c["lang"] = resolve_reply_language(msg, c.get("lang") or detected_lang)
+        db_save_conversation(tenant_id, user_key, c)
+
+    lang = get_lang(c.get("lang"))
+    settings = tenant_settings(tenant, lang)
 
     if not allowed:
         return {
             "status": "blocked",
-            "reply_voice": "Atvainojiet, serviss nav pieejams.",
-            "msg_out": "Serviss nav pieejams.",
-            "lang": l_hint,
-        }
-
-    user_key = norm_user_key(raw_phone)
-    c = db_get_or_create_conversation(tenant_id, user_key, l_hint)
-    lang = get_lang(c["lang"])
-    settings = tenant_settings(tenant, lang)
-
-    # Intents: Reschedule / Cancel
-    t_low = msg.lower()
-    if any(w in t_low for w in ["pārcelt", "перенести", "reschedule"]):
-        ev = find_next_event_by_phone(settings["calendar_id"], raw_phone)
-        if not ev:
-            return {
-                "status": "no_booking",
-                "reply_voice": "Jums nav aktīvu pierakstu.",
-                "msg_out": "Jums nav aktīvu pierakstu.",
-                "lang": lang,
-            }
-        dt_old = parse_dt_any_tz(ev["start"]["dateTime"])
-        c["pending"] = {
-            "reschedule_event_id": ev["id"],
-            "reschedule_old_iso": ev["start"]["dateTime"],
-        }
-        db_save_conversation(tenant_id, user_key, c)
-        ws = dt_old.strftime("%d.%m %H:%M") if dt_old else ""
-        return {
-            "status": "reschedule_wait",
-            "reply_voice": f"Pieraksts {ws}. Uz kuru laiku pārcelt?",
-            "msg_out": f"Pieraksts {ws}. Uz kuru laiku pārcelt?",
+            "reply_voice": t(lang, "service_unavailable_voice"),
+            "msg_out": t(lang, "service_unavailable_text"),
             "lang": lang,
         }
 
+    t_low = msg.lower()
+
+    if msg and is_greeting_only(msg):
+        return {
+            "status": "greeting",
+            "reply_voice": t(lang, "greeting_only_reply"),
+            "msg_out": t(lang, "greeting_only_reply"),
+            "lang": lang,
+        }
+
+    if msg and is_identity_check(msg):
+        return {
+            "status": "identity",
+            "reply_voice": t(lang, "identity_yes", biz=settings["biz_name"]),
+            "msg_out": t(lang, "identity_yes", biz=settings["biz_name"]),
+            "lang": lang,
+        }
+
+    if msg and is_hours_question(msg):
+        return {
+            "status": "info",
+            "reply_voice": t(lang, "hours_info", biz=settings["biz_name"], start=settings["work_start"], end=settings["work_end"]),
+            "msg_out": t(lang, "hours_info", biz=settings["biz_name"], start=settings["work_start"], end=settings["work_end"]),
+            "lang": lang,
+        }
+
+    if msg and is_booking_opener(msg) and not any(w in t_low for w in ["atcelt", "отменить", "cancel", "pārcelt", "перенести", "reschedule"]):
+        if not c.get("service"):
+            return {
+                "status": "need_more",
+                "reply_voice": t(lang, "ask_booking_service"),
+                "msg_out": t(lang, "ask_booking_service"),
+                "lang": lang,
+            }
+        if not c.get("datetime_iso"):
+            return {
+                "status": "need_more",
+                "reply_voice": t(lang, "ask_booking_time"),
+                "msg_out": t(lang, "ask_booking_time"),
+                "lang": lang,
+            }
+
+    # Intent: cancel
     if any(w in t_low for w in ["atcelt", "отменить", "cancel"]):
         ev = find_next_event_by_phone(settings["calendar_id"], raw_phone)
         if not ev:
             return {
                 "status": "no_booking",
-                "reply_voice": "Jums nav aktīvu pierakstu.",
-                "msg_out": "Jums nav aktīvu pierakstu.",
+                "reply_voice": t(lang, "no_active_booking"),
+                "msg_out": t(lang, "no_active_booking"),
                 "lang": lang,
             }
 
@@ -799,49 +1210,113 @@ def handle_user_text(
         if not deleted:
             return {
                 "status": "cancel_failed",
-                "reply_voice": "Neizdevās atcelt pierakstu. Mēģiniet vēlreiz.",
-                "msg_out": "Neizdevās atcelt pierakstu. Mēģiniet vēlreiz.",
+                "reply_voice": t(lang, "cancel_failed"),
+                "msg_out": t(lang, "cancel_failed"),
                 "lang": lang,
             }
 
+        c["pending"] = None
+        c["state"] = "CANCELLED"
+        c["datetime_iso"] = None
+        db_save_conversation(tenant_id, user_key, c)
         return {
             "status": "cancelled",
-            "reply_voice": "Pieraksts atcelts.",
-            "msg_out": "Pieraksts atcelts.",
+            "reply_voice": t(lang, "cancelled"),
+            "msg_out": t(lang, "cancelled"),
             "lang": lang,
         }
 
-    # 1/2 Selection
+    # Intent: reschedule
+    if any(w in t_low for w in ["pārcelt", "перенести", "reschedule"]):
+        ev = find_next_event_by_phone(settings["calendar_id"], raw_phone)
+        if not ev:
+            return {
+                "status": "no_booking",
+                "reply_voice": t(lang, "no_active_booking"),
+                "msg_out": t(lang, "no_active_booking"),
+                "lang": lang,
+            }
+        dt_old = parse_dt_any_tz(ev["start"].get("dateTime", ""))
+        c["pending"] = {
+            "reschedule_event_id": ev["id"],
+            "reschedule_old_iso": ev["start"].get("dateTime"),
+        }
+        db_save_conversation(tenant_id, user_key, c)
+        return {
+            "status": "reschedule_wait",
+            "reply_voice": t(lang, "reschedule_ask", when=format_dt_short(dt_old)),
+            "msg_out": t(lang, "reschedule_ask", when=format_dt_short(dt_old)),
+            "lang": lang,
+        }
+
+    # If user selected one of offered options by number.
     if msg in ("1", "2") and c.get("pending") and "opt1_iso" in c["pending"]:
         p = c["pending"]
-        dt_sel = parse_dt_any_tz(p["opt1_iso"] if msg == "1" else p["opt2_iso"])
-        svc = p.get("service") or c.get("service") or settings["services_hint"]
-        nm = p.get("name") or c.get("name") or "Klients"
+        selected_iso = p.get("opt1_iso") if msg == "1" else p.get("opt2_iso")
+        dt_sel = parse_dt_any_tz(selected_iso or "")
+        if not dt_sel:
+            return {
+                "status": "need_more",
+                "reply_voice": t(lang, "need_time"),
+                "msg_out": t(lang, "need_time"),
+                "lang": lang,
+            }
+
+        svc_name = normalize_service(p.get("service") or c.get("service") or settings["services_hint"])
+        client_name = normalize_name(p.get("name") or c.get("name")) or "Client"
+
+        if p.get("reschedule_event_id"):
+            deleted = delete_calendar_event(settings["calendar_id"], p["reschedule_event_id"])
+            if not deleted:
+                return {
+                    "status": "cancel_failed",
+                    "reply_voice": t(lang, "cancel_failed"),
+                    "msg_out": t(lang, "cancel_failed"),
+                    "lang": lang,
+                }
+
         create_calendar_event(
             settings["calendar_id"],
             dt_sel,
             APPT_MINUTES,
-            f"{settings['biz_name']} - {svc}",
-            f"Name: {nm}\nPhone: {raw_phone}",
+            f"{settings['biz_name']} - {svc_name}",
+            f"Name: {client_name}\nPhone: {raw_phone}",
         )
-        c["pending"], c["state"], c["datetime_iso"] = None, "BOOKED", dt_sel.isoformat()
+        c["pending"] = None
+        c["state"] = "BOOKED"
+        c["datetime_iso"] = dt_sel.isoformat()
+        c["service"] = svc_name
+        c["name"] = client_name
         db_save_conversation(tenant_id, user_key, c)
         return {
             "status": "booked",
-            "reply_voice": "Paldies, pieraksts apstпирrināts!",
-            "msg_out": f"Apstiprināts: {dt_sel.strftime('%d.%m %H:%M')}",
+            "reply_voice": t(lang, "booking_confirmed"),
+            "msg_out": t(lang, "booking_confirmed_text", service=svc_name, when=format_dt_short(dt_sel)),
             "lang": lang,
         }
 
-    # AI Extraction
-    sys_pt = f"Receptionist for {settings['biz_name']}. Hours: {settings['work_start']}-{settings['work_end']}. Services: {settings['services_hint']}. Return JSON: service, time_text, datetime_iso, name."
-    usr_pt = f"Today: {now_ts().date()}. User: {msg}. Lang: {lang}."
+    # AI extraction
+    sys_pt = (
+        f"You are an appointment receptionist for {settings['biz_name']}. "
+        f"Business hours: {settings['work_start']}-{settings['work_end']}. "
+        f"Known services: {settings['services_hint']}. "
+        "Extract and return strict JSON only with keys: "
+        "service, time_text, datetime_iso, name. "
+        "service and name must be plain strings, not arrays. "
+        "If value is unknown use null."
+    )
+    usr_pt = f"Today: {now_ts().date()}. User language: {lang}. User message: {msg}"
     data = openai_chat_json(sys_pt, usr_pt)
 
-    if data.get("service"):
-        c["service"] = data["service"]
-    if data.get("name"):
-        c["name"] = data["name"]
+    service = normalize_service(data.get("service"))
+    name = normalize_name(data.get("name"))
+    if service:
+        c["service"] = service
+    if name:
+        c["name"] = name
+    if data.get("time_text"):
+        c["time_text"] = str(data.get("time_text"))
+
     dt_start = parse_dt_from_iso_or_fallback(
         data.get("datetime_iso"), data.get("time_text"), msg
     )
@@ -849,29 +1324,28 @@ def handle_user_text(
         dt_start = parse_dt_any_tz(c.get("datetime_iso") or "")
     if dt_start:
         c["datetime_iso"] = dt_start.isoformat()
+
     db_save_conversation(tenant_id, user_key, c)
 
-    # Validations... (продолжение логики в Части 5)
-    # (Продолжение handle_user_text)
     if not c.get("service"):
         return {
             "status": "need_more",
-            "reply_voice": "Kādu pakalpojumu vēlaties?",
-            "msg_out": "Kādu pakalсовуму vēlaties?",
+            "reply_voice": t(lang, "need_service"),
+            "msg_out": t(lang, "need_service"),
             "lang": lang,
         }
     if not dt_start:
         return {
             "status": "need_more",
-            "reply_voice": "Kad un cikos jums būtu ērti?",
-            "msg_out": "Kad un cikos jums būtu ērti?",
+            "reply_voice": t(lang, "need_time"),
+            "msg_out": t(lang, "need_time"),
             "lang": lang,
         }
-    if not c.get("name"):
+    if not c.get("name") and channel == "voice":
         return {
             "status": "need_more",
-            "reply_voice": "Kā jūs sauc?",
-            "msg_out": "Kā jūs sauc?",
+            "reply_voice": t(lang, "need_name"),
+            "msg_out": t(lang, "need_name"),
             "lang": lang,
         }
 
@@ -891,19 +1365,25 @@ def handle_user_text(
                 "opt1_iso": opts[0].isoformat(),
                 "opt2_iso": opts[1].isoformat(),
                 "service": c["service"],
-                "name": c["name"],
+                "name": c.get("name"),
+                **(c.get("pending") or {}),
             }
             db_save_conversation(tenant_id, user_key, c)
             return {
                 "status": "busy",
-                "reply_voice": "Šajā laikā nestrādājam. Nosūtu brīvos laikus ziņā.",
-                "msg_out": f"Nestradajam. Varianti: 1){opts[0].strftime('%H:%M')} 2){opts[1].strftime('%H:%M')}",
+                "reply_voice": t(lang, "closed_voice"),
+                "msg_out": t(
+                    lang,
+                    "closed_text",
+                    opt1=format_dt_short(opts[0]),
+                    opt2=format_dt_short(opts[1]),
+                ),
                 "lang": lang,
             }
         return {
             "status": "recovery",
-            "reply_voice": "Atvainojiet, visi laiki ir aizņemti.",
-            "msg_out": "Visi laiki aizņemti. Mēģiniet vēlāk.",
+            "reply_voice": t(lang, "all_busy_voice"),
+            "msg_out": t(lang, "all_busy_text"),
             "lang": lang,
         }
 
@@ -923,43 +1403,66 @@ def handle_user_text(
                 "opt1_iso": opts[0].isoformat(),
                 "opt2_iso": opts[1].isoformat(),
                 "service": c["service"],
-                "name": c["name"],
+                "name": c.get("name"),
+                **(c.get("pending") or {}),
             }
             db_save_conversation(tenant_id, user_key, c)
             return {
                 "status": "busy",
-                "reply_voice": "Šis laiks ir aizņemts. Nosūtu variantus ziņā.",
-                "msg_out": f"Aizņemts. Varianti: 1){opts[0].strftime('%H:%M')} 2){opts[1].strftime('%H:%M')}",
+                "reply_voice": t(lang, "busy_voice"),
+                "msg_out": t(
+                    lang,
+                    "busy_text",
+                    opt1=format_dt_short(opts[0]),
+                    opt2=format_dt_short(opts[1]),
+                ),
                 "lang": lang,
             }
         return {
             "status": "recovery",
-            "reply_voice": "Visi laiki aizņemti.",
-            "msg_out": "Nav brīvu laiku.",
+            "reply_voice": t(lang, "all_busy_voice"),
+            "msg_out": t(lang, "all_busy_text"),
             "lang": lang,
         }
 
-    # Apply Reschedule if pending
+    # Apply reschedule if pending
     if c.get("pending") and c["pending"].get("reschedule_event_id"):
-        delete_calendar_event(
+        deleted = delete_calendar_event(
             settings["calendar_id"], c["pending"]["reschedule_event_id"]
         )
+        if not deleted:
+            return {
+                "status": "cancel_failed",
+                "reply_voice": t(lang, "cancel_failed"),
+                "msg_out": t(lang, "cancel_failed"),
+                "lang": lang,
+            }
         c["pending"] = None
 
-    # Final Booking
+    # Final booking
+    final_name = normalize_name(c.get("name")) or "Client"
+    final_service = normalize_service(c.get("service")) or settings["services_hint"]
     create_calendar_event(
         settings["calendar_id"],
         dt_start,
         APPT_MINUTES,
-        f"{settings['biz_name']} - {c['service']}",
-        f"Name: {c['name']}\nPhone: {raw_phone}",
+        f"{settings['biz_name']} - {final_service}",
+        f"Name: {final_name}\nPhone: {raw_phone}",
     )
     c["state"] = "BOOKED"
+    c["name"] = final_name
+    c["service"] = final_service
+    c["datetime_iso"] = dt_start.isoformat()
     db_save_conversation(tenant_id, user_key, c)
     return {
         "status": "booked",
-        "reply_voice": "Paldies! Pieraksts apstiprināts.",
-        "msg_out": f"Apstiprināts: {c['service']} {dt_start.strftime('%d.%m %H:%M')}",
+        "reply_voice": t(lang, "booking_confirmed"),
+        "msg_out": t(
+            lang,
+            "booking_confirmed_text",
+            service=final_service,
+            when=format_dt_short(dt_start),
+        ),
         "lang": lang,
     }
 
@@ -967,14 +1470,45 @@ def handle_user_text(
 # -------------------------
 # TWILIO ENDPOINTS
 # -------------------------
-
-
 @app.post("/voice/incoming")
 async def voice_incoming(request: Request):
     form = await request.form()
     to_num = str(form.get("To", ""))
+    caller = normalize_voice_caller(str(form.get("From", "")))
     tenant = get_tenant_by_phone(to_num)
     biz = tenant_settings(tenant, "lv")["biz_name"]
+
+    c = db_get_or_create_conversation(tenant["_id"], caller, "lv")
+    lang = get_lang(c.get("lang")) if caller != "unknown" else "lv"
+
+    vr = VoiceResponse()
+    g = Gather(
+        input="speech dtmf",
+        action="/voice/language",
+        method="POST",
+        timeout=7,
+        num_digits=1,
+        language=stt_locale_for_lang(lang),
+    )
+    say_or_play(g, t(lang, "greeting", biz=biz), lang)
+    vr.append(g)
+    say_or_play(vr, t(lang, "voice_fallback"), lang)
+    return twiml(vr)
+
+
+@app.post("/voice/language")
+async def voice_language(request: Request):
+    form = await request.form()
+    to_num = str(form.get("To", ""))
+    caller = normalize_voice_caller(str(form.get("From", "")))
+    speech = str(form.get("SpeechResult", "")).strip()
+    digits = str(form.get("Digits", "")).strip()
+
+    tenant = get_tenant_by_phone(to_num)
+    c = db_get_or_create_conversation(tenant["_id"], caller, "lv")
+    selected_lang = detect_language_choice(speech, digits) or get_lang(c.get("lang"))
+    c["lang"] = selected_lang
+    db_save_conversation(tenant["_id"], caller, c)
 
     vr = VoiceResponse()
     g = Gather(
@@ -982,10 +1516,11 @@ async def voice_incoming(request: Request):
         action="/voice/intent",
         method="POST",
         timeout=7,
-        language="lv-LV",
+        language=stt_locale_for_lang(selected_lang),
     )
-    say_or_play(g, f"Labdien! Jūs sazvanījāt {biz}. Kā varu palīdzēt?", "lv")
+    say_or_play(g, t(selected_lang, "how_help"), selected_lang)
     vr.append(g)
+    say_or_play(vr, t(selected_lang, "voice_fallback"), selected_lang)
     return twiml(vr)
 
 
@@ -997,29 +1532,29 @@ async def voice_intent(request: Request):
     speech = str(form.get("SpeechResult", "")).strip()
 
     tenant = get_tenant_by_phone(to_num)
-    result = handle_user_text(tenant["_id"], caller, speech, "voice", "lv")
+    c = db_get_or_create_conversation(tenant["_id"], caller, detect_language(speech))
+    lang = resolve_reply_language(speech, c.get("lang") or detect_language(speech))
+    result = handle_user_text(tenant["_id"], caller, speech, "voice", lang)
 
     vr = VoiceResponse()
     say_or_play(vr, result["reply_voice"], result["lang"])
-    if result["status"] == "need_more":
-        vr.append(
-            Gather(
-                input="speech",
-                action="/voice/intent",
-                method="POST",
-                timeout=7,
-                language="lv-LV",
-            )
+    if result["status"] in ("need_more", "reschedule_wait", "greeting", "identity", "info"):
+        g = Gather(
+            input="speech",
+            action="/voice/intent",
+            method="POST",
+            timeout=7,
+            language=stt_locale_for_lang(result["lang"]),
         )
+        say_or_play(g, t(result["lang"], "how_help"), result["lang"])
+        vr.append(g)
+        say_or_play(vr, t(result["lang"], "voice_fallback"), result["lang"])
     else:
         vr.hangup()
 
-    # Send SMS confirmation after call if booked
-    if result["status"] == "booked" and caller != "unknown":
-        send_message(
-            caller,
-            f"{tenant_settings(tenant, result['lang'])['biz_name']}: {result['msg_out']}",
-        )
+    if result["status"] in ("booked", "busy", "cancelled") and caller != "unknown":
+        biz_name = tenant_settings(tenant, result["lang"])["biz_name"]
+        send_message(caller, f"{biz_name}: {result['msg_out']}")
 
     return twiml(vr)
 
