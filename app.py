@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import ast
 import base64
 import logging
 from datetime import datetime, timedelta, timezone, date
@@ -412,17 +413,43 @@ def normalize_voice_caller(raw_from: str) -> str:
     return v
 
 
+def _join_service_parts(values: Any) -> Optional[str]:
+    if isinstance(values, dict):
+        parts = [str(v).strip().strip("'\"") for v in values.values() if str(v).strip()]
+        return ", ".join(parts) if parts else None
+    if isinstance(values, (list, tuple, set)):
+        parts = [str(v).strip().strip("'\"") for v in values if str(v).strip()]
+        return ", ".join(parts) if parts else None
+    return None
+
+
 def normalize_service(value: Any) -> Optional[str]:
     if value is None:
         return None
-    if isinstance(value, list):
-        parts = [str(x).strip() for x in value if str(x).strip()]
-        return ", ".join(parts) if parts else None
-    if isinstance(value, dict):
-        parts = [str(v).strip() for v in value.values() if str(v).strip()]
-        return ", ".join(parts) if parts else None
+
+    joined = _join_service_parts(value)
+    if joined:
+        return joined
+
     txt = str(value).strip()
-    return txt or None
+    if not txt:
+        return None
+
+    if txt[0] in '[{(' and txt[-1] in ']})':
+        try:
+            parsed = ast.literal_eval(txt)
+            joined = _join_service_parts(parsed)
+            if joined:
+                return joined
+        except Exception:
+            pass
+        inner = txt[1:-1].strip()
+        if inner:
+            parts = [p.strip().strip("'\"") for p in inner.split(',') if p.strip()]
+            if parts:
+                return ", ".join(parts)
+
+    return txt.strip("'\"") or None
 
 
 def normalize_name(value: Any) -> Optional[str]:
@@ -1124,6 +1151,40 @@ def parse_dt_from_iso_or_fallback(
     return dt if dt else parse_time_text_to_dt(f"{time_text or ''} {raw_text or ''}")
 
 
+def has_explicit_time(text_: Optional[str]) -> bool:
+    src = (text_ or "").lower().strip()
+    if not src:
+        return False
+    if re.search(r"([01]?\d|2[0-3])[:. ]([0-5]\d)", src):
+        return True
+    return False
+
+
+def has_date_reference(text_: Optional[str]) -> bool:
+    src = (text_ or "").lower().strip()
+    if not src:
+        return False
+    if re.search(r"(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?", src):
+        return True
+    keywords = [
+        "rīt", "rit", "parīt", "šodien", "sodien",
+        "завтра", "послезавтра", "сегодня",
+        "tomorrow", "day after tomorrow", "today",
+    ]
+    return any(k in src for k in keywords)
+
+
+def combine_date_with_explicit_time(base_iso: Optional[str], time_source: Optional[str]) -> Optional[datetime]:
+    base_dt = parse_dt_any_tz((base_iso or "").strip())
+    if not base_dt or not has_explicit_time(time_source):
+        return None
+    m = re.search(r"([01]?\d|2[0-3])[:. ]([0-5]\d)", (time_source or "").lower())
+    if not m:
+        return None
+    hh, mm = int(m.group(1)), int(m.group(2))
+    return base_dt.replace(hour=hh, minute=mm, second=0, microsecond=0)
+
+
 # -------------------------
 # CORE LOGIC: handle_user_text
 # -------------------------
@@ -1317,13 +1378,43 @@ def handle_user_text(
     if data.get("time_text"):
         c["time_text"] = str(data.get("time_text"))
 
-    dt_start = parse_dt_from_iso_or_fallback(
+    pending = c.get("pending") or {}
+    pending_date_dt = None
+    if pending.get("awaiting_time_date_iso") and has_explicit_time(msg):
+        pending_date_dt = combine_date_with_explicit_time(pending.get("awaiting_time_date_iso"), msg)
+
+    dt_start = pending_date_dt or parse_dt_from_iso_or_fallback(
         data.get("datetime_iso"), data.get("time_text"), msg
     )
+    explicit_time_present = has_explicit_time(msg) or has_explicit_time(str(data.get("time_text") or ""))
+    date_reference_present = has_date_reference(msg) or has_date_reference(str(data.get("time_text") or ""))
+
+    if not dt_start and pending.get("awaiting_time_date_iso"):
+        base_pending = parse_dt_any_tz(pending.get("awaiting_time_date_iso") or "")
+        if base_pending and explicit_time_present:
+            dt_start = combine_date_with_explicit_time(base_pending.isoformat(), msg)
+
+    if dt_start and not explicit_time_present and date_reference_present:
+        pending.update({
+            "awaiting_time_date_iso": dt_start.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+        })
+        c["pending"] = pending
+        c["datetime_iso"] = None
+        db_save_conversation(tenant_id, user_key, c)
+        return {
+            "status": "need_more",
+            "reply_voice": t(lang, "need_time"),
+            "msg_out": t(lang, "need_time"),
+            "lang": lang,
+        }
+
     if not dt_start:
         dt_start = parse_dt_any_tz(c.get("datetime_iso") or "")
     if dt_start:
         c["datetime_iso"] = dt_start.isoformat()
+        if pending.get("awaiting_time_date_iso"):
+            pending.pop("awaiting_time_date_iso", None)
+            c["pending"] = pending or None
 
     db_save_conversation(tenant_id, user_key, c)
 
