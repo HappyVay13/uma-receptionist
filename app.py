@@ -1894,3 +1894,40 @@ def health():
         "allow_default_tenant_fallback": ALLOW_DEFAULT_TENANT_FALLBACK,
         "twilio_validate_signature": TWILIO_VALIDATE_SIGNATURE,
     }
+
+
+
+# =========================
+# Twilio Signature Validation (safe body replay)
+# =========================
+from twilio.request_validator import RequestValidator
+from urllib.parse import parse_qs
+
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
+
+if TWILIO_AUTH_TOKEN:
+    validator = RequestValidator(TWILIO_AUTH_TOKEN)
+
+    @app.middleware("http")
+    async def twilio_signature_validation(request: Request, call_next):
+        path = request.url.path
+
+        if path.startswith("/sms") or path.startswith("/voice") or path.startswith("/whatsapp"):
+            body_bytes = await request.body()
+            body_str = body_bytes.decode()
+            params = {k: v[0] for k, v in parse_qs(body_str).items()}
+
+            signature = request.headers.get("X-Twilio-Signature", "")
+            url = str(request.url)
+
+            valid = validator.validate(url, params, signature)
+            if not valid:
+                raise HTTPException(status_code=403, detail="Invalid Twilio signature")
+
+            async def receive():
+                return {"type": "http.request", "body": body_bytes}
+
+            request._receive = receive
+
+        response = await call_next(request)
+        return response
