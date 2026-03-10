@@ -11,6 +11,7 @@ import requests
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import Response, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
+from twilio.request_validator import RequestValidator
 from twilio.twiml.voice_response import VoiceResponse, Gather
 from twilio.rest import Client as TwilioClient
 from twilio.jwt.access_token import AccessToken
@@ -72,6 +73,10 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
 
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "").strip()
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "").strip()
+TWILIO_VALIDATE_SIGNATURE = (
+    (os.getenv("TWILIO_VALIDATE_SIGNATURE", "true") or "true").strip().lower()
+    in ("1", "true", "yes", "on")
+)
 TWILIO_FROM_NUMBER = os.getenv("TWILIO_FROM_NUMBER", "").strip()
 TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM", "").strip()
 
@@ -874,6 +879,55 @@ def blocked_result_for_lang(lang: str) -> Dict[str, Any]:
         "msg_out": t(lang, "service_unavailable_text"),
         "lang": lang,
     }
+
+
+# -------------------------
+# TWILIO REQUEST VALIDATION
+# -------------------------
+def twilio_request_validator() -> Optional[RequestValidator]:
+    if not (TWILIO_VALIDATE_SIGNATURE and TWILIO_AUTH_TOKEN):
+        return None
+    try:
+        return RequestValidator(TWILIO_AUTH_TOKEN)
+    except Exception as e:
+        log.error("Twilio validator init failed: %s", e)
+        return None
+
+
+def should_validate_twilio_request(path: str) -> bool:
+    p = (path or "").lower()
+    return p.startswith("/voice") or p.startswith("/sms") or p.startswith("/whatsapp")
+
+
+@app.middleware("http")
+async def validate_twilio_signature_middleware(request: Request, call_next):
+    if not should_validate_twilio_request(request.url.path):
+        return await call_next(request)
+
+    validator = twilio_request_validator()
+    if validator is None:
+        return await call_next(request)
+
+    signature = request.headers.get("X-Twilio-Signature", "").strip()
+    if not signature:
+        log.warning("twilio_signature_missing path=%s", request.url.path)
+        return Response(content="Invalid Twilio signature", status_code=403)
+
+    form = await request.form()
+    form_data = {k: v for k, v in form.multi_items()}
+    url = str(request.url)
+    try:
+        is_valid = validator.validate(url, form_data, signature)
+    except Exception as e:
+        log.error("twilio_signature_validation_error path=%s err=%s", request.url.path, e)
+        return Response(content="Invalid Twilio signature", status_code=403)
+
+    if not is_valid:
+        log.warning("twilio_signature_invalid path=%s", request.url.path)
+        return Response(content="Invalid Twilio signature", status_code=403)
+
+    request._form = form
+    return await call_next(request)
 
 
 # -------------------------
@@ -1838,4 +1892,5 @@ def health():
         "tz": str(TZ),
         "test_tenant_id": TEST_TENANT_ID or None,
         "allow_default_tenant_fallback": ALLOW_DEFAULT_TENANT_FALLBACK,
+        "twilio_validate_signature": TWILIO_VALIDATE_SIGNATURE,
     }
