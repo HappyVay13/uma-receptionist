@@ -1,3 +1,39 @@
+
+# =========================
+# Structured Logging + Sentry (Phase 2.6)
+# =========================
+import logging
+import os
+
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
+logging.basicConfig(
+    level=LOG_LEVEL,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s"
+)
+
+logger = logging.getLogger("repliq")
+
+SENTRY_DSN = os.getenv("SENTRY_DSN")
+
+if SENTRY_DSN:
+    try:
+        import sentry_sdk
+        from sentry_sdk.integrations.asgi import SentryAsgiMiddleware
+
+        sentry_sdk.init(
+            dsn=SENTRY_DSN,
+            traces_sample_rate=0.1,
+            environment=os.getenv("ENVIRONMENT", "production")
+        )
+
+        app.add_middleware(SentryAsgiMiddleware)
+        logger.info("Sentry initialized")
+
+    except Exception as e:
+        logger.error(f"Sentry init failed: {e}")
+
+
 import os
 import json
 import re
