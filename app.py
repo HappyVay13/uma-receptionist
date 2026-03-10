@@ -1937,3 +1937,40 @@ def health():
         "allow_default_tenant_fallback": ALLOW_DEFAULT_TENANT_FALLBACK,
         "twilio_validate_signature": TWILIO_VALIDATE_SIGNATURE,
     }
+
+
+
+# =========================
+# Tenant Configuration Hardening (Phase 2.7)
+# =========================
+
+REQUIRED_TENANT_FIELDS = [
+    "calendar_id",
+    "timezone",
+    "work_start",
+    "work_end"
+]
+
+def validate_tenant_config(tenant: dict):
+    missing = []
+    for f in REQUIRED_TENANT_FIELDS:
+        if not tenant.get(f):
+            missing.append(f)
+
+    if missing:
+        logger.error(f"tenant_config_invalid tenant_id={tenant.get('id')} missing={missing}")
+        raise Exception(f"Tenant configuration invalid: missing {missing}")
+
+    return True
+
+
+def safe_calendar_check(tenant: dict):
+    try:
+        if not tenant.get("calendar_id"):
+            raise Exception("calendar_id missing")
+
+        return True
+
+    except Exception as e:
+        logger.error(f"calendar_config_error tenant_id={tenant.get('id')} error={e}")
+        raise
