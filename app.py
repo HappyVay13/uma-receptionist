@@ -553,6 +553,108 @@ def normalize_name(value: Any) -> Optional[str]:
     return txt or None
 
 
+def parse_alias_mapping(value: Any) -> Dict[str, str]:
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return {
+            str(k).strip().lower(): str(v).strip()
+            for k, v in value.items()
+            if str(k).strip() and str(v).strip()
+        }
+    txt = str(value).strip()
+    if not txt:
+        return {}
+    try:
+        parsed = json.loads(txt)
+        if isinstance(parsed, dict):
+            return {
+                str(k).strip().lower(): str(v).strip()
+                for k, v in parsed.items()
+                if str(k).strip() and str(v).strip()
+            }
+    except Exception:
+        pass
+    mapping: Dict[str, str] = {}
+    for line in txt.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if "=>" in line:
+            left, right = line.split("=>", 1)
+        elif ":" in line:
+            left, right = line.split(":", 1)
+        else:
+            continue
+        left = left.strip().lower()
+        right = right.strip()
+        if left and right:
+            mapping[left] = right
+    return mapping
+
+
+def tenant_service_aliases(tenant: Dict[str, Any], lang: str) -> Dict[str, str]:
+    lang = get_lang(lang)
+    candidates: List[Any] = []
+    if lang == "lv":
+        candidates.extend([tenant.get("service_aliases_lv"), tenant.get("aliases_lv")])
+    elif lang == "ru":
+        candidates.extend([tenant.get("service_aliases_ru"), tenant.get("aliases_ru")])
+    elif lang == "en":
+        candidates.extend([tenant.get("service_aliases_en"), tenant.get("aliases_en")])
+
+    candidates.extend([
+        tenant.get("service_aliases"),
+        tenant.get("aliases"),
+        os.getenv(f"BIZ_SERVICE_ALIASES_{lang.upper()}", "").strip(),
+        os.getenv("BIZ_SERVICE_ALIASES", "").strip(),
+    ])
+
+    merged: Dict[str, str] = {}
+    for candidate in candidates:
+        merged.update(parse_alias_mapping(candidate))
+    return merged
+
+
+def apply_service_aliases(value: Optional[str], aliases: Dict[str, str]) -> Optional[str]:
+    service = normalize_service(value)
+    if not service:
+        return None
+    norm = service.strip().lower()
+    if norm in aliases:
+        return aliases[norm]
+    for alias, canonical in aliases.items():
+        if alias and alias in norm:
+            return canonical
+    return service
+
+
+def tenant_business_memory(tenant: Dict[str, Any], lang: str) -> str:
+    lang = get_lang(lang)
+    parts: List[str] = []
+
+    lang_keys = {
+        "lv": ("business_memory_lv", "faq_lv", "booking_rules_lv"),
+        "ru": ("business_memory_ru", "faq_ru", "booking_rules_ru"),
+        "en": ("business_memory_en", "faq_en", "booking_rules_en"),
+    }.get(lang, ())
+
+    generic_keys = ("business_memory", "faq", "booking_rules", "policies")
+
+    for key in list(lang_keys) + list(generic_keys):
+        val = tenant.get(key)
+        if val:
+            txt = str(val).strip()
+            if txt:
+                parts.append(f"{key}: {txt}")
+
+    env_memory = os.getenv(f"BIZ_BUSINESS_MEMORY_{lang.upper()}", "").strip() or os.getenv("BIZ_BUSINESS_MEMORY", "").strip()
+    if env_memory:
+        parts.append(f"env_memory: {env_memory}")
+
+    return "\n".join(parts)
+
+
 
 LANG_HINTS = {
     "lv": {
@@ -1387,6 +1489,8 @@ def handle_user_text(
 
     lang = get_lang(c.get("lang"))
     settings = tenant_settings(tenant, lang)
+    service_aliases = tenant_service_aliases(tenant, lang)
+    business_memory = tenant_business_memory(tenant, lang)
     calendar_ready = calendar_is_configured(settings["calendar_id"])
 
     if not allowed:
@@ -1510,7 +1614,7 @@ def handle_user_text(
                 "lang": lang,
             }
 
-        svc_name = normalize_service(p.get("service") or c.get("service") or settings["services_hint"])
+        svc_name = apply_service_aliases(p.get("service") or c.get("service") or settings["services_hint"], service_aliases) or settings["services_hint"]
         client_name = normalize_name(p.get("name") or c.get("name")) or "Client"
 
         if p.get("reschedule_event_id"):
@@ -1544,22 +1648,26 @@ def handle_user_text(
         }
 
     # AI extraction
+    alias_hint = ", ".join([f"{k} => {v}" for k, v in service_aliases.items()][:50])
     sys_pt = (
         f"You are an appointment receptionist for {settings['biz_name']}. "
         f"Business hours: {settings['work_start']}-{settings['work_end']}. "
         f"Known services: {settings['services_hint']}. "
+        f"Service aliases: {alias_hint or 'none'}. "
+        f"Business memory: {business_memory or 'none'}. "
         "Extract and return strict JSON only with keys: "
         "service, time_text, datetime_iso, name. "
         "service and name must be plain strings, not arrays. "
+        "If a user names a service using an alias, map it to the canonical service name. "
         "If value is unknown use null."
     )
     usr_pt = f"Today: {now_ts().date()}. User language: {lang}. User message: {msg}"
     data = openai_chat_json(sys_pt, usr_pt)
 
-    service = normalize_service(data.get("service"))
+    service = apply_service_aliases(data.get("service"), service_aliases)
     name = normalize_name(data.get("name"))
     if service:
-        c["service"] = service
+        c["service"] = apply_service_aliases(service, service_aliases) or service
     if name:
         c["name"] = name
     if data.get("time_text"):
@@ -1721,7 +1829,7 @@ def handle_user_text(
 
     # Final booking
     final_name = normalize_name(c.get("name")) or "Client"
-    final_service = normalize_service(c.get("service")) or settings["services_hint"]
+    final_service = apply_service_aliases(c.get("service"), service_aliases) or settings["services_hint"]
     create_calendar_event(
         settings["calendar_id"],
         dt_start,
