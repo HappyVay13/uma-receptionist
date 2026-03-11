@@ -123,7 +123,6 @@ TWILIO_TWIML_APP_SID = os.getenv("TWILIO_TWIML_APP_SID", "").strip()
 
 SERVER_BASE_URL = os.getenv("SERVER_BASE_URL", "").strip().rstrip("/")
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
-
 GOOGLE_OAUTH_CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID", "").strip()
 GOOGLE_OAUTH_CLIENT_SECRET = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", "").strip()
 GOOGLE_OAUTH_REDIRECT_URI = (
@@ -360,21 +359,6 @@ def resolve_tenant_for_incoming(to_number: str) -> Dict[str, Any]:
         "_resolved_via": "unconfigured",
         "_unconfigured": True,
         "phone_number": cleaned_to,
-    }tenant = get_tenant_by_phone(cleaned_to)
-    if tenant.get("_id"):
-        tenant["_resolved_via"] = "phone_number"
-        return tenant
-
-    if ALLOW_DEFAULT_TENANT_FALLBACK:
-        tenant = get_tenant(TENANT_ID_DEFAULT)
-        tenant["_resolved_via"] = "default_fallback"
-        return tenant
-
-    return {
-        "_id": None,
-        "_resolved_via": "unconfigured",
-        "_unconfigured": True,
-        "phone_number": cleaned_to,
     }
 
 
@@ -458,7 +442,7 @@ def get_tenant(tenant_id: str) -> Dict[str, Any]:
         return out
     for i, name in enumerate(col_names):
         out[name] = row[i]
-    return out
+    return normalize_tenant_saas_fields(out)
 
 
 
@@ -480,14 +464,7 @@ def upsert_tenant_google_account(
     if not tenant_id:
         return
     with engine.begin() as conn:
-        conn.execute(
-            text(
-                """
-                DELETE FROM tenant_google_accounts WHERE tenant_id=:tid
-                """
-            ),
-            {"tid": tenant_id},
-        )
+        conn.execute(text("DELETE FROM tenant_google_accounts WHERE tenant_id=:tid"), {"tid": tenant_id})
         conn.execute(
             text(
                 """
@@ -527,10 +504,7 @@ def get_tenant_google_account(tenant_id: str) -> Dict[str, Any]:
             ).fetchone()
         if not row:
             return {}
-        keys = [
-            "tenant_id", "google_email", "access_token", "refresh_token",
-            "token_expiry", "scope", "created_at", "updated_at"
-        ]
+        keys = ["tenant_id", "google_email", "access_token", "refresh_token", "token_expiry", "scope", "created_at", "updated_at"]
         return {k: row[i] for i, k in enumerate(keys)}
     except Exception as e:
         log.error("get_tenant_google_account failed tenant_id=%s err=%s", tenant_id, e)
@@ -540,23 +514,22 @@ def mark_tenant_google_connected(tenant_id: str, is_connected: bool, owner_email
     tenant_id = (tenant_id or "").strip()
     if not tenant_id:
         return
-    cols = {c["name"] for c in tenants_columns()}
+    cols = tenants_columns()
+    pk = tenants_pk(cols)
+    col_names = {c["name"] for c in cols}
     sets = []
     params: Dict[str, Any] = {"tid": tenant_id, "gc": is_connected}
-    if "google_connected" in cols:
+    if "google_connected" in col_names:
         sets.append("google_connected=:gc")
-    if owner_email and "owner_email" in cols:
+    if owner_email and "owner_email" in col_names:
         sets.append("owner_email=:owner_email")
         params["owner_email"] = owner_email
-    if "updated_at" in cols:
+    if "updated_at" in col_names:
         sets.append("updated_at=NOW()")
     if not sets:
         return
     with engine.begin() as conn:
-        conn.execute(
-            text(f"UPDATE tenants SET {', '.join(sets)} WHERE {tenants_pk(tenants_columns())}=:tid"),
-            params,
-        )
+        conn.execute(text(f"UPDATE tenants SET {', '.join(sets)} WHERE {pk}=:tid"), params)
 
 def build_google_oauth_state(tenant_id: str) -> str:
     payload = {"tenant_id": tenant_id, "ts": now_ts().isoformat()}
@@ -644,10 +617,7 @@ def select_tenant_calendar_id(tenant_id: str, calendar_id: str) -> None:
     if "calendar_id" not in col_names:
         return
     with engine.begin() as conn:
-        conn.execute(
-            text(f"UPDATE tenants SET calendar_id=:cid WHERE {pk}=:tid"),
-            {"cid": calendar_id, "tid": tenant_id},
-        )
+        conn.execute(text(f"UPDATE tenants SET calendar_id=:cid WHERE {pk}=:tid"), {"cid": calendar_id, "tid": tenant_id})
 
 
 # -------------------------
@@ -1141,6 +1111,22 @@ def db_save_conversation(tenant_id: str, user_key: str, c: Dict[str, Any]) -> No
         )
 
 
+
+# -------------------------
+# Phase 3 – Tenant Calendar Abstraction
+# -------------------------
+def resolve_tenant_calendar_id(tenant: Dict[str, Any]) -> Optional[str]:
+    if tenant.get("google_connected"):
+        return str(tenant.get("calendar_id") or "").strip() or None
+    return str(tenant.get("calendar_id") or "").strip() or None
+
+def get_tenant_calendar_context(tenant: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "calendar_id": resolve_tenant_calendar_id(tenant),
+        "timezone": tenant.get("timezone", "Europe/Riga"),
+    }
+
+
 # -------------------------
 # SaaS ACCESS CONTROL
 # -------------------------
@@ -1196,7 +1182,7 @@ def tenant_settings(tenant: Dict[str, Any], lang: str) -> Dict[str, Any]:
         "services_hint": tenant_services_for_lang(tenant, lang),
         "work_start": str(tenant.get("work_start") or WORK_START_HHMM_DEFAULT),
         "work_end": str(tenant.get("work_end") or WORK_END_HHMM_DEFAULT),
-        "calendar_id": tenant_calendar_id(tenant),
+        "calendar_id": resolve_tenant_calendar_id(tenant) or tenant_calendar_id(tenant),
     }
 
 
