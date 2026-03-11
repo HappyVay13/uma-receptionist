@@ -1,27 +1,5 @@
 
 # =========================
-# Phase 3 – Tenant Calendar Abstraction
-# =========================
-
-def resolve_tenant_calendar_id(tenant: Dict[str, Any]) -> Optional[str]:
-    """Return the calendar id that should be used for this tenant."""
-    # future: if google OAuth connected we will read from oauth table
-    if tenant.get("google_connected"):
-        # placeholder for future OAuth implementation
-        return tenant.get("calendar_id")
-    return tenant.get("calendar_id")
-
-
-def get_tenant_calendar_context(tenant: Dict[str, Any]) -> Dict[str, Any]:
-    """Unified calendar context used by booking engine."""
-    return {
-        "calendar_id": resolve_tenant_calendar_id(tenant),
-        "timezone": tenant.get("timezone", "Europe/Riga")
-    }
-
-
-
-# =========================
 # Structured Logging + Sentry (Phase 2.6)
 # =========================
 import logging
@@ -145,6 +123,14 @@ TWILIO_TWIML_APP_SID = os.getenv("TWILIO_TWIML_APP_SID", "").strip()
 
 SERVER_BASE_URL = os.getenv("SERVER_BASE_URL", "").strip().rstrip("/")
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
+
+GOOGLE_OAUTH_CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID", "").strip()
+GOOGLE_OAUTH_CLIENT_SECRET = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", "").strip()
+GOOGLE_OAUTH_REDIRECT_URI = (
+    os.getenv("GOOGLE_OAUTH_REDIRECT_URI", "").strip()
+    or (f"{SERVER_BASE_URL}/google/callback" if SERVER_BASE_URL else "")
+)
+GOOGLE_OAUTH_SCOPE = "https://www.googleapis.com/auth/calendar"
 
 GOOGLE_TTS_VOICE_NAME = (
     os.getenv("GOOGLE_TTS_VOICE_NAME", "").strip()
@@ -357,10 +343,24 @@ def resolve_tenant_for_incoming(to_number: str) -> Dict[str, Any]:
     if test_tenant_id:
         tenant = get_tenant(test_tenant_id)
         tenant["_resolved_via"] = "test_tenant_id"
-        tenant = normalize_tenant_saas_fields(tenant)
-    return tenant
+        return normalize_tenant_saas_fields(tenant)
 
     tenant = get_tenant_by_phone(cleaned_to)
+    if tenant.get("_id"):
+        tenant["_resolved_via"] = "phone_number"
+        return normalize_tenant_saas_fields(tenant)
+
+    if ALLOW_DEFAULT_TENANT_FALLBACK:
+        tenant = get_tenant(TENANT_ID_DEFAULT)
+        tenant["_resolved_via"] = "default_fallback"
+        return normalize_tenant_saas_fields(tenant)
+
+    return {
+        "_id": None,
+        "_resolved_via": "unconfigured",
+        "_unconfigured": True,
+        "phone_number": cleaned_to,
+    }tenant = get_tenant_by_phone(cleaned_to)
     if tenant.get("_id"):
         tenant["_resolved_via"] = "phone_number"
         return tenant
@@ -459,6 +459,195 @@ def get_tenant(tenant_id: str) -> Dict[str, Any]:
     for i, name in enumerate(col_names):
         out[name] = row[i]
     return out
+
+
+
+# -------------------------
+# GOOGLE OAUTH HELPERS (Phase 3 Foundation)
+# -------------------------
+def oauth_ready() -> bool:
+    return bool(GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET and GOOGLE_OAUTH_REDIRECT_URI)
+
+def upsert_tenant_google_account(
+    tenant_id: str,
+    google_email: Optional[str],
+    access_token: str,
+    refresh_token: Optional[str],
+    token_expiry: Optional[datetime],
+    scope: Optional[str],
+) -> None:
+    tenant_id = (tenant_id or "").strip()
+    if not tenant_id:
+        return
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                DELETE FROM tenant_google_accounts WHERE tenant_id=:tid
+                """
+            ),
+            {"tid": tenant_id},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO tenant_google_accounts
+                (tenant_id, google_email, access_token, refresh_token, token_expiry, scope, created_at, updated_at)
+                VALUES
+                (:tid, :google_email, :access_token, :refresh_token, :token_expiry, :scope, NOW(), NOW())
+                """
+            ),
+            {
+                "tid": tenant_id,
+                "google_email": google_email,
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "token_expiry": token_expiry,
+                "scope": scope,
+            },
+        )
+
+def get_tenant_google_account(tenant_id: str) -> Dict[str, Any]:
+    tenant_id = (tenant_id or "").strip()
+    if not tenant_id:
+        return {}
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT tenant_id, google_email, access_token, refresh_token, token_expiry, scope, created_at, updated_at
+                    FROM tenant_google_accounts
+                    WHERE tenant_id=:tid
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """
+                ),
+                {"tid": tenant_id},
+            ).fetchone()
+        if not row:
+            return {}
+        keys = [
+            "tenant_id", "google_email", "access_token", "refresh_token",
+            "token_expiry", "scope", "created_at", "updated_at"
+        ]
+        return {k: row[i] for i, k in enumerate(keys)}
+    except Exception as e:
+        log.error("get_tenant_google_account failed tenant_id=%s err=%s", tenant_id, e)
+        return {}
+
+def mark_tenant_google_connected(tenant_id: str, is_connected: bool, owner_email: Optional[str] = None) -> None:
+    tenant_id = (tenant_id or "").strip()
+    if not tenant_id:
+        return
+    cols = {c["name"] for c in tenants_columns()}
+    sets = []
+    params: Dict[str, Any] = {"tid": tenant_id, "gc": is_connected}
+    if "google_connected" in cols:
+        sets.append("google_connected=:gc")
+    if owner_email and "owner_email" in cols:
+        sets.append("owner_email=:owner_email")
+        params["owner_email"] = owner_email
+    if "updated_at" in cols:
+        sets.append("updated_at=NOW()")
+    if not sets:
+        return
+    with engine.begin() as conn:
+        conn.execute(
+            text(f"UPDATE tenants SET {', '.join(sets)} WHERE {tenants_pk(tenants_columns())}=:tid"),
+            params,
+        )
+
+def build_google_oauth_state(tenant_id: str) -> str:
+    payload = {"tenant_id": tenant_id, "ts": now_ts().isoformat()}
+    return base64.urlsafe_b64encode(json.dumps(payload).encode("utf-8")).decode("utf-8")
+
+def parse_google_oauth_state(state: str) -> Dict[str, Any]:
+    try:
+        raw = base64.urlsafe_b64decode((state or "").encode("utf-8")).decode("utf-8")
+        obj = json.loads(raw)
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
+        return {}
+
+def build_google_oauth_url(tenant_id: str) -> str:
+    params = {
+        "client_id": GOOGLE_OAUTH_CLIENT_ID,
+        "redirect_uri": GOOGLE_OAUTH_REDIRECT_URI,
+        "response_type": "code",
+        "scope": GOOGLE_OAUTH_SCOPE,
+        "access_type": "offline",
+        "prompt": "consent",
+        "include_granted_scopes": "true",
+        "state": build_google_oauth_state(tenant_id),
+    }
+    return "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
+
+def exchange_google_code_for_tokens(code_value: str) -> Dict[str, Any]:
+    data = {
+        "code": code_value,
+        "client_id": GOOGLE_OAUTH_CLIENT_ID,
+        "client_secret": GOOGLE_OAUTH_CLIENT_SECRET,
+        "redirect_uri": GOOGLE_OAUTH_REDIRECT_URI,
+        "grant_type": "authorization_code",
+    }
+    try:
+        r = requests.post("https://oauth2.googleapis.com/token", data=data, timeout=30)
+        if r.status_code == 200:
+            return r.json()
+        log.error("google_token_exchange_failed status=%s body=%s", r.status_code, r.text[:500])
+    except Exception as e:
+        log.error("google_token_exchange_exception err=%s", e)
+    return {}
+
+def fetch_google_userinfo(access_token: str) -> Dict[str, Any]:
+    if not access_token:
+        return {}
+    try:
+        r = requests.get(
+            "https://www.googleapis.com/oauth2/v2/userinfo",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=20,
+        )
+        if r.status_code == 200:
+            return r.json()
+        log.error("google_userinfo_failed status=%s body=%s", r.status_code, r.text[:300])
+    except Exception as e:
+        log.error("google_userinfo_exception err=%s", e)
+    return {}
+
+def fetch_google_calendar_list(access_token: str) -> List[Dict[str, Any]]:
+    if not access_token:
+        return []
+    try:
+        r = requests.get(
+            "https://www.googleapis.com/calendar/v3/users/me/calendarList",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=20,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            return data.get("items", []) if isinstance(data, dict) else []
+        log.error("google_calendar_list_failed status=%s body=%s", r.status_code, r.text[:300])
+    except Exception as e:
+        log.error("google_calendar_list_exception err=%s", e)
+    return []
+
+def select_tenant_calendar_id(tenant_id: str, calendar_id: str) -> None:
+    tenant_id = (tenant_id or "").strip()
+    calendar_id = (calendar_id or "").strip()
+    if not tenant_id or not calendar_id:
+        return
+    cols = tenants_columns()
+    pk = tenants_pk(cols)
+    col_names = {c["name"] for c in cols}
+    if "calendar_id" not in col_names:
+        return
+    with engine.begin() as conn:
+        conn.execute(
+            text(f"UPDATE tenants SET calendar_id=:cid WHERE {pk}=:tid"),
+            {"cid": calendar_id, "tid": tenant_id},
+        )
 
 
 # -------------------------
@@ -1045,7 +1234,7 @@ def blocked_result_for_lang(lang: str) -> Dict[str, Any]:
 # -------------------------
 # TWILIO REQUEST VALIDATION
 # -------------------------
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlencode
 
 def twilio_request_validator() -> Optional[RequestValidator]:
     if not (TWILIO_VALIDATE_SIGNATURE and TWILIO_AUTH_TOKEN):
@@ -2028,6 +2217,84 @@ async def whatsapp_incoming(request: Request):
     return Response(status_code=204)
 
 
+
+# -------------------------
+# GOOGLE OAUTH ENDPOINTS (Phase 3 Foundation)
+# -------------------------
+@app.get("/google/connect")
+def google_connect(tenant_id: str):
+    tenant = get_tenant(tenant_id)
+    if not tenant.get("_id"):
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    if not oauth_ready():
+        raise HTTPException(status_code=500, detail="Google OAuth is not configured")
+    return {"auth_url": build_google_oauth_url(tenant["_id"]), "tenant_id": tenant["_id"]}
+
+@app.get("/google/callback")
+def google_callback(code: str = "", state: str = ""):
+    if not oauth_ready():
+        raise HTTPException(status_code=500, detail="Google OAuth is not configured")
+    state_data = parse_google_oauth_state(state)
+    tenant_id = str(state_data.get("tenant_id") or "").strip()
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="Invalid OAuth state")
+    token_data = exchange_google_code_for_tokens(code)
+    access_token = str(token_data.get("access_token") or "").strip()
+    refresh_token = str(token_data.get("refresh_token") or "").strip() or None
+    expires_in = int(token_data.get("expires_in") or 0)
+    scope = str(token_data.get("scope") or "").strip() or None
+    if not access_token:
+        raise HTTPException(status_code=400, detail="Failed to exchange OAuth code")
+    token_expiry = now_ts() + timedelta(seconds=expires_in) if expires_in else None
+    userinfo = fetch_google_userinfo(access_token)
+    google_email = str(userinfo.get("email") or "").strip() or None
+    upsert_tenant_google_account(
+        tenant_id=tenant_id,
+        google_email=google_email,
+        access_token=access_token,
+        refresh_token=refresh_token,
+        token_expiry=token_expiry,
+        scope=scope,
+    )
+    mark_tenant_google_connected(tenant_id, True, owner_email=google_email)
+    calendars = fetch_google_calendar_list(access_token)
+    return {
+        "status": "connected",
+        "tenant_id": tenant_id,
+        "google_email": google_email,
+        "calendars_found": len(calendars),
+        "next": "/google/calendars?tenant_id=" + tenant_id,
+    }
+
+@app.get("/google/calendars")
+def google_calendars(tenant_id: str):
+    acct = get_tenant_google_account(tenant_id)
+    access_token = str(acct.get("access_token") or "").strip()
+    if not access_token:
+        raise HTTPException(status_code=404, detail="Google account is not connected")
+    calendars = fetch_google_calendar_list(access_token)
+    simplified = [
+        {
+            "id": c.get("id"),
+            "summary": c.get("summary"),
+            "primary": c.get("primary", False),
+            "timeZone": c.get("timeZone"),
+        }
+        for c in calendars
+    ]
+    return {"tenant_id": tenant_id, "items": simplified}
+
+@app.post("/google/select_calendar")
+async def google_select_calendar(request: Request):
+    data = await request.json()
+    tenant_id = str(data.get("tenant_id") or "").strip()
+    calendar_id = str(data.get("calendar_id") or "").strip()
+    if not tenant_id or not calendar_id:
+        raise HTTPException(status_code=400, detail="tenant_id and calendar_id are required")
+    select_tenant_calendar_id(tenant_id, calendar_id)
+    return {"status": "ok", "tenant_id": tenant_id, "calendar_id": calendar_id}
+
+
 # -------------------------
 # BROWSER SDK TOKEN
 # -------------------------
@@ -2067,6 +2334,7 @@ def health():
         "test_tenant_id": TEST_TENANT_ID or None,
         "allow_default_tenant_fallback": ALLOW_DEFAULT_TENANT_FALLBACK,
         "twilio_validate_signature": TWILIO_VALIDATE_SIGNATURE,
+        "google_oauth_ready": oauth_ready(),
     }
 
 
