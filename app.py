@@ -335,7 +335,8 @@ def resolve_tenant_for_incoming(to_number: str) -> Dict[str, Any]:
     if test_tenant_id:
         tenant = get_tenant(test_tenant_id)
         tenant["_resolved_via"] = "test_tenant_id"
-        return tenant
+        tenant = normalize_tenant_saas_fields(tenant)
+    return tenant
 
     tenant = get_tenant_by_phone(cleaned_to)
     if tenant.get("_id"):
@@ -2058,6 +2059,29 @@ REQUIRED_TENANT_FIELDS = [
     "work_start",
     "work_end"
 ]
+
+
+# =========================
+# Phase 3 – SaaS Tenant Lifecycle Fields
+# =========================
+
+SAAS_TENANT_FIELDS = {
+    "onboarding_completed": False,
+    "google_connected": False,
+    "subscription_status": "trial",
+    "plan": "starter",
+    "owner_email": ""
+}
+
+def normalize_tenant_saas_fields(tenant: Dict[str, Any]) -> Dict[str, Any]:
+    """Ensure SaaS lifecycle fields exist so older tenants don't break."""
+    if not tenant:
+        return tenant
+    for k, v in SAAS_TENANT_FIELDS.items():
+        if k not in tenant or tenant.get(k) is None:
+            tenant[k] = v
+    return tenant
+
 
 def validate_tenant_config(tenant: dict):
     missing = []
