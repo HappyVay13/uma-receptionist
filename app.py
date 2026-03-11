@@ -1,5 +1,27 @@
 
 # =========================
+# Phase 3 – Tenant Calendar Abstraction
+# =========================
+
+def resolve_tenant_calendar_id(tenant: Dict[str, Any]) -> Optional[str]:
+    """Return the calendar id that should be used for this tenant."""
+    # future: if google OAuth connected we will read from oauth table
+    if tenant.get("google_connected"):
+        # placeholder for future OAuth implementation
+        return tenant.get("calendar_id")
+    return tenant.get("calendar_id")
+
+
+def get_tenant_calendar_context(tenant: Dict[str, Any]) -> Dict[str, Any]:
+    """Unified calendar context used by booking engine."""
+    return {
+        "calendar_id": resolve_tenant_calendar_id(tenant),
+        "timezone": tenant.get("timezone", "Europe/Riga")
+    }
+
+
+
+# =========================
 # Structured Logging + Sentry (Phase 2.6)
 # =========================
 import logging
