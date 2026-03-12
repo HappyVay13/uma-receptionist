@@ -37,6 +37,7 @@ if SENTRY_DSN:
 import os
 import json
 import re
+import uuid
 import ast
 import base64
 import logging
