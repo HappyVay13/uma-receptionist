@@ -1241,7 +1241,22 @@ def twilio_request_validator() -> Optional[RequestValidator]:
 
 def should_validate_twilio_request(path: str) -> bool:
     p = (path or "").lower()
-    return p.startswith("/voice") or p.startswith("/sms") or p.startswith("/whatsapp")
+
+    # browser / SDK endpoints must not require Twilio signature
+    if p.startswith("/voice/token"):
+        return False
+
+    # real Twilio webhook endpoints
+    if (
+        p.startswith("/voice/incoming")
+        or p.startswith("/voice/language")
+        or p.startswith("/voice/intent")
+        or p.startswith("/sms")
+        or p.startswith("/whatsapp")
+    ):
+        return True
+
+    return False
 
 
 @app.middleware("http")
