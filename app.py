@@ -295,8 +295,30 @@ def tenants_pk(cols: List[Dict[str, Any]]) -> str:
     return "id"
 
 
+
+def normalize_incoming_to_number(raw_to: str) -> str:
+    v = (raw_to or "").strip()
+
+    # remove Twilio channel prefixes
+    if v.startswith("whatsapp:"):
+        v = v[len("whatsapp:"):]
+    if v.startswith("sip:"):
+        v = v[len("sip:"):]
+    if v.startswith("client:"):
+        v = v[len("client:"):]
+
+    # keep only phone-significant chars
+    v = re.sub(r"[^\d+]", "", v)
+
+    # normalize digits-only into E.164-like format
+    if v and not v.startswith("+") and v.isdigit():
+        v = "+" + v
+
+    return v
+
+
 def get_tenant_by_phone(to_number: str) -> Dict[str, Any]:
-    to_number = (to_number or "").strip().replace("whatsapp:", "")
+    to_number = normalize_incoming_to_number(to_number)
     if not to_number or to_number.lower() == "unknown":
         return {}
 
@@ -334,17 +356,19 @@ def tenant_is_resolved(tenant: Dict[str, Any]) -> bool:
 
 
 def log_tenant_resolution(channel: str, to_number: str, tenant: Dict[str, Any]) -> None:
+    normalized_to = normalize_incoming_to_number(to_number)
     log.info(
-        "tenant_resolution channel=%s to=%s via=%s tenant_id=%s",
+        "tenant_resolution channel=%s to=%s normalized_to=%s via=%s tenant_id=%s",
         channel,
-        (to_number or "").replace("whatsapp:", ""),
+        to_number or "",
+        normalized_to,
         tenant.get("_resolved_via"),
         tenant.get("_id"),
     )
 
 
 def resolve_tenant_for_incoming(to_number: str) -> Dict[str, Any]:
-    cleaned_to = (to_number or "").strip().replace("whatsapp:", "")
+    cleaned_to = normalize_incoming_to_number(to_number)
     test_tenant_id = (TEST_TENANT_ID or "").strip()
     if test_tenant_id:
         tenant = get_tenant(test_tenant_id)
