@@ -2382,3 +2382,65 @@ def safe_calendar_check(tenant: dict):
     except Exception as e:
         logger.error(f"calendar_config_error tenant_id={tenant.get('id')} error={e}")
         raise
+
+
+
+# =========================
+# SAAS ONBOARDING (Phase 3 Step 1)
+# =========================
+
+from fastapi import Body
+
+@app.post("/onboarding/create_tenant")
+def onboarding_create_tenant(payload: dict = Body(...)):
+    business_name = (payload.get("business_name") or "").strip()
+    owner_email = (payload.get("owner_email") or "").strip()
+
+    if not business_name:
+        raise HTTPException(status_code=400, detail="business_name required")
+
+    tenant_id = re.sub(r"[^a-zA-Z0-9_]+", "_", business_name.lower()).strip("_")
+    if not tenant_id:
+        tenant_id = "tenant_" + uuid.uuid4().hex[:8]
+
+    # ensure uniqueness
+    tenant_id = tenant_id + "_" + uuid.uuid4().hex[:4]
+
+    cols = tenants_columns()
+    col_names = {c["name"] for c in cols}
+
+    fields = {
+        "id": tenant_id,
+        "business_name": business_name,
+        "owner_email": owner_email,
+        "status": "active",
+        "timezone": "Europe/Riga",
+        "subscription_status": "trial",
+        "google_connected": False
+    }
+
+    insert_cols=[]
+    insert_vals={}
+
+    for k,v in fields.items():
+        if k in col_names:
+            insert_cols.append(k)
+            insert_vals[k]=v
+
+    if not insert_cols:
+        raise HTTPException(status_code=500, detail="tenants schema mismatch")
+
+    sql_cols=", ".join(insert_cols)
+    sql_params=", ".join([f":{c}" for c in insert_cols])
+
+    with engine.connect() as conn:
+        conn.execute(
+            text(f"INSERT INTO tenants ({sql_cols}) VALUES ({sql_params})"),
+            insert_vals
+        )
+        conn.commit()
+
+    return {
+        "tenant_id": tenant_id,
+        "onboarding_google_url": f"/google/connect?tenant_id={tenant_id}"
+    }
