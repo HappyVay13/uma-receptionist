@@ -37,7 +37,6 @@ if SENTRY_DSN:
 import os
 import json
 import re
-import uuid
 import ast
 import base64
 import logging
@@ -306,11 +305,19 @@ def get_tenant_by_phone(to_number: str) -> Dict[str, Any]:
     pk = tenants_pk(cols)
 
     with engine.connect() as conn:
-        row = conn.execute(
-            text(
-                f"SELECT {', '.join(col_names)} FROM tenants WHERE phone_number=:num LIMIT 1"
-            ),
+        route = conn.execute(
+            text("SELECT tenant_id FROM phone_routes WHERE phone_number=:num LIMIT 1"),
             {"num": to_number},
+        ).fetchone()
+
+        if not route:
+            return {}
+
+        tenant_id = route[0]
+
+        row = conn.execute(
+            text(f"SELECT {', '.join(col_names)} FROM tenants WHERE {pk}=:tid LIMIT 1"),
+            {"tid": tenant_id},
         ).fetchone()
 
     if not row:
@@ -321,7 +328,6 @@ def get_tenant_by_phone(to_number: str) -> Dict[str, Any]:
         out[name] = row[i]
     out["_id"] = out.get(pk)
     return out
-
 
 def tenant_is_resolved(tenant: Dict[str, Any]) -> bool:
     return bool(tenant and tenant.get("_id") and not tenant.get("_unconfigured"))
