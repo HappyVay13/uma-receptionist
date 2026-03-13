@@ -199,6 +199,7 @@ I18N: Dict[str, Dict[str, str]] = {
         "unclear_reply": "Labdien! Precizējiet, lūdzu, kā varu palīdzēt — pieraksts, pārcelšana vai atcelšana?",
         "ask_booking_service": "Protams. Uz kādu pakalpojumu vēlaties pierakstīties?",
         "ask_booking_time": "Labi. Kurš datums un laiks jums būtu ērts?",
+        "voice_options_prompt": "Pieejami varianti: viens — {opt1}, divi — {opt2}. Kuru izvēlaties?",
     },
     "ru": {
         "service_unavailable_voice": "Извините, сервис недоступен.",
@@ -228,6 +229,7 @@ I18N: Dict[str, Dict[str, str]] = {
         "unclear_reply": "Здравствуйте! Уточните, пожалуйста, чем помочь — запись, перенос или отмена?",
         "ask_booking_service": "Конечно. На какую услугу вас записать?",
         "ask_booking_time": "Хорошо. Какая дата и время вам подходят?",
+        "voice_options_prompt": "Доступны варианты: один — {opt1}, два — {opt2}. Какой выбираете?",
     },
     "en": {
         "service_unavailable_voice": "Sorry, the service is unavailable.",
@@ -257,6 +259,7 @@ I18N: Dict[str, Dict[str, str]] = {
         "unclear_reply": "Hello! Please clarify how I can help — booking, rescheduling, or cancellation?",
         "ask_booking_service": "Of course. Which service would you like to book?",
         "ask_booking_time": "Sure. What date and time would work for you?",
+        "voice_options_prompt": "Available options: one — {opt1}, two — {opt2}. Which do you choose?",
     },
 }
 
@@ -1471,6 +1474,14 @@ def send_message(to_number: str, body: str):
         log.error(f"Twilio send error: {e}")
 
 
+def channel_supports_messaging(channel: str, raw_phone: str) -> bool:
+    channel = (channel or "").strip().lower()
+    if channel in ("sms", "whatsapp"):
+        return True
+    phone = normalize_incoming_to_number(raw_phone)
+    return bool(phone and looks_like_phone_number(phone))
+
+
 def openai_chat_json(system: str, user: str) -> Dict[str, Any]:
     if not OPENAI_API_KEY:
         return {"service": None, "time_text": None, "datetime_iso": None, "name": None}
@@ -1598,12 +1609,17 @@ def google_tts_mp3(text_: str, lang_code: str, voice_name: str) -> bytes:
         "voice": {"languageCode": lang_code, "name": voice_name},
         "audioConfig": {"audioEncoding": "MP3"},
     }
-    try:
-        resp = svc.text().synthesize(body=body).execute()
-        return base64.b64decode(resp["audioContent"])
-    except Exception as e:
-        log.error("Google TTS failed: %s", e)
-        return b""
+    last_err = None
+    for attempt in range(2):
+        try:
+            resp = svc.text().synthesize(body=body).execute()
+            return base64.b64decode(resp["audioContent"])
+        except Exception as e:
+            last_err = e
+            log.error("Google TTS failed attempt=%s err=%s", attempt + 1, e)
+    if last_err is not None:
+        log.error("Google TTS failed окончательно: %s", last_err)
+    return b""
 
 
 def elevenlabs_tts_mp3(text_: str, voice_id: str) -> bytes:
@@ -1867,6 +1883,7 @@ def handle_user_text(
 
     lang = get_lang(c.get("lang"))
     settings = tenant_settings(tenant, lang)
+    voice_like_channel = (channel or "").strip().lower() == "voice"
     service_aliases = tenant_service_aliases(tenant, lang)
     business_memory = tenant_business_memory(tenant, lang)
     calendar_ready = calendar_is_configured(settings["calendar_id"])
@@ -1906,6 +1923,10 @@ def handle_user_text(
         }
 
     if msg and is_booking_opener(msg) and not any(w in t_low for w in ["atcelt", "отменить", "cancel", "pārcelt", "перенести", "reschedule"]):
+        pending = c.get("pending") or {}
+        pending["booking_intent"] = True
+        c["pending"] = pending
+        db_save_conversation(tenant_id, user_key, c)
         if not c.get("service"):
             return {
                 "status": "need_more",
@@ -2025,6 +2046,29 @@ def handle_user_text(
             "lang": lang,
         }
 
+
+    pending = c.get("pending") or {}
+    explicit_time_parts = parse_explicit_time_parts(msg)
+    explicit_time_present = explicit_time_parts is not None
+    date_reference_present = has_date_reference(msg)
+
+    if explicit_time_present and not date_reference_present:
+        base_dt = None
+        if c.get("datetime_iso"):
+            base_dt = parse_dt_any_tz(c.get("datetime_iso") or "")
+        if not base_dt and pending.get("awaiting_time_date_iso"):
+            base_dt = parse_dt_any_tz(pending.get("awaiting_time_date_iso") or "")
+        if not base_dt and pending.get("opt1_iso"):
+            base_dt = parse_dt_any_tz(pending.get("opt1_iso") or "")
+        if base_dt:
+            hh, mm = explicit_time_parts
+            dt_guess = base_dt.replace(hour=hh, minute=mm, second=0, microsecond=0)
+            c["datetime_iso"] = dt_guess.isoformat()
+            if pending.get("awaiting_time_date_iso"):
+                pending.pop("awaiting_time_date_iso", None)
+            c["pending"] = pending or None
+            db_save_conversation(tenant_id, user_key, c)
+
     # AI extraction
     alias_hint = ", ".join([f"{k} => {v}" for k, v in service_aliases.items()][:50])
     sys_pt = (
@@ -2135,9 +2179,15 @@ def handle_user_text(
                 **(c.get("pending") or {}),
             }
             db_save_conversation(tenant_id, user_key, c)
+            voice_prompt = t(
+                lang,
+                "voice_options_prompt",
+                opt1=format_dt_short(opts[0]),
+                opt2=format_dt_short(opts[1]),
+            ) if voice_like_channel else t(lang, "closed_voice")
             return {
-                "status": "busy",
-                "reply_voice": t(lang, "closed_voice"),
+                "status": "need_more" if voice_like_channel else "busy",
+                "reply_voice": voice_prompt,
                 "msg_out": t(
                     lang,
                     "closed_text",
@@ -2173,9 +2223,15 @@ def handle_user_text(
                 **(c.get("pending") or {}),
             }
             db_save_conversation(tenant_id, user_key, c)
+            voice_prompt = t(
+                lang,
+                "voice_options_prompt",
+                opt1=format_dt_short(opts[0]),
+                opt2=format_dt_short(opts[1]),
+            ) if voice_like_channel else t(lang, "busy_voice")
             return {
-                "status": "busy",
-                "reply_voice": t(lang, "busy_voice"),
+                "status": "need_more" if voice_like_channel else "busy",
+                "reply_voice": voice_prompt,
                 "msg_out": t(
                     lang,
                     "busy_text",
@@ -2333,13 +2389,13 @@ async def voice_intent(request: Request):
             speech_timeout="auto",
             language=stt_locale_for_lang(result["lang"]),
         )
-        say_or_play(g, t(result["lang"], "how_help"), result["lang"])
+        say_or_play(g, gather_followup_prompt(result), result["lang"])
         vr.append(g)
         say_or_play(vr, t(result["lang"], "voice_fallback"), result["lang"])
     else:
         vr.hangup()
 
-    if result["status"] in ("booked", "busy", "cancelled") and caller != "unknown":
+    if result["status"] in ("booked", "busy", "cancelled") and caller != "unknown" and channel_supports_messaging("voice", caller):
         biz_name = tenant_settings(tenant, result["lang"])["biz_name"]
         send_message(caller, f"{biz_name}: {result['msg_out']}")
 
