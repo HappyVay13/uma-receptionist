@@ -39,6 +39,7 @@ import json
 import re
 import ast
 import base64
+import uuid
 import logging
 from datetime import datetime, timedelta, timezone, date
 from typing import Dict, Any, Optional, Tuple, List
@@ -120,6 +121,10 @@ TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM", "").strip()
 TWILIO_API_KEY_SID = os.getenv("TWILIO_API_KEY_SID", "").strip()
 TWILIO_API_KEY_SECRET = os.getenv("TWILIO_API_KEY_SECRET", "").strip()
 TWILIO_TWIML_APP_SID = os.getenv("TWILIO_TWIML_APP_SID", "").strip()
+
+VOICE_DEMO_TENANT_ID = (os.getenv("VOICE_DEMO_TENANT_ID", "") or "").strip()
+VOICE_CLIENT_TENANT_MAP = (os.getenv("VOICE_CLIENT_TENANT_MAP", "") or "").strip()
+
 
 SERVER_BASE_URL = os.getenv("SERVER_BASE_URL", "").strip().rstrip("/")
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
@@ -296,26 +301,122 @@ def tenants_pk(cols: List[Dict[str, Any]]) -> str:
 
 
 
-def normalize_incoming_to_number(raw_to: str) -> str:
-    v = (raw_to or "").strip()
-
-    # remove Twilio channel prefixes
+def normalize_incoming_to_number(raw_value: str) -> str:
+    v = (raw_value or "").strip()
     if v.startswith("whatsapp:"):
         v = v[len("whatsapp:"):]
     if v.startswith("sip:"):
         v = v[len("sip:"):]
     if v.startswith("client:"):
         v = v[len("client:"):]
-
-    # keep only phone-significant chars
     v = re.sub(r"[^\d+]", "", v)
-
-    # normalize digits-only into E.164-like format
     if v and not v.startswith("+") and v.isdigit():
         v = "+" + v
-
     return v
 
+def looks_like_phone_number(raw_value: str) -> bool:
+    v = normalize_incoming_to_number(raw_value)
+    digits = re.sub(r"\D", "", v)
+    return len(digits) >= 7
+
+def parse_voice_client_tenant_map() -> Dict[str, str]:
+    txt = (VOICE_CLIENT_TENANT_MAP or "").strip()
+    out: Dict[str, str] = {}
+    if not txt:
+        return out
+    try:
+        parsed = json.loads(txt)
+        if isinstance(parsed, dict):
+            for k, v in parsed.items():
+                ks = str(k).strip()
+                vs = str(v).strip()
+                if ks and vs:
+                    out[ks] = vs
+            return out
+    except Exception:
+        pass
+    for part in txt.split(","):
+        part = part.strip()
+        if not part or ":" not in part:
+            continue
+        left, right = part.split(":", 1)
+        left = left.strip()
+        right = right.strip()
+        if left and right:
+            out[left] = right
+    return out
+
+def tenant_id_from_client_identity(client_identity: str) -> Optional[str]:
+    ident = (client_identity or "").strip()
+    if ident.startswith("client:"):
+        ident = ident[len("client:"):]
+
+    m = re.match(r"^tenant__([^_]+(?:_[^_]+)*)__.+$", ident)
+    if m:
+        return m.group(1)
+
+    m2 = re.match(r"^tenant:([^:]+):.+$", ident)
+    if m2:
+        return m2.group(1)
+
+    mapped = parse_voice_client_tenant_map().get(ident)
+    if mapped:
+        return mapped
+
+    if VOICE_DEMO_TENANT_ID:
+        return VOICE_DEMO_TENANT_ID
+
+    return None
+
+def resolve_voice_tenant_for_incoming(to_number: str, raw_from: str = "") -> Dict[str, Any]:
+    test_tenant_id = (TEST_TENANT_ID or "").strip()
+    if test_tenant_id:
+        tenant = get_tenant(test_tenant_id)
+        tenant["_resolved_via"] = "test_tenant_id"
+        return normalize_tenant_saas_fields(tenant)
+
+    if looks_like_phone_number(to_number):
+        tenant = get_tenant_by_phone(to_number)
+        if tenant.get("_id"):
+            tenant["_resolved_via"] = "phone_number"
+            return normalize_tenant_saas_fields(tenant)
+
+    client_tenant_id = tenant_id_from_client_identity(raw_from)
+    if client_tenant_id:
+        tenant = get_tenant(client_tenant_id)
+        if tenant.get("_id"):
+            tenant["_resolved_via"] = "voice_client_identity"
+            return normalize_tenant_saas_fields(tenant)
+
+    if ALLOW_DEFAULT_TENANT_FALLBACK:
+        tenant = get_tenant(TENANT_ID_DEFAULT)
+        tenant["_resolved_via"] = "default_fallback"
+        return normalize_tenant_saas_fields(tenant)
+
+    return {
+        "_id": None,
+        "_resolved_via": "unconfigured",
+        "_unconfigured": True,
+        "phone_number": normalize_incoming_to_number(to_number),
+    }
+
+def upsert_phone_route(phone_number: str, tenant_id: str) -> None:
+    phone_number = normalize_incoming_to_number(phone_number)
+    tenant_id = (tenant_id or "").strip()
+    if not phone_number or not tenant_id:
+        return
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO phone_routes (phone_number, tenant_id)
+                VALUES (:phone_number, :tenant_id)
+                ON CONFLICT (phone_number)
+                DO UPDATE SET tenant_id = EXCLUDED.tenant_id
+                """
+            ),
+            {"phone_number": phone_number, "tenant_id": tenant_id},
+        )
 
 def get_tenant_by_phone(to_number: str) -> Dict[str, Any]:
     to_number = normalize_incoming_to_number(to_number)
@@ -356,12 +457,11 @@ def tenant_is_resolved(tenant: Dict[str, Any]) -> bool:
 
 
 def log_tenant_resolution(channel: str, to_number: str, tenant: Dict[str, Any]) -> None:
-    normalized_to = normalize_incoming_to_number(to_number)
     log.info(
         "tenant_resolution channel=%s to=%s normalized_to=%s via=%s tenant_id=%s",
         channel,
         to_number or "",
-        normalized_to,
+        normalize_incoming_to_number(to_number),
         tenant.get("_resolved_via"),
         tenant.get("_id"),
     )
@@ -2107,7 +2207,7 @@ async def voice_incoming(request: Request):
     form = await request.form()
     to_num = str(form.get("To", ""))
     caller = normalize_voice_caller(str(form.get("From", "")))
-    tenant = resolve_tenant_for_incoming(to_num)
+    tenant = resolve_voice_tenant_for_incoming(to_num, caller)
     log_tenant_resolution("voice", to_num, tenant)
     if not tenant_is_resolved(tenant):
         vr = VoiceResponse()
@@ -2142,7 +2242,7 @@ async def voice_language(request: Request):
     speech = str(form.get("SpeechResult", "")).strip()
     digits = str(form.get("Digits", "")).strip()
 
-    tenant = resolve_tenant_for_incoming(to_num)
+    tenant = resolve_voice_tenant_for_incoming(to_num, caller)
     log_tenant_resolution("voice_language", to_num, tenant)
     if not tenant_is_resolved(tenant):
         vr = VoiceResponse()
@@ -2175,7 +2275,7 @@ async def voice_intent(request: Request):
     caller = normalize_voice_caller(str(form.get("From", "")))
     speech = str(form.get("SpeechResult", "")).strip()
 
-    tenant = resolve_tenant_for_incoming(to_num)
+    tenant = resolve_voice_tenant_for_incoming(to_num, caller)
     log_tenant_resolution("voice_intent", to_num, tenant)
     if not tenant_is_resolved(tenant):
         vr = VoiceResponse()
@@ -2216,7 +2316,7 @@ async def sms_incoming(request: Request):
     from_num = str(form.get("From", ""))
     body = str(form.get("Body", "")).strip()
 
-    tenant = resolve_tenant_for_incoming(to_num)
+    tenant = resolve_voice_tenant_for_incoming(to_num, caller)
     log_tenant_resolution("sms", to_num, tenant)
     if not tenant_is_resolved(tenant):
         send_message(from_num, t(detect_language(body), "service_unavailable_text"))
@@ -2236,7 +2336,7 @@ async def whatsapp_incoming(request: Request):
     from_num = str(form.get("From", ""))
     body = str(form.get("Body", "")).strip()
 
-    tenant = resolve_tenant_for_incoming(to_num)
+    tenant = resolve_voice_tenant_for_incoming(to_num, caller)
     log_tenant_resolution("whatsapp", to_num, tenant)
     if not tenant_is_resolved(tenant):
         send_message(from_num, t(detect_language(body), "service_unavailable_text"))
@@ -2324,6 +2424,20 @@ async def google_select_calendar(request: Request):
     if not tenant_id or not calendar_id:
         raise HTTPException(status_code=400, detail="tenant_id and calendar_id are required")
     select_tenant_calendar_id(tenant_id, calendar_id)
+
+    cols = tenants_columns()
+    pk = tenants_pk(cols)
+    col_names = {c["name"] for c in cols}
+    sets = []
+    params: Dict[str, Any] = {"tid": tenant_id}
+    if "onboarding_completed" in col_names:
+        sets.append("onboarding_completed=true")
+    if "updated_at" in col_names:
+        sets.append("updated_at=NOW()")
+    if sets:
+        with engine.begin() as conn:
+            conn.execute(text(f"UPDATE tenants SET {', '.join(sets)} WHERE {pk}=:tid"), params)
+
     return {"status": "ok", "tenant_id": tenant_id, "calendar_id": calendar_id}
 
 
@@ -2331,7 +2445,7 @@ async def google_select_calendar(request: Request):
 # BROWSER SDK TOKEN
 # -------------------------
 @app.get("/voice/token")
-def get_voice_token(client_id: str = "default"):
+def get_voice_token(client_id: str = "default", tenant_id: str = ""):
     if not (
         TWILIO_ACCOUNT_SID
         and TWILIO_API_KEY_SID
@@ -2340,17 +2454,21 @@ def get_voice_token(client_id: str = "default"):
     ):
         raise HTTPException(status_code=500, detail="Twilio Voice SDK config missing")
 
+    clean_client_id = re.sub(r"[^a-zA-Z0-9_\-]", "_", (client_id or "default")).strip("_") or "default"
+    clean_tenant_id = re.sub(r"[^a-zA-Z0-9_\-]", "_", (tenant_id or "")).strip("_")
+    identity = f"tenant__{clean_tenant_id}__{clean_client_id}" if clean_tenant_id else clean_client_id
+
     token = AccessToken(
         TWILIO_ACCOUNT_SID,
         TWILIO_API_KEY_SID,
         TWILIO_API_KEY_SECRET,
-        identity=client_id,
+        identity=identity,
     )
     grant = VoiceGrant(
         outgoing_application_sid=TWILIO_TWIML_APP_SID, incoming_allow=True
     )
     token.add_grant(grant)
-    return {"token": token.to_jwt(), "identity": client_id}
+    return {"token": token.to_jwt(), "identity": identity, "tenant_id": clean_tenant_id or None}
 
 
 @app.on_event("startup")
@@ -2441,6 +2559,10 @@ from fastapi import Body
 def onboarding_create_tenant(payload: dict = Body(...)):
     business_name = (payload.get("business_name") or "").strip()
     owner_email = (payload.get("owner_email") or "").strip()
+    phone_number = normalize_incoming_to_number(payload.get("phone_number") or "")
+    business_type = (payload.get("business_type") or "barbershop").strip()
+    timezone_value = (payload.get("timezone") or "Europe/Riga").strip()
+    language_value = get_lang((payload.get("language") or "lv").strip())
 
     if not business_name:
         raise HTTPException(status_code=400, detail="business_name required")
@@ -2448,8 +2570,6 @@ def onboarding_create_tenant(payload: dict = Body(...)):
     tenant_id = re.sub(r"[^a-zA-Z0-9_]+", "_", business_name.lower()).strip("_")
     if not tenant_id:
         tenant_id = "tenant_" + uuid.uuid4().hex[:8]
-
-    # ensure uniqueness
     tenant_id = tenant_id + "_" + uuid.uuid4().hex[:4]
 
     cols = tenants_columns()
@@ -2460,33 +2580,43 @@ def onboarding_create_tenant(payload: dict = Body(...)):
         "business_name": business_name,
         "owner_email": owner_email,
         "status": "active",
-        "timezone": "Europe/Riga",
+        "timezone": timezone_value,
         "subscription_status": "trial",
-        "google_connected": False
+        "google_connected": False,
+        "onboarding_completed": False,
+        "business_type": business_type,
+        "language": language_value,
+        "phone_number": phone_number or None,
+        "plan": "starter",
     }
 
-    insert_cols=[]
-    insert_vals={}
+    insert_cols = []
+    insert_vals: Dict[str, Any] = {}
 
-    for k,v in fields.items():
+    for k, v in fields.items():
         if k in col_names:
             insert_cols.append(k)
-            insert_vals[k]=v
+            insert_vals[k] = v
 
     if not insert_cols:
         raise HTTPException(status_code=500, detail="tenants schema mismatch")
 
-    sql_cols=", ".join(insert_cols)
-    sql_params=", ".join([f":{c}" for c in insert_cols])
+    sql_cols = ", ".join(insert_cols)
+    sql_params = ", ".join([f":{c}" for c in insert_cols])
 
-    with engine.connect() as conn:
+    with engine.begin() as conn:
         conn.execute(
             text(f"INSERT INTO tenants ({sql_cols}) VALUES ({sql_params})"),
-            insert_vals
+            insert_vals,
         )
-        conn.commit()
 
+    if phone_number:
+        upsert_phone_route(phone_number, tenant_id)
+
+    google_path = f"/google/connect?tenant_id={tenant_id}"
     return {
         "tenant_id": tenant_id,
-        "onboarding_google_url": f"/google/connect?tenant_id={tenant_id}"
+        "business_name": business_name,
+        "phone_number": phone_number or None,
+        "onboarding_google_url": f"{SERVER_BASE_URL}{google_path}" if SERVER_BASE_URL else google_path,
     }
