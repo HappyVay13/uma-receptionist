@@ -1106,6 +1106,32 @@ def is_hours_question(text_: str) -> bool:
 
 def is_booking_opener(text_: str) -> bool:
     low = (text_ or "").strip().lower()
+    if not low:
+        return False
+
+    strong_phrases = [
+        "gribu pierakstīties",
+        "gribu pierakstities",
+        "vēlos pierakstīties",
+        "vēlos pierakstities",
+        "velos pierakstities",
+        "pierakstīties",
+        "pierakstities",
+        "pieraksts",
+        "gribu rezervēt",
+        "gribu rezervet",
+        "vēlos rezervēt",
+        "velos rezervet",
+        "можно записаться",
+        "хочу записаться",
+        "нужна запись",
+        "i want to book",
+        "i'd like to book",
+        "need an appointment",
+    ]
+    if any(p in low for p in strong_phrases):
+        return True
+
     return any(p in low for p in BOOKING_OPENERS)
 
 def detect_language_choice(text_: str, digits: str = "") -> Optional[str]:
@@ -1640,6 +1666,14 @@ def tts_endpoint(text: str, lang: str = "lv"):
     if not audio:
         raise HTTPException(status_code=500, detail="TTS unavailable")
     return StreamingResponse(iter([audio]), media_type="audio/mpeg")
+
+
+def gather_followup_prompt(result: Dict[str, Any]) -> str:
+    status = str(result.get("status") or "").strip()
+    reply = str(result.get("reply_voice") or "").strip()
+    if status in ("need_more", "reschedule_wait", "greeting", "identity", "info") and reply:
+        return reply
+    return t(get_lang(result.get("lang")), "how_help")
 
 
 # -------------------------
@@ -2225,6 +2259,7 @@ async def voice_incoming(request: Request):
         action="/voice/language",
         method="POST",
         timeout=7,
+        speech_timeout="auto",
         num_digits=1,
         language=stt_locale_for_lang(lang),
     )
@@ -2260,6 +2295,7 @@ async def voice_language(request: Request):
         action="/voice/intent",
         method="POST",
         timeout=7,
+        speech_timeout="auto",
         language=stt_locale_for_lang(selected_lang),
     )
     say_or_play(g, t(selected_lang, "how_help"), selected_lang)
@@ -2294,6 +2330,7 @@ async def voice_intent(request: Request):
             action="/voice/intent",
             method="POST",
             timeout=7,
+            speech_timeout="auto",
             language=stt_locale_for_lang(result["lang"]),
         )
         say_or_play(g, t(result["lang"], "how_help"), result["lang"])
@@ -2316,7 +2353,7 @@ async def sms_incoming(request: Request):
     from_num = str(form.get("From", ""))
     body = str(form.get("Body", "")).strip()
 
-    tenant = resolve_voice_tenant_for_incoming(to_num, caller)
+    tenant = resolve_tenant_for_incoming(to_num)
     log_tenant_resolution("sms", to_num, tenant)
     if not tenant_is_resolved(tenant):
         send_message(from_num, t(detect_language(body), "service_unavailable_text"))
@@ -2336,7 +2373,7 @@ async def whatsapp_incoming(request: Request):
     from_num = str(form.get("From", ""))
     body = str(form.get("Body", "")).strip()
 
-    tenant = resolve_voice_tenant_for_incoming(to_num, caller)
+    tenant = resolve_tenant_for_incoming(to_num)
     log_tenant_resolution("whatsapp", to_num, tenant)
     if not tenant_is_resolved(tenant):
         send_message(from_num, t(detect_language(body), "service_unavailable_text"))
