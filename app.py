@@ -658,12 +658,29 @@ def mark_tenant_google_connected(tenant_id: str, is_connected: bool, owner_email
     if owner_email and "owner_email" in col_names:
         sets.append("owner_email=:owner_email")
         params["owner_email"] = owner_email
+    if tenant_has_google_account(tenant_id) and "google_connected" in col_names:
+        sets.append("google_connected=true")
     if "updated_at" in col_names:
         sets.append("updated_at=NOW()")
     if not sets:
         return
     with engine.begin() as conn:
         conn.execute(text(f"UPDATE tenants SET {', '.join(sets)} WHERE {pk}=:tid"), params)
+
+
+
+def tenant_has_google_account(tenant_id: str) -> bool:
+    acct = get_tenant_google_account(tenant_id)
+    return bool(str(acct.get("access_token") or "").strip())
+
+def tenant_google_connected_effective(tenant: Dict[str, Any]) -> bool:
+    tenant = normalize_tenant_saas_fields(tenant or {})
+    if bool(tenant.get("google_connected")):
+        return True
+    tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip()
+    if not tenant_id:
+        return False
+    return tenant_has_google_account(tenant_id)
 
 def build_google_oauth_state(tenant_id: str) -> str:
     payload = {"tenant_id": tenant_id, "ts": now_ts().isoformat()}
@@ -2651,7 +2668,7 @@ def onboarding_status_payload(tenant: Dict[str, Any]) -> Dict[str, Any]:
     tenant = normalize_tenant_saas_fields(tenant or {})
     tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip()
     calendar_id = str(tenant.get("calendar_id") or "").strip()
-    google_connected = bool(tenant.get("google_connected"))
+    google_connected = tenant_google_connected_effective(tenant)
     onboarding_completed = bool(tenant.get("onboarding_completed"))
     calendar_selected = bool(calendar_id)
     phone_number = normalize_incoming_to_number(tenant.get("phone_number") or "")
@@ -2701,8 +2718,10 @@ def onboarding_finish(payload: dict = Body(...)):
 
     tenant = normalize_tenant_saas_fields(tenant)
 
+    google_connected = tenant_google_connected_effective(tenant)
+
     missing = []
-    if not tenant.get("google_connected"):
+    if not google_connected:
         missing.append("google_connected")
     if not str(tenant.get("calendar_id") or "").strip():
         missing.append("calendar_id")
@@ -2720,6 +2739,10 @@ def onboarding_finish(payload: dict = Body(...)):
     col_names = {c["name"] for c in cols}
     sets = []
     params: Dict[str, Any] = {"tid": tenant_id}
+    if "google_connected" in col_names:
+        sets.append("google_connected=true")
+    if "onboarding_completed" in col_names:
+        sets.append("onboarding_completed=true")
     if "updated_at" in col_names:
         sets.append("updated_at=NOW()")
 
