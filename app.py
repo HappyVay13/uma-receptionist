@@ -2523,8 +2523,6 @@ async def google_select_calendar(request: Request):
     col_names = {c["name"] for c in cols}
     sets = []
     params: Dict[str, Any] = {"tid": tenant_id}
-    if "onboarding_completed" in col_names:
-        sets.append("onboarding_completed=true")
     if "updated_at" in col_names:
         sets.append("updated_at=NOW()")
     if sets:
@@ -2647,6 +2645,97 @@ def safe_calendar_check(tenant: dict):
 # =========================
 
 from fastapi import Body
+
+
+def onboarding_status_payload(tenant: Dict[str, Any]) -> Dict[str, Any]:
+    tenant = normalize_tenant_saas_fields(tenant or {})
+    tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip()
+    calendar_id = str(tenant.get("calendar_id") or "").strip()
+    google_connected = bool(tenant.get("google_connected"))
+    onboarding_completed = bool(tenant.get("onboarding_completed"))
+    calendar_selected = bool(calendar_id)
+    phone_number = normalize_incoming_to_number(tenant.get("phone_number") or "")
+
+    next_step = "create_tenant"
+    if tenant_id:
+        next_step = "connect_google"
+    if google_connected:
+        next_step = "select_calendar"
+    if google_connected and calendar_selected:
+        next_step = "finish"
+    if onboarding_completed:
+        next_step = "done"
+
+    return {
+        "tenant_id": tenant_id or None,
+        "business_name": tenant.get("business_name"),
+        "owner_email": tenant.get("owner_email"),
+        "phone_number": phone_number or None,
+        "google_connected": google_connected,
+        "calendar_selected": calendar_selected,
+        "calendar_id": calendar_id or None,
+        "onboarding_completed": onboarding_completed,
+        "subscription_status": tenant.get("subscription_status"),
+        "plan": tenant.get("plan"),
+        "next_step": next_step,
+    }
+
+
+@app.get("/onboarding/status")
+def onboarding_status(tenant_id: str):
+    tenant = get_tenant((tenant_id or "").strip())
+    if not tenant.get("_id"):
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    return onboarding_status_payload(tenant)
+
+
+@app.post("/onboarding/finish")
+def onboarding_finish(payload: dict = Body(...)):
+    tenant_id = str(payload.get("tenant_id") or "").strip()
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="tenant_id required")
+
+    tenant = get_tenant(tenant_id)
+    if not tenant.get("_id"):
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    tenant = normalize_tenant_saas_fields(tenant)
+
+    missing = []
+    if not tenant.get("google_connected"):
+        missing.append("google_connected")
+    if not str(tenant.get("calendar_id") or "").strip():
+        missing.append("calendar_id")
+
+    if missing:
+        return {
+            "status": "incomplete",
+            "tenant_id": tenant_id,
+            "missing": missing,
+            "onboarding": onboarding_status_payload(tenant),
+        }
+
+    cols = tenants_columns()
+    pk = tenants_pk(cols)
+    col_names = {c["name"] for c in cols}
+    sets = []
+    params: Dict[str, Any] = {"tid": tenant_id}
+    if "updated_at" in col_names:
+        sets.append("updated_at=NOW()")
+
+    if sets:
+        with engine.begin() as conn:
+            conn.execute(
+                text(f"UPDATE tenants SET {', '.join(sets)} WHERE {pk}=:tid"),
+                params,
+            )
+
+    tenant = get_tenant(tenant_id)
+    return {
+        "status": "ok",
+        "tenant_id": tenant_id,
+        "onboarding": onboarding_status_payload(tenant),
+    }
 
 @app.post("/onboarding/create_tenant")
 def onboarding_create_tenant(payload: dict = Body(...)):
