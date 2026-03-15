@@ -422,8 +422,10 @@ def upsert_phone_route(phone_number: str, tenant_id: str) -> None:
         )
 
 def get_tenant_by_phone(to_number: str) -> Dict[str, Any]:
+    original_to_number = to_number
     to_number = normalize_incoming_to_number(to_number)
     if not to_number or to_number.lower() == "unknown":
+        log.info("phone_route_lookup skipped original=%s normalized=%s", original_to_number, to_number)
         return {}
 
     cols = tenants_columns()
@@ -437,9 +439,11 @@ def get_tenant_by_phone(to_number: str) -> Dict[str, Any]:
         ).fetchone()
 
         if not route:
+            log.info("phone_route_lookup miss original=%s normalized=%s", original_to_number, to_number)
             return {}
 
         tenant_id = route[0]
+        log.info("phone_route_lookup hit original=%s normalized=%s tenant_id=%s", original_to_number, to_number, tenant_id)
 
         row = conn.execute(
             text(f"SELECT {', '.join(col_names)} FROM tenants WHERE {pk}=:tid LIMIT 1"),
@@ -447,6 +451,7 @@ def get_tenant_by_phone(to_number: str) -> Dict[str, Any]:
         ).fetchone()
 
     if not row:
+        log.warning("phone_route_lookup tenant_missing normalized=%s tenant_id=%s", to_number, tenant_id)
         return {}
 
     out: Dict[str, Any] = {}
@@ -2577,6 +2582,56 @@ def get_voice_token(client_id: str = "default", tenant_id: str = ""):
     )
     token.add_grant(grant)
     return {"token": token.to_jwt(), "identity": identity, "tenant_id": clean_tenant_id or None}
+
+
+
+@app.get("/debug/phone_route")
+def debug_phone_route(phone: str):
+    normalized = normalize_incoming_to_number(phone)
+    result: Dict[str, Any] = {
+        "input": phone,
+        "normalized": normalized,
+        "tenant_from_lookup": None,
+        "tenant": None,
+        "phone_route_row": None,
+        "db_context": None,
+    }
+
+    try:
+        with engine.connect() as conn:
+            db_ctx = conn.execute(
+                text("SELECT current_database(), current_schema(), current_user")
+            ).fetchone()
+            if db_ctx:
+                result["db_context"] = {
+                    "database": db_ctx[0],
+                    "schema": db_ctx[1],
+                    "user": db_ctx[2],
+                }
+
+            route = conn.execute(
+                text(
+                    "SELECT phone_number, tenant_id, created_at FROM phone_routes WHERE phone_number=:num LIMIT 1"
+                ),
+                {"num": normalized},
+            ).fetchone()
+
+            if route:
+                result["phone_route_row"] = {
+                    "phone_number": route[0],
+                    "tenant_id": route[1],
+                    "created_at": str(route[2]) if len(route) > 2 and route[2] is not None else None,
+                }
+
+        tenant = get_tenant_by_phone(normalized)
+        if tenant:
+            result["tenant_from_lookup"] = tenant.get("_id")
+            result["tenant"] = onboarding_status_payload(tenant)
+
+    except Exception as e:
+        result["error"] = str(e)
+
+    return result
 
 
 @app.on_event("startup")
