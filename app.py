@@ -95,6 +95,12 @@ TZ = timezone(timedelta(hours=2))  # Europe/Riga
 
 TENANT_ID_DEFAULT = (os.getenv("DEFAULT_CLIENT_ID", "default") or "default").strip()
 TEST_TENANT_ID = (os.getenv("TEST_TENANT_ID", "") or "").strip()
+SMS_TEST_TENANT_ID = (os.getenv("SMS_TEST_TENANT_ID", "") or "").strip()
+WHATSAPP_TEST_TENANT_ID = (os.getenv("WHATSAPP_TEST_TENANT_ID", "") or "").strip()
+SOLE_TENANT_FALLBACK_ENABLED = (
+    (os.getenv("SOLE_TENANT_FALLBACK_ENABLED", "false") or "false").strip().lower()
+    in ("1", "true", "yes", "on")
+)
 ALLOW_DEFAULT_TENANT_FALLBACK = (
     (os.getenv("ALLOW_DEFAULT_TENANT_FALLBACK", "false") or "false").strip().lower()
     in ("1", "true", "yes", "on")
@@ -182,6 +188,7 @@ I18N: Dict[str, Dict[str, str]] = {
         "reschedule_ask": "Pieraksts {when}. Uz kuru laiku pārcelt?",
         "booking_confirmed": "Paldies! Pieraksts apstiprināts.",
         "booking_confirmed_text": "Apstiprināts: {service} {when}",
+        "booking_failed": "Atvainojiet, neizdevās izveidot pierakstu. Lūdzu, mēģiniet vēlreiz.",
         "need_service": "Kādu pakalpojumu vēlaties?",
         "need_time": "Kad un cikos jums būtu ērti?",
         "need_name": "Kā jūs sauc?",
@@ -217,6 +224,7 @@ I18N: Dict[str, Dict[str, str]] = {
         "reschedule_ask": "Запись на {when}. На какое время перенести?",
         "booking_confirmed": "Спасибо! Запись подтверждена.",
         "booking_confirmed_text": "Подтверждено: {service} {when}",
+        "booking_failed": "Не удалось создать запись. Пожалуйста, попробуйте ещё раз.",
         "need_service": "Какую услугу вы хотите?",
         "need_time": "На какую дату и время вам удобно?",
         "need_name": "Как вас зовут?",
@@ -252,6 +260,7 @@ I18N: Dict[str, Dict[str, str]] = {
         "reschedule_ask": "Your appointment is on {when}. What time would you like to move it to?",
         "booking_confirmed": "Thank you! Your appointment is confirmed.",
         "booking_confirmed_text": "Confirmed: {service} {when}",
+        "booking_failed": "Could not create the appointment. Please try again.",
         "need_service": "Which service would you like?",
         "need_time": "What date and time would work for you?",
         "need_name": "What is your name?",
@@ -499,6 +508,74 @@ def resolve_tenant_for_incoming(to_number: str) -> Dict[str, Any]:
     if tenant.get("_id"):
         tenant["_resolved_via"] = "phone_number"
         return normalize_tenant_saas_fields(tenant)
+
+    if ALLOW_DEFAULT_TENANT_FALLBACK:
+        tenant = get_tenant(TENANT_ID_DEFAULT)
+        tenant["_resolved_via"] = "default_fallback"
+        return normalize_tenant_saas_fields(tenant)
+
+    return {
+        "_id": None,
+        "_resolved_via": "unconfigured",
+        "_unconfigured": True,
+        "phone_number": cleaned_to,
+    }
+
+
+def get_single_active_tenant() -> Dict[str, Any]:
+    cols = tenants_columns()
+    col_names = [c["name"] for c in cols]
+    if not col_names:
+        return {}
+    pk = tenants_pk(cols)
+    order_col = "updated_at" if "updated_at" in col_names else pk
+    status_col = "status" if "status" in col_names else None
+    where_sql = f"WHERE {status_col} != 'inactive'" if status_col else ""
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(f"SELECT {', '.join(col_names)} FROM tenants {where_sql} ORDER BY {order_col} DESC LIMIT 2")
+            ).fetchall()
+        if len(rows) != 1:
+            return {}
+        row = rows[0]
+        out: Dict[str, Any] = {}
+        for i, name in enumerate(col_names):
+            out[name] = row[i]
+        out["_id"] = out.get(pk)
+        return normalize_tenant_saas_fields(out)
+    except Exception as e:
+        log.error("get_single_active_tenant failed: %s", e)
+        return {}
+
+
+def resolve_tenant_for_channel_incoming(to_number: str, channel: str) -> Dict[str, Any]:
+    cleaned_to = normalize_incoming_to_number(to_number)
+    channel_name = (channel or "").strip().lower()
+
+    channel_test_tenant_id = ""
+    if channel_name == "whatsapp":
+        channel_test_tenant_id = WHATSAPP_TEST_TENANT_ID or TEST_TENANT_ID
+    elif channel_name == "sms":
+        channel_test_tenant_id = SMS_TEST_TENANT_ID or TEST_TENANT_ID
+    else:
+        channel_test_tenant_id = TEST_TENANT_ID
+
+    if channel_test_tenant_id:
+        tenant = get_tenant(channel_test_tenant_id)
+        tenant["_resolved_via"] = f"{channel_name}_test_tenant_id"
+        return normalize_tenant_saas_fields(tenant)
+
+    tenant = get_tenant_by_phone(cleaned_to)
+    if tenant.get("_id"):
+        tenant["_resolved_via"] = "phone_number"
+        return normalize_tenant_saas_fields(tenant)
+
+    if SOLE_TENANT_FALLBACK_ENABLED:
+        tenant = get_single_active_tenant()
+        if tenant.get("_id"):
+            tenant["_resolved_via"] = "sole_tenant_fallback"
+            return normalize_tenant_saas_fields(tenant)
 
     if ALLOW_DEFAULT_TENANT_FALLBACK:
         tenant = get_tenant(TENANT_ID_DEFAULT)
@@ -1599,12 +1676,7 @@ def create_calendar_event(
         "end": {"dateTime": dt_end.isoformat(), "timeZone": "Europe/Riga"},
     }
     try:
-        return (
-            svc.events()
-            .insert(calendarId=calendar_id, body=event)
-            .execute()
-            .get("htmlLink")
-        )
+        return svc.events().insert(calendarId=calendar_id, body=event).execute()
     except Exception as e:
         log.error("Create calendar event failed: %s", e)
         return None
@@ -2174,13 +2246,20 @@ def book_appointment_for_datetime(
 
     final_name = normalize_name(c.get("name")) or normalize_name(pending.get("name")) or "Client"
     final_service = apply_service_aliases(c.get("service"), service_aliases) or apply_service_aliases(pending.get("service"), service_aliases) or settings["services_hint"]
-    create_calendar_event(
+    created_event = create_calendar_event(
         settings["calendar_id"],
         dt_start,
         APPT_MINUTES,
         f"{settings['biz_name']} - {final_service}",
         build_event_description(tenant_id, final_name, raw_phone),
     )
+    if not created_event or not created_event.get("id"):
+        return {
+            "status": "booking_failed",
+            "reply_voice": t(lang, "booking_failed"),
+            "msg_out": t(lang, "booking_failed"),
+            "lang": lang,
+        }
 
     c["pending"] = None
     c["state"] = STATE_BOOKED
@@ -2650,7 +2729,7 @@ async def sms_incoming(request: Request):
     from_num = str(form.get("From", ""))
     body = str(form.get("Body", "")).strip()
 
-    tenant = resolve_tenant_for_incoming(to_num)
+    tenant = resolve_tenant_for_channel_incoming(to_num, "sms")
     log_tenant_resolution("sms", to_num, tenant)
     if not tenant_is_resolved(tenant):
         send_message(from_num, t(detect_language(body), "service_unavailable_text"))
@@ -2670,7 +2749,7 @@ async def whatsapp_incoming(request: Request):
     from_num = str(form.get("From", ""))
     body = str(form.get("Body", "")).strip()
 
-    tenant = resolve_tenant_for_incoming(to_num)
+    tenant = resolve_tenant_for_channel_incoming(to_num, "whatsapp")
     log_tenant_resolution("whatsapp", to_num, tenant)
     if not tenant_is_resolved(tenant):
         send_message(from_num, t(detect_language(body), "service_unavailable_text"))
@@ -2814,6 +2893,9 @@ def health():
         "status": "ok",
         "tz": str(TZ),
         "test_tenant_id": TEST_TENANT_ID or None,
+        "sms_test_tenant_id": SMS_TEST_TENANT_ID or None,
+        "whatsapp_test_tenant_id": WHATSAPP_TEST_TENANT_ID or None,
+        "sole_tenant_fallback_enabled": SOLE_TENANT_FALLBACK_ENABLED,
         "allow_default_tenant_fallback": ALLOW_DEFAULT_TENANT_FALLBACK,
         "twilio_validate_signature": TWILIO_VALIDATE_SIGNATURE,
         "google_oauth_ready": oauth_ready(),
