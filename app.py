@@ -1766,6 +1766,33 @@ def find_next_two_slots(
     return None
 
 
+def find_first_two_slots_for_day(
+    calendar_id: str,
+    day_dt: datetime,
+    duration_min: int,
+    work_start: str,
+    work_end: str,
+):
+    try:
+        ws_h, ws_m = _parse_hhmm(work_start)
+        we_h, we_m = _parse_hhmm(work_end)
+    except Exception:
+        return None
+
+    candidate = day_dt.replace(hour=ws_h, minute=ws_m, second=0, microsecond=0)
+    day_end = day_dt.replace(hour=we_h, minute=we_m, second=0, microsecond=0)
+    found = []
+    step = timedelta(minutes=30)
+
+    while candidate + timedelta(minutes=duration_min) <= day_end:
+        if not is_slot_busy(calendar_id, candidate, candidate + timedelta(minutes=duration_min)):
+            found.append(candidate)
+            if len(found) == 2:
+                return found[0], found[1]
+        candidate += step
+    return None
+
+
 def find_next_event_by_phone(calendar_id: str, phone: str, tenant_id: Optional[str] = None):
     svc = get_gcal()
     if not svc or not calendar_id:
@@ -2099,6 +2126,20 @@ def prompt_for_state(lang: str, c: Dict[str, Any], pending: Dict[str, Any]) -> s
     return t(lang, "how_help")
 
 
+def reset_booking_context(c: Dict[str, Any], keep_name: bool = True) -> Dict[str, Any]:
+    preserved_name = c.get("name") if keep_name else None
+    c["service"] = None
+    c["datetime_iso"] = None
+    c["time_text"] = None
+    c["pending"] = {"booking_intent": True}
+    c["state"] = STATE_AWAITING_SERVICE
+    if keep_name:
+        c["name"] = preserved_name
+    else:
+        c["name"] = None
+    return c
+
+
 def book_appointment_for_datetime(
     tenant_id: str,
     raw_phone: str,
@@ -2305,13 +2346,10 @@ def handle_user_text(
             "lang": lang,
         }
 
-    if msg and is_booking_opener(msg):
-        pending["booking_intent"] = True
-        c["pending"] = pending
-        if not c.get("service"):
-            c["state"] = STATE_AWAITING_SERVICE
-        elif not c.get("datetime_iso"):
-            c["state"] = STATE_AWAITING_DATE
+    fresh_booking_start = bool(msg and is_booking_opener(msg))
+    if fresh_booking_start:
+        c = reset_booking_context(c, keep_name=True)
+        pending = c.get("pending") or {}
         active_flow = True
 
     selected_iso = extract_slot_choice(msg, pending)
@@ -2400,9 +2438,26 @@ def handle_user_text(
             pending["booking_intent"] = True
             pending["awaiting_time_date_iso"] = base_date.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
             clear_offered_slots(pending)
-            c["pending"] = pending
+            day_slots = find_first_two_slots_for_day(
+                settings["calendar_id"],
+                base_date,
+                APPT_MINUTES,
+                settings["work_start"],
+                settings["work_end"],
+            ) if calendar_ready else None
             c["state"] = STATE_AWAITING_TIME
             c["datetime_iso"] = None
+            if day_slots:
+                pending = set_offered_slots(pending, [day_slots[0], day_slots[1]])
+                c["pending"] = pending
+                db_save_conversation(tenant_id, user_key, c)
+                return {
+                    "status": "need_more",
+                    "reply_voice": t(lang, "voice_options_prompt", opt1=format_dt_short(day_slots[0]), opt2=format_dt_short(day_slots[1])),
+                    "msg_out": t(lang, "voice_options_prompt", opt1=format_dt_short(day_slots[0]), opt2=format_dt_short(day_slots[1])),
+                    "lang": lang,
+                }
+            c["pending"] = pending
             db_save_conversation(tenant_id, user_key, c)
             return {
                 "status": "need_more",
@@ -2479,10 +2534,7 @@ def handle_user_text(
                 "lang": lang,
             }
 
-    if msg and is_booking_opener(msg):
-        c["state"] = STATE_AWAITING_SERVICE if not c.get("service") else STATE_AWAITING_DATE
-        pending["booking_intent"] = True
-        c["pending"] = pending
+    if fresh_booking_start:
         db_save_conversation(tenant_id, user_key, c)
         return {
             "status": "need_more",
