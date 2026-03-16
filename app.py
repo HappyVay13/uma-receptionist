@@ -2122,6 +2122,11 @@ def prompt_for_state(lang: str, c: Dict[str, Any], pending: Dict[str, Any]) -> s
                 return t(lang, "voice_options_repeat", opt1=format_dt_short(dt1), opt2=format_dt_short(dt2))
         return t(lang, "ask_booking_time_only")
     if state == STATE_AWAITING_CONFIRM:
+        confirm_iso = str(pending.get("confirm_slot_iso") or c.get("datetime_iso") or "").strip()
+        dt_confirm = parse_dt_any_tz(confirm_iso)
+        service_name = apply_service_aliases(c.get("service"), {}) or c.get("service") or pending.get("service") or ""
+        if dt_confirm:
+            return t(lang, "ask_booking_confirm", when=format_dt_short(dt_confirm), service=service_name or t(lang, "need_service"))
         return t(lang, "repeat_yes_no")
     return t(lang, "how_help")
 
@@ -2149,6 +2154,7 @@ def book_appointment_for_datetime(
     settings: Dict[str, Any],
     service_aliases: Dict[str, str],
     dt_start: datetime,
+    require_confirmation: bool = True,
 ) -> Dict[str, Any]:
     voice_like_channel = (channel or "").strip().lower() == "voice"
     pending = c.get("pending") or {}
@@ -2163,6 +2169,7 @@ def book_appointment_for_datetime(
             pending = set_offered_slots(pending, [opts[0], opts[1]])
             pending["service"] = c.get("service")
             pending["name"] = c.get("name")
+            pending.pop("confirm_slot_iso", None)
             c["pending"] = pending
             c["state"] = STATE_AWAITING_TIME
             c["datetime_iso"] = None
@@ -2186,6 +2193,7 @@ def book_appointment_for_datetime(
             pending = set_offered_slots(pending, [opts[0], opts[1]])
             pending["service"] = c.get("service")
             pending["name"] = c.get("name")
+            pending.pop("confirm_slot_iso", None)
             c["pending"] = pending
             c["state"] = STATE_AWAITING_TIME
             c["datetime_iso"] = None
@@ -2203,6 +2211,26 @@ def book_appointment_for_datetime(
             "lang": lang,
         }
 
+    final_name = normalize_name(c.get("name")) or normalize_name(pending.get("name")) or "Client"
+    final_service = apply_service_aliases(c.get("service"), service_aliases) or apply_service_aliases(pending.get("service"), service_aliases) or settings["services_hint"]
+
+    if require_confirmation:
+        pending["booking_intent"] = True
+        pending["confirm_slot_iso"] = dt_start.isoformat()
+        pending["service"] = final_service
+        pending["name"] = final_name
+        c["pending"] = pending
+        c["state"] = STATE_AWAITING_CONFIRM
+        c["name"] = final_name
+        c["service"] = final_service
+        c["datetime_iso"] = dt_start.isoformat()
+        return {
+            "status": "need_more",
+            "reply_voice": t(lang, "ask_booking_confirm", when=format_dt_short(dt_start), service=final_service),
+            "msg_out": t(lang, "ask_booking_confirm", when=format_dt_short(dt_start), service=final_service),
+            "lang": lang,
+        }
+
     if pending.get("reschedule_event_id"):
         deleted = delete_calendar_event(settings["calendar_id"], pending["reschedule_event_id"])
         if not deleted:
@@ -2213,9 +2241,7 @@ def book_appointment_for_datetime(
                 "lang": lang,
             }
 
-    final_name = normalize_name(c.get("name")) or normalize_name(pending.get("name")) or "Client"
-    final_service = apply_service_aliases(c.get("service"), service_aliases) or apply_service_aliases(pending.get("service"), service_aliases) or settings["services_hint"]
-    create_calendar_event(
+    event_result = create_calendar_event(
         settings["calendar_id"],
         dt_start,
         APPT_MINUTES,
@@ -2223,7 +2249,27 @@ def book_appointment_for_datetime(
         build_event_description(tenant_id, final_name, raw_phone),
     )
 
-    c["pending"] = None
+    if not event_result:
+        pending["confirm_slot_iso"] = dt_start.isoformat()
+        c["pending"] = pending
+        c["state"] = STATE_AWAITING_CONFIRM
+        c["name"] = final_name
+        c["service"] = final_service
+        c["datetime_iso"] = dt_start.isoformat()
+        return {
+            "status": "booking_failed",
+            "reply_voice": t(lang, "booking_failed"),
+            "msg_out": t(lang, "booking_failed"),
+            "lang": lang,
+        }
+
+    pending.pop("confirm_slot_iso", None)
+    pending.pop("awaiting_time_date_iso", None)
+    clear_offered_slots(pending)
+    if pending.get("reschedule_event_id"):
+        pending.pop("reschedule_event_id", None)
+        pending.pop("reschedule_old_iso", None)
+    c["pending"] = pending or None
     c["state"] = STATE_BOOKED
     c["name"] = final_name
     c["service"] = final_service
@@ -2544,25 +2590,31 @@ def handle_user_text(
         }
 
     if msg and conversation_state(c) == STATE_AWAITING_CONFIRM:
+        confirm_iso = str(pending.get("confirm_slot_iso") or c.get("datetime_iso") or "").strip()
+        dt_confirm = parse_dt_any_tz(confirm_iso)
         if is_yes_text(msg, lang):
+            if not dt_confirm:
+                c["state"] = STATE_AWAITING_TIME
+                db_save_conversation(tenant_id, user_key, c)
+                return {
+                    "status": "need_more",
+                    "reply_voice": prompt_for_state(lang, c, pending),
+                    "msg_out": prompt_for_state(lang, c, pending),
+                    "lang": lang,
+                }
+            result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_aliases, dt_confirm, require_confirmation=False)
+            db_save_conversation(tenant_id, user_key, c)
+            return result
+        if is_no_text(msg, lang):
+            pending.pop("confirm_slot_iso", None)
+            c["pending"] = pending or {"booking_intent": True}
+            c["datetime_iso"] = None
             c["state"] = STATE_AWAITING_TIME
             db_save_conversation(tenant_id, user_key, c)
             return {
                 "status": "need_more",
-                "reply_voice": prompt_for_state(lang, c, pending),
-                "msg_out": prompt_for_state(lang, c, pending),
-                "lang": lang,
-            }
-        if is_no_text(msg, lang):
-            c["state"] = STATE_AWAITING_SERVICE
-            c["service"] = None
-            c["datetime_iso"] = None
-            c["pending"] = {"booking_intent": True}
-            db_save_conversation(tenant_id, user_key, c)
-            return {
-                "status": "need_more",
-                "reply_voice": t(lang, "ask_booking_service"),
-                "msg_out": t(lang, "ask_booking_service"),
+                "reply_voice": prompt_for_state(lang, c, c.get("pending") or {}),
+                "msg_out": prompt_for_state(lang, c, c.get("pending") or {}),
                 "lang": lang,
             }
         db_save_conversation(tenant_id, user_key, c)
