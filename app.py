@@ -46,7 +46,7 @@ from typing import Dict, Any, Optional, Tuple, List
 
 import requests
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import Response, StreamingResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from twilio.request_validator import RequestValidator
 from twilio.twiml.voice_response import VoiceResponse, Gather
@@ -843,9 +843,15 @@ def tts_language_code_for_lang(lang: str) -> str:
 
 
 def norm_user_key(phone: str) -> str:
-    p = (phone or "").strip().replace("whatsapp:", "")
-    p = re.sub(r"[^\d+]", "", p)
-    return p or "unknown"
+    raw = (phone or "").strip().replace("whatsapp:", "")
+    if not raw:
+        return "unknown"
+    phone_like = re.sub(r"[^\d+]", "", raw)
+    digits = re.sub(r"\D", "", phone_like)
+    if len(digits) >= 7:
+        return phone_like or "unknown"
+    safe = re.sub(r"[^a-zA-Z0-9_:\-]", "_", raw).strip("_")
+    return safe or "unknown"
 
 
 def normalize_voice_caller(raw_from: str) -> str:
@@ -3509,21 +3515,31 @@ class DevResetRequest(BaseModel):
     tenant_id: str
     user_id: str
 
+def _dev_raw_user(user_id: str) -> str:
+    uid = (user_id or "dev_user").strip()
+    return f"dev:{uid}"
+
 @app.post("/dev_chat")
 async def dev_chat(req: DevChatRequest):
     try:
+        raw_user = _dev_raw_user(req.user_id)
         result = handle_user_text(
             tenant_id=req.tenant_id,
-            user_id=req.user_id,
-            text=req.message,
+            raw_phone=raw_user,
+            text_in=req.message,
             channel=req.channel,
-            lang=req.lang
+            lang_hint=req.lang,
         )
+        conv = db_get_or_create_conversation(req.tenant_id, raw_user, req.lang)
         return {
             "status": result.get("status"),
-            "reply": result.get("reply"),
-            "state": result.get("state"),
-            "pending": result.get("pending")
+            "reply": result.get("msg_out") or result.get("reply_voice"),
+            "lang": result.get("lang"),
+            "state": conv.get("state"),
+            "pending": conv.get("pending"),
+            "service": conv.get("service"),
+            "datetime_iso": conv.get("datetime_iso"),
+            "name": conv.get("name"),
         }
     except Exception as e:
         log.exception("DEV CHAT ERROR")
@@ -3538,14 +3554,146 @@ async def dev_reset(req: DevResetRequest):
                 text("""
                 delete from conversations
                 where tenant_id = :tenant_id
-                and user_id = :user_id
+                and user_key = :user_key
                 """),
                 {
                     "tenant_id": req.tenant_id,
-                    "user_id": req.user_id
+                    "user_key": norm_user_key(_dev_raw_user(req.user_id))
                 }
             )
         return {"status": "reset_ok"}
     except Exception as e:
         log.exception("DEV RESET ERROR")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/dev_chat_ui", response_class=HTMLResponse)
+def dev_chat_ui():
+    html = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Repliq Dev Chat</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; background: #f6f7fb; color: #1f2937; }
+    .wrap { max-width: 900px; margin: 0 auto; padding: 20px; }
+    .panel { background: white; border-radius: 16px; box-shadow: 0 8px 24px rgba(0,0,0,0.08); padding: 16px; }
+    .top { display: grid; grid-template-columns: 1fr 1fr 120px 120px; gap: 12px; margin-bottom: 16px; }
+    input, select, textarea, button { font: inherit; }
+    input, select { width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 10px; box-sizing: border-box; }
+    .chat { height: 480px; overflow-y: auto; background: #fafafa; border: 1px solid #e5e7eb; border-radius: 12px; padding: 12px; }
+    .msg { margin: 10px 0; display: flex; }
+    .msg.user { justify-content: flex-end; }
+    .bubble { max-width: 72%; padding: 10px 12px; border-radius: 14px; line-height: 1.4; white-space: pre-wrap; }
+    .user .bubble { background: #2563eb; color: white; border-bottom-right-radius: 4px; }
+    .bot .bubble { background: #e5e7eb; color: #111827; border-bottom-left-radius: 4px; }
+    .meta { font-size: 12px; color: #6b7280; margin-top: 4px; }
+    .composer { display: grid; grid-template-columns: 1fr 120px 120px; gap: 12px; margin-top: 16px; }
+    textarea { width: 100%; height: 64px; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 10px; resize: vertical; box-sizing: border-box; }
+    button { border: none; border-radius: 10px; padding: 10px 14px; cursor: pointer; }
+    .send { background: #111827; color: white; }
+    .reset { background: #fee2e2; color: #991b1b; }
+    .hint { margin-top: 10px; font-size: 13px; color: #6b7280; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="panel">
+      <div class="top">
+        <input id="tenant" placeholder="tenant_id" value="default" />
+        <input id="user" placeholder="user_id" value="local_test_1" />
+        <select id="lang">
+          <option value="lv">lv</option>
+          <option value="ru">ru</option>
+          <option value="en">en</option>
+        </select>
+        <select id="channel">
+          <option value="dev">dev</option>
+          <option value="whatsapp">whatsapp</option>
+          <option value="sms">sms</option>
+          <option value="voice">voice</option>
+        </select>
+      </div>
+
+      <div id="chat" class="chat"></div>
+
+      <div class="composer">
+        <textarea id="message" placeholder="Type a test message..."></textarea>
+        <button class="send" onclick="sendMessage()">Send</button>
+        <button class="reset" onclick="resetChat()">Reset</button>
+      </div>
+
+      <div class="hint">Use the same tenant_id + user_id to preserve conversation state between messages.</div>
+    </div>
+  </div>
+
+  <script>
+    const chat = document.getElementById('chat');
+    const messageInput = document.getElementById('message');
+
+    function addBubble(role, text, meta = '') {
+      const row = document.createElement('div');
+      row.className = `msg ${role}`;
+      const wrap = document.createElement('div');
+      const bubble = document.createElement('div');
+      bubble.className = 'bubble';
+      bubble.textContent = text;
+      wrap.appendChild(bubble);
+      if (meta) {
+        const metaDiv = document.createElement('div');
+        metaDiv.className = 'meta';
+        metaDiv.textContent = meta;
+        wrap.appendChild(metaDiv);
+      }
+      row.appendChild(wrap);
+      chat.appendChild(row);
+      chat.scrollTop = chat.scrollHeight;
+    }
+
+    async function sendMessage() {
+      const tenant_id = document.getElementById('tenant').value.trim();
+      const user_id = document.getElementById('user').value.trim();
+      const lang = document.getElementById('lang').value;
+      const channel = document.getElementById('channel').value;
+      const message = messageInput.value.trim();
+      if (!tenant_id || !user_id || !message) return;
+
+      addBubble('user', message);
+      messageInput.value = '';
+
+      const resp = await fetch('/dev_chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tenant_id, user_id, message, lang, channel })
+      });
+      const data = await resp.json();
+      const meta = `status=${data.status || ''} | state=${data.state || ''}`;
+      addBubble('bot', data.reply || '(no reply)', meta);
+    }
+
+    async function resetChat() {
+      const tenant_id = document.getElementById('tenant').value.trim();
+      const user_id = document.getElementById('user').value.trim();
+      if (!tenant_id || !user_id) return;
+      await fetch('/dev_reset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tenant_id, user_id })
+      });
+      chat.innerHTML = '';
+      addBubble('bot', 'Conversation reset.', 'dev');
+    }
+
+    messageInput.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    });
+  </script>
+</body>
+</html>
+    """
+    return HTMLResponse(content=html)
