@@ -205,7 +205,7 @@ I18N: Dict[str, Dict[str, str]] = {
         "ask_booking_time_only": "Labi. Cikos jums būtu ērti?",
         "repeat_yes_no": "Lūdzu, pasakiet jā vai nē.",
         "invalid_time_choice": "Šis laiks nav pieejams. Lūdzu, izvēlieties no piedāvātajiem variantiem.",
-        "voice_options_prompt": "Pieejami varianti: 1) {opt1}, 2) {opt2}. Varat izvēlēties vienu no tiem vai uzrakstīt citu sev ērtu laiku.
+        "voice_options_prompt": "Pieejami varianti: 1) {opt1}, 2) {opt2}. Varat izvēlēties vienu no tiem vai uzrakstīt citu sev ērtu laiku.",
         "voice_options_repeat": "Varu piedāvāt šādus laikus: viens — {opt1}, divi — {opt2}. Kuru izvēlaties?",
     },
     "ru": {
