@@ -2248,6 +2248,98 @@ def parse_date_only_text(text_: Optional[str]) -> Optional[datetime]:
     return None
 
 
+NATURAL_TIME_DEFAULTS = {
+    "morning": 10,
+    "midday": 12,
+    "afternoon": 14,
+    "evening": 17,
+}
+
+def detect_time_bucket(text_: Optional[str]) -> Optional[str]:
+    src = (text_ or "").lower().strip()
+    if not src:
+        return None
+    patterns = {
+        "morning": [
+            "no rīta", "no rita", "rīt no rīta", "rit no rita", "утром", "in the morning", "morning"
+        ],
+        "midday": [
+            "pusdienlaikā", "pusdienlaika", "ap pusdienlaiku", "днём", "днем", "at noon", "noon", "midday"
+        ],
+        "afternoon": [
+            "pēcpusdienā", "pecpusdiena", "pecpusdienā", "after lunch", "in the afternoon", "afternoon", "днём", "днем", "после обеда"
+        ],
+        "evening": [
+            "vakarā", "vakara", "вечером", "in the evening", "evening", "tonight"
+        ],
+    }
+    for bucket, hints in patterns.items():
+        if any(h in src for h in hints):
+            return bucket
+    return None
+
+def has_natural_time_hint(text_: Optional[str]) -> bool:
+    src = (text_ or "").lower().strip()
+    if not src:
+        return False
+    if parse_explicit_time_parts(src):
+        return True
+    if detect_time_bucket(src):
+        return True
+    approx_markers = ["ap ", "apmēram", "apmeram", "kaut kur", "around", "about", "около", "примерно"]
+    if any(m in src for m in approx_markers):
+        return True
+    return False
+
+def parse_natural_datetime(text_: Optional[str], base_iso: Optional[str] = None) -> Optional[datetime]:
+    src = (text_ or "").lower().strip()
+    if not src:
+        return None
+
+    base_dt = parse_dt_any_tz((base_iso or "").strip())
+    date_dt = parse_date_only_text(src)
+    if not date_dt and base_dt:
+        date_dt = base_dt
+
+    time_parts = parse_explicit_time_parts(src)
+
+    if not time_parts:
+        approx_patterns = [
+            r"\bap\s+([01]?\d|2[0-3])\b",
+            r"\bapmēram\s+([01]?\d|2[0-3])\b",
+            r"\bapmeram\s+([01]?\d|2[0-3])\b",
+            r"\bkaut\s+kur\s+([01]?\d|2[0-3])\b",
+            r"\baround\s+([01]?\d|2[0-3])\b",
+            r"\babout\s+([01]?\d|2[0-3])\b",
+            r"\bоколо\s+([01]?\d|2[0-3])\b",
+            r"\bпримерно\s+([01]?\d|2[0-3])\b",
+        ]
+        for pat in approx_patterns:
+            m = re.search(pat, src)
+            if m:
+                time_parts = (int(m.group(1)), 0)
+                break
+
+    if not time_parts:
+        bucket = detect_time_bucket(src)
+        if bucket:
+            time_parts = (NATURAL_TIME_DEFAULTS[bucket], 0)
+
+    if date_dt and time_parts:
+        hh, mm = time_parts
+        return date_dt.replace(hour=hh, minute=mm, second=0, microsecond=0)
+
+    if date_dt and not time_parts and detect_time_bucket(src):
+        hh = NATURAL_TIME_DEFAULTS[detect_time_bucket(src)]
+        return date_dt.replace(hour=hh, minute=0, second=0, microsecond=0)
+
+    if not date_dt and base_dt and time_parts:
+        hh, mm = time_parts
+        return base_dt.replace(hour=hh, minute=mm, second=0, microsecond=0)
+
+    return None
+
+
 def extract_service_from_text(text_: Optional[str], catalog: List[Dict[str, Any]], lang: str) -> Optional[Dict[str, Any]]:
     low = (text_ or "").strip().lower()
     if not low:
@@ -2596,10 +2688,12 @@ def handle_user_text(
     active_flow = is_active_booking_flow(c)
 
     if msg and is_greeting_only(msg):
-        c['state']=STATE_NEW
-        c['service']=None
-        c['date']=None
-        c['time']=None
+        c["state"] = STATE_NEW
+        c["service"] = None
+        c["datetime_iso"] = None
+        c["time_text"] = None
+        c["pending"] = None
+        db_save_conversation(tenant_id, user_key, c)
         return {
             "status": "greeting",
             "reply_voice": t(lang, "greeting_only_reply"),
@@ -2705,14 +2799,17 @@ def handle_user_text(
 
     if c["state"] == STATE_AWAITING_DATE:
         dt_start = None
-        if msg:
+        natural_dt = parse_natural_datetime(msg)
+        if natural_dt:
+            dt_start = natural_dt
+        elif msg:
             data = get_ai_data()
             dt_start = parse_dt_from_iso_or_fallback(data.get("datetime_iso"), data.get("time_text"), msg)
-        if dt_start and explicit_time_present:
+        if dt_start and (explicit_time_present or has_natural_time_hint(msg)):
             result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, dt_start)
             db_save_conversation(tenant_id, user_key, c)
             return result
-        if date_only_dt or (dt_start and not explicit_time_present):
+        if date_only_dt or (dt_start and not (explicit_time_present or has_natural_time_hint(msg))):
             base_date = date_only_dt or dt_start
             pending["booking_intent"] = True
             pending["awaiting_time_date_iso"] = base_date.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
@@ -2762,7 +2859,10 @@ def handle_user_text(
                 return result
 
         dt_start = None
-        if explicit_time_present and pending.get("awaiting_time_date_iso"):
+        natural_dt = parse_natural_datetime(msg, pending.get("awaiting_time_date_iso"))
+        if natural_dt:
+            dt_start = natural_dt
+        elif explicit_time_present and pending.get("awaiting_time_date_iso"):
             dt_start = combine_date_with_explicit_time(pending.get("awaiting_time_date_iso"), msg)
         if not dt_start and msg:
             data = get_ai_data()
