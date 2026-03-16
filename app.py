@@ -1386,6 +1386,166 @@ def tenant_settings(tenant: Dict[str, Any], lang: str) -> Dict[str, Any]:
     }
 
 
+def _slugify_service_key(value: str) -> str:
+    low = (value or "").strip().lower()
+    low = re.sub(r"[^a-z0-9а-яёāēīūčšžģķļņ]+", "_", low, flags=re.IGNORECASE)
+    return low.strip("_") or f"service_{uuid.uuid4().hex[:6]}"
+
+
+def _ensure_list(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [str(x).strip() for x in value if str(x).strip()]
+    txt = str(value).strip()
+    if not txt:
+        return []
+    try:
+        parsed = json.loads(txt)
+        if isinstance(parsed, list):
+            return [str(x).strip() for x in parsed if str(x).strip()]
+    except Exception:
+        pass
+    return [x.strip() for x in txt.split(",") if x.strip()]
+
+
+def parse_service_catalog(value: Any) -> List[Dict[str, Any]]:
+    if value is None:
+        return []
+    parsed = value
+    if isinstance(value, str):
+        txt = value.strip()
+        if not txt:
+            return []
+        try:
+            parsed = json.loads(txt)
+        except Exception:
+            return []
+    if not isinstance(parsed, list):
+        return []
+
+    out: List[Dict[str, Any]] = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        base_name = str(item.get("name") or item.get("name_lv") or item.get("display_name") or item.get("key") or "").strip()
+        if not base_name:
+            continue
+        key = str(item.get("key") or _slugify_service_key(base_name)).strip()
+        try:
+            duration_min = int(item.get("duration_min") or APPT_MINUTES)
+        except Exception:
+            duration_min = APPT_MINUTES
+        aliases = _ensure_list(item.get("aliases"))
+        aliases_lv = _ensure_list(item.get("aliases_lv"))
+        aliases_ru = _ensure_list(item.get("aliases_ru"))
+        aliases_en = _ensure_list(item.get("aliases_en"))
+        if not aliases_lv and aliases:
+            aliases_lv = aliases[:]
+        if not aliases_ru and aliases:
+            aliases_ru = aliases[:]
+        if not aliases_en and aliases:
+            aliases_en = aliases[:]
+        out.append({
+            "key": key,
+            "name_lv": str(item.get("name_lv") or base_name).strip(),
+            "name_ru": str(item.get("name_ru") or item.get("name") or base_name).strip(),
+            "name_en": str(item.get("name_en") or item.get("name") or base_name).strip(),
+            "duration_min": max(5, duration_min),
+            "aliases_lv": aliases_lv,
+            "aliases_ru": aliases_ru,
+            "aliases_en": aliases_en,
+        })
+    return out
+
+
+def fallback_service_catalog(tenant: Dict[str, Any]) -> List[Dict[str, Any]]:
+    names: Dict[str, List[str]] = {
+        "lv": [x.strip() for x in str(tenant.get("services_lv") or BUSINESS_FALLBACK["services_lv"]).split(",") if x.strip()],
+        "ru": [x.strip() for x in str(tenant.get("services_ru") or BUSINESS_FALLBACK["services_ru"]).split(",") if x.strip()],
+        "en": [x.strip() for x in str(tenant.get("services_en") or BUSINESS_FALLBACK["services_en"]).split(",") if x.strip()],
+    }
+    max_len = max(len(names["lv"]), len(names["ru"]), len(names["en"]), 1)
+    catalog: List[Dict[str, Any]] = []
+    for i in range(max_len):
+        lv_name = names["lv"][i] if i < len(names["lv"]) else names["lv"][0]
+        ru_name = names["ru"][i] if i < len(names["ru"]) else (names["ru"][0] if names["ru"] else lv_name)
+        en_name = names["en"][i] if i < len(names["en"]) else (names["en"][0] if names["en"] else lv_name)
+        catalog.append({
+            "key": _slugify_service_key(lv_name),
+            "name_lv": lv_name,
+            "name_ru": ru_name,
+            "name_en": en_name,
+            "duration_min": APPT_MINUTES,
+            "aliases_lv": [lv_name],
+            "aliases_ru": [ru_name],
+            "aliases_en": [en_name],
+        })
+    return catalog
+
+
+def tenant_service_catalog(tenant: Dict[str, Any]) -> List[Dict[str, Any]]:
+    for key in ("service_catalog", "services_catalog", "service_catalog_json", "services_json"):
+        catalog = parse_service_catalog(tenant.get(key))
+        if catalog:
+            return catalog
+    env_catalog = parse_service_catalog(os.getenv("BIZ_SERVICE_CATALOG", "").strip())
+    if env_catalog:
+        return env_catalog
+    return fallback_service_catalog(tenant)
+
+
+def get_service_item_by_key(catalog: List[Dict[str, Any]], service_key: Optional[str]) -> Optional[Dict[str, Any]]:
+    sk = str(service_key or "").strip()
+    if not sk:
+        return None
+    for item in catalog:
+        if str(item.get("key") or "").strip() == sk:
+            return item
+    return None
+
+
+def service_display_name(service_item: Optional[Dict[str, Any]], lang: str) -> str:
+    if not service_item:
+        return ""
+    lang = get_lang(lang)
+    return str(service_item.get(f"name_{lang}") or service_item.get("name_lv") or service_item.get("key") or "").strip()
+
+
+def service_duration_min(service_item: Optional[Dict[str, Any]]) -> int:
+    if not service_item:
+        return APPT_MINUTES
+    try:
+        return max(5, int(service_item.get("duration_min") or APPT_MINUTES))
+    except Exception:
+        return APPT_MINUTES
+
+
+def service_catalog_summary(catalog: List[Dict[str, Any]], lang: str) -> str:
+    parts = []
+    for item in catalog:
+        display = service_display_name(item, lang)
+        dur = service_duration_min(item)
+        if display:
+            parts.append(f"{display} ({dur} min)")
+    return ", ".join(parts)
+
+
+def service_alias_map_from_catalog(catalog: List[Dict[str, Any]], lang: str) -> Dict[str, str]:
+    lang = get_lang(lang)
+    out: Dict[str, str] = {}
+    for item in catalog:
+        key = str(item.get("key") or "").strip()
+        if not key:
+            continue
+        display = service_display_name(item, lang)
+        for alias in [display] + list(item.get(f"aliases_{lang}") or []):
+            a = str(alias or "").strip().lower()
+            if a:
+                out[a] = key
+    return out
+
+
 def calendar_is_configured(calendar_id: str) -> bool:
     return bool((calendar_id or "").strip())
 
@@ -2088,23 +2248,21 @@ def parse_date_only_text(text_: Optional[str]) -> Optional[datetime]:
     return None
 
 
-def extract_service_from_text(text_: Optional[str], service_aliases: Dict[str, str], services_hint: str) -> Optional[str]:
-    service = apply_service_aliases(text_, service_aliases)
-    if service and service.strip().lower() != (text_ or "").strip().lower():
-        return service
-
+def extract_service_from_text(text_: Optional[str], catalog: List[Dict[str, Any]], lang: str) -> Optional[Dict[str, Any]]:
     low = (text_ or "").strip().lower()
     if not low:
         return None
 
-    for item in [x.strip() for x in (services_hint or "").split(",") if x.strip()]:
-        if item.lower() in low or low in item.lower():
-            return item
-
-    if service_aliases:
-        for alias, canonical in service_aliases.items():
-            if alias and alias in low:
-                return canonical
+    for item in catalog:
+        display = service_display_name(item, lang).lower()
+        candidates = {display, str(item.get("key") or "").strip().lower()}
+        candidates.update(str(x).strip().lower() for x in (item.get(f"aliases_{get_lang(lang)}") or []) if str(x).strip())
+        candidates.update(str(x).strip().lower() for x in (item.get("aliases_lv") or []) if str(x).strip())
+        candidates.update(str(x).strip().lower() for x in (item.get("aliases_ru") or []) if str(x).strip())
+        candidates.update(str(x).strip().lower() for x in (item.get("aliases_en") or []) if str(x).strip())
+        for cand in candidates:
+            if cand and (cand == low or cand in low or low in cand):
+                return item
     return None
 
 
@@ -2154,7 +2312,7 @@ def prompt_for_state(lang: str, c: Dict[str, Any], pending: Dict[str, Any]) -> s
     if state == STATE_AWAITING_CONFIRM:
         confirm_iso = str(pending.get("confirm_slot_iso") or c.get("datetime_iso") or "").strip()
         dt_confirm = parse_dt_any_tz(confirm_iso)
-        service_name = apply_service_aliases(c.get("service"), {}) or c.get("service") or pending.get("service") or ""
+        service_name = pending.get("service_display") or c.get("service") or ""
         if dt_confirm:
             return t(lang, "ask_booking_confirm", when=format_dt_short(dt_confirm), service=service_name or t(lang, "need_service"))
         return t(lang, "repeat_yes_no")
@@ -2182,19 +2340,21 @@ def book_appointment_for_datetime(
     lang: str,
     c: Dict[str, Any],
     settings: Dict[str, Any],
-    service_aliases: Dict[str, str],
+    service_catalog: List[Dict[str, Any]],
     dt_start: datetime,
     require_confirmation: bool = True,
 ) -> Dict[str, Any]:
     voice_like_channel = (channel or "").strip().lower() == "voice"
     pending = c.get("pending") or {}
     calendar_ready = calendar_is_configured(settings["calendar_id"])
+    service_item = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
+    duration_min = service_duration_min(service_item)
 
     if not calendar_ready:
         return blocked_result_for_lang(lang)
 
-    if not in_business_hours(dt_start, APPT_MINUTES, settings["work_start"], settings["work_end"]):
-        opts = find_next_two_slots(settings["calendar_id"], dt_start, APPT_MINUTES, settings["work_start"], settings["work_end"])
+    if not in_business_hours(dt_start, duration_min, settings["work_start"], settings["work_end"]):
+        opts = find_next_two_slots(settings["calendar_id"], dt_start, duration_min, settings["work_start"], settings["work_end"])
         if opts:
             pending = set_offered_slots(pending, [opts[0], opts[1]])
             pending["service"] = c.get("service")
@@ -2217,8 +2377,8 @@ def book_appointment_for_datetime(
             "lang": lang,
         }
 
-    if is_slot_busy(settings["calendar_id"], dt_start, dt_start + timedelta(minutes=APPT_MINUTES)):
-        opts = find_next_two_slots(settings["calendar_id"], dt_start, APPT_MINUTES, settings["work_start"], settings["work_end"])
+    if is_slot_busy(settings["calendar_id"], dt_start, dt_start + timedelta(minutes=duration_min)):
+        opts = find_next_two_slots(settings["calendar_id"], dt_start, duration_min, settings["work_start"], settings["work_end"])
         if opts:
             pending = set_offered_slots(pending, [opts[0], opts[1]])
             pending["service"] = c.get("service")
@@ -2242,17 +2402,21 @@ def book_appointment_for_datetime(
         }
 
     final_name = normalize_name(c.get("name")) or normalize_name(pending.get("name")) or "Client"
-    final_service = apply_service_aliases(c.get("service"), service_aliases) or apply_service_aliases(pending.get("service"), service_aliases) or settings["services_hint"]
+    final_service_key = str(c.get("service") or pending.get("service") or "").strip()
+    final_service_item = get_service_item_by_key(service_catalog, final_service_key) or service_item
+    final_service = service_display_name(final_service_item, lang) or settings["services_hint"]
+    duration_min = service_duration_min(final_service_item)
 
     if require_confirmation:
         pending["booking_intent"] = True
         pending["confirm_slot_iso"] = dt_start.isoformat()
-        pending["service"] = final_service
+        pending["service"] = final_service_key or str(final_service_item.get("key") if final_service_item else "")
+        pending["service_display"] = final_service
         pending["name"] = final_name
         c["pending"] = pending
         c["state"] = STATE_AWAITING_CONFIRM
         c["name"] = final_name
-        c["service"] = final_service
+        c["service"] = pending["service"]
         c["datetime_iso"] = dt_start.isoformat()
         return {
             "status": "need_more",
@@ -2274,7 +2438,7 @@ def book_appointment_for_datetime(
     event_result = create_calendar_event(
         settings["calendar_id"],
         dt_start,
-        APPT_MINUTES,
+        duration_min,
         f"{settings['biz_name']} - {final_service}",
         build_event_description(tenant_id, final_name, raw_phone),
     )
@@ -2284,7 +2448,7 @@ def book_appointment_for_datetime(
         c["pending"] = pending
         c["state"] = STATE_AWAITING_CONFIRM
         c["name"] = final_name
-        c["service"] = final_service
+        c["service"] = pending.get("service") or final_service_key
         c["datetime_iso"] = dt_start.isoformat()
         return {
             "status": "booking_failed",
@@ -2302,7 +2466,7 @@ def book_appointment_for_datetime(
     c["pending"] = pending or None
     c["state"] = STATE_BOOKED
     c["name"] = final_name
-    c["service"] = final_service
+    c["service"] = pending.get("service") or final_service_key
     c["datetime_iso"] = dt_start.isoformat()
     return {
         "status": "booked",
@@ -2331,7 +2495,8 @@ def handle_user_text(
 
     lang = get_lang(c.get("lang"))
     settings = tenant_settings(tenant, lang)
-    service_aliases = tenant_service_aliases(tenant, lang)
+    service_catalog = tenant_service_catalog(tenant)
+    service_aliases = service_alias_map_from_catalog(service_catalog, lang)
     business_memory = tenant_business_memory(tenant, lang)
     calendar_ready = calendar_is_configured(settings["calendar_id"])
 
@@ -2432,7 +2597,7 @@ def handle_user_text(
     if selected_iso:
         dt_sel = parse_dt_any_tz(selected_iso)
         if dt_sel:
-            result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_aliases, dt_sel)
+            result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, dt_sel)
             db_save_conversation(tenant_id, user_key, c)
             return result
 
@@ -2445,8 +2610,8 @@ def handle_user_text(
         sys_pt = (
             f"You are an appointment receptionist for {settings['biz_name']}. "
             f"Business hours: {settings['work_start']}-{settings['work_end']}. "
-            f"Known services: {settings['services_hint']}. "
-            f"Service aliases: {alias_hint or 'none'}. "
+            f"Known services: {service_catalog_summary(service_catalog, lang)}. "
+            f"Service aliases map to service keys: {alias_hint or 'none'}. "
             f"Business memory: {business_memory or 'none'}. "
             "Extract and return strict JSON only with keys: service, time_text, datetime_iso, name. "
             "service and name must be plain strings, not arrays. "
@@ -2458,18 +2623,20 @@ def handle_user_text(
         return ai_data
 
     if active_flow or c["state"] in ACTIVE_BOOKING_STATES or c["state"] == STATE_NEW:
-        service = extract_service_from_text(msg, service_aliases, settings["services_hint"])
-        if not service and msg:
+        service_item = extract_service_from_text(msg, service_catalog, lang)
+        if not service_item and msg:
             data = get_ai_data()
-            service = apply_service_aliases(data.get("service"), service_aliases)
+            extracted_service_key = apply_service_aliases(data.get("service"), service_aliases)
+            service_item = get_service_item_by_key(service_catalog, extracted_service_key) or extract_service_from_text(data.get("service"), service_catalog, lang)
             extracted_name = normalize_name(data.get("name"))
             if extracted_name and not c.get("name"):
                 c["name"] = extracted_name
             if data.get("time_text") and not c.get("time_text"):
                 c["time_text"] = str(data.get("time_text"))
 
-        if service and not c.get("service"):
-            c["service"] = service
+        if service_item and not c.get("service"):
+            c["service"] = str(service_item.get("key") or "").strip()
+            pending["service_display"] = service_display_name(service_item, lang)
             clear_offered_slots(pending)
             pending.pop("awaiting_time_date_iso", None)
             c["pending"] = pending or None
@@ -2506,7 +2673,7 @@ def handle_user_text(
             data = get_ai_data()
             dt_start = parse_dt_from_iso_or_fallback(data.get("datetime_iso"), data.get("time_text"), msg)
         if dt_start and explicit_time_present:
-            result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_aliases, dt_start)
+            result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, dt_start)
             db_save_conversation(tenant_id, user_key, c)
             return result
         if date_only_dt or (dt_start and not explicit_time_present):
@@ -2517,7 +2684,7 @@ def handle_user_text(
             day_slots = find_first_two_slots_for_day(
                 settings["calendar_id"],
                 base_date,
-                APPT_MINUTES,
+                service_duration_min(get_service_item_by_key(service_catalog, c.get("service"))),
                 settings["work_start"],
                 settings["work_end"],
             ) if calendar_ready else None
@@ -2554,7 +2721,7 @@ def handle_user_text(
         if selected_iso:
             dt_sel = parse_dt_any_tz(selected_iso)
             if dt_sel:
-                result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_aliases, dt_sel)
+                result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, dt_sel)
                 db_save_conversation(tenant_id, user_key, c)
                 return result
 
@@ -2572,7 +2739,7 @@ def handle_user_text(
             clear_offered_slots(pending)
             pending.pop("awaiting_time_date_iso", None)
             c["pending"] = pending or None
-            result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_aliases, dt_start)
+            result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, dt_start)
             db_save_conversation(tenant_id, user_key, c)
             return result
 
@@ -2595,10 +2762,14 @@ def handle_user_text(
 
     if not active_flow and not c.get("service") and msg:
         data = get_ai_data()
-        service = apply_service_aliases(data.get("service"), service_aliases)
+        extracted_service_key = apply_service_aliases(data.get("service"), service_aliases)
+        service_item = get_service_item_by_key(service_catalog, extracted_service_key) or extract_service_from_text(data.get("service"), service_catalog, lang)
         name = normalize_name(data.get("name"))
-        if service:
-            c["service"] = service
+        if service_item:
+            c["service"] = str(service_item.get("key") or "").strip()
+            pending = c.get("pending") or {}
+            pending["service_display"] = service_display_name(service_item, lang)
+            c["pending"] = pending
             c["state"] = STATE_AWAITING_DATE
             if name and not c.get("name"):
                 c["name"] = name
@@ -2632,7 +2803,7 @@ def handle_user_text(
                     "msg_out": prompt_for_state(lang, c, pending),
                     "lang": lang,
                 }
-            result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_aliases, dt_confirm, require_confirmation=False)
+            result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, dt_confirm, require_confirmation=False)
             db_save_conversation(tenant_id, user_key, c)
             return result
         if is_no_text(msg, lang):
