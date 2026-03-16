@@ -1895,9 +1895,25 @@ def parse_explicit_time_parts(text_: Optional[str]) -> Optional[Tuple[int, int]]
     src = (text_ or "").lower().strip()
     if not src:
         return None
+
+    # 14:30 / 14.30 / 14 30
     m = re.search(r"\b([01]?\d|2[0-3])[:. ]([0-5]\d)\b", src)
     if m:
         return int(m.group(1)), int(m.group(2))
+
+    # 2pm / 2 pm / 2:30pm / 2.30 pm
+    m = re.search(r"\b(1[0-2]|0?[1-9])(?:[:. ]([0-5]\d))?\s*(am|pm)\b", src)
+    if m:
+        hh = int(m.group(1))
+        mm = int(m.group(2) or 0)
+        ampm = m.group(3)
+        if ampm == "pm" and hh != 12:
+            hh += 12
+        if ampm == "am" and hh == 12:
+            hh = 0
+        return hh, mm
+
+    # plain hour like 14
     if re.fullmatch(r"([01]?\d|2[0-3])", src):
         return int(src), 0
     return None
@@ -1917,8 +1933,14 @@ def has_date_reference(text_: Optional[str]) -> bool:
         "rīt", "rit", "parīt", "šodien", "sodien",
         "завтра", "послезавтра", "сегодня",
         "tomorrow", "day after tomorrow", "today",
+        "next monday", "next tuesday", "next wednesday", "next thursday", "next friday", "next saturday", "next sunday",
     ]
-    return any(k in src for k in keywords)
+    if any(k in src for k in keywords):
+        return True
+    for hints in WEEKDAY_HINTS.values():
+        if any(h in src for h in hints):
+            return True
+    return False
 
 
 def combine_date_with_explicit_time(base_iso: Optional[str], time_source: Optional[str]) -> Optional[datetime]:
@@ -2060,6 +2082,8 @@ def parse_date_only_text(text_: Optional[str]) -> Optional[datetime]:
     for wd, hints in WEEKDAY_HINTS.items():
         if any(h in src for h in hints):
             d = next_weekday_date(wd, base)
+            if src.startswith("this ") and d > base + timedelta(days=7):
+                d = base + timedelta(days=(wd - base.weekday()) % 7)
             return datetime.combine(d, datetime.min.time(), tzinfo=TZ).replace(hour=9)
     return None
 
