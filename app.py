@@ -2090,9 +2090,9 @@ def has_date_reference(text_: Optional[str]) -> bool:
     if re.search(r"\b(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?\b", src):
         return True
     keywords = [
-        "rīt", "rit", "parīt", "šodien", "sodien",
-        "завтра", "послезавтра", "сегодня",
-        "tomorrow", "day after tomorrow", "today",
+        "rīt", "rit", "parīt", "šodien", "sodien", "šorīt", "sorit", "šovakar", "sovakar",
+        "завтра", "послезавтра", "сегодня", "сегодня утром", "сегодня днем", "сегодня днём", "сегодня вечером",
+        "tomorrow", "day after tomorrow", "today", "this morning", "this afternoon", "this evening", "tonight",
         "next monday", "next tuesday", "next wednesday", "next thursday", "next friday", "next saturday", "next sunday",
     ]
     if any(k in src for k in keywords):
@@ -2236,7 +2236,7 @@ def parse_date_only_text(text_: Optional[str]) -> Optional[datetime]:
         return datetime.combine(base + timedelta(days=2), datetime.min.time(), tzinfo=TZ).replace(hour=9)
     if any(k in src for k in ["rīt", "rit", "завтра", "tomorrow"]):
         return datetime.combine(base + timedelta(days=1), datetime.min.time(), tzinfo=TZ).replace(hour=9)
-    if any(k in src for k in ["šodien", "sodien", "сегодня", "today"]):
+    if any(k in src for k in ["šodien", "sodien", "šorīt", "sorit", "šovakar", "sovakar", "сегодня", "сегодня утром", "сегодня днем", "сегодня днём", "сегодня вечером", "today", "this morning", "this afternoon", "this evening", "tonight"]):
         return datetime.combine(base, datetime.min.time(), tzinfo=TZ).replace(hour=9)
 
     for wd, hints in WEEKDAY_HINTS.items():
@@ -2261,16 +2261,16 @@ def detect_time_bucket(text_: Optional[str]) -> Optional[str]:
         return None
     patterns = {
         "morning": [
-            "no rīta", "no rita", "rīt no rīta", "rit no rita", "утром", "in the morning", "morning"
+            "no rīta", "no rita", "rīt no rīta", "rit no rita", "šorīt", "sorit", "утром", "сегодня утром", "in the morning", "this morning", "morning"
         ],
         "midday": [
-            "pusdienlaikā", "pusdienlaika", "ap pusdienlaiku", "днём", "днем", "at noon", "noon", "midday"
+            "pusdienlaikā", "pusdienlaika", "ap pusdienlaiku", "днём", "днем", "сегодня днем", "сегодня днём", "at noon", "noon", "midday"
         ],
         "afternoon": [
-            "pēcpusdienā", "pecpusdiena", "pecpusdienā", "after lunch", "in the afternoon", "afternoon", "днём", "днем", "после обеда"
+            "pēcpusdienā", "pecpusdiena", "pecpusdienā", "šopēcpusdien", "sopecpusdien", "after lunch", "in the afternoon", "this afternoon", "afternoon", "днём", "днем", "после обеда"
         ],
         "evening": [
-            "vakarā", "vakara", "вечером", "in the evening", "evening", "tonight"
+            "vakarā", "vakara", "šovakar", "sovakar", "вечером", "сегодня вечером", "in the evening", "this evening", "evening", "tonight"
         ],
     }
     for bucket, hints in patterns.items():
