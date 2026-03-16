@@ -205,7 +205,7 @@ I18N: Dict[str, Dict[str, str]] = {
         "ask_booking_time_only": "Labi. Cikos jums būtu ērti?",
         "repeat_yes_no": "Lūdzu, pasakiet jā vai nē.",
         "invalid_time_choice": "Šis laiks nav pieejams. Lūdzu, izvēlieties no piedāvātajiem variantiem.",
-        "voice_options_prompt": "Pieejami varianti: viens — {opt1}, divi — {opt2}. Kuru izvēlaties?",
+        "voice_options_prompt": "Pieejami varianti: 1) {opt1}, 2) {opt2}. Varat izvēlēties vienu no tiem vai uzrakstīt citu sev ērtu laiku.
         "voice_options_repeat": "Varu piedāvāt šādus laikus: viens — {opt1}, divi — {opt2}. Kuru izvēlaties?",
     },
     "ru": {
@@ -2126,7 +2126,7 @@ def prompt_for_state(lang: str, c: Dict[str, Any], pending: Dict[str, Any]) -> s
         dt_confirm = parse_dt_any_tz(confirm_iso)
         service_name = apply_service_aliases(c.get("service"), {}) or c.get("service") or pending.get("service") or ""
         if dt_confirm:
-            return t(lang, "ask_booking_confirm", when=format_dt_short(dt_confirm), service=service_name or t(lang, "need_service"))
+            return t(lang, "Apstiprināt pierakstu? (Jā / Nē)", when=format_dt_short(dt_confirm), service=service_name or t(lang, "need_service"))
         return t(lang, "repeat_yes_no")
     return t(lang, "how_help")
 
@@ -2226,8 +2226,8 @@ def book_appointment_for_datetime(
         c["datetime_iso"] = dt_start.isoformat()
         return {
             "status": "need_more",
-            "reply_voice": t(lang, "ask_booking_confirm", when=format_dt_short(dt_start), service=final_service),
-            "msg_out": t(lang, "ask_booking_confirm", when=format_dt_short(dt_start), service=final_service),
+            "reply_voice": t(lang, "Apstiprināt pierakstu? (Jā / Nē)", when=format_dt_short(dt_start), service=final_service),
+            "msg_out": t(lang, "Apstiprināt pierakstu? (Jā / Nē)", when=format_dt_short(dt_start), service=final_service),
             "lang": lang,
         }
 
