@@ -2595,7 +2595,11 @@ def handle_user_text(
 
     active_flow = is_active_booking_flow(c)
 
-    if not active_flow and msg and is_greeting_only(msg):
+    if msg and is_greeting_only(msg):
+        c['state']=STATE_NEW
+        c['service']=None
+        c['date']=None
+        c['time']=None
         return {
             "status": "greeting",
             "reply_voice": t(lang, "greeting_only_reply"),
