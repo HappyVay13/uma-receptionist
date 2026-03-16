@@ -2333,6 +2333,35 @@ def reset_booking_context(c: Dict[str, Any], keep_name: bool = True) -> Dict[str
     return c
 
 
+def normalize_booking_state(c: Dict[str, Any]) -> Dict[str, Any]:
+    pending = c.get("pending") or {}
+    state = conversation_state(c)
+    service_key = str(c.get("service") or pending.get("service") or "").strip()
+    confirm_iso = str(pending.get("confirm_slot_iso") or "").strip()
+    awaiting_time_date_iso = str(pending.get("awaiting_time_date_iso") or "").strip()
+    offered_slots = get_offered_slots(pending)
+    has_booking_intent = bool(pending.get("booking_intent"))
+    booked_dt = str(c.get("datetime_iso") or "").strip()
+
+    if confirm_iso:
+        state = STATE_AWAITING_CONFIRM
+    elif offered_slots or awaiting_time_date_iso:
+        state = STATE_AWAITING_TIME
+    elif service_key and state not in (STATE_BOOKED, STATE_CANCELLED):
+        state = STATE_AWAITING_DATE if not booked_dt else state
+    elif has_booking_intent and not service_key:
+        state = STATE_AWAITING_SERVICE
+    elif state in ACTIVE_BOOKING_STATES and not service_key:
+        state = STATE_AWAITING_SERVICE
+
+    if state in (STATE_BOOKED, STATE_CANCELLED) and has_booking_intent:
+        state = STATE_AWAITING_SERVICE if not service_key else STATE_AWAITING_DATE
+
+    c["state"] = state
+    c["pending"] = pending or None
+    return c
+
+
 def book_appointment_for_datetime(
     tenant_id: str,
     raw_phone: str,
@@ -2504,6 +2533,7 @@ def handle_user_text(
         return blocked_result_for_lang(lang)
 
     c["state"] = conversation_state(c)
+    c = normalize_booking_state(c)
     pending = c.get("pending") or {}
     t_low = msg.lower()
 
@@ -2640,7 +2670,8 @@ def handle_user_text(
             clear_offered_slots(pending)
             pending.pop("awaiting_time_date_iso", None)
             c["pending"] = pending or None
-            if c["state"] in (STATE_NEW, STATE_AWAITING_SERVICE):
+            c = normalize_booking_state(c)
+            if c["state"] in (STATE_NEW, STATE_AWAITING_SERVICE, STATE_AWAITING_DATE):
                 c["state"] = STATE_AWAITING_DATE
                 db_save_conversation(tenant_id, user_key, c)
                 return {
@@ -2663,6 +2694,7 @@ def handle_user_text(
 
     if c.get("service") and c["state"] == STATE_NEW and not c.get("datetime_iso"):
         c["state"] = STATE_AWAITING_DATE
+        c = normalize_booking_state(c)
 
     date_only_dt = parse_date_only_text(msg)
     explicit_time_present = has_explicit_time(msg)
@@ -2826,11 +2858,12 @@ def handle_user_text(
             "lang": lang,
         }
 
+    c = normalize_booking_state(c)
     db_save_conversation(tenant_id, user_key, c)
     return {
         "status": "need_more" if is_active_booking_flow(c) else "info",
-        "reply_voice": prompt_for_state(lang, c, c.get("pending") or {} ) if is_active_booking_flow(c) else t(lang, "unclear_reply"),
-        "msg_out": prompt_for_state(lang, c, c.get("pending") or {} ) if is_active_booking_flow(c) else t(lang, "unclear_reply"),
+        "reply_voice": prompt_for_state(lang, c, c.get("pending") or {}) if is_active_booking_flow(c) else t(lang, "unclear_reply"),
+        "msg_out": prompt_for_state(lang, c, c.get("pending") or {}) if is_active_booking_flow(c) else t(lang, "unclear_reply"),
         "lang": lang,
     }
 
