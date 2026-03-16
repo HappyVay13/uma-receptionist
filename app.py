@@ -182,13 +182,14 @@ I18N: Dict[str, Dict[str, str]] = {
         "reschedule_ask": "Pieraksts {when}. Uz kuru laiku pārcelt?",
         "booking_confirmed": "Paldies! Pieraksts apstiprināts.",
         "booking_confirmed_text": "Apstiprināts: {service} {when}",
+        "booking_failed": "Neizdevās apstiprināt pierakstu. Mēģiniet vēlreiz.",
         "need_service": "Kādu pakalpojumu vēlaties?",
         "need_time": "Kad un cikos jums būtu ērti?",
         "need_name": "Kā jūs sauc?",
         "closed_voice": "Šajā laikā nestrādājam. Nosūtu brīvos laikus ziņā.",
-        "closed_text": "Šajā laikā nestrādājam. Varianti: 1) {opt1} 2) {opt2}",
+        "closed_text": "Šajā laikā mēs nestrādājam. Varu piedāvāt: 1) {opt1}, 2) {opt2}. Varat arī uzrakstīt citu sev ērtu laiku darba laikā.",
         "busy_voice": "Šis laiks ir aizņemts. Nosūtu variantus ziņā.",
-        "busy_text": "Šis laiks ir aizņemts. Varianti: 1) {opt1} 2) {opt2}",
+        "busy_text": "Šis laiks diemžēl nav pieejams. Varu piedāvāt: 1) {opt1}, 2) {opt2}. Varat arī uzrakstīt citu sev ērtu laiku.",
         "all_busy_voice": "Atvainojiet, visi laiki ir aizņemti.",
         "all_busy_text": "Visi laiki ir aizņemti. Mēģiniet vēlāk.",
         "greeting": "Labdien! Jūs sazvanījāt {biz}. Izvēlieties valodu: latviešu spiediet vai sakiet viens, русский — divi, English — three.",
@@ -206,7 +207,8 @@ I18N: Dict[str, Dict[str, str]] = {
         "repeat_yes_no": "Lūdzu, pasakiet jā vai nē.",
         "invalid_time_choice": "Šis laiks nav pieejams. Lūdzu, izvēlieties no piedāvātajiem variantiem.",
         "voice_options_prompt": "Pieejami varianti: 1) {opt1}, 2) {opt2}. Varat izvēlēties vienu no tiem vai uzrakstīt citu sev ērtu laiku.",
-        "voice_options_repeat": "Varu piedāvāt šādus laikus: viens — {opt1}, divi — {opt2}. Kuru izvēlaties?",
+        "ask_booking_confirm": "Apstiprināt pierakstu uz {when}? Atbildiet ar jā vai nē.",
+        "voice_options_repeat": "Varu piedāvāt šādus laikus: 1) {opt1}, 2) {opt2}. Varat izvēlēties vienu no tiem vai uzrakstīt citu sev ērtu laiku.",
     },
     "ru": {
         "service_unavailable_voice": "Извините, сервис недоступен.",
@@ -217,13 +219,14 @@ I18N: Dict[str, Dict[str, str]] = {
         "reschedule_ask": "Запись на {when}. На какое время перенести?",
         "booking_confirmed": "Спасибо! Запись подтверждена.",
         "booking_confirmed_text": "Подтверждено: {service} {when}",
+        "booking_failed": "Не удалось подтвердить запись. Попробуйте ещё раз.",
         "need_service": "Какую услугу вы хотите?",
         "need_time": "На какую дату и время вам удобно?",
         "need_name": "Как вас зовут?",
         "closed_voice": "В это время мы не работаем. Отправляю свободные варианты сообщением.",
-        "closed_text": "В это время мы не работаем. Варианты: 1) {opt1} 2) {opt2}",
+        "closed_text": "В это время мы не работаем. Могу предложить: 1) {opt1}, 2) {opt2}. Вы также можете написать другое удобное вам время в рабочие часы.",
         "busy_voice": "Это время занято. Отправляю варианты сообщением.",
-        "busy_text": "Это время занято. Варианты: 1) {opt1} 2) {opt2}",
+        "busy_text": "Это время занято. Могу предложить: 1) {opt1}, 2) {opt2}. Вы также можете написать другое удобное вам время.",
         "all_busy_voice": "Извините, все слоты заняты.",
         "all_busy_text": "Свободных слотов нет. Попробуйте позже.",
         "greeting": "Здравствуйте! Вы позвонили в {biz}. Выберите язык: латышский — один, русский — два, английский — три.",
@@ -240,8 +243,9 @@ I18N: Dict[str, Dict[str, str]] = {
         "ask_booking_time_only": "Хорошо. На какое время вам удобно?",
         "repeat_yes_no": "Пожалуйста, скажите да или нет.",
         "invalid_time_choice": "Это время недоступно. Пожалуйста, выберите один из предложенных вариантов.",
-        "voice_options_prompt": "Доступны варианты: один — {opt1}, два — {opt2}. Какой выбираете?",
-        "voice_options_repeat": "Могу предложить такие варианты: один — {opt1}, два — {opt2}. Какой выбираете?",
+        "voice_options_prompt": "Доступны варианты: один — {opt1}, два — {opt2}. Вы можете выбрать один из них или назвать другое удобное время.",
+        "ask_booking_confirm": "Подтвердить запись на {when}? Ответьте да или нет.",
+        "voice_options_repeat": "Могу предложить такие варианты: 1) {opt1}, 2) {opt2}. Вы можете выбрать один из них или написать другое удобное время.",
     },
     "en": {
         "service_unavailable_voice": "Sorry, the service is unavailable.",
@@ -252,13 +256,14 @@ I18N: Dict[str, Dict[str, str]] = {
         "reschedule_ask": "Your appointment is on {when}. What time would you like to move it to?",
         "booking_confirmed": "Thank you! Your appointment is confirmed.",
         "booking_confirmed_text": "Confirmed: {service} {when}",
+        "booking_failed": "I could not confirm the booking. Please try again.",
         "need_service": "Which service would you like?",
         "need_time": "What date and time would work for you?",
         "need_name": "What is your name?",
         "closed_voice": "We are closed at that time. I am sending available options by message.",
-        "closed_text": "We are closed at that time. Options: 1) {opt1} 2) {opt2}",
+        "closed_text": "We are closed at that time. I can offer: 1) {opt1}, 2) {opt2}. You can also type another time within working hours.",
         "busy_voice": "That time is already booked. I am sending available options by message.",
-        "busy_text": "That time is busy. Options: 1) {opt1} 2) {opt2}",
+        "busy_text": "That time is already taken. I can offer: 1) {opt1}, 2) {opt2}. You can also type another convenient time.",
         "all_busy_voice": "Sorry, all slots are busy.",
         "all_busy_text": "No available slots right now. Please try later.",
         "greeting": "Hello! You have reached {biz}. Choose a language: Latvian press or say one, Russian two, English three.",
@@ -275,8 +280,9 @@ I18N: Dict[str, Dict[str, str]] = {
         "ask_booking_time_only": "Sure. What time works for you?",
         "repeat_yes_no": "Please say yes or no.",
         "invalid_time_choice": "That time is not available. Please choose one of the offered options.",
-        "voice_options_prompt": "Available options: one — {opt1}, two — {opt2}. Which do you choose?",
-        "voice_options_repeat": "I can offer these times: one — {opt1}, two — {opt2}. Which do you choose?",
+        "voice_options_prompt": "Available options: one — {opt1}, two — {opt2}. You can choose one of them or say another convenient time.",
+        "ask_booking_confirm": "Confirm the booking for {when}? Please answer yes or no.",
+        "voice_options_repeat": "I can offer these times: 1) {opt1}, 2) {opt2}. You can choose one of them or type another convenient time.",
     },
 }
 
@@ -2126,7 +2132,7 @@ def prompt_for_state(lang: str, c: Dict[str, Any], pending: Dict[str, Any]) -> s
         dt_confirm = parse_dt_any_tz(confirm_iso)
         service_name = apply_service_aliases(c.get("service"), {}) or c.get("service") or pending.get("service") or ""
         if dt_confirm:
-            return t(lang, "Apstiprināt pierakstu? (Jā / Nē)", when=format_dt_short(dt_confirm), service=service_name or t(lang, "need_service"))
+            return t(lang, "ask_booking_confirm", when=format_dt_short(dt_confirm), service=service_name or t(lang, "need_service"))
         return t(lang, "repeat_yes_no")
     return t(lang, "how_help")
 
@@ -2226,8 +2232,8 @@ def book_appointment_for_datetime(
         c["datetime_iso"] = dt_start.isoformat()
         return {
             "status": "need_more",
-            "reply_voice": t(lang, "Apstiprināt pierakstu? (Jā / Nē)", when=format_dt_short(dt_start), service=final_service),
-            "msg_out": t(lang, "Apstiprināt pierakstu? (Jā / Nē)", when=format_dt_short(dt_start), service=final_service),
+            "reply_voice": t(lang, "ask_booking_confirm", when=format_dt_short(dt_start), service=final_service),
+            "msg_out": t(lang, "ask_booking_confirm", when=format_dt_short(dt_start), service=final_service),
             "lang": lang,
         }
 
