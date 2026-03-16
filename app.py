@@ -3491,3 +3491,61 @@ def onboarding_create_tenant(payload: dict = Body(...)):
         "phone_number": phone_number or None,
         "onboarding_google_url": f"{SERVER_BASE_URL}{google_path}" if SERVER_BASE_URL else google_path,
     }
+
+
+# =========================
+# DEV LOCAL CHAT (no Twilio cost)
+# =========================
+from pydantic import BaseModel
+
+class DevChatRequest(BaseModel):
+    tenant_id: str
+    user_id: str
+    message: str
+    channel: str = "dev"
+    lang: str = "lv"
+
+class DevResetRequest(BaseModel):
+    tenant_id: str
+    user_id: str
+
+@app.post("/dev_chat")
+async def dev_chat(req: DevChatRequest):
+    try:
+        result = handle_user_text(
+            tenant_id=req.tenant_id,
+            user_id=req.user_id,
+            text=req.message,
+            channel=req.channel,
+            lang=req.lang
+        )
+        return {
+            "status": result.get("status"),
+            "reply": result.get("reply"),
+            "state": result.get("state"),
+            "pending": result.get("pending")
+        }
+    except Exception as e:
+        log.exception("DEV CHAT ERROR")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/dev_reset")
+async def dev_reset(req: DevResetRequest):
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("""
+                delete from conversations
+                where tenant_id = :tenant_id
+                and user_id = :user_id
+                """),
+                {
+                    "tenant_id": req.tenant_id,
+                    "user_id": req.user_id
+                }
+            )
+        return {"status": "reset_ok"}
+    except Exception as e:
+        log.exception("DEV RESET ERROR")
+        raise HTTPException(status_code=500, detail=str(e))
