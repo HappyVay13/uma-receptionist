@@ -219,6 +219,8 @@ I18N: Dict[str, Dict[str, str]] = {
         "voice_options_repeat": "Varu piedāvāt šādus laikus: 1) {opt1}, 2) {opt2}. Varat izvēlēties vienu no tiem vai uzrakstīt citu sev ērtu laiku.",
         "smart_slots_prompt": "Pieejamie laiki: 1) {opt1}, 2) {opt2}, 3) {opt3}. Varat izvēlēties numuru vai uzrakstīt citu sev ērtu laiku.",
         "smart_slots_repeat": "Varu piedāvāt šādus laikus: 1) {opt1}, 2) {opt2}, 3) {opt3}. Varat izvēlēties numuru vai uzrakstīt citu sev ērtu laiku.",
+        "holiday_closed_text": "Diemžēl šajā dienā mēs nestrādājam. Vai vēlaties citu dienu?",
+        "holiday_closed_voice": "Diemžēl šajā dienā mēs nestrādājam. Vai vēlaties citu dienu?",
     },
     "ru": {
         "service_unavailable_voice": "Извините, сервис недоступен.",
@@ -259,6 +261,8 @@ I18N: Dict[str, Dict[str, str]] = {
         "voice_options_repeat": "Могу предложить такие варианты: 1) {opt1}, 2) {opt2}. Вы можете выбрать один из них или написать другое удобное время.",
         "smart_slots_prompt": "Доступные варианты: 1) {opt1}, 2) {opt2}, 3) {opt3}. Вы можете выбрать номер или написать другое удобное время.",
         "smart_slots_repeat": "Могу предложить такие варианты: 1) {opt1}, 2) {opt2}, 3) {opt3}. Вы можете выбрать номер или написать другое удобное время.",
+        "holiday_closed_text": "К сожалению, в этот день мы не работаем. Хотите выбрать другую дату?",
+        "holiday_closed_voice": "К сожалению, в этот день мы не работаем. Хотите выбрать другую дату?",
     },
     "en": {
         "service_unavailable_voice": "Sorry, the service is unavailable.",
@@ -299,6 +303,8 @@ I18N: Dict[str, Dict[str, str]] = {
         "voice_options_repeat": "I can offer these times: 1) {opt1}, 2) {opt2}. You can choose one of them or type another convenient time.",
         "smart_slots_prompt": "Available times: 1) {opt1}, 2) {opt2}, 3) {opt3}. You can choose a number or type another convenient time.",
         "smart_slots_repeat": "I can offer these times: 1) {opt1}, 2) {opt2}, 3) {opt3}. You can choose a number or type another convenient time.",
+        "holiday_closed_text": "Unfortunately, we are closed on that day. Would you like another date?",
+        "holiday_closed_voice": "Unfortunately, we are closed on that day. Would you like another date?",
     },
 }
 
@@ -1601,10 +1607,19 @@ def tenant_business_rules(tenant: Dict[str, Any], work_start: str, work_end: str
                 if isinstance(interval, (list, tuple)) and len(interval) >= 2:
                     breaks_by_day[wk].append([str(interval[0]).strip(), str(interval[1]).strip()])
 
+    holidays: List[str] = []
+    src_holidays = tenant.get("holidays_json") or tenant.get("holidays")
+    parsed_holidays = _safe_json_obj(src_holidays)
+    if isinstance(parsed_holidays, list):
+        holidays = [str(x).strip() for x in parsed_holidays if str(x).strip()]
+    elif isinstance(parsed_holidays, str) and parsed_holidays.strip():
+        holidays = [parsed_holidays.strip()]
+
     return {
         "weekly_hours": weekly_hours,
         "days_off": sorted(days_off),
         "breaks": breaks_by_day,
+        "holidays": holidays,
     }
 
 
@@ -2256,6 +2271,8 @@ def in_business_hours(
             weekday_key = _weekday_key_for_date(dt_start)
             rule_hours = (business_rules.get("weekly_hours") or {}).get(weekday_key)
             rule_breaks = (business_rules.get("breaks") or {}).get(weekday_key) or []
+        if is_holiday_for_rules(dt_start, business_rules):
+            return False
         if rule_hours is None and business_rules:
             return False
 
@@ -2312,6 +2329,8 @@ def find_first_two_slots_for_day(
 ):
     try:
         weekday_key = _weekday_key_for_date(day_dt)
+        if business_rules and is_holiday_for_rules(day_dt, business_rules):
+            return None
         if business_rules:
             rule_hours = (business_rules.get("weekly_hours") or {}).get(weekday_key)
             if not rule_hours:
@@ -2349,6 +2368,8 @@ def find_first_n_slots_for_day(
 ):
     try:
         weekday_key = _weekday_key_for_date(day_dt)
+        if business_rules and is_holiday_for_rules(day_dt, business_rules):
+            return []
         if business_rules:
             rule_hours = (business_rules.get("weekly_hours") or {}).get(weekday_key)
             if not rule_hours:
@@ -2903,6 +2924,21 @@ def book_appointment_for_datetime(
     if not calendar_ready:
         return blocked_result_for_lang(lang)
 
+    if is_holiday_for_rules(dt_start, settings.get("business_rules")):
+        pending = c.get("pending") or {}
+        pending["booking_intent"] = True
+        pending["awaiting_time_date_iso"] = None
+        clear_offered_slots(pending)
+        c["pending"] = pending
+        c["state"] = STATE_AWAITING_DATE
+        c["datetime_iso"] = None
+        return {
+            "status": "need_more" if voice_like_channel else "holiday_closed",
+            "reply_voice": t(lang, "holiday_closed_voice"),
+            "msg_out": t(lang, "holiday_closed_text"),
+            "lang": lang,
+        }
+
     if not in_business_hours(dt_start, duration_min, settings["work_start"], settings["work_end"], settings.get("business_rules")):
         opts = find_next_two_slots(settings["calendar_id"], dt_start, duration_min, settings["work_start"], settings["work_end"], settings.get("business_rules"))
         if opts:
@@ -3264,6 +3300,16 @@ def handle_user_text(
             ) if calendar_ready else []
             c["state"] = STATE_AWAITING_TIME
             c["datetime_iso"] = None
+            if is_holiday_for_rules(base_date, settings.get("business_rules")):
+                c["pending"] = pending
+                c["state"] = STATE_AWAITING_DATE
+                db_save_conversation(tenant_id, user_key, c)
+                return {
+                    "status": "need_more",
+                    "reply_voice": t(lang, "holiday_closed_voice"),
+                    "msg_out": t(lang, "holiday_closed_text"),
+                    "lang": lang,
+                }
             if len(day_slots) >= 3:
                 pending = set_offered_slots(pending, day_slots[:3])
                 c["pending"] = pending
@@ -4199,15 +4245,21 @@ def dev_chat_ui():
 # -------------------------
 def parse_holidays(tenant: dict):
     try:
-        raw = tenant.get("holidays_json")
+        raw = tenant.get("holidays_json") or tenant.get("holidays")
         if not raw:
             return set()
         if isinstance(raw, str):
             raw = json.loads(raw)
-        return set(raw)
-    except:
+        return set(str(x).strip() for x in raw if str(x).strip())
+    except Exception:
         return set()
 
 def is_holiday(check_date: date, tenant: dict):
     holidays = parse_holidays(tenant)
     return check_date.strftime("%Y-%m-%d") in holidays
+
+def is_holiday_for_rules(dt_value: datetime, business_rules: Optional[Dict[str, Any]] = None) -> bool:
+    if not business_rules:
+        return False
+    holidays = business_rules.get("holidays") or []
+    return dt_value.strftime("%Y-%m-%d") in holidays
