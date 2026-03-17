@@ -173,6 +173,8 @@ BUSINESS_FALLBACK = {
 BUSINESS_WEEKLY_HOURS_JSON = os.getenv("BIZ_WEEKLY_HOURS_JSON", "").strip()
 BUSINESS_BREAKS_JSON = os.getenv("BIZ_BREAKS_JSON", "").strip()
 BUSINESS_DAYS_OFF = os.getenv("BIZ_DAYS_OFF", "").strip()
+BUSINESS_MIN_NOTICE_MINUTES = int((os.getenv("BIZ_MIN_NOTICE_MINUTES", "0") or "0").strip())
+BUSINESS_BUFFER_MINUTES = int((os.getenv("BIZ_BUFFER_MINUTES", "0") or "0").strip())
 
 
 
@@ -221,6 +223,8 @@ I18N: Dict[str, Dict[str, str]] = {
         "smart_slots_repeat": "Varu piedāvāt šādus laikus: 1) {opt1}, 2) {opt2}, 3) {opt3}. Varat izvēlēties numuru vai uzrakstīt citu sev ērtu laiku.",
         "holiday_closed_text": "Diemžēl šajā dienā mēs nestrādājam. Vai vēlaties citu dienu?",
         "holiday_closed_voice": "Diemžēl šajā dienā mēs nestrādājam. Vai vēlaties citu dienu?",
+        "min_notice_text": "Diemžēl tik drīz pierakstu vairs nevaram pieņemt. Varu piedāvāt tuvākos pieejamos laikus.",
+        "min_notice_voice": "Diemžēl tik drīz pierakstu vairs nevaram pieņemt. Varu piedāvāt tuvākos pieejamos laikus.",
     },
     "ru": {
         "service_unavailable_voice": "Извините, сервис недоступен.",
@@ -263,6 +267,8 @@ I18N: Dict[str, Dict[str, str]] = {
         "smart_slots_repeat": "Могу предложить такие варианты: 1) {opt1}, 2) {opt2}, 3) {opt3}. Вы можете выбрать номер или написать другое удобное время.",
         "holiday_closed_text": "К сожалению, в этот день мы не работаем. Хотите выбрать другую дату?",
         "holiday_closed_voice": "К сожалению, в этот день мы не работаем. Хотите выбрать другую дату?",
+        "min_notice_text": "К сожалению, так скоро записать уже нельзя. Могу предложить ближайшие доступные варианты.",
+        "min_notice_voice": "К сожалению, так скоро записать уже нельзя. Могу предложить ближайшие доступные варианты.",
     },
     "en": {
         "service_unavailable_voice": "Sorry, the service is unavailable.",
@@ -305,6 +311,8 @@ I18N: Dict[str, Dict[str, str]] = {
         "smart_slots_repeat": "I can offer these times: 1) {opt1}, 2) {opt2}, 3) {opt3}. You can choose a number or type another convenient time.",
         "holiday_closed_text": "Unfortunately, we are closed on that day. Would you like another date?",
         "holiday_closed_voice": "Unfortunately, we are closed on that day. Would you like another date?",
+        "min_notice_text": "Unfortunately, it is too soon to book that time now. I can offer the nearest available options.",
+        "min_notice_voice": "Unfortunately, it is too soon to book that time now. I can offer the nearest available options.",
     },
 }
 
@@ -1520,6 +1528,15 @@ def _safe_json_obj(value: Any) -> Any:
         return None
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        if value is None or str(value).strip() == "":
+            return default
+        return int(value)
+    except Exception:
+        return default
+
+
 def _normalize_weekday_key(value: str) -> Optional[str]:
     low = (value or "").strip().lower()
     mapping = {
@@ -1615,11 +1632,28 @@ def tenant_business_rules(tenant: Dict[str, Any], work_start: str, work_end: str
     elif isinstance(parsed_holidays, str) and parsed_holidays.strip():
         holidays = [parsed_holidays.strip()]
 
+    min_notice_minutes = _safe_int(
+        tenant.get("min_notice_minutes")
+        or tenant.get("lead_time_min")
+        or tenant.get("minimum_notice_minutes")
+        or BUSINESS_MIN_NOTICE_MINUTES,
+        0,
+    )
+    buffer_minutes = _safe_int(
+        tenant.get("buffer_minutes")
+        or tenant.get("booking_buffer_min")
+        or tenant.get("service_buffer_minutes")
+        or BUSINESS_BUFFER_MINUTES,
+        0,
+    )
+
     return {
         "weekly_hours": weekly_hours,
         "days_off": sorted(days_off),
         "breaks": breaks_by_day,
         "holidays": holidays,
+        "min_notice_minutes": max(0, min_notice_minutes),
+        "buffer_minutes": max(0, buffer_minutes),
     }
 
 
@@ -2092,9 +2126,22 @@ def get_gcal():
         return None
 
 
-def is_slot_busy(calendar_id: str, dt_start: datetime, dt_end: datetime) -> bool:
+def is_slot_busy(calendar_id: str, dt_start: datetime, dt_end: datetime, buffer_minutes: int = 0) -> bool:
     svc = get_gcal()
     if not svc or not calendar_id:
+        return False
+    window_start = dt_start - timedelta(minutes=max(0, int(buffer_minutes or 0)))
+    window_end = dt_end + timedelta(minutes=max(0, int(buffer_minutes or 0)))
+    body = {
+        "timeMin": window_start.isoformat(),
+        "timeMax": window_end.isoformat(),
+        "items": [{"id": calendar_id}],
+    }
+    try:
+        fb = svc.freebusy().query(body=body).execute()
+        return len(fb["calendars"][calendar_id].get("busy", [])) > 0
+    except Exception as e:
+        log.error("Calendar freebusy failed: %s", e)
         return False
     body = {
         "timeMin": dt_start.isoformat(),
@@ -2273,6 +2320,8 @@ def in_business_hours(
             rule_breaks = (business_rules.get("breaks") or {}).get(weekday_key) or []
         if is_holiday_for_rules(dt_start, business_rules):
             return False
+        if violates_min_notice(dt_start, business_rules):
+            return False
         if rule_hours is None and business_rules:
             return False
 
@@ -2310,7 +2359,8 @@ def find_next_two_slots(
     for _ in range(96):
         if in_business_hours(candidate, duration_min, work_start, work_end, business_rules):
             if not is_slot_busy(
-                calendar_id, candidate, candidate + timedelta(minutes=duration_min)
+                calendar_id, candidate, candidate + timedelta(minutes=duration_min),
+                _safe_int((business_rules or {}).get("buffer_minutes"), 0)
             ):
                 found.append(candidate)
                 if len(found) == 2:
@@ -2349,7 +2399,7 @@ def find_first_two_slots_for_day(
     step = timedelta(minutes=30)
 
     while candidate + timedelta(minutes=duration_min) <= day_end:
-        if in_business_hours(candidate, duration_min, work_start, work_end, business_rules) and not is_slot_busy(calendar_id, candidate, candidate + timedelta(minutes=duration_min)):
+        if in_business_hours(candidate, duration_min, work_start, work_end, business_rules) and not is_slot_busy(calendar_id, candidate, candidate + timedelta(minutes=duration_min), _safe_int((business_rules or {}).get("buffer_minutes"), 0)):
             found.append(candidate)
             if len(found) == 2:
                 return found[0], found[1]
@@ -2388,7 +2438,7 @@ def find_first_n_slots_for_day(
     step = timedelta(minutes=30)
 
     while candidate + timedelta(minutes=duration_min) <= day_end:
-        if in_business_hours(candidate, duration_min, work_start, work_end, business_rules) and not is_slot_busy(calendar_id, candidate, candidate + timedelta(minutes=duration_min)):
+        if in_business_hours(candidate, duration_min, work_start, work_end, business_rules) and not is_slot_busy(calendar_id, candidate, candidate + timedelta(minutes=duration_min), _safe_int((business_rules or {}).get("buffer_minutes"), 0)):
             found.append(candidate)
             if len(found) >= max(1, limit):
                 return found
@@ -2939,6 +2989,39 @@ def book_appointment_for_datetime(
             "lang": lang,
         }
 
+    if violates_min_notice(dt_start, settings.get("business_rules")):
+        duration_for_notice = duration_min
+        cutoff = min_notice_cutoff(settings.get("business_rules")) or now_ts()
+        opts = find_next_two_slots(
+            settings["calendar_id"],
+            cutoff,
+            duration_for_notice,
+            settings["work_start"],
+            settings["work_end"],
+            settings.get("business_rules"),
+        )
+        if opts:
+            pending = set_offered_slots(pending, [opts[0], opts[1]])
+            pending["service"] = c.get("service")
+            pending["name"] = c.get("name")
+            pending.pop("confirm_slot_iso", None)
+            c["pending"] = pending
+            c["state"] = STATE_AWAITING_TIME
+            c["datetime_iso"] = None
+            voice_prompt = t(lang, "voice_options_prompt", opt1=format_dt_short(opts[0]), opt2=format_dt_short(opts[1])) if voice_like_channel else t(lang, "min_notice_voice")
+            return {
+                "status": "need_more" if voice_like_channel else "min_notice",
+                "reply_voice": voice_prompt,
+                "msg_out": t(lang, "min_notice_text"),
+                "lang": lang,
+            }
+        return {
+            "status": "need_more" if voice_like_channel else "min_notice",
+            "reply_voice": t(lang, "min_notice_voice"),
+            "msg_out": t(lang, "min_notice_text"),
+            "lang": lang,
+        }
+
     if not in_business_hours(dt_start, duration_min, settings["work_start"], settings["work_end"], settings.get("business_rules")):
         opts = find_next_two_slots(settings["calendar_id"], dt_start, duration_min, settings["work_start"], settings["work_end"], settings.get("business_rules"))
         if opts:
@@ -2963,7 +3046,7 @@ def book_appointment_for_datetime(
             "lang": lang,
         }
 
-    if is_slot_busy(settings["calendar_id"], dt_start, dt_start + timedelta(minutes=duration_min)):
+    if is_slot_busy(settings["calendar_id"], dt_start, dt_start + timedelta(minutes=duration_min), _safe_int((settings.get("business_rules") or {}).get("buffer_minutes"), 0)):
         opts = find_next_two_slots(settings["calendar_id"], dt_start, duration_min, settings["work_start"], settings["work_end"], settings.get("business_rules"))
         if opts:
             pending = set_offered_slots(pending, [opts[0], opts[1]])
@@ -4004,6 +4087,8 @@ def dev_rules(tenant_id: str):
         "work_start": settings.get("work_start"),
         "work_end": settings.get("work_end"),
         "business_rules": settings.get("business_rules"),
+        "min_notice_minutes": (settings.get("business_rules") or {}).get("min_notice_minutes"),
+        "buffer_minutes": (settings.get("business_rules") or {}).get("buffer_minutes"),
     }
 
 
@@ -4263,3 +4348,16 @@ def is_holiday_for_rules(dt_value: datetime, business_rules: Optional[Dict[str, 
         return False
     holidays = business_rules.get("holidays") or []
     return dt_value.strftime("%Y-%m-%d") in holidays
+
+
+def min_notice_cutoff(business_rules: Optional[Dict[str, Any]] = None) -> Optional[datetime]:
+    mins = _safe_int((business_rules or {}).get("min_notice_minutes"), 0)
+    if mins <= 0:
+        return None
+    return now_ts() + timedelta(minutes=mins)
+
+def violates_min_notice(dt_value: datetime, business_rules: Optional[Dict[str, Any]] = None) -> bool:
+    cutoff = min_notice_cutoff(business_rules)
+    if cutoff is None:
+        return False
+    return dt_value < cutoff
