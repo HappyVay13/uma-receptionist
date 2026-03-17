@@ -170,6 +170,11 @@ BUSINESS_FALLBACK = {
     "work_end": WORK_END_HHMM_DEFAULT,
 }
 
+BUSINESS_WEEKLY_HOURS_JSON = os.getenv("BIZ_WEEKLY_HOURS_JSON", "").strip()
+BUSINESS_BREAKS_JSON = os.getenv("BIZ_BREAKS_JSON", "").strip()
+BUSINESS_DAYS_OFF = os.getenv("BIZ_DAYS_OFF", "").strip()
+
+
 
 # -------------------------
 # I18N
@@ -1495,6 +1500,114 @@ def tenant_services_for_lang(tenant: Dict[str, Any], lang: str) -> str:
     return BUSINESS_FALLBACK[f"services_{lang}"]
 
 
+def _safe_json_obj(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (dict, list)):
+        return value
+    txt = str(value).strip()
+    if not txt:
+        return None
+    try:
+        return json.loads(txt)
+    except Exception:
+        return None
+
+
+def _normalize_weekday_key(value: str) -> Optional[str]:
+    low = (value or "").strip().lower()
+    mapping = {
+        "mon": "mon", "monday": "mon", "1": "mon",
+        "tue": "tue", "tues": "tue", "tuesday": "tue", "2": "tue",
+        "wed": "wed", "wednesday": "wed", "3": "wed",
+        "thu": "thu", "thur": "thu", "thurs": "thu", "thursday": "thu", "4": "thu",
+        "fri": "fri", "friday": "fri", "5": "fri",
+        "sat": "sat", "saturday": "sat", "6": "sat",
+        "sun": "sun", "sunday": "sun", "0": "sun", "7": "sun",
+    }
+    return mapping.get(low)
+
+
+def _weekday_key_for_date(dt_value: datetime) -> str:
+    keys = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+    return keys[dt_value.weekday()]
+
+
+def default_weekly_hours(work_start: str, work_end: str) -> Dict[str, Optional[List[str]]]:
+    return {k: [work_start, work_end] for k in ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]}
+
+
+def tenant_business_rules(tenant: Dict[str, Any], work_start: str, work_end: str) -> Dict[str, Any]:
+    weekly_hours = default_weekly_hours(work_start, work_end)
+    src_weekly = (
+        tenant.get("weekly_hours_json")
+        or tenant.get("business_hours_json")
+        or tenant.get("working_hours_json")
+        or BUSINESS_WEEKLY_HOURS_JSON
+    )
+    parsed_weekly = _safe_json_obj(src_weekly)
+    if isinstance(parsed_weekly, dict):
+        for raw_key, value in parsed_weekly.items():
+            wk = _normalize_weekday_key(str(raw_key))
+            if not wk:
+                continue
+            if value in (None, False, "closed", "off"):
+                weekly_hours[wk] = None
+            elif isinstance(value, (list, tuple)) and len(value) >= 2:
+                weekly_hours[wk] = [str(value[0]).strip(), str(value[1]).strip()]
+            elif isinstance(value, dict):
+                start = str(value.get("start") or value.get("from") or "").strip()
+                end = str(value.get("end") or value.get("to") or "").strip()
+                if start and end:
+                    weekly_hours[wk] = [start, end]
+
+    days_off: set[str] = set()
+    src_days_off = tenant.get("days_off") or tenant.get("days_off_json") or BUSINESS_DAYS_OFF
+    parsed_days_off = _safe_json_obj(src_days_off)
+    if isinstance(parsed_days_off, list):
+        for item in parsed_days_off:
+            wk = _normalize_weekday_key(str(item))
+            if wk:
+                days_off.add(wk)
+    else:
+        for part in str(src_days_off or "").split(","):
+            wk = _normalize_weekday_key(part)
+            if wk:
+                days_off.add(wk)
+    for wk in list(days_off):
+        weekly_hours[wk] = None
+
+    breaks_by_day = {k: [] for k in ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]}
+    src_breaks = tenant.get("breaks_json") or tenant.get("breaks") or BUSINESS_BREAKS_JSON
+    parsed_breaks = _safe_json_obj(src_breaks)
+    if isinstance(parsed_breaks, dict):
+        for raw_key, value in parsed_breaks.items():
+            wk = _normalize_weekday_key(str(raw_key))
+            if not wk:
+                continue
+            vals = value if isinstance(value, list) else [value]
+            for interval in vals:
+                if isinstance(interval, (list, tuple)) and len(interval) >= 2:
+                    breaks_by_day[wk].append([str(interval[0]).strip(), str(interval[1]).strip()])
+                elif isinstance(interval, dict):
+                    start = str(interval.get("start") or interval.get("from") or "").strip()
+                    end = str(interval.get("end") or interval.get("to") or "").strip()
+                    if start and end:
+                        breaks_by_day[wk].append([start, end])
+    elif isinstance(parsed_breaks, list):
+        # global breaks applied to every day
+        for wk in breaks_by_day:
+            for interval in parsed_breaks:
+                if isinstance(interval, (list, tuple)) and len(interval) >= 2:
+                    breaks_by_day[wk].append([str(interval[0]).strip(), str(interval[1]).strip()])
+
+    return {
+        "weekly_hours": weekly_hours,
+        "days_off": sorted(days_off),
+        "breaks": breaks_by_day,
+    }
+
+
 def tenant_settings(tenant: Dict[str, Any], lang: str) -> Dict[str, Any]:
     biz_name = str(
         tenant.get("business_name")
@@ -1502,13 +1615,16 @@ def tenant_settings(tenant: Dict[str, Any], lang: str) -> Dict[str, Any]:
         or BUSINESS_FALLBACK["business_name"]
     )
     addr = str(tenant.get("address") or BUSINESS_FALLBACK["address"])
+    work_start = str(tenant.get("work_start") or WORK_START_HHMM_DEFAULT)
+    work_end = str(tenant.get("work_end") or WORK_END_HHMM_DEFAULT)
     return {
         "biz_name": biz_name,
         "addr": addr,
         "services_hint": tenant_services_for_lang(tenant, lang),
-        "work_start": str(tenant.get("work_start") or WORK_START_HHMM_DEFAULT),
-        "work_end": str(tenant.get("work_end") or WORK_END_HHMM_DEFAULT),
+        "work_start": work_start,
+        "work_end": work_end,
         "calendar_id": resolve_tenant_calendar_id(tenant) or tenant_calendar_id(tenant),
+        "business_rules": tenant_business_rules(tenant, work_start, work_end),
     }
 
 
@@ -2126,18 +2242,40 @@ def gather_followup_prompt(result: Dict[str, Any]) -> str:
 # -------------------------
 # CALENDAR LOGIC (Business Hours & Slots)
 # -------------------------
+def _interval_overlaps(start_a: datetime, end_a: datetime, start_b: datetime, end_b: datetime) -> bool:
+    return start_a < end_b and end_a > start_b
+
+
 def in_business_hours(
-    dt_start: datetime, duration_min: int, work_start: str, work_end: str
+    dt_start: datetime, duration_min: int, work_start: str, work_end: str, business_rules: Optional[Dict[str, Any]] = None
 ) -> bool:
     try:
-        ws_h, ws_m = _parse_hhmm(work_start)
-        we_h, we_m = _parse_hhmm(work_end)
+        rule_hours = None
+        rule_breaks: List[List[str]] = []
+        if business_rules:
+            weekday_key = _weekday_key_for_date(dt_start)
+            rule_hours = (business_rules.get("weekly_hours") or {}).get(weekday_key)
+            rule_breaks = (business_rules.get("breaks") or {}).get(weekday_key) or []
+        if rule_hours is None and business_rules:
+            return False
+
+        start_hhmm, end_hhmm = (rule_hours or [work_start, work_end])[:2]
+        ws_h, ws_m = _parse_hhmm(start_hhmm)
+        we_h, we_m = _parse_hhmm(end_hhmm)
         day_start = dt_start.replace(hour=ws_h, minute=ws_m, second=0, microsecond=0)
         day_end = dt_start.replace(hour=we_h, minute=we_m, second=0, microsecond=0)
-        return (
-            dt_start >= day_start
-            and (dt_start + timedelta(minutes=duration_min)) <= day_end
-        )
+        dt_end = dt_start + timedelta(minutes=duration_min)
+        if not (dt_start >= day_start and dt_end <= day_end):
+            return False
+
+        for br_start, br_end in rule_breaks:
+            bs_h, bs_m = _parse_hhmm(br_start)
+            be_h, be_m = _parse_hhmm(br_end)
+            break_start = dt_start.replace(hour=bs_h, minute=bs_m, second=0, microsecond=0)
+            break_end = dt_start.replace(hour=be_h, minute=be_m, second=0, microsecond=0)
+            if _interval_overlaps(dt_start, dt_end, break_start, break_end):
+                return False
+        return True
     except Exception:
         return False
 
@@ -2148,11 +2286,12 @@ def find_next_two_slots(
     duration_min: int,
     work_start: str,
     work_end: str,
+    business_rules: Optional[Dict[str, Any]] = None,
 ):
     step, found = 30, []
     candidate = dt_start + timedelta(minutes=step)
     for _ in range(96):
-        if in_business_hours(candidate, duration_min, work_start, work_end):
+        if in_business_hours(candidate, duration_min, work_start, work_end, business_rules):
             if not is_slot_busy(
                 calendar_id, candidate, candidate + timedelta(minutes=duration_min)
             ):
@@ -2169,10 +2308,19 @@ def find_first_two_slots_for_day(
     duration_min: int,
     work_start: str,
     work_end: str,
+    business_rules: Optional[Dict[str, Any]] = None,
 ):
     try:
-        ws_h, ws_m = _parse_hhmm(work_start)
-        we_h, we_m = _parse_hhmm(work_end)
+        weekday_key = _weekday_key_for_date(day_dt)
+        if business_rules:
+            rule_hours = (business_rules.get("weekly_hours") or {}).get(weekday_key)
+            if not rule_hours:
+                return None
+            start_hhmm, end_hhmm = rule_hours[:2]
+        else:
+            start_hhmm, end_hhmm = work_start, work_end
+        ws_h, ws_m = _parse_hhmm(start_hhmm)
+        we_h, we_m = _parse_hhmm(end_hhmm)
     except Exception:
         return None
 
@@ -2182,7 +2330,7 @@ def find_first_two_slots_for_day(
     step = timedelta(minutes=30)
 
     while candidate + timedelta(minutes=duration_min) <= day_end:
-        if not is_slot_busy(calendar_id, candidate, candidate + timedelta(minutes=duration_min)):
+        if in_business_hours(candidate, duration_min, work_start, work_end, business_rules) and not is_slot_busy(calendar_id, candidate, candidate + timedelta(minutes=duration_min)):
             found.append(candidate)
             if len(found) == 2:
                 return found[0], found[1]
@@ -2197,10 +2345,19 @@ def find_first_n_slots_for_day(
     work_start: str,
     work_end: str,
     limit: int = 3,
+    business_rules: Optional[Dict[str, Any]] = None,
 ):
     try:
-        ws_h, ws_m = _parse_hhmm(work_start)
-        we_h, we_m = _parse_hhmm(work_end)
+        weekday_key = _weekday_key_for_date(day_dt)
+        if business_rules:
+            rule_hours = (business_rules.get("weekly_hours") or {}).get(weekday_key)
+            if not rule_hours:
+                return []
+            start_hhmm, end_hhmm = rule_hours[:2]
+        else:
+            start_hhmm, end_hhmm = work_start, work_end
+        ws_h, ws_m = _parse_hhmm(start_hhmm)
+        we_h, we_m = _parse_hhmm(end_hhmm)
     except Exception:
         return []
 
@@ -2210,7 +2367,7 @@ def find_first_n_slots_for_day(
     step = timedelta(minutes=30)
 
     while candidate + timedelta(minutes=duration_min) <= day_end:
-        if not is_slot_busy(calendar_id, candidate, candidate + timedelta(minutes=duration_min)):
+        if in_business_hours(candidate, duration_min, work_start, work_end, business_rules) and not is_slot_busy(calendar_id, candidate, candidate + timedelta(minutes=duration_min)):
             found.append(candidate)
             if len(found) >= max(1, limit):
                 return found
@@ -2746,8 +2903,8 @@ def book_appointment_for_datetime(
     if not calendar_ready:
         return blocked_result_for_lang(lang)
 
-    if not in_business_hours(dt_start, duration_min, settings["work_start"], settings["work_end"]):
-        opts = find_next_two_slots(settings["calendar_id"], dt_start, duration_min, settings["work_start"], settings["work_end"])
+    if not in_business_hours(dt_start, duration_min, settings["work_start"], settings["work_end"], settings.get("business_rules")):
+        opts = find_next_two_slots(settings["calendar_id"], dt_start, duration_min, settings["work_start"], settings["work_end"], settings.get("business_rules"))
         if opts:
             pending = set_offered_slots(pending, [opts[0], opts[1]])
             pending["service"] = c.get("service")
@@ -2771,7 +2928,7 @@ def book_appointment_for_datetime(
         }
 
     if is_slot_busy(settings["calendar_id"], dt_start, dt_start + timedelta(minutes=duration_min)):
-        opts = find_next_two_slots(settings["calendar_id"], dt_start, duration_min, settings["work_start"], settings["work_end"])
+        opts = find_next_two_slots(settings["calendar_id"], dt_start, duration_min, settings["work_start"], settings["work_end"], settings.get("business_rules"))
         if opts:
             pending = set_offered_slots(pending, [opts[0], opts[1]])
             pending["service"] = c.get("service")
@@ -3103,6 +3260,7 @@ def handle_user_text(
                 settings["work_start"],
                 settings["work_end"],
                 limit=3,
+                business_rules=settings.get("business_rules"),
             ) if calendar_ready else []
             c["state"] = STATE_AWAITING_TIME
             c["datetime_iso"] = None
@@ -3788,6 +3946,18 @@ def onboarding_create_tenant(payload: dict = Body(...)):
         "business_name": business_name,
         "phone_number": phone_number or None,
         "onboarding_google_url": f"{SERVER_BASE_URL}{google_path}" if SERVER_BASE_URL else google_path,
+    }
+
+
+@app.get("/dev_rules")
+def dev_rules(tenant_id: str):
+    tenant = get_tenant((tenant_id or "").strip() or TENANT_ID_DEFAULT)
+    settings = tenant_settings(tenant, get_lang(tenant.get("language") or "lv"))
+    return {
+        "tenant_id": tenant.get("_id"),
+        "work_start": settings.get("work_start"),
+        "work_end": settings.get("work_end"),
+        "business_rules": settings.get("business_rules"),
     }
 
 
