@@ -118,6 +118,8 @@ TWILIO_VALIDATE_SIGNATURE = (
 )
 TWILIO_FROM_NUMBER = os.getenv("TWILIO_FROM_NUMBER", "").strip()
 TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM", "").strip()
+BOOKING_CONFIRMATION_ENABLED = ((os.getenv("BOOKING_CONFIRMATION_ENABLED", "true") or "true").strip().lower() in ("1", "true", "yes", "on"))
+AUTO_SEND_CONFIRMATION_FOR_TEXT_CHANNELS = ((os.getenv("AUTO_SEND_CONFIRMATION_FOR_TEXT_CHANNELS", "false") or "false").strip().lower() in ("1", "true", "yes", "on"))
 
 # Twilio Voice SDK (WebRTC) token minting
 TWILIO_API_KEY_SID = os.getenv("TWILIO_API_KEY_SID", "").strip()
@@ -182,6 +184,7 @@ I18N: Dict[str, Dict[str, str]] = {
         "reschedule_ask": "Pieraksts {when}. Uz kuru laiku pārcelt?",
         "booking_confirmed": "Paldies! Pieraksts apstiprināts.",
         "booking_confirmed_text": "Apstiprināts: {service} {when}",
+        "booking_confirmation_sms": "Pieraksts apstiprināts: {service} {when}. {biz}",
         "booking_failed": "Neizdevās apstiprināt pierakstu. Mēģiniet vēlreiz.",
         "need_service": "Kādu pakalpojumu vēlaties?",
         "need_time": "Kad un cikos jums būtu ērti?",
@@ -219,6 +222,7 @@ I18N: Dict[str, Dict[str, str]] = {
         "reschedule_ask": "Запись на {when}. На какое время перенести?",
         "booking_confirmed": "Спасибо! Запись подтверждена.",
         "booking_confirmed_text": "Подтверждено: {service} {when}",
+        "booking_confirmation_sms": "Запись подтверждена: {service} {when}. {biz}",
         "booking_failed": "Не удалось подтвердить запись. Попробуйте ещё раз.",
         "need_service": "Какую услугу вы хотите?",
         "need_time": "На какую дату и время вам удобно?",
@@ -256,6 +260,7 @@ I18N: Dict[str, Dict[str, str]] = {
         "reschedule_ask": "Your appointment is on {when}. What time would you like to move it to?",
         "booking_confirmed": "Thank you! Your appointment is confirmed.",
         "booking_confirmed_text": "Confirmed: {service} {when}",
+        "booking_confirmation_sms": "Appointment confirmed: {service} {when}. {biz}",
         "booking_failed": "I could not confirm the booking. Please try again.",
         "need_service": "Which service would you like?",
         "need_time": "What date and time would work for you?",
@@ -1417,6 +1422,11 @@ def handle_user_text_with_logging(
         result=result,
         conv=conv,
     )
+    try:
+        tenant = get_tenant(tenant_id)
+        send_booking_confirmation_if_needed(tenant, raw_phone, channel, result)
+    except Exception as e:
+        log.error("booking_confirmation_failed tenant_id=%s channel=%s err=%s", tenant_id, channel, e)
     return result
 
 
@@ -1782,6 +1792,43 @@ def send_message(to_number: str, body: str):
         client.messages.create(from_=from_number, to=to_number, body=body)
     except Exception as e:
         log.error(f"Twilio send error: {e}")
+
+
+def send_booking_confirmation_if_needed(tenant: Dict[str, Any], raw_user: str, channel: str, result: Dict[str, Any]) -> bool:
+    if not BOOKING_CONFIRMATION_ENABLED:
+        return False
+    if str(result.get("status") or "").strip() != "booked":
+        return False
+
+    ch = (channel or "").strip().lower()
+    if ch in ("dev", ""):
+        return False
+    if ch in ("sms", "whatsapp") and not AUTO_SEND_CONFIRMATION_FOR_TEXT_CHANNELS:
+        return False
+
+    to_number = (raw_user or "").strip()
+    if ch == "voice":
+        to_number = normalize_incoming_to_number(raw_user)
+    if not channel_supports_messaging("sms", to_number):
+        return False
+
+    lang = get_lang(result.get("lang"))
+    biz_name = tenant_settings(tenant, lang)["biz_name"]
+    body = t(
+        lang,
+        "booking_confirmation_sms",
+        service=(result.get("service") or result.get("service_display") or ""),
+        when=(result.get("when") or result.get("datetime_text") or ""),
+        biz=biz_name,
+    )
+    if not body.strip():
+        body = f"{biz_name}: {result.get('msg_out') or result.get('reply_voice') or ''}".strip()
+    try:
+        send_message(to_number, body)
+        log.info("booking_confirmation_sent channel=%s to=%s tenant_id=%s", ch, to_number, tenant.get("_id"))
+        return True
+    except Exception:
+        return False
 
 
 def channel_supports_messaging(channel: str, raw_phone: str) -> bool:
@@ -2704,6 +2751,9 @@ def book_appointment_for_datetime(
         "reply_voice": t(lang, "booking_confirmed"),
         "msg_out": t(lang, "booking_confirmed_text", service=final_service, when=format_dt_short(dt_start)),
         "lang": lang,
+        "service": final_service,
+        "when": format_dt_short(dt_start),
+        "datetime_text": format_dt_short(dt_start),
     }
 
 
