@@ -212,6 +212,8 @@ I18N: Dict[str, Dict[str, str]] = {
         "voice_options_prompt": "Pieejami varianti: 1) {opt1}, 2) {opt2}. Varat izvēlēties vienu no tiem vai uzrakstīt citu sev ērtu laiku.",
         "ask_booking_confirm": "Apstiprināt pierakstu uz {when}? Atbildiet ar jā vai nē.",
         "voice_options_repeat": "Varu piedāvāt šādus laikus: 1) {opt1}, 2) {opt2}. Varat izvēlēties vienu no tiem vai uzrakstīt citu sev ērtu laiku.",
+        "smart_slots_prompt": "Pieejamie laiki: 1) {opt1}, 2) {opt2}, 3) {opt3}. Varat izvēlēties numuru vai uzrakstīt citu sev ērtu laiku.",
+        "smart_slots_repeat": "Varu piedāvāt šādus laikus: 1) {opt1}, 2) {opt2}, 3) {opt3}. Varat izvēlēties numuru vai uzrakstīt citu sev ērtu laiku.",
     },
     "ru": {
         "service_unavailable_voice": "Извините, сервис недоступен.",
@@ -250,6 +252,8 @@ I18N: Dict[str, Dict[str, str]] = {
         "voice_options_prompt": "Доступны варианты: один — {opt1}, два — {opt2}. Вы можете выбрать один из них или назвать другое удобное время.",
         "ask_booking_confirm": "Подтвердить запись на {when}? Ответьте да или нет.",
         "voice_options_repeat": "Могу предложить такие варианты: 1) {opt1}, 2) {opt2}. Вы можете выбрать один из них или написать другое удобное время.",
+        "smart_slots_prompt": "Доступные варианты: 1) {opt1}, 2) {opt2}, 3) {opt3}. Вы можете выбрать номер или написать другое удобное время.",
+        "smart_slots_repeat": "Могу предложить такие варианты: 1) {opt1}, 2) {opt2}, 3) {opt3}. Вы можете выбрать номер или написать другое удобное время.",
     },
     "en": {
         "service_unavailable_voice": "Sorry, the service is unavailable.",
@@ -288,6 +292,8 @@ I18N: Dict[str, Dict[str, str]] = {
         "voice_options_prompt": "Available options: one — {opt1}, two — {opt2}. You can choose one of them or say another convenient time.",
         "ask_booking_confirm": "Confirm the booking for {when}? Please answer yes or no.",
         "voice_options_repeat": "I can offer these times: 1) {opt1}, 2) {opt2}. You can choose one of them or type another convenient time.",
+        "smart_slots_prompt": "Available times: 1) {opt1}, 2) {opt2}, 3) {opt3}. You can choose a number or type another convenient time.",
+        "smart_slots_repeat": "I can offer these times: 1) {opt1}, 2) {opt2}, 3) {opt3}. You can choose a number or type another convenient time.",
     },
 }
 
@@ -2184,6 +2190,34 @@ def find_first_two_slots_for_day(
     return None
 
 
+def find_first_n_slots_for_day(
+    calendar_id: str,
+    day_dt: datetime,
+    duration_min: int,
+    work_start: str,
+    work_end: str,
+    limit: int = 3,
+):
+    try:
+        ws_h, ws_m = _parse_hhmm(work_start)
+        we_h, we_m = _parse_hhmm(work_end)
+    except Exception:
+        return []
+
+    candidate = day_dt.replace(hour=ws_h, minute=ws_m, second=0, microsecond=0)
+    day_end = day_dt.replace(hour=we_h, minute=we_m, second=0, microsecond=0)
+    found: List[datetime] = []
+    step = timedelta(minutes=30)
+
+    while candidate + timedelta(minutes=duration_min) <= day_end:
+        if not is_slot_busy(calendar_id, candidate, candidate + timedelta(minutes=duration_min)):
+            found.append(candidate)
+            if len(found) >= max(1, limit):
+                return found
+        candidate += step
+    return found
+
+
 def find_next_event_by_phone(calendar_id: str, phone: str, tenant_id: Optional[str] = None):
     svc = get_gcal()
     if not svc or not calendar_id:
@@ -2597,6 +2631,8 @@ def extract_slot_choice(msg: Optional[str], pending: Dict[str, Any]) -> Optional
         return offered[0]
     if low == "2" and len(offered) >= 2:
         return offered[1]
+    if low == "3" and len(offered) >= 3:
+        return offered[2]
 
     parsed_parts = parse_explicit_time_parts(low)
     if parsed_parts:
@@ -2625,6 +2661,12 @@ def prompt_for_state(lang: str, c: Dict[str, Any], pending: Dict[str, Any]) -> s
         return t(lang, "ask_booking_date")
     if state == STATE_AWAITING_TIME:
         offered = get_offered_slots(pending)
+        if len(offered) >= 3:
+            dt1 = parse_dt_any_tz(offered[0])
+            dt2 = parse_dt_any_tz(offered[1])
+            dt3 = parse_dt_any_tz(offered[2])
+            if dt1 and dt2 and dt3:
+                return t(lang, "smart_slots_repeat", opt1=format_dt_short(dt1), opt2=format_dt_short(dt2), opt3=format_dt_short(dt3))
         if len(offered) >= 2:
             dt1 = parse_dt_any_tz(offered[0])
             dt2 = parse_dt_any_tz(offered[1])
@@ -3054,17 +3096,28 @@ def handle_user_text(
             pending["booking_intent"] = True
             pending["awaiting_time_date_iso"] = base_date.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
             clear_offered_slots(pending)
-            day_slots = find_first_two_slots_for_day(
+            day_slots = find_first_n_slots_for_day(
                 settings["calendar_id"],
                 base_date,
                 service_duration_min(get_service_item_by_key(service_catalog, c.get("service"))),
                 settings["work_start"],
                 settings["work_end"],
-            ) if calendar_ready else None
+                limit=3,
+            ) if calendar_ready else []
             c["state"] = STATE_AWAITING_TIME
             c["datetime_iso"] = None
-            if day_slots:
-                pending = set_offered_slots(pending, [day_slots[0], day_slots[1]])
+            if len(day_slots) >= 3:
+                pending = set_offered_slots(pending, day_slots[:3])
+                c["pending"] = pending
+                db_save_conversation(tenant_id, user_key, c)
+                return {
+                    "status": "need_more",
+                    "reply_voice": t(lang, "smart_slots_prompt", opt1=format_dt_short(day_slots[0]), opt2=format_dt_short(day_slots[1]), opt3=format_dt_short(day_slots[2])),
+                    "msg_out": t(lang, "smart_slots_prompt", opt1=format_dt_short(day_slots[0]), opt2=format_dt_short(day_slots[1]), opt3=format_dt_short(day_slots[2])),
+                    "lang": lang,
+                }
+            if len(day_slots) >= 2:
+                pending = set_offered_slots(pending, day_slots[:2])
                 c["pending"] = pending
                 db_save_conversation(tenant_id, user_key, c)
                 return {
