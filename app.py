@@ -4192,3 +4192,22 @@ def dev_chat_ui():
 </html>
     """
     return HTMLResponse(content=html)
+
+
+# -------------------------
+# HOLIDAYS SUPPORT (2.2)
+# -------------------------
+def parse_holidays(tenant: dict):
+    try:
+        raw = tenant.get("holidays_json")
+        if not raw:
+            return set()
+        if isinstance(raw, str):
+            raw = json.loads(raw)
+        return set(raw)
+    except:
+        return set()
+
+def is_holiday(check_date: date, tenant: dict):
+    holidays = parse_holidays(tenant)
+    return check_date.strftime("%Y-%m-%d") in holidays
