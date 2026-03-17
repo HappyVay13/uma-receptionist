@@ -1317,6 +1317,110 @@ def db_save_conversation(tenant_id: str, user_key: str, c: Dict[str, Any]) -> No
         )
 
 
+# -------------------------
+# DB: CALL LOGGING
+# -------------------------
+def ensure_call_logs_table() -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS call_logs (
+                    id BIGSERIAL PRIMARY KEY,
+                    tenant_id TEXT NOT NULL,
+                    user_id TEXT,
+                    channel TEXT,
+                    intent TEXT,
+                    service TEXT,
+                    datetime_iso TEXT,
+                    status TEXT,
+                    raw_text TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+        )
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_call_logs_tenant_created_at ON call_logs (tenant_id, created_at DESC)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_call_logs_user_id ON call_logs (user_id)"))
+
+def infer_intent_label(raw_text: str, result_status: str, conv: Optional[Dict[str, Any]] = None) -> str:
+    low = (raw_text or "").strip().lower()
+    if any(w in low for w in ["atcelt", "отменить", "cancel"]):
+        return "cancel"
+    if any(w in low for w in ["pārcelt", "перенести", "reschedule"]):
+        return "reschedule"
+    if conv and is_active_booking_flow(conv):
+        return "booking"
+    if any(w in low for w in ["pierakst", "запис", "appointment", "book"]):
+        return "booking"
+    if result_status in ("booked", "busy", "booking_failed", "reschedule_wait", "no_booking"):
+        return "booking"
+    if result_status == "greeting":
+        return "greeting"
+    if result_status == "identity":
+        return "identity"
+    if result_status == "info":
+        return "info"
+    return "unknown"
+
+def log_call_event(
+    tenant_id: str,
+    user_id: str,
+    channel: str,
+    raw_text: str,
+    result: Dict[str, Any],
+    conv: Optional[Dict[str, Any]] = None,
+) -> None:
+    try:
+        conv = conv or {}
+        intent = infer_intent_label(raw_text, str(result.get("status") or "").strip(), conv)
+        service = str(conv.get("service") or "").strip() or None
+        datetime_iso = str(conv.get("datetime_iso") or "").strip() or None
+        status = str(result.get("status") or "").strip() or "unknown"
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO call_logs
+                    (tenant_id, user_id, channel, intent, service, datetime_iso, status, raw_text)
+                    VALUES
+                    (:tenant_id, :user_id, :channel, :intent, :service, :datetime_iso, :status, :raw_text)
+                    """
+                ),
+                {
+                    "tenant_id": (tenant_id or "").strip() or TENANT_ID_DEFAULT,
+                    "user_id": norm_user_key(user_id),
+                    "channel": (channel or "").strip().lower() or "unknown",
+                    "intent": intent,
+                    "service": service,
+                    "datetime_iso": datetime_iso,
+                    "status": status,
+                    "raw_text": (raw_text or "").strip(),
+                },
+            )
+    except Exception as e:
+        log.error("call_log_write_failed tenant_id=%s user_id=%s err=%s", tenant_id, user_id, e)
+
+def handle_user_text_with_logging(
+    tenant_id: str, raw_phone: str, text_in: str, channel: str, lang_hint: str
+) -> Dict[str, Any]:
+    result = handle_user_text(tenant_id, raw_phone, text_in, channel, lang_hint)
+    try:
+        conv = db_get_or_create_conversation(tenant_id, raw_phone, lang_hint or "lv")
+    except Exception:
+        conv = {}
+    log_call_event(
+        tenant_id=tenant_id,
+        user_id=raw_phone,
+        channel=channel,
+        raw_text=text_in,
+        result=result,
+        conv=conv,
+    )
+    return result
+
+
+
 
 # -------------------------
 # Phase 3 – Tenant Calendar Abstraction
@@ -3065,7 +3169,7 @@ async def voice_intent(request: Request):
         return twiml(vr)
     c = db_get_or_create_conversation(tenant["_id"], caller, detect_language(speech))
     lang = resolve_reply_language(speech, c.get("lang") or detect_language(speech))
-    result = handle_user_text(tenant["_id"], caller, speech, "voice", lang)
+    result = handle_user_text_with_logging(tenant["_id"], caller, speech, "voice", lang)
 
     vr = VoiceResponse()
     say_or_play(vr, result["reply_voice"], result["lang"])
@@ -3103,7 +3207,7 @@ async def sms_incoming(request: Request):
     if not tenant_is_resolved(tenant):
         send_message(from_num, t(detect_language(body), "service_unavailable_text"))
         return Response(status_code=204)
-    result = handle_user_text(
+    result = handle_user_text_with_logging(
         tenant["_id"], from_num, body, "sms", detect_language(body)
     )
     biz = tenant_settings(tenant, result["lang"])["biz_name"]
@@ -3123,7 +3227,7 @@ async def whatsapp_incoming(request: Request):
     if not tenant_is_resolved(tenant):
         send_message(from_num, t(detect_language(body), "service_unavailable_text"))
         return Response(status_code=204)
-    result = handle_user_text(
+    result = handle_user_text_with_logging(
         tenant["_id"], from_num, body, "whatsapp", detect_language(body)
     )
     biz = tenant_settings(tenant, result["lang"])["biz_name"]
@@ -3254,6 +3358,7 @@ def get_voice_token(client_id: str = "default", tenant_id: str = ""):
 @app.on_event("startup")
 def _startup():
     ensure_tenant_row(TENANT_ID_DEFAULT)
+    ensure_call_logs_table()
 
 
 @app.get("/health")
@@ -3499,6 +3604,39 @@ def onboarding_create_tenant(payload: dict = Body(...)):
     }
 
 
+@app.get("/dev_logs")
+def dev_logs(tenant_id: str, limit: int = 50):
+    limit = max(1, min(int(limit or 50), 200))
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT id, tenant_id, user_id, channel, intent, service, datetime_iso, status, raw_text, created_at
+                FROM call_logs
+                WHERE tenant_id=:tenant_id
+                ORDER BY created_at DESC
+                LIMIT :limit
+                """
+            ),
+            {"tenant_id": tenant_id, "limit": limit},
+        ).fetchall()
+    items = []
+    for r in rows:
+        items.append({
+            "id": r[0],
+            "tenant_id": r[1],
+            "user_id": r[2],
+            "channel": r[3],
+            "intent": r[4],
+            "service": r[5],
+            "datetime_iso": r[6],
+            "status": r[7],
+            "raw_text": r[8],
+            "created_at": r[9].isoformat() if hasattr(r[9], "isoformat") else str(r[9]),
+        })
+    return {"items": items}
+
+
 # =========================
 # DEV LOCAL CHAT (no Twilio cost)
 # =========================
@@ -3523,7 +3661,7 @@ def _dev_raw_user(user_id: str) -> str:
 async def dev_chat(req: DevChatRequest):
     try:
         raw_user = _dev_raw_user(req.user_id)
-        result = handle_user_text(
+        result = handle_user_text_with_logging(
             tenant_id=req.tenant_id,
             raw_phone=raw_user,
             text_in=req.message,
