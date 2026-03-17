@@ -3033,6 +3033,111 @@ def parse_natural_datetime(text_: Optional[str], base_iso: Optional[str] = None)
     return None
 
 
+def parse_time_window_preference(text_: Optional[str]) -> Optional[Dict[str, int]]:
+    src = (text_ or "").lower().strip()
+    if not src:
+        return None
+
+    after_patterns = [
+        r"\bпосле\s+([01]?\d|2[0-3])(?:[:. ]([0-5]\d))?\b",
+        r"\bafter\s+([01]?\d|2[0-3])(?:[:. ]([0-5]\d))?\b",
+        r"\bno\s+([01]?\d|2[0-3])(?:[:. ]([0-5]\d))?\b",
+        r"\bот\s+([01]?\d|2[0-3])(?:[:. ]([0-5]\d))?\b",
+        r"\bс\s+([01]?\d|2[0-3])(?:[:. ]([0-5]\d))?\b",
+        r"\bstarting\s+from\s+([01]?\d|2[0-3])(?:[:. ]([0-5]\d))?\b",
+        r"\bnot\s+earlier\s+than\s+([01]?\d|2[0-3])(?:[:. ]([0-5]\d))?\b",
+        r"\bне\s+раньше\s+([01]?\d|2[0-3])(?:[:. ]([0-5]\d))?\b",
+        r"\bначиная\s+с\s+([01]?\d|2[0-3])(?:[:. ]([0-5]\d))?\b",
+    ]
+    for pat in after_patterns:
+        m = re.search(pat, src)
+        if m:
+            return {
+                "kind": "after",
+                "hour": int(m.group(1)),
+                "minute": int(m.group(2) or 0),
+            }
+
+    if any(x in src for x in ["после обеда", "after lunch", "in the afternoon", "this afternoon", "pēcpusdien", "pecpusdien"]):
+        return {"kind": "after", "hour": 12, "minute": 0}
+    if any(x in src for x in ["вечером", "in the evening", "this evening", "vakarā", "vakara"]):
+        return {"kind": "after", "hour": 17, "minute": 0}
+    if any(x in src for x in ["утром", "in the morning", "this morning", "šorīt", "sorit"]):
+        return {"kind": "after", "hour": 9, "minute": 0}
+
+    return None
+
+
+def slot_matches_time_window(dt_value: datetime, window_pref: Optional[Dict[str, int]]) -> bool:
+    if not dt_value or not window_pref:
+        return False
+    kind = str(window_pref.get("kind") or "").strip().lower()
+    hh = int(window_pref.get("hour") or 0)
+    mm = int(window_pref.get("minute") or 0)
+    if kind == "after":
+        return (dt_value.hour, dt_value.minute) >= (hh, mm)
+    return False
+
+
+def filter_offered_slots_by_time_window(offered_slots: List[str], window_pref: Optional[Dict[str, int]]) -> List[datetime]:
+    matched: List[datetime] = []
+    for iso in offered_slots or []:
+        dt_value = parse_dt_any_tz(iso)
+        if dt_value and slot_matches_time_window(dt_value, window_pref):
+            matched.append(dt_value)
+    return matched
+
+
+def find_first_n_slots_for_day_from_time(
+    calendar_id: str,
+    day_dt: datetime,
+    duration_min: int,
+    work_start: str,
+    work_end: str,
+    from_hour: int,
+    from_minute: int = 0,
+    limit: int = 3,
+    business_rules: Optional[Dict[str, Any]] = None,
+):
+    slots = find_first_n_slots_for_day(
+        calendar_id=calendar_id,
+        day_dt=day_dt,
+        duration_min=duration_min,
+        work_start=work_start,
+        work_end=work_end,
+        limit=96,
+        business_rules=business_rules,
+    )
+    filtered = [
+        dt_value for dt_value in slots
+        if (dt_value.hour, dt_value.minute) >= (int(from_hour), int(from_minute))
+    ]
+    return filtered[:max(1, limit)]
+
+
+def format_slot_prompt_for_lang(lang: str, slots: List[datetime]) -> str:
+    clean = [dt for dt in slots if dt]
+    if len(clean) >= 3:
+        return t(
+            lang,
+            "smart_slots_prompt",
+            opt1=format_dt_short(clean[0]),
+            opt2=format_dt_short(clean[1]),
+            opt3=format_dt_short(clean[2]),
+        )
+    if len(clean) >= 2:
+        return t(
+            lang,
+            "voice_options_prompt",
+            opt1=format_dt_short(clean[0]),
+            opt2=format_dt_short(clean[1]),
+        )
+    if len(clean) == 1:
+        only = format_dt_short(clean[0])
+        return only
+    return t(lang, "ask_booking_time_only")
+
+
 def extract_service_from_text(text_: Optional[str], catalog: List[Dict[str, Any]], lang: str) -> Optional[Dict[str, Any]]:
     low = (text_ or "").strip().lower()
     if not low:
@@ -3729,6 +3834,51 @@ def handle_user_text(
                 return result
 
         dt_start = None
+        time_window_pref = parse_time_window_preference(msg)
+        base_day_iso = str(pending.get("awaiting_time_date_iso") or "").strip()
+        base_day_dt = parse_dt_any_tz(base_day_iso) if base_day_iso else None
+
+        if time_window_pref and base_day_dt:
+            filtered_offered = filter_offered_slots_by_time_window(get_offered_slots(pending), time_window_pref)
+            if filtered_offered:
+                pending = set_offered_slots(pending, filtered_offered[:3])
+                c["pending"] = pending
+                c["state"] = STATE_AWAITING_TIME
+                db_save_conversation(tenant_id, user_key, c)
+                slot_prompt = format_slot_prompt_for_lang(lang, filtered_offered[:3])
+                return {
+                    "status": "need_more",
+                    "reply_voice": slot_prompt,
+                    "msg_out": slot_prompt,
+                    "lang": lang,
+                }
+
+            service_item_for_time = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
+            time_window_slots = find_first_n_slots_for_day_from_time(
+                calendar_id=settings["calendar_id"],
+                day_dt=base_day_dt,
+                duration_min=service_duration_min(service_item_for_time),
+                work_start=settings["work_start"],
+                work_end=settings["work_end"],
+                from_hour=int(time_window_pref.get("hour") or 0),
+                from_minute=int(time_window_pref.get("minute") or 0),
+                limit=3,
+                business_rules=settings.get("business_rules"),
+            ) if calendar_ready else []
+
+            if time_window_slots:
+                pending = set_offered_slots(pending, time_window_slots[:3])
+                c["pending"] = pending
+                c["state"] = STATE_AWAITING_TIME
+                db_save_conversation(tenant_id, user_key, c)
+                slot_prompt = format_slot_prompt_for_lang(lang, time_window_slots[:3])
+                return {
+                    "status": "need_more",
+                    "reply_voice": slot_prompt,
+                    "msg_out": slot_prompt,
+                    "lang": lang,
+                }
+
         natural_dt = parse_natural_datetime(msg, pending.get("awaiting_time_date_iso"))
         if natural_dt:
             dt_start = natural_dt
