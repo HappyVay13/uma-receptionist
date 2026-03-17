@@ -225,6 +225,11 @@ I18N: Dict[str, Dict[str, str]] = {
         "holiday_closed_voice": "Diemžēl šajā dienā mēs nestrādājam. Vai vēlaties citu dienu?",
         "min_notice_text": "Diemžēl tik drīz pierakstu vairs nevaram pieņemt. Varu piedāvāt tuvākos pieejamos laikus.",
         "min_notice_voice": "Diemžēl tik drīz pierakstu vairs nevaram pieņemt. Varu piedāvāt tuvākos pieejamos laikus.",
+        "rescheduled_text": "Pieraksts pārcelts: {service} {when}",
+        "rescheduled_voice": "Labi, pārcēlu jūsu pierakstu uz {when}.",
+        "reschedule_same_time": "Tas ir jūsu pašreizējais pieraksta laiks. Lūdzu, izvēlieties citu laiku.",
+        "reschedule_keep_current": "Labi, atstājam pašreizējo pierakstu bez izmaiņām.",
+        "reschedule_failed_keep": "Neizdevās pārcelt pierakstu. Esošais pieraksts palika spēkā.",
     },
     "ru": {
         "service_unavailable_voice": "Извините, сервис недоступен.",
@@ -269,6 +274,11 @@ I18N: Dict[str, Dict[str, str]] = {
         "holiday_closed_voice": "К сожалению, в этот день мы не работаем. Хотите выбрать другую дату?",
         "min_notice_text": "К сожалению, так скоро записать уже нельзя. Могу предложить ближайшие доступные варианты.",
         "min_notice_voice": "К сожалению, так скоро записать уже нельзя. Могу предложить ближайшие доступные варианты.",
+        "rescheduled_text": "Запись перенесена: {service} {when}",
+        "rescheduled_voice": "Хорошо, я перенёс вашу запись на {when}.",
+        "reschedule_same_time": "Это уже текущее время вашей записи. Пожалуйста, выберите другое время.",
+        "reschedule_keep_current": "Хорошо, оставляем текущую запись без изменений.",
+        "reschedule_failed_keep": "Не удалось перенести запись. Текущая запись сохранена.",
     },
     "en": {
         "service_unavailable_voice": "Sorry, the service is unavailable.",
@@ -313,6 +323,11 @@ I18N: Dict[str, Dict[str, str]] = {
         "holiday_closed_voice": "Unfortunately, we are closed on that day. Would you like another date?",
         "min_notice_text": "Unfortunately, it is too soon to book that time now. I can offer the nearest available options.",
         "min_notice_voice": "Unfortunately, it is too soon to book that time now. I can offer the nearest available options.",
+        "rescheduled_text": "Appointment moved: {service} {when}",
+        "rescheduled_voice": "Okay, I moved your appointment to {when}.",
+        "reschedule_same_time": "That is already your current appointment time. Please choose another time.",
+        "reschedule_keep_current": "Okay, we will keep your current appointment unchanged.",
+        "reschedule_failed_keep": "I could not move the appointment. Your current appointment was kept unchanged.",
     },
 }
 
@@ -1927,6 +1942,30 @@ def event_belongs_to_tenant(ev: Dict[str, Any], tenant_id: str, phone: str) -> b
     return bool((phone_norm and phone_norm in desc_norm) or (phone and phone in desc))
 
 
+def extract_name_from_event_description(description: str) -> Optional[str]:
+    text_ = str(description or "")
+    m = re.search(r"^Name:\s*(.+)$", text_, flags=re.IGNORECASE | re.MULTILINE)
+    if m:
+        return normalize_name(m.group(1))
+    m = re.search(r"^Имя:\s*(.+)$", text_, flags=re.IGNORECASE | re.MULTILINE)
+    if m:
+        return normalize_name(m.group(1))
+    return None
+
+def abort_reschedule_text(text_: Optional[str], lang: str) -> bool:
+    low = (text_ or "").strip().lower()
+    if not low:
+        return False
+    abort_words = {
+        "lv": {"nē", "ne", "nevajag", "atstāt", "atstat", "lai paliek", "nevajag pārcelt", "nevajag parcelt"},
+        "ru": {"нет", "не надо", "оставить", "оставь", "пусть остается", "не переносить"},
+        "en": {"no", "keep it", "leave it", "do not move", "dont move", "don't move"},
+    }
+    allowed = set().union(*abort_words.values())
+    allowed.update(abort_words.get(get_lang(lang), set()))
+    return low in allowed
+
+
 def blocked_result_for_lang(lang: str) -> Dict[str, Any]:
     return {
         "status": "blocked",
@@ -2182,6 +2221,35 @@ def create_calendar_event(
         )
     except Exception as e:
         log.error("Create calendar event failed: %s", e)
+        return None
+
+def update_calendar_event(
+    calendar_id: str,
+    event_id: str,
+    dt_start: datetime,
+    duration_min: int,
+    summary: str,
+    description: str,
+):
+    svc = get_gcal()
+    if not svc or not calendar_id or not event_id:
+        return None
+    dt_end = dt_start + timedelta(minutes=duration_min)
+    body = {
+        "summary": summary,
+        "description": description,
+        "start": {"dateTime": dt_start.isoformat(), "timeZone": "Europe/Riga"},
+        "end": {"dateTime": dt_end.isoformat(), "timeZone": "Europe/Riga"},
+    }
+    try:
+        return (
+            svc.events()
+            .patch(calendarId=calendar_id, eventId=event_id, body=body)
+            .execute()
+            .get("htmlLink")
+        )
+    except Exception as e:
+        log.error("Update calendar event failed: %s", e)
         return None
 
 
@@ -3070,11 +3138,32 @@ def book_appointment_for_datetime(
             "lang": lang,
         }
 
-    final_name = normalize_name(c.get("name")) or normalize_name(pending.get("name")) or "Client"
+    final_name = normalize_name(c.get("name")) or normalize_name(pending.get("name")) or extract_name_from_event_description(pending.get("reschedule_description") or "") or "Client"
     final_service_key = str(c.get("service") or pending.get("service") or "").strip()
     final_service_item = get_service_item_by_key(service_catalog, final_service_key) or service_item
-    final_service = service_display_name(final_service_item, lang) or settings["services_hint"]
+    if not final_service_item and pending.get("reschedule_summary"):
+        old_summary = str(pending.get("reschedule_summary") or "").strip()
+        if " - " in old_summary:
+            old_service_name = old_summary.split(" - ", 1)[1].strip()
+        else:
+            old_service_name = old_summary
+        final_service = old_service_name or settings["services_hint"]
+    else:
+        final_service = service_display_name(final_service_item, lang) or settings["services_hint"]
     duration_min = service_duration_min(final_service_item)
+    old_dt = parse_dt_any_tz(str(pending.get("reschedule_old_iso") or "").strip()) if pending.get("reschedule_old_iso") else None
+    is_reschedule_flow = bool(pending.get("reschedule_event_id"))
+
+    if is_reschedule_flow and old_dt and abs((dt_start - old_dt).total_seconds()) < 60:
+        c["pending"] = pending
+        c["state"] = STATE_AWAITING_TIME if get_offered_slots(pending) else STATE_AWAITING_DATE
+        c["datetime_iso"] = old_dt.isoformat()
+        return {
+            "status": "need_more",
+            "reply_voice": t(lang, "reschedule_same_time"),
+            "msg_out": t(lang, "reschedule_same_time"),
+            "lang": lang,
+        }
 
     if require_confirmation:
         pending["booking_intent"] = True
@@ -3094,44 +3183,63 @@ def book_appointment_for_datetime(
             "lang": lang,
         }
 
-    if pending.get("reschedule_event_id"):
-        deleted = delete_calendar_event(settings["calendar_id"], pending["reschedule_event_id"])
-        if not deleted:
+    event_summary = str(pending.get("reschedule_summary") or f"{settings['biz_name']} - {final_service}").strip()
+    event_description = str(pending.get("reschedule_description") or build_event_description(tenant_id, final_name, raw_phone)).strip()
+
+    if is_reschedule_flow:
+        event_result = update_calendar_event(
+            settings["calendar_id"],
+            pending["reschedule_event_id"],
+            dt_start,
+            duration_min,
+            event_summary,
+            event_description,
+        )
+        if not event_result:
+            pending["confirm_slot_iso"] = dt_start.isoformat()
+            c["pending"] = pending
+            c["state"] = STATE_AWAITING_CONFIRM
+            c["name"] = final_name
+            c["service"] = pending.get("service") or final_service_key
+            c["datetime_iso"] = dt_start.isoformat()
             return {
-                "status": "cancel_failed",
-                "reply_voice": t(lang, "cancel_failed"),
-                "msg_out": t(lang, "cancel_failed"),
+                "status": "booking_failed",
+                "reply_voice": t(lang, "reschedule_failed_keep"),
+                "msg_out": t(lang, "reschedule_failed_keep"),
                 "lang": lang,
             }
+    else:
+        event_result = create_calendar_event(
+            settings["calendar_id"],
+            dt_start,
+            duration_min,
+            event_summary,
+            event_description,
+        )
 
-    event_result = create_calendar_event(
-        settings["calendar_id"],
-        dt_start,
-        duration_min,
-        f"{settings['biz_name']} - {final_service}",
-        build_event_description(tenant_id, final_name, raw_phone),
-    )
-
-    if not event_result:
-        pending["confirm_slot_iso"] = dt_start.isoformat()
-        c["pending"] = pending
-        c["state"] = STATE_AWAITING_CONFIRM
-        c["name"] = final_name
-        c["service"] = pending.get("service") or final_service_key
-        c["datetime_iso"] = dt_start.isoformat()
-        return {
-            "status": "booking_failed",
-            "reply_voice": t(lang, "booking_failed"),
-            "msg_out": t(lang, "booking_failed"),
-            "lang": lang,
-        }
+        if not event_result:
+            pending["confirm_slot_iso"] = dt_start.isoformat()
+            c["pending"] = pending
+            c["state"] = STATE_AWAITING_CONFIRM
+            c["name"] = final_name
+            c["service"] = pending.get("service") or final_service_key
+            c["datetime_iso"] = dt_start.isoformat()
+            return {
+                "status": "booking_failed",
+                "reply_voice": t(lang, "booking_failed"),
+                "msg_out": t(lang, "booking_failed"),
+                "lang": lang,
+            }
 
     pending.pop("confirm_slot_iso", None)
     pending.pop("awaiting_time_date_iso", None)
     clear_offered_slots(pending)
+    was_rescheduled = bool(pending.get("reschedule_event_id"))
     if pending.get("reschedule_event_id"):
         pending.pop("reschedule_event_id", None)
         pending.pop("reschedule_old_iso", None)
+        pending.pop("reschedule_summary", None)
+        pending.pop("reschedule_description", None)
     c["pending"] = pending or None
     c["state"] = STATE_BOOKED
     c["name"] = final_name
@@ -3139,8 +3247,8 @@ def book_appointment_for_datetime(
     c["datetime_iso"] = dt_start.isoformat()
     return {
         "status": "booked",
-        "reply_voice": t(lang, "booking_confirmed"),
-        "msg_out": t(lang, "booking_confirmed_text", service=final_service, when=format_dt_short(dt_start)),
+        "reply_voice": t(lang, "rescheduled_voice", when=format_dt_short(dt_start)) if was_rescheduled else t(lang, "booking_confirmed"),
+        "msg_out": t(lang, "rescheduled_text", service=final_service, when=format_dt_short(dt_start)) if was_rescheduled else t(lang, "booking_confirmed_text", service=final_service, when=format_dt_short(dt_start)),
         "lang": lang,
         "service": final_service,
         "when": format_dt_short(dt_start),
@@ -3230,7 +3338,12 @@ def handle_user_text(
             "booking_intent": True,
             "reschedule_event_id": ev["id"],
             "reschedule_old_iso": ev["start"].get("dateTime"),
+            "reschedule_summary": ev.get("summary") or "",
+            "reschedule_description": ev.get("description") or "",
         }
+        existing_name = extract_name_from_event_description(ev.get("description") or "")
+        if existing_name and not c.get("name"):
+            c["name"] = existing_name
         c["state"] = STATE_AWAITING_DATE
         db_save_conversation(tenant_id, user_key, c)
         return {
@@ -3241,6 +3354,24 @@ def handle_user_text(
         }
 
     active_flow = is_active_booking_flow(c)
+
+    if pending.get("reschedule_event_id") and msg and abort_reschedule_text(msg, lang):
+        pending.pop("reschedule_event_id", None)
+        pending.pop("reschedule_old_iso", None)
+        pending.pop("reschedule_summary", None)
+        pending.pop("reschedule_description", None)
+        pending.pop("confirm_slot_iso", None)
+        pending.pop("awaiting_time_date_iso", None)
+        clear_offered_slots(pending)
+        c["pending"] = None
+        c["state"] = STATE_BOOKED
+        db_save_conversation(tenant_id, user_key, c)
+        return {
+            "status": "info",
+            "reply_voice": t(lang, "reschedule_keep_current"),
+            "msg_out": t(lang, "reschedule_keep_current"),
+            "lang": lang,
+        }
 
     if msg and is_greeting_only(msg):
         c["state"] = STATE_NEW
