@@ -110,6 +110,18 @@ WORK_END_HHMM_DEFAULT = os.getenv("WORK_END_HHMM", "18:00").strip()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
 
+LLM_INTENT_ENABLED = (
+    (os.getenv("LLM_INTENT_ENABLED", "true") or "true").strip().lower()
+    in ("1", "true", "yes", "on")
+)
+LLM_INTENT_MIN_CONFIDENCE = float(
+    (os.getenv("LLM_INTENT_MIN_CONFIDENCE", "0.65") or "0.65").strip()
+)
+LLM_FALLBACK_ENABLED = (
+    (os.getenv("LLM_FALLBACK_ENABLED", "true") or "true").strip().lower()
+    in ("1", "true", "yes", "on")
+)
+
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "").strip()
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "").strip()
 TWILIO_VALIDATE_SIGNATURE = (
@@ -2144,6 +2156,132 @@ def openai_chat_json(system: str, user: str) -> Dict[str, Any]:
     return {}
 
 
+def clamp_confidence(value: Any, default: float = 0.0) -> float:
+    try:
+        return max(0.0, min(1.0, float(value)))
+    except Exception:
+        return default
+
+
+def normalize_llm_intent(value: Any) -> str:
+    low = str(value or "").strip().lower()
+    mapping = {
+        "book": "booking",
+        "booking": "booking",
+        "appointment": "booking",
+        "reschedule": "reschedule",
+        "move": "reschedule",
+        "change": "reschedule",
+        "cancel": "cancel",
+        "cancellation": "cancel",
+        "info": "info",
+        "question": "info",
+        "faq": "info",
+    }
+    return mapping.get(low, "unknown")
+
+
+def llm_can_override_intent(intent: str, confidence: float) -> bool:
+    if not LLM_INTENT_ENABLED:
+        return False
+    if intent not in {"booking", "reschedule", "cancel", "info"}:
+        return False
+    return confidence >= LLM_INTENT_MIN_CONFIDENCE
+
+
+def llm_understand_message(
+    msg: str,
+    lang: str,
+    settings: Dict[str, Any],
+    service_catalog: List[Dict[str, Any]],
+    service_aliases: Dict[str, str],
+    business_memory: str,
+    c: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    default = {
+        "intent": "unknown",
+        "confidence": 0.0,
+        "entities": {
+            "service": None,
+            "date": None,
+            "time": None,
+            "datetime_iso": None,
+            "time_text": None,
+            "confirmation": None,
+            "name": None,
+        },
+        "fallback_reply": None,
+    }
+    if not OPENAI_API_KEY or not msg.strip():
+        return default
+
+    alias_hint = ", ".join([f"{k} => {v}" for k, v in service_aliases.items()][:80])
+    sys_pt = (
+        "You are an intent and entity parser for a production appointment receptionist. "
+        "Return strict JSON only. "
+        "Allowed intents: booking, reschedule, cancel, info, unknown. "
+        "Use only provided business context. Do not invent facts. "
+        f"Business name: {settings['biz_name']}. "
+        f"Address: {settings['addr']}. "
+        f"Working hours: {settings['work_start']}-{settings['work_end']}. "
+        f"Known services: {service_catalog_summary(service_catalog, lang)}. "
+        f"Service aliases map to service keys: {alias_hint or 'none'}. "
+        f"Business memory: {business_memory or 'none'}. "
+        "confirmation must be one of yes, no, null. "
+        "If service is recognized from an alias, return the canonical service key when possible. "
+        "fallback_reply should be a short safe reply for the user only if the message is info/unclear; otherwise null. "
+        "Output JSON shape: "
+        '{"intent":"booking|reschedule|cancel|info|unknown","confidence":0.0,"entities":{"service":null,"date":null,"time":null,"datetime_iso":null,"time_text":null,"confirmation":null,"name":null},"fallback_reply":null}'
+    )
+    user_pt = (
+        f"Today: {now_ts().date()}. "
+        f"User language: {lang}. "
+        f"Conversation state: {conversation_state(c or {})}. "
+        f"Current service: {str((c or {}).get('service') or '')}. "
+        f"Current datetime_iso: {str((c or {}).get('datetime_iso') or '')}. "
+        f"User message: {msg}"
+    )
+    raw = openai_chat_json(sys_pt, user_pt)
+    if not isinstance(raw, dict):
+        return default
+
+    entities = raw.get("entities") if isinstance(raw.get("entities"), dict) else {}
+    out = {
+        "intent": normalize_llm_intent(raw.get("intent")),
+        "confidence": clamp_confidence(raw.get("confidence")),
+        "entities": {
+            "service": normalize_service(entities.get("service") if entities else raw.get("service")),
+            "date": str(entities.get("date") or "").strip() or None,
+            "time": str(entities.get("time") or "").strip() or None,
+            "datetime_iso": str(entities.get("datetime_iso") or raw.get("datetime_iso") or "").strip() or None,
+            "time_text": str(entities.get("time_text") or raw.get("time_text") or "").strip() or None,
+            "confirmation": str(entities.get("confirmation") or "").strip().lower() or None,
+            "name": normalize_name(entities.get("name") if entities else raw.get("name")),
+        },
+        "fallback_reply": str(raw.get("fallback_reply") or "").strip() or None,
+    }
+
+    service_value = out["entities"].get("service")
+    if service_value:
+        mapped = apply_service_aliases(service_value, service_aliases) or canonical_service_key_from_text(service_value, service_aliases)
+        out["entities"]["service"] = mapped or service_value
+
+    if out["entities"].get("confirmation") not in ("yes", "no", None):
+        out["entities"]["confirmation"] = None
+
+    return out
+
+
+def llm_extract_legacy_fields(llm_result: Dict[str, Any]) -> Dict[str, Any]:
+    entities = llm_result.get("entities") or {}
+    return {
+        "service": entities.get("service"),
+        "time_text": entities.get("time_text") or entities.get("time"),
+        "datetime_iso": entities.get("datetime_iso"),
+        "name": entities.get("name"),
+    }
+
+
 _GCAL = None
 
 
@@ -3292,7 +3430,41 @@ def handle_user_text(
     pending = c.get("pending") or {}
     t_low = msg.lower()
 
-    if any(w in t_low for w in ["atcelt", "отменить", "cancel"]):
+    llm_result: Optional[Dict[str, Any]] = None
+    def get_llm_result() -> Dict[str, Any]:
+        nonlocal llm_result
+        if llm_result is not None:
+            return llm_result
+        llm_result = llm_understand_message(
+            msg=msg,
+            lang=lang,
+            settings=settings,
+            service_catalog=service_catalog,
+            service_aliases=service_aliases,
+            business_memory=business_memory,
+            c=c,
+        )
+        return llm_result
+
+    if msg and LLM_INTENT_ENABLED:
+        llm_entities = (get_llm_result().get("entities") or {})
+        extracted_name = normalize_name(llm_entities.get("name"))
+        if extracted_name and not c.get("name"):
+            c["name"] = extracted_name
+        if llm_entities.get("time_text") and not c.get("time_text"):
+            c["time_text"] = str(llm_entities.get("time_text"))
+        llm_service_key = str(llm_entities.get("service") or "").strip()
+        if llm_service_key:
+            mapped_item = get_service_item_by_key(service_catalog, llm_service_key) or extract_service_from_text(llm_service_key, service_catalog, lang)
+            if mapped_item and not c.get("service"):
+                c["service"] = str(mapped_item.get("key") or "").strip()
+                pending["service_display"] = service_display_name(mapped_item, lang)
+                c["pending"] = pending or None
+
+    llm_intent = normalize_llm_intent(get_llm_result().get("intent")) if msg and LLM_INTENT_ENABLED else "unknown"
+    llm_confidence = clamp_confidence(get_llm_result().get("confidence")) if msg and LLM_INTENT_ENABLED else 0.0
+
+    if any(w in t_low for w in ["atcelt", "отменить", "cancel"]) or (llm_can_override_intent(llm_intent, llm_confidence) and llm_intent == "cancel"):
         if not calendar_ready:
             return blocked_result_for_lang(lang)
         ev = find_next_event_by_phone(settings["calendar_id"], raw_phone, tenant_id)
@@ -3322,7 +3494,7 @@ def handle_user_text(
             "lang": lang,
         }
 
-    if any(w in t_low for w in ["pārcelt", "перенести", "reschedule"]):
+    if any(w in t_low for w in ["pārcelt", "перенести", "reschedule"]) or (llm_can_override_intent(llm_intent, llm_confidence) and llm_intent == "reschedule"):
         if not calendar_ready:
             return blocked_result_for_lang(lang)
         ev = find_next_event_by_phone(settings["calendar_id"], raw_phone, tenant_id)
@@ -3401,7 +3573,7 @@ def handle_user_text(
             "lang": lang,
         }
 
-    fresh_booking_start = bool(msg and is_booking_opener(msg))
+    fresh_booking_start = bool(msg and (is_booking_opener(msg) or (llm_can_override_intent(llm_intent, llm_confidence) and llm_intent == "booking")))
     if fresh_booking_start:
         c = reset_booking_context(c, keep_name=True)
         pending = c.get("pending") or {}
@@ -3420,20 +3592,7 @@ def handle_user_text(
         nonlocal ai_data
         if ai_data is not None:
             return ai_data
-        alias_hint = ", ".join([f"{k} => {v}" for k, v in service_aliases.items()][:50])
-        sys_pt = (
-            f"You are an appointment receptionist for {settings['biz_name']}. "
-            f"Business hours: {settings['work_start']}-{settings['work_end']}. "
-            f"Known services: {service_catalog_summary(service_catalog, lang)}. "
-            f"Service aliases map to service keys: {alias_hint or 'none'}. "
-            f"Business memory: {business_memory or 'none'}. "
-            "Extract and return strict JSON only with keys: service, time_text, datetime_iso, name. "
-            "service and name must be plain strings, not arrays. "
-            "If a user names a service using an alias, map it to the canonical service name. "
-            "If value is unknown use null."
-        )
-        usr_pt = f"Today: {now_ts().date()}. User language: {lang}. User message: {msg}"
-        ai_data = openai_chat_json(sys_pt, usr_pt)
+        ai_data = llm_extract_legacy_fields(get_llm_result()) if LLM_INTENT_ENABLED else {}
         return ai_data
 
     if active_flow or c["state"] in ACTIVE_BOOKING_STATES or c["state"] == STATE_NEW:
@@ -3644,7 +3803,8 @@ def handle_user_text(
     if msg and conversation_state(c) == STATE_AWAITING_CONFIRM:
         confirm_iso = str(pending.get("confirm_slot_iso") or c.get("datetime_iso") or "").strip()
         dt_confirm = parse_dt_any_tz(confirm_iso)
-        if is_yes_text(msg, lang):
+        llm_confirmation = str((get_llm_result().get("entities") or {}).get("confirmation") or "").strip().lower() if msg and LLM_INTENT_ENABLED else ""
+        if is_yes_text(msg, lang) or llm_confirmation == "yes":
             if not dt_confirm:
                 c["state"] = STATE_AWAITING_TIME
                 db_save_conversation(tenant_id, user_key, c)
@@ -3657,7 +3817,7 @@ def handle_user_text(
             result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, dt_confirm, require_confirmation=False)
             db_save_conversation(tenant_id, user_key, c)
             return result
-        if is_no_text(msg, lang):
+        if is_no_text(msg, lang) or llm_confirmation == "no":
             pending.pop("confirm_slot_iso", None)
             c["pending"] = pending or {"booking_intent": True}
             c["datetime_iso"] = None
@@ -3679,10 +3839,24 @@ def handle_user_text(
 
     c = normalize_booking_state(c)
     db_save_conversation(tenant_id, user_key, c)
+    if is_active_booking_flow(c):
+        fallback_text = prompt_for_state(lang, c, c.get("pending") or {})
+        return {
+            "status": "need_more",
+            "reply_voice": fallback_text,
+            "msg_out": fallback_text,
+            "lang": lang,
+        }
+
+    llm_fallback_reply = None
+    if msg and LLM_FALLBACK_ENABLED:
+        llm_fallback_reply = str(get_llm_result().get("fallback_reply") or "").strip() or None
+
+    final_reply = llm_fallback_reply or t(lang, "unclear_reply")
     return {
-        "status": "need_more" if is_active_booking_flow(c) else "info",
-        "reply_voice": prompt_for_state(lang, c, c.get("pending") or {}) if is_active_booking_flow(c) else t(lang, "unclear_reply"),
-        "msg_out": prompt_for_state(lang, c, c.get("pending") or {}) if is_active_booking_flow(c) else t(lang, "unclear_reply"),
+        "status": "info",
+        "reply_voice": final_reply,
+        "msg_out": final_reply,
         "lang": lang,
     }
 
@@ -3975,6 +4149,8 @@ def health():
         "allow_default_tenant_fallback": ALLOW_DEFAULT_TENANT_FALLBACK,
         "twilio_validate_signature": TWILIO_VALIDATE_SIGNATURE,
         "google_oauth_ready": oauth_ready(),
+        "llm_intent_enabled": LLM_INTENT_ENABLED,
+        "llm_fallback_enabled": LLM_FALLBACK_ENABLED,
     }
 
 
@@ -4272,6 +4448,14 @@ class DevResetRequest(BaseModel):
     tenant_id: str
     user_id: str
 
+class DevFocusTestRequest(BaseModel):
+    tenant_id: str
+    user_id: str = "focus_test_user"
+    inputs: List[str]
+    lang: str = "lv"
+    channel: str = "dev"
+    reset_first: bool = True
+
 def _dev_raw_user(user_id: str) -> str:
     uid = (user_id or "dev_user").strip()
     return f"dev:{uid}"
@@ -4306,23 +4490,97 @@ async def dev_chat(req: DevChatRequest):
 @app.post("/dev_reset")
 async def dev_reset(req: DevResetRequest):
     try:
-        with engine.begin() as conn:
-            conn.execute(
-                text("""
-                delete from conversations
-                where tenant_id = :tenant_id
-                and user_key = :user_key
-                """),
-                {
-                    "tenant_id": req.tenant_id,
-                    "user_key": norm_user_key(_dev_raw_user(req.user_id))
-                }
-            )
+        delete_conversation_state(req.tenant_id, _dev_raw_user(req.user_id))
         return {"status": "reset_ok"}
     except Exception as e:
         log.exception("DEV RESET ERROR")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+def delete_conversation_state(tenant_id: str, user_key_raw: str) -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
+            delete from conversations
+            where tenant_id = :tenant_id
+            and user_key = :user_key
+            """),
+            {
+                "tenant_id": tenant_id,
+                "user_key": norm_user_key(user_key_raw),
+            }
+        )
+
+@app.post("/dev_focus_test")
+async def dev_focus_test(req: DevFocusTestRequest):
+    try:
+        if not req.inputs:
+            raise HTTPException(status_code=400, detail="inputs required")
+        tenant = get_tenant(req.tenant_id)
+        lang = get_lang(req.lang)
+        settings = tenant_settings(tenant, lang)
+        service_catalog = tenant_service_catalog(tenant)
+        service_aliases = ensure_default_barbershop_aliases(
+            service_catalog,
+            merged_service_alias_map(service_catalog, tenant, lang),
+            lang,
+        )
+        business_memory = tenant_business_memory(tenant, lang)
+        raw_user = _dev_raw_user(req.user_id)
+
+        if req.reset_first:
+            delete_conversation_state(req.tenant_id, raw_user)
+
+        results = []
+        for item in req.inputs:
+            conv_before = db_get_or_create_conversation(req.tenant_id, raw_user, lang)
+            llm_result = llm_understand_message(
+                msg=item,
+                lang=lang,
+                settings=settings,
+                service_catalog=service_catalog,
+                service_aliases=service_aliases,
+                business_memory=business_memory,
+                c=conv_before,
+            )
+            system_result = handle_user_text_with_logging(
+                tenant_id=req.tenant_id,
+                raw_phone=raw_user,
+                text_in=item,
+                channel=req.channel,
+                lang_hint=lang,
+            )
+            conv_after = db_get_or_create_conversation(req.tenant_id, raw_user, lang)
+            detected_intent = normalize_llm_intent(llm_result.get("intent"))
+            success = bool(
+                detected_intent in {"booking", "reschedule", "cancel", "info"}
+                or str(system_result.get("status") or "").strip() not in {"info", "blocked"}
+            )
+            failure_reason = None if success else "intent_unknown_and_no_actionable_system_transition"
+            results.append({
+                "input": item,
+                "detected_intent": detected_intent,
+                "intent_confidence": clamp_confidence(llm_result.get("confidence")),
+                "extracted_entities": llm_result.get("entities") or {},
+                "system_response": system_result.get("msg_out") or system_result.get("reply_voice"),
+                "system_status": system_result.get("status"),
+                "conversation_state": conv_after.get("state"),
+                "success": success,
+                "failure_reason": failure_reason,
+            })
+
+        return {
+            "tenant_id": req.tenant_id,
+            "user_id": req.user_id,
+            "lang": lang,
+            "count": len(results),
+            "results": results,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("DEV FOCUS TEST ERROR")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/dev_chat_ui", response_class=HTMLResponse)
 def dev_chat_ui():
