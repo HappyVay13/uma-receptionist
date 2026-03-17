@@ -1666,6 +1666,74 @@ def service_alias_map_from_catalog(catalog: List[Dict[str, Any]], lang: str) -> 
     return out
 
 
+def canonical_service_key_from_text(text_: Optional[str], alias_map: Dict[str, str]) -> Optional[str]:
+    low = (text_ or "").strip().lower()
+    if not low:
+        return None
+    if low in alias_map:
+        return alias_map[low]
+    # Prefer longest alias first so generic words don't beat specific phrases
+    for alias in sorted(alias_map.keys(), key=len, reverse=True):
+        if alias and alias in low:
+            return alias_map[alias]
+    return None
+
+
+def merged_service_alias_map(catalog: List[Dict[str, Any]], tenant: Dict[str, Any], lang: str) -> Dict[str, str]:
+    merged = service_alias_map_from_catalog(catalog, lang)
+    merged.update(tenant_service_aliases(tenant, lang))
+    return merged
+
+
+def ensure_default_barbershop_aliases(catalog: List[Dict[str, Any]], alias_map: Dict[str, str], lang: str) -> Dict[str, str]:
+    out = dict(alias_map)
+    haircut_keys = []
+    beard_keys = []
+    combo_keys = []
+    for item in catalog:
+        key = str(item.get("key") or "").strip()
+        hay = " ".join([
+            key,
+            str(item.get("name_lv") or ""),
+            str(item.get("name_ru") or ""),
+            str(item.get("name_en") or ""),
+            " ".join(item.get("aliases_lv") or []),
+            " ".join(item.get("aliases_ru") or []),
+            " ".join(item.get("aliases_en") or []),
+        ]).lower()
+        if any(x in hay for x in ["friz", "haircut", "стриж", "matu griez", "griezum"]):
+            haircut_keys.append(key)
+        if any(x in hay for x in ["bārd", "barda", "beard", "бород"]):
+            beard_keys.append(key)
+        if any(x in hay for x in ["combo", "комбо", "kombo"]):
+            combo_keys.append(key)
+
+    def add_many(key: Optional[str], aliases: List[str]):
+        if not key:
+            return
+        for a in aliases:
+            aa = a.strip().lower()
+            if aa and aa not in out:
+                out[aa] = key
+
+    haircut_key = haircut_keys[0] if haircut_keys else None
+    beard_key = beard_keys[0] if beard_keys else None
+    combo_key = combo_keys[0] if combo_keys else None
+
+    add_many(haircut_key, [
+        "matu griezums", "griezums", "apgriezt matus", "apgriezt", "frizūra", "frizura",
+        "vīriešu frizūra", "viriesu frizura", "vīriešu matu griezums", "viriesu matu griezums",
+        "подстричься", "стрижка", "мужская стрижка", "haircut", "mens haircut", "cut hair", "trim hair"
+    ])
+    add_many(beard_key, [
+        "bārda", "barda", "bārdas korekcija", "bārdas trim", "beard trim", "beard", "борода", "подровнять бороду"
+    ])
+    add_many(combo_key, [
+        "combo", "kombo", "комбо", "matu griezums un bārda", "frizūra un bārda", "haircut and beard", "стрижка и борода"
+    ])
+    return out
+
+
 def calendar_is_configured(calendar_id: str) -> bool:
     return bool((calendar_id or "").strip())
 
@@ -2502,6 +2570,7 @@ def extract_service_from_text(text_: Optional[str], catalog: List[Dict[str, Any]
     if not low:
         return None
 
+    candidates_index: List[Tuple[int, str, Dict[str, Any]]] = []
     for item in catalog:
         display = service_display_name(item, lang).lower()
         candidates = {display, str(item.get("key") or "").strip().lower()}
@@ -2510,8 +2579,12 @@ def extract_service_from_text(text_: Optional[str], catalog: List[Dict[str, Any]
         candidates.update(str(x).strip().lower() for x in (item.get("aliases_ru") or []) if str(x).strip())
         candidates.update(str(x).strip().lower() for x in (item.get("aliases_en") or []) if str(x).strip())
         for cand in candidates:
-            if cand and (cand == low or cand in low or low in cand):
-                return item
+            if cand:
+                candidates_index.append((len(cand), cand, item))
+
+    for _, cand, item in sorted(candidates_index, key=lambda x: x[0], reverse=True):
+        if cand == low or cand in low or low in cand:
+            return item
     return None
 
 
@@ -2777,7 +2850,11 @@ def handle_user_text(
     lang = get_lang(c.get("lang"))
     settings = tenant_settings(tenant, lang)
     service_catalog = tenant_service_catalog(tenant)
-    service_aliases = service_alias_map_from_catalog(service_catalog, lang)
+    service_aliases = ensure_default_barbershop_aliases(
+        service_catalog,
+        merged_service_alias_map(service_catalog, tenant, lang),
+        lang,
+    )
     business_memory = tenant_business_memory(tenant, lang)
     calendar_ready = calendar_is_configured(settings["calendar_id"])
 
@@ -2911,10 +2988,13 @@ def handle_user_text(
         return ai_data
 
     if active_flow or c["state"] in ACTIVE_BOOKING_STATES or c["state"] == STATE_NEW:
-        service_item = extract_service_from_text(msg, service_catalog, lang)
+        direct_service_key = canonical_service_key_from_text(msg, service_aliases)
+        service_item = get_service_item_by_key(service_catalog, direct_service_key) if direct_service_key else None
+        if not service_item:
+            service_item = extract_service_from_text(msg, service_catalog, lang)
         if not service_item and msg:
             data = get_ai_data()
-            extracted_service_key = apply_service_aliases(data.get("service"), service_aliases)
+            extracted_service_key = apply_service_aliases(data.get("service"), service_aliases) or canonical_service_key_from_text(data.get("service"), service_aliases)
             service_item = get_service_item_by_key(service_catalog, extracted_service_key) or extract_service_from_text(data.get("service"), service_catalog, lang)
             extracted_name = normalize_name(data.get("name"))
             if extracted_name and not c.get("name"):
@@ -3057,10 +3137,14 @@ def handle_user_text(
         }
 
     if not active_flow and not c.get("service") and msg:
-        data = get_ai_data()
-        extracted_service_key = apply_service_aliases(data.get("service"), service_aliases)
-        service_item = get_service_item_by_key(service_catalog, extracted_service_key) or extract_service_from_text(data.get("service"), service_catalog, lang)
-        name = normalize_name(data.get("name"))
+        direct_service_key = canonical_service_key_from_text(msg, service_aliases)
+        service_item = get_service_item_by_key(service_catalog, direct_service_key) if direct_service_key else None
+        data = None
+        if not service_item:
+            data = get_ai_data()
+            extracted_service_key = apply_service_aliases(data.get("service"), service_aliases) or canonical_service_key_from_text(data.get("service"), service_aliases)
+            service_item = get_service_item_by_key(service_catalog, extracted_service_key) or extract_service_from_text(data.get("service"), service_catalog, lang)
+        name = normalize_name(data.get("name")) if data else None
         if service_item:
             c["service"] = str(service_item.get("key") or "").strip()
             pending = c.get("pending") or {}
