@@ -2777,10 +2777,10 @@ def has_explicit_time(text_: Optional[str]) -> bool:
 
 
 def has_date_reference(text_: Optional[str]) -> bool:
-    src = (text_ or "").lower().strip()
+    src = _normalize_date_text(text_)
     if not src:
         return False
-    if re.search(r"\b(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?\b", src):
+    if parse_numeric_date(src) or parse_month_name_date(src):
         return True
     keywords = [
         "rīt", "rit", "parīt", "šodien", "sodien", "šorīt", "sorit", "šovakar", "sovakar",
@@ -2910,19 +2910,17 @@ def next_weekday_date(target_weekday: int, base: Optional[date] = None) -> date:
 
 
 def parse_date_only_text(text_: Optional[str]) -> Optional[datetime]:
-    src = (text_ or "").lower().strip()
+    src = _normalize_date_text(text_)
     if not src:
         return None
 
-    dm = re.search(r"\b(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?\b", src)
-    if dm:
-        dd, mo = int(dm.group(1)), int(dm.group(2))
-        yy = dm.group(3)
-        year = int(yy) + 2000 if yy and len(yy) == 2 else int(yy) if yy else today_local().year
-        try:
-            return datetime(year, mo, dd, 9, 0, tzinfo=TZ)
-        except Exception:
-            pass
+    numeric_dt = parse_numeric_date(src)
+    if numeric_dt:
+        return numeric_dt
+
+    month_name_dt = parse_month_name_date(src)
+    if month_name_dt:
+        return month_name_dt
 
     base = today_local()
     if any(k in src for k in ["parīt", "послезавтра", "day after tomorrow"]):
@@ -2939,6 +2937,99 @@ def parse_date_only_text(text_: Optional[str]) -> Optional[datetime]:
                 d = base + timedelta(days=(wd - base.weekday()) % 7)
             return datetime.combine(d, datetime.min.time(), tzinfo=TZ).replace(hour=9)
     return None
+
+
+MONTH_NAME_ALIASES = {
+    1: ["january", "jan", "января", "январь", "янв", "janvāris", "janvaris", "janvārī", "janvari"],
+    2: ["february", "feb", "февраля", "февраль", "фев", "februāris", "februaris", "februārī", "februari"],
+    3: ["march", "mar", "марта", "март", "мар", "marts", "martā", "marta"],
+    4: ["april", "apr", "апреля", "апрель", "апр", "aprīlis", "aprilis", "aprīlī", "aprili"],
+    5: ["may", "мая", "май", "maijs", "maijā", "maija"],
+    6: ["june", "jun", "июня", "июнь", "июн", "jūnijs", "junijs", "jūnijā", "junija"],
+    7: ["july", "jul", "июля", "июль", "июл", "jūlijs", "julijs", "jūlijā", "julija"],
+    8: ["august", "aug", "августа", "август", "авг", "augusts", "augustā", "augusta"],
+    9: ["september", "sep", "sept", "сентября", "сентябрь", "сен", "septembris", "septembrī", "septembra"],
+    10: ["october", "oct", "октября", "октябрь", "окт", "oktobris", "oktobrī", "oktobra"],
+    11: ["november", "nov", "ноября", "ноябрь", "ноя", "novembris", "novembrī", "novembra"],
+    12: ["december", "dec", "декабря", "декабрь", "дек", "decembris", "decembrī", "decembra"],
+}
+
+MONTH_ALIAS_TO_NUMBER = {
+    alias: month
+    for month, aliases in MONTH_NAME_ALIASES.items()
+    for alias in aliases
+}
+
+
+def _normalize_date_text(text_: Optional[str]) -> str:
+    src = (text_ or "").lower().strip()
+    if not src:
+        return ""
+    src = src.replace(",", " ")
+    src = re.sub(r"\s+", " ", src)
+    return src
+
+
+def _future_or_same_year_date(day: int, month: int, year: Optional[int] = None) -> Optional[datetime]:
+    base = today_local()
+    target_year = year or base.year
+    try:
+        dt_value = datetime(target_year, month, day, 9, 0, tzinfo=TZ)
+    except Exception:
+        return None
+    if year is None and dt_value.date() < base:
+        try:
+            dt_value = datetime(target_year + 1, month, day, 9, 0, tzinfo=TZ)
+        except Exception:
+            return None
+    return dt_value
+
+
+def parse_month_name_date(text_: Optional[str]) -> Optional[datetime]:
+    src = _normalize_date_text(text_)
+    if not src:
+        return None
+
+    # 19 marts / 19 марта / 19 march / 19 martā
+    m = re.search(r"\b(\d{1,2})\.?\s+([a-zA-Zāčēģīķļņōŗšūžа-яё]+)(?:\s+(\d{2,4}))?\b", src, flags=re.IGNORECASE)
+    if m:
+        day = int(m.group(1))
+        month_name = m.group(2).strip(" .")
+        month = MONTH_ALIAS_TO_NUMBER.get(month_name)
+        if month:
+            year_raw = m.group(3)
+            year = None
+            if year_raw:
+                year = int(year_raw) + 2000 if len(year_raw) == 2 else int(year_raw)
+            return _future_or_same_year_date(day, month, year)
+
+    # march 19 / марта 19 / marts 19
+    m = re.search(r"\b([a-zA-Zāčēģīķļņōŗšūžа-яё]+)\s+(\d{1,2})(?:\,?\s*(\d{2,4}))?\b", src, flags=re.IGNORECASE)
+    if m:
+        month_name = m.group(1).strip(" .")
+        day = int(m.group(2))
+        month = MONTH_ALIAS_TO_NUMBER.get(month_name)
+        if month:
+            year_raw = m.group(3)
+            year = None
+            if year_raw:
+                year = int(year_raw) + 2000 if len(year_raw) == 2 else int(year_raw)
+            return _future_or_same_year_date(day, month, year)
+
+    return None
+
+
+def parse_numeric_date(text_: Optional[str]) -> Optional[datetime]:
+    src = _normalize_date_text(text_)
+    if not src:
+        return None
+    dm = re.search(r"\b(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?\b", src)
+    if not dm:
+        return None
+    dd, mo = int(dm.group(1)), int(dm.group(2))
+    yy = dm.group(3)
+    year = int(yy) + 2000 if yy and len(yy) == 2 else int(yy) if yy else None
+    return _future_or_same_year_date(dd, mo, year)
 
 
 NATURAL_TIME_DEFAULTS = {
