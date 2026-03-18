@@ -2634,6 +2634,36 @@ def find_first_n_slots_for_day(
     return found
 
 
+
+
+def find_first_n_slots_for_day_window(
+    calendar_id: str,
+    day_dt: datetime,
+    duration_min: int,
+    work_start: str,
+    work_end: str,
+    window_start_hour: int,
+    window_end_hour: int,
+    limit: int = 3,
+    business_rules: Optional[Dict[str, Any]] = None,
+):
+    slots = find_first_n_slots_for_day(
+        calendar_id=calendar_id,
+        day_dt=day_dt,
+        duration_min=duration_min,
+        work_start=work_start,
+        work_end=work_end,
+        limit=max(limit * 6, limit),
+        business_rules=business_rules,
+    )
+    filtered: List[datetime] = []
+    for slot in slots:
+        if window_start_hour <= slot.hour < window_end_hour:
+            filtered.append(slot)
+            if len(filtered) >= max(1, limit):
+                return filtered
+    return filtered
+
 def find_next_event_by_phone(calendar_id: str, phone: str, tenant_id: Optional[str] = None):
     svc = get_gcal()
     if not svc or not calendar_id:
@@ -2945,12 +2975,32 @@ def detect_time_bucket(text_: Optional[str]) -> Optional[str]:
             "pēcpusdienā", "pecpusdiena", "pecpusdienā", "šopēcpusdien", "sopecpusdien", "after lunch", "in the afternoon", "this afternoon", "afternoon", "днём", "днем", "после обеда"
         ],
         "evening": [
-            "vakarā", "vakara", "šovakar", "sovakar", "вечером", "сегодня вечером", "in the evening", "this evening", "evening", "tonight"
+            "vakarā", "vakara", "šovakar", "sovakar", "вечером", "сегодня вечером", "in the evening", "this evening", "evening", "tonight",
+            "pēc darba", "pec darba", "после работы", "after work"
         ],
     }
     for bucket, hints in patterns.items():
         if any(h in src for h in hints):
             return bucket
+    return None
+
+def parse_time_window(text_: Optional[str]) -> Optional[Tuple[int, int]]:
+    src = (text_ or "").lower().strip()
+    if not src:
+        return None
+
+    if any(h in src for h in ["pēc darba", "pec darba", "после работы", "after work"]):
+        return (17, 21)
+
+    bucket = detect_time_bucket(src)
+    if bucket == "morning":
+        return (9, 12)
+    if bucket == "midday":
+        return (11, 14)
+    if bucket == "afternoon":
+        return (12, 17)
+    if bucket == "evening":
+        return (16, 21)
     return None
 
 def has_natural_time_hint(text_: Optional[str]) -> bool:
@@ -3735,6 +3785,56 @@ def handle_user_text(
             extracted_name = normalize_name(data.get("name"))
             if extracted_name and not c.get("name"):
                 c["name"] = extracted_name
+
+        if not dt_start and pending.get("awaiting_time_date_iso"):
+            time_window = parse_time_window(msg)
+            base_day = parse_dt_any_tz(str(pending.get("awaiting_time_date_iso") or "").strip())
+            if time_window and base_day:
+                service_item = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
+                slots = find_first_n_slots_for_day_window(
+                    calendar_id=settings["calendar_id"],
+                    day_dt=base_day,
+                    duration_min=service_duration_min(service_item),
+                    work_start=settings["work_start"],
+                    work_end=settings["work_end"],
+                    window_start_hour=time_window[0],
+                    window_end_hour=time_window[1],
+                    limit=3,
+                    business_rules=settings.get("business_rules"),
+                ) if calendar_ready else []
+                if len(slots) >= 3:
+                    pending = set_offered_slots(pending, slots[:3])
+                    c["pending"] = pending
+                    db_save_conversation(tenant_id, user_key, c)
+                    return {
+                        "status": "need_more",
+                        "reply_voice": t(lang, "smart_slots_prompt", opt1=format_dt_short(slots[0]), opt2=format_dt_short(slots[1]), opt3=format_dt_short(slots[2])),
+                        "msg_out": t(lang, "smart_slots_prompt", opt1=format_dt_short(slots[0]), opt2=format_dt_short(slots[1]), opt3=format_dt_short(slots[2])),
+                        "lang": lang,
+                    }
+                if len(slots) >= 2:
+                    pending = set_offered_slots(pending, slots[:2])
+                    c["pending"] = pending
+                    db_save_conversation(tenant_id, user_key, c)
+                    return {
+                        "status": "need_more",
+                        "reply_voice": t(lang, "voice_options_prompt", opt1=format_dt_short(slots[0]), opt2=format_dt_short(slots[1])),
+                        "msg_out": t(lang, "voice_options_prompt", opt1=format_dt_short(slots[0]), opt2=format_dt_short(slots[1])),
+                        "lang": lang,
+                    }
+                if len(slots) == 1:
+                    pending = set_offered_slots(pending, slots[:1])
+                    pending["confirm_slot_iso"] = slots[0].isoformat()
+                    c["pending"] = pending
+                    c["state"] = STATE_AWAITING_CONFIRM
+                    c["datetime_iso"] = slots[0].isoformat()
+                    db_save_conversation(tenant_id, user_key, c)
+                    return {
+                        "status": "need_more",
+                        "reply_voice": t(lang, "ask_booking_confirm", when=format_dt_short(slots[0]), service=pending.get("service_display") or ""),
+                        "msg_out": t(lang, "ask_booking_confirm", when=format_dt_short(slots[0]), service=pending.get("service_display") or ""),
+                        "lang": lang,
+                    }
 
         if dt_start:
             clear_offered_slots(pending)
