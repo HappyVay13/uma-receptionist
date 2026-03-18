@@ -1590,6 +1590,24 @@ def ensure_call_logs_table() -> None:
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_call_logs_tenant_created_at ON call_logs (tenant_id, created_at DESC)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_call_logs_user_id ON call_logs (user_id)"))
 
+
+def ensure_phone_routes_table() -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS phone_routes (
+                    id BIGSERIAL PRIMARY KEY,
+                    phone_number TEXT NOT NULL UNIQUE,
+                    tenant_id TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+        )
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_phone_routes_tenant_id ON phone_routes (tenant_id)"))
+
 def infer_intent_label(raw_text: str, result_status: str, conv: Optional[Dict[str, Any]] = None) -> str:
     low = (raw_text or "").strip().lower()
     if any(w in low for w in ["atcelt", "отменить", "cancel"]):
@@ -4568,6 +4586,7 @@ def get_voice_token(client_id: str = "default", tenant_id: str = ""):
 def _startup():
     ensure_tenant_row(TENANT_ID_DEFAULT)
     ensure_call_logs_table()
+    ensure_phone_routes_table()
 
 
 @app.get("/health")
@@ -4983,6 +5002,7 @@ def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
         <input id="tenant" value="{tenant_id}" placeholder="tenant_id" />
         <button onclick="loadAll()">Refresh</button>
       </div>
+      <div class="muted">JSON endpoints: <a id="lnk_analytics" href="#">analytics</a> · <a id="lnk_bookings" href="#">bookings</a> · <a id="lnk_conversations" href="#">conversations</a> · <a id="lnk_tenant" href="#">tenant config</a></div>
       <div class="metrics">
         <div class="card"><div>Total requests</div><div id="m_requests" class="num">-</div></div>
         <div class="card"><div>Total bookings</div><div id="m_bookings" class="num">-</div></div>
@@ -5015,6 +5035,10 @@ async function loadAll() {{
     fetch(`/dashboard/bookings?tenant_id=${{encodeURIComponent(tenant)}}&limit=20`).then(r => r.json()),
     fetch(`/dashboard/conversations?tenant_id=${{encodeURIComponent(tenant)}}&limit=20`).then(r => r.json())
   ]);
+  document.getElementById('lnk_analytics').href = `/dashboard/analytics?tenant_id=${encodeURIComponent(tenant)}`;
+  document.getElementById('lnk_bookings').href = `/dashboard/bookings?tenant_id=${encodeURIComponent(tenant)}`;
+  document.getElementById('lnk_conversations').href = `/dashboard/conversations?tenant_id=${encodeURIComponent(tenant)}`;
+  document.getElementById('lnk_tenant').href = `/tenant/config?tenant_id=${encodeURIComponent(tenant)}`;
   document.getElementById('m_requests').textContent = a.total_requests ?? '-';
   document.getElementById('m_bookings').textContent = a.total_bookings ?? '-';
   document.getElementById('m_conv').textContent = (a.conversion_rate ?? 0) + '%';
@@ -5042,6 +5066,184 @@ document.addEventListener('DOMContentLoaded', loadAll);
 </html>
     """
     return HTMLResponse(content=html)
+
+
+
+class TenantConfigUpdateRequest(BaseModel):
+    tenant_id: str
+    business_name: Optional[str] = None
+    phone_number: Optional[str] = None
+    timezone: Optional[str] = None
+    language: Optional[str] = None
+    work_start: Optional[str] = None
+    work_end: Optional[str] = None
+    services_lv: Optional[str] = None
+    services_ru: Optional[str] = None
+    services_en: Optional[str] = None
+    weekly_hours_json: Optional[str] = None
+    days_off_json: Optional[str] = None
+    breaks_json: Optional[str] = None
+    holidays_json: Optional[str] = None
+    min_notice_minutes: Optional[int] = None
+    buffer_minutes: Optional[int] = None
+    service_catalog_json: Optional[str] = None
+
+def _jsonable_tenant_view(tenant: Dict[str, Any]) -> Dict[str, Any]:
+    tenant = dict(tenant or {})
+    for k, v in list(tenant.items()):
+        if hasattr(v, "isoformat"):
+            tenant[k] = v.isoformat()
+    return tenant
+
+@app.get("/tenants")
+def list_tenants(limit: int = 100):
+    limit = max(1, min(int(limit or 100), 500))
+    cols = tenants_columns()
+    pk = tenants_pk(cols)
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(f"""
+                SELECT {pk},
+                       COALESCE(business_name, name, {pk}) AS business_name,
+                       phone_number,
+                       timezone,
+                       language,
+                       calendar_id,
+                       onboarding_completed,
+                       google_connected,
+                       subscription_status,
+                       plan,
+                       updated_at
+                FROM tenants
+                ORDER BY updated_at DESC NULLS LAST, {pk} ASC
+                LIMIT :limit
+            """),
+            {"limit": limit},
+        ).fetchall()
+    items = []
+    for r in rows:
+        items.append({
+            "tenant_id": r[0],
+            "business_name": r[1],
+            "phone_number": r[2],
+            "timezone": r[3],
+            "language": r[4],
+            "calendar_id": r[5],
+            "onboarding_completed": r[6],
+            "google_connected": r[7],
+            "subscription_status": r[8],
+            "plan": r[9],
+            "updated_at": r[10].isoformat() if hasattr(r[10], "isoformat") else str(r[10]),
+        })
+    return {"items": items}
+
+@app.get("/tenant/config")
+def tenant_config(tenant_id: str = TENANT_ID_DEFAULT):
+    tenant = get_tenant((tenant_id or "").strip() or TENANT_ID_DEFAULT)
+    if not tenant.get("_id"):
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    settings = tenant_settings(tenant, get_lang(tenant.get("language") or "lv"))
+    routes = []
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text("SELECT phone_number, tenant_id, updated_at FROM phone_routes WHERE tenant_id=:tenant_id ORDER BY updated_at DESC NULLS LAST, phone_number ASC"),
+                {"tenant_id": tenant.get("_id")},
+            ).fetchall()
+        for r in rows:
+            routes.append({
+                "phone_number": r[0],
+                "tenant_id": r[1],
+                "updated_at": r[2].isoformat() if hasattr(r[2], "isoformat") else str(r[2]),
+            })
+    except Exception:
+        routes = []
+    return {
+        "tenant": _jsonable_tenant_view(tenant),
+        "resolved_settings": settings,
+        "phone_routes": routes,
+    }
+
+@app.post("/tenant/config/update")
+def tenant_config_update(payload: TenantConfigUpdateRequest):
+    tenant_id = (payload.tenant_id or "").strip()
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="tenant_id required")
+    tenant = get_tenant(tenant_id)
+    if not tenant.get("_id"):
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    cols = tenants_columns()
+    pk = tenants_pk(cols)
+    col_names = {c["name"] for c in cols}
+
+    updates = []
+    params: Dict[str, Any] = {"tid": tenant_id}
+
+    def add_field(field_name: str, value):
+        if field_name in col_names and value is not None:
+            updates.append(f"{field_name}=:{field_name}")
+            params[field_name] = value
+
+    add_field("business_name", payload.business_name.strip() if isinstance(payload.business_name, str) and payload.business_name.strip() else payload.business_name)
+    add_field("phone_number", normalize_incoming_to_number(payload.phone_number or "") or None)
+    add_field("timezone", payload.timezone.strip() if isinstance(payload.timezone, str) and payload.timezone.strip() else payload.timezone)
+    add_field("language", get_lang(payload.language) if payload.language is not None else None)
+    add_field("work_start", payload.work_start.strip() if isinstance(payload.work_start, str) and payload.work_start.strip() else payload.work_start)
+    add_field("work_end", payload.work_end.strip() if isinstance(payload.work_end, str) and payload.work_end.strip() else payload.work_end)
+    add_field("services_lv", payload.services_lv)
+    add_field("services_ru", payload.services_ru)
+    add_field("services_en", payload.services_en)
+    add_field("weekly_hours_json", payload.weekly_hours_json)
+    add_field("days_off_json", payload.days_off_json)
+    add_field("breaks_json", payload.breaks_json)
+    add_field("holidays_json", payload.holidays_json)
+    add_field("min_notice_minutes", payload.min_notice_minutes)
+    add_field("buffer_minutes", payload.buffer_minutes)
+    # support either service_catalog_json or service_catalog depending on schema
+    if payload.service_catalog_json is not None:
+        if "service_catalog_json" in col_names:
+            add_field("service_catalog_json", payload.service_catalog_json)
+        elif "service_catalog" in col_names:
+            add_field("service_catalog", payload.service_catalog_json)
+
+    if "updated_at" in col_names:
+        updates.append("updated_at=NOW()")
+
+    if updates:
+        with engine.begin() as conn:
+            conn.execute(
+                text(f"UPDATE tenants SET {', '.join(updates)} WHERE {pk}=:tid"),
+                params,
+            )
+
+    new_phone = normalize_incoming_to_number(payload.phone_number or "")
+    if new_phone:
+        upsert_phone_route(new_phone, tenant_id)
+
+    updated = get_tenant(tenant_id)
+    return {
+        "status": "ok",
+        "tenant": _jsonable_tenant_view(updated),
+        "resolved_settings": tenant_settings(updated, get_lang(updated.get("language") or "lv")),
+    }
+
+@app.get("/tenant/routes")
+def tenant_routes(tenant_id: str = TENANT_ID_DEFAULT):
+    tenant_id = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text("SELECT phone_number, tenant_id, updated_at FROM phone_routes WHERE tenant_id=:tenant_id ORDER BY updated_at DESC NULLS LAST, phone_number ASC"),
+            {"tenant_id": tenant_id},
+        ).fetchall()
+    items = []
+    for r in rows:
+        items.append({
+            "phone_number": r[0],
+            "tenant_id": r[1],
+            "updated_at": r[2].isoformat() if hasattr(r[2], "isoformat") else str(r[2]),
+        })
+    return {"tenant_id": tenant_id, "items": items}
 
 @app.get("/dev_rules")
 def dev_rules(tenant_id: str):
