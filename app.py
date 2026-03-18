@@ -4919,7 +4919,8 @@ def dashboard_analytics(tenant_id: str) -> Dict[str, Any]:
     }
 
 @app.get("/dashboard/bookings")
-def dashboard_bookings(tenant_id: str, limit: int = 50):
+@app.get("/bookings")
+def dashboard_bookings(tenant_id: str = TENANT_ID_DEFAULT, limit: int = 50):
     tenant = get_tenant((tenant_id or '').strip() or TENANT_ID_DEFAULT)
     if not tenant.get('_id'):
         raise HTTPException(status_code=404, detail='Tenant not found')
@@ -4929,7 +4930,8 @@ def dashboard_bookings(tenant_id: str, limit: int = 50):
     }
 
 @app.get("/dashboard/conversations")
-def dashboard_conversations(tenant_id: str, limit: int = 100):
+@app.get("/conversations")
+def dashboard_conversations(tenant_id: str = TENANT_ID_DEFAULT, limit: int = 100):
     tenant = get_tenant((tenant_id or '').strip() or TENANT_ID_DEFAULT)
     if not tenant.get('_id'):
         raise HTTPException(status_code=404, detail='Tenant not found')
@@ -4939,7 +4941,8 @@ def dashboard_conversations(tenant_id: str, limit: int = 100):
     }
 
 @app.get("/dashboard/analytics")
-def dashboard_analytics_endpoint(tenant_id: str):
+@app.get("/analytics")
+def dashboard_analytics_endpoint(tenant_id: str = TENANT_ID_DEFAULT):
     tenant = get_tenant((tenant_id or '').strip() or TENANT_ID_DEFAULT)
     if not tenant.get('_id'):
         raise HTTPException(status_code=404, detail='Tenant not found')
