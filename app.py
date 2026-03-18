@@ -3627,7 +3627,19 @@ def handle_user_text(
     fresh_booking_start = bool(msg and is_booking_opener(msg))
     llm_intent = _normalize_llm_intent((llm_hint or {}).get("intent"))
     llm_conf = float((llm_hint or {}).get("confidence") or 0.0)
-    if not fresh_booking_start and llm_intent == "booking" and llm_conf >= LLM_INTENT_MIN_CONFIDENCE:
+
+    # IMPORTANT:
+    # Do not restart an already active booking flow just because the LLM
+    # broadly classified a short follow-up like "pēc darba" / "after work"
+    # as a booking message. Inside an active flow these should be treated
+    # as contextual booking details, not a brand new booking opener.
+    if (
+        not fresh_booking_start
+        and not active_flow
+        and c["state"] not in ACTIVE_BOOKING_STATES
+        and llm_intent == "booking"
+        and llm_conf >= LLM_INTENT_MIN_CONFIDENCE
+    ):
         fresh_booking_start = True
 
     if not c.get("name") and (llm_hint or {}).get("name"):
