@@ -41,6 +41,7 @@ import ast
 import base64
 import uuid
 import logging
+import random
 from datetime import datetime, timedelta, timezone, date
 from typing import Dict, Any, Optional, Tuple, List
 
@@ -341,6 +342,188 @@ def t(lang: str, key: str, **kwargs: Any) -> str:
         return template.format(**kwargs)
     except Exception:
         return template
+
+
+# -------------------------
+# HUMAN RESPONSE LAYER (2.6)
+# -------------------------
+def _pick_variant(options: List[str], fallback: str) -> str:
+    cleaned = [str(x).strip() for x in options if str(x).strip()]
+    return random.choice(cleaned) if cleaned else fallback
+
+def _slot_labels_from_pending(pending: Dict[str, Any]) -> List[str]:
+    labels: List[str] = []
+    for iso in get_offered_slots(pending or {}):
+        dtv = parse_dt_any_tz(iso)
+        if dtv:
+            labels.append(format_dt_short(dtv))
+    return labels
+
+def humanize_result(result: Dict[str, Any], conv: Optional[Dict[str, Any]], tenant: Dict[str, Any]) -> Dict[str, Any]:
+    result = dict(result or {})
+    conv = conv or {}
+    tenant = tenant or {}
+    lang = get_lang(result.get("lang") or conv.get("lang") or tenant.get("language") or "lv")
+    state = conversation_state(conv)
+    pending = conv.get("pending") or {}
+    settings = tenant_settings(tenant, lang)
+    service_text = str(result.get("service") or pending.get("service_display") or "").strip()
+    when_text = str(result.get("when") or result.get("datetime_text") or "").strip()
+    slots = _slot_labels_from_pending(pending)
+
+    def apply(text_value: str):
+        result["msg_out"] = text_value
+        result["reply_voice"] = text_value
+
+    if result.get("status") == "greeting":
+        if lang == "ru":
+            apply(_pick_variant([
+                "Здравствуйте! Чем могу помочь?",
+                "Добрый день! Чем могу помочь?",
+            ], result.get("msg_out") or "Здравствуйте! Чем могу помочь?"))
+        elif lang == "en":
+            apply(_pick_variant([
+                "Hello! How can I help you today?",
+                "Hi! How can I help?",
+            ], result.get("msg_out") or "Hello! How can I help?"))
+        else:
+            apply(_pick_variant([
+                "Labdien! Kā varu palīdzēt?",
+                "Sveiki! Kā varu palīdzēt?",
+            ], result.get("msg_out") or "Labdien! Kā varu palīdzēt?"))
+        return result
+
+    if result.get("status") == "booked" and when_text:
+        if lang == "ru":
+            apply(_pick_variant([
+                f"Отлично, записал вас на {when_text}.",
+                f"Готово, запись подтверждена на {when_text}.",
+                f"Хорошо, подтверждаю запись на {when_text}.",
+            ], result.get("msg_out") or f"Запись подтверждена на {when_text}."))
+        elif lang == "en":
+            apply(_pick_variant([
+                f"Great, you are booked for {when_text}.",
+                f"Done, your appointment is confirmed for {when_text}.",
+            ], result.get("msg_out") or f"Your appointment is confirmed for {when_text}."))
+        else:
+            apply(_pick_variant([
+                f"Lieliski, pierakstīju jūs uz {when_text}.",
+                f"Gatavs, jūsu pieraksts ir apstiprināts uz {when_text}.",
+                f"Labi, apstiprinu pierakstu uz {when_text}.",
+            ], result.get("msg_out") or f"Pieraksts apstiprināts uz {when_text}."))
+        return result
+
+    if result.get("status") == "reschedule_wait" and when_text:
+        if lang == "ru":
+            apply(_pick_variant([
+                f"Понял. Сейчас у вас запись на {when_text}. На какое время хотите перенести?",
+                f"Хорошо, текущая запись стоит на {when_text}. Какое новое время вам удобно?",
+            ], result.get("msg_out") or f"Текущая запись на {when_text}. На какое время перенести?"))
+        elif lang == "en":
+            apply(_pick_variant([
+                f"Understood. Your current appointment is at {when_text}. What time would you like instead?",
+                f"Okay, you are currently booked for {when_text}. What new time works for you?",
+            ], result.get("msg_out") or f"Your appointment is at {when_text}. What time would you like instead?"))
+        else:
+            apply(_pick_variant([
+                f"Sapratu. Pašlaik jums pieraksts ir {when_text}. Uz kuru laiku vēlaties pārcelt?",
+                f"Labi, šobrīd jūsu pieraksts ir {when_text}. Kāds jaunais laiks jums derētu?",
+            ], result.get("msg_out") or f"Pieraksts ir {when_text}. Uz kuru laiku pārcelt?"))
+        return result
+
+    if result.get("status") in {"holiday_closed", "min_notice"}:
+        # keep clearer existing text but make it a little warmer
+        if lang == "ru":
+            apply(result.get("msg_out") or "К сожалению, на это время записать нельзя. Давайте подберём другой вариант.")
+        elif lang == "en":
+            apply(result.get("msg_out") or "Unfortunately, that time is not available. Let me suggest another option.")
+        else:
+            apply(result.get("msg_out") or "Diemžēl šis laiks nav pieejams. Atradīsim citu variantu.")
+        return result
+
+    if result.get("status") in {"busy", "need_more"} and state == STATE_AWAITING_SERVICE:
+        if lang == "ru":
+            apply(_pick_variant([
+                "Конечно. На какую услугу вас записать?",
+                "Хорошо. Что именно хотите сделать?",
+                "Подскажите, на какую услугу хотите записаться?",
+            ], result.get("msg_out") or "На какую услугу вас записать?"))
+        elif lang == "en":
+            apply(_pick_variant([
+                "Of course. Which service would you like to book?",
+                "Sure — what would you like to book?",
+            ], result.get("msg_out") or "Which service would you like to book?"))
+        else:
+            apply(_pick_variant([
+                "Protams. Uz kādu pakalpojumu vēlaties pierakstīties?",
+                "Labi. Pasakiet, lūdzu, kuru pakalpojumu vēlaties.",
+                "Uz kuru pakalpojumu jūs pierakstīt?",
+            ], result.get("msg_out") or "Uz kādu pakalpojumu vēlaties pierakstīties?"))
+        return result
+
+    if result.get("status") in {"busy", "need_more"} and state == STATE_AWAITING_DATE:
+        if lang == "ru":
+            apply(_pick_variant([
+                "Хорошо. На какой день вас записать?",
+                "Отлично. Какая дата вам удобна?",
+                "Подскажите, на какой день хотите запись?",
+            ], result.get("msg_out") or "На какой день вас записать?"))
+        elif lang == "en":
+            apply(_pick_variant([
+                "Sure. Which day would work for you?",
+                "Okay. What date would you prefer?",
+            ], result.get("msg_out") or "Which day would work for you?"))
+        else:
+            apply(_pick_variant([
+                "Labi. Uz kuru dienu vēlaties pierakstīties?",
+                "Skaidrs. Kurš datums jums būtu ērts?",
+                "Pasakiet, lūdzu, kuru dienu vēlaties.",
+            ], result.get("msg_out") or "Uz kuru dienu vēlaties pierakstīties?"))
+        return result
+
+    if result.get("status") in {"busy", "need_more"} and state == STATE_AWAITING_TIME and slots:
+        if len(slots) >= 3:
+            joined = ", ".join(slots[:3])
+        else:
+            joined = ", ".join(slots[:2])
+        if lang == "ru":
+            apply(_pick_variant([
+                f"Могу предложить такие варианты: {joined}. Что вам удобнее?",
+                f"Есть несколько свободных вариантов: {joined}. Какое время подойдёт?",
+                f"Свободно вот так: {joined}. Что выбираем?",
+            ], result.get("msg_out") or f"Доступны варианты: {joined}."))
+        elif lang == "en":
+            apply(_pick_variant([
+                f"I can offer these times: {joined}. What works best for you?",
+                f"There are a few available options: {joined}. Which one suits you?",
+            ], result.get("msg_out") or f"Available times: {joined}."))
+        else:
+            apply(_pick_variant([
+                f"Varu piedāvāt šādus laikus: {joined}. Kurš jums der?",
+                f"Ir pieejami vairāki varianti: {joined}. Ko izvēlamies?",
+                f"Brīvie laiki ir šādi: {joined}. Kurš jums būtu ērtāks?",
+            ], result.get("msg_out") or f"Pieejamie laiki: {joined}."))
+        return result
+
+    if result.get("status") == "need_more" and state == STATE_AWAITING_CONFIRM and when_text:
+        if lang == "ru":
+            apply(_pick_variant([
+                f"Тогда подтверждаем запись на {when_text}?",
+                f"Подтверждаем время {when_text}?",
+            ], result.get("msg_out") or f"Подтвердить запись на {when_text}?"))
+        elif lang == "en":
+            apply(_pick_variant([
+                f"Shall I confirm the booking for {when_text}?",
+                f"Would you like me to confirm {when_text}?",
+            ], result.get("msg_out") or f"Confirm the booking for {when_text}?"))
+        else:
+            apply(_pick_variant([
+                f"Tad apstiprinām pierakstu uz {when_text}?",
+                f"Vai apstiprināt laiku {when_text}?",
+            ], result.get("msg_out") or f"Apstiprināt pierakstu uz {when_text}?"))
+        return result
+
+    return result
 
 
 # -------------------------
@@ -1456,6 +1639,12 @@ def handle_user_text_with_logging(
         conv = db_get_or_create_conversation(tenant_id, raw_phone, lang_hint or "lv")
     except Exception:
         conv = {}
+    try:
+        tenant = get_tenant(tenant_id)
+        result = humanize_result(result, conv, tenant)
+    except Exception as e:
+        log.error("humanize_result_failed tenant_id=%s err=%s", tenant_id, e)
+        tenant = {}
     log_call_event(
         tenant_id=tenant_id,
         user_id=raw_phone,
@@ -1465,7 +1654,7 @@ def handle_user_text_with_logging(
         conv=conv,
     )
     try:
-        tenant = get_tenant(tenant_id)
+        tenant = tenant or get_tenant(tenant_id)
         send_booking_confirmation_if_needed(tenant, raw_phone, channel, result)
     except Exception as e:
         log.error("booking_confirmation_failed tenant_id=%s channel=%s err=%s", tenant_id, channel, e)
