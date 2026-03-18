@@ -1580,11 +1580,13 @@ def ensure_call_logs_table() -> None:
                     datetime_iso TEXT,
                     status TEXT,
                     raw_text TEXT,
+                    ai_reply TEXT,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
                 """
             )
         )
+        conn.execute(text("ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS ai_reply TEXT"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_call_logs_tenant_created_at ON call_logs (tenant_id, created_at DESC)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_call_logs_user_id ON call_logs (user_id)"))
 
@@ -1622,14 +1624,15 @@ def log_call_event(
         service = str(conv.get("service") or "").strip() or None
         datetime_iso = str(conv.get("datetime_iso") or "").strip() or None
         status = str(result.get("status") or "").strip() or "unknown"
+        ai_reply = str(result.get("msg_out") or result.get("reply_voice") or "").strip() or None
         with engine.begin() as conn:
             conn.execute(
                 text(
                     """
                     INSERT INTO call_logs
-                    (tenant_id, user_id, channel, intent, service, datetime_iso, status, raw_text)
+                    (tenant_id, user_id, channel, intent, service, datetime_iso, status, raw_text, ai_reply)
                     VALUES
-                    (:tenant_id, :user_id, :channel, :intent, :service, :datetime_iso, :status, :raw_text)
+                    (:tenant_id, :user_id, :channel, :intent, :service, :datetime_iso, :status, :raw_text, :ai_reply)
                     """
                 ),
                 {
@@ -1641,6 +1644,7 @@ def log_call_event(
                     "datetime_iso": datetime_iso,
                     "status": status,
                     "raw_text": (raw_text or "").strip(),
+                    "ai_reply": ai_reply,
                 },
             )
     except Exception as e:
@@ -4808,6 +4812,233 @@ def onboarding_create_tenant(payload: dict = Body(...)):
         "onboarding_google_url": f"{SERVER_BASE_URL}{google_path}" if SERVER_BASE_URL else google_path,
     }
 
+
+# =========================
+# DASHBOARD MVP (Phase 3.1)
+# =========================
+def dashboard_recent_bookings(tenant_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+    limit = max(1, min(int(limit or 50), 200))
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                """
+                WITH ranked AS (
+                    SELECT
+                        user_id,
+                        service,
+                        datetime_iso,
+                        status,
+                        raw_text,
+                        ai_reply,
+                        created_at,
+                        ROW_NUMBER() OVER (PARTITION BY user_id, COALESCE(datetime_iso, ''), COALESCE(service, '') ORDER BY created_at DESC) AS rn
+                    FROM call_logs
+                    WHERE tenant_id=:tenant_id
+                      AND intent IN ('booking', 'cancel', 'reschedule')
+                      AND (service IS NOT NULL OR datetime_iso IS NOT NULL OR status IN ('cancelled','booked','reschedule_wait'))
+                )
+                SELECT user_id, service, datetime_iso, status, raw_text, ai_reply, created_at
+                FROM ranked
+                WHERE rn=1
+                ORDER BY created_at DESC
+                LIMIT :limit
+                """
+            ),
+            {"tenant_id": tenant_id, "limit": limit},
+        ).fetchall()
+    items = []
+    for r in rows:
+        user_id, service, datetime_iso, status, raw_text, ai_reply, created_at = r
+        name = None
+        text_in = str(raw_text or '').strip()
+        m = re.search(r"(?:my name is|i am|меня зовут|я\s+)([A-Za-zĀ-žА-Яа-яЁё\-]{2,40})", text_in, flags=re.IGNORECASE)
+        if m:
+            name = m.group(1).strip()
+        items.append({
+            "user_id": user_id,
+            "client_name": name,
+            "service": service,
+            "datetime_iso": datetime_iso,
+            "status": status,
+            "last_user_message": raw_text,
+            "last_ai_reply": ai_reply,
+            "created_at": created_at.isoformat() if hasattr(created_at, 'isoformat') else str(created_at),
+        })
+    return items
+
+def dashboard_recent_conversations(tenant_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+    limit = max(1, min(int(limit or 100), 300))
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT id, user_id, channel, intent, service, datetime_iso, status, raw_text, ai_reply, created_at
+                FROM call_logs
+                WHERE tenant_id=:tenant_id
+                ORDER BY created_at DESC
+                LIMIT :limit
+                """
+            ),
+            {"tenant_id": tenant_id, "limit": limit},
+        ).fetchall()
+    items = []
+    for r in rows:
+        items.append({
+            "id": r[0],
+            "user_id": r[1],
+            "channel": r[2],
+            "intent": r[3],
+            "service": r[4],
+            "datetime_iso": r[5],
+            "status": r[6],
+            "user_message": r[7],
+            "ai_reply": r[8],
+            "created_at": r[9].isoformat() if hasattr(r[9], 'isoformat') else str(r[9]),
+        })
+    return items
+
+def dashboard_analytics(tenant_id: str) -> Dict[str, Any]:
+    today_start = datetime.combine(today_local(), datetime.min.time(), tzinfo=TZ)
+    with engine.connect() as conn:
+        total_requests = conn.execute(text("SELECT COUNT(*) FROM call_logs WHERE tenant_id=:tenant_id"), {"tenant_id": tenant_id}).scalar() or 0
+        total_bookings = conn.execute(text("SELECT COUNT(*) FROM call_logs WHERE tenant_id=:tenant_id AND status='booked'"), {"tenant_id": tenant_id}).scalar() or 0
+        total_cancelled = conn.execute(text("SELECT COUNT(*) FROM call_logs WHERE tenant_id=:tenant_id AND status='cancelled'"), {"tenant_id": tenant_id}).scalar() or 0
+        total_reschedule = conn.execute(text("SELECT COUNT(*) FROM call_logs WHERE tenant_id=:tenant_id AND status IN ('reschedule_wait','booked') AND intent='reschedule'"), {"tenant_id": tenant_id}).scalar() or 0
+        today_requests = conn.execute(text("SELECT COUNT(*) FROM call_logs WHERE tenant_id=:tenant_id AND created_at >= :today_start"), {"tenant_id": tenant_id, "today_start": today_start}).scalar() or 0
+        today_bookings = conn.execute(text("SELECT COUNT(*) FROM call_logs WHERE tenant_id=:tenant_id AND status='booked' AND created_at >= :today_start"), {"tenant_id": tenant_id, "today_start": today_start}).scalar() or 0
+    conversion_rate = round((float(total_bookings) / float(total_requests) * 100.0), 1) if total_requests else 0.0
+    return {
+        "tenant_id": tenant_id,
+        "total_requests": int(total_requests),
+        "total_bookings": int(total_bookings),
+        "total_cancelled": int(total_cancelled),
+        "total_reschedules": int(total_reschedule),
+        "conversion_rate": conversion_rate,
+        "today_requests": int(today_requests),
+        "today_bookings": int(today_bookings),
+    }
+
+@app.get("/dashboard/bookings")
+def dashboard_bookings(tenant_id: str, limit: int = 50):
+    tenant = get_tenant((tenant_id or '').strip() or TENANT_ID_DEFAULT)
+    if not tenant.get('_id'):
+        raise HTTPException(status_code=404, detail='Tenant not found')
+    return {
+        "tenant_id": tenant.get('_id'),
+        "items": dashboard_recent_bookings(tenant.get('_id'), limit),
+    }
+
+@app.get("/dashboard/conversations")
+def dashboard_conversations(tenant_id: str, limit: int = 100):
+    tenant = get_tenant((tenant_id or '').strip() or TENANT_ID_DEFAULT)
+    if not tenant.get('_id'):
+        raise HTTPException(status_code=404, detail='Tenant not found')
+    return {
+        "tenant_id": tenant.get('_id'),
+        "items": dashboard_recent_conversations(tenant.get('_id'), limit),
+    }
+
+@app.get("/dashboard/analytics")
+def dashboard_analytics_endpoint(tenant_id: str):
+    tenant = get_tenant((tenant_id or '').strip() or TENANT_ID_DEFAULT)
+    if not tenant.get('_id'):
+        raise HTTPException(status_code=404, detail='Tenant not found')
+    return dashboard_analytics(tenant.get('_id'))
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
+    tenant_id = (tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
+    html = f"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Repliq Dashboard</title>
+  <style>
+    body {{ font-family: Arial, sans-serif; margin: 0; background: #f6f7fb; color: #111827; }}
+    .wrap {{ max-width: 1200px; margin: 0 auto; padding: 20px; }}
+    .panel {{ background: white; border-radius: 16px; box-shadow: 0 8px 24px rgba(0,0,0,0.08); padding: 16px; margin-bottom: 16px; }}
+    .top {{ display:flex; gap:12px; align-items:center; margin-bottom:16px; }}
+    input, button {{ font: inherit; }}
+    input {{ padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 10px; }}
+    button {{ border:none; border-radius: 10px; padding:10px 14px; background:#111827; color:white; cursor:pointer; }}
+    .metrics {{ display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:12px; }}
+    .card {{ background:#fafafa; border:1px solid #e5e7eb; border-radius: 12px; padding: 14px; }}
+    .card .num {{ font-size: 28px; font-weight: bold; margin-top: 6px; }}
+    table {{ width:100%; border-collapse: collapse; font-size:14px; }}
+    th, td {{ text-align:left; padding:10px 8px; border-bottom:1px solid #e5e7eb; vertical-align:top; }}
+    th {{ background:#fafafa; }}
+    .muted {{ color:#6b7280; font-size:12px; }}
+    .section-title {{ margin:0 0 12px 0; }}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="panel">
+      <div class="top">
+        <input id="tenant" value="{tenant_id}" placeholder="tenant_id" />
+        <button onclick="loadAll()">Refresh</button>
+      </div>
+      <div class="metrics">
+        <div class="card"><div>Total requests</div><div id="m_requests" class="num">-</div></div>
+        <div class="card"><div>Total bookings</div><div id="m_bookings" class="num">-</div></div>
+        <div class="card"><div>Conversion</div><div id="m_conv" class="num">-</div></div>
+        <div class="card"><div>Today bookings</div><div id="m_today" class="num">-</div></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3 class="section-title">Recent bookings</h3>
+      <table id="bookings_tbl">
+        <thead><tr><th>User</th><th>Service</th><th>Date/Time</th><th>Status</th><th>Created</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div class="panel">
+      <h3 class="section-title">Recent conversations</h3>
+      <table id="conv_tbl">
+        <thead><tr><th>Time</th><th>User</th><th>Channel</th><th>User message</th><th>AI reply</th><th>Status</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+<script>
+async function loadAll() {{
+  const tenant = document.getElementById('tenant').value.trim() || 'default';
+  const [a,b,c] = await Promise.all([
+    fetch(`/dashboard/analytics?tenant_id=${{encodeURIComponent(tenant)}}`).then(r => r.json()),
+    fetch(`/dashboard/bookings?tenant_id=${{encodeURIComponent(tenant)}}&limit=20`).then(r => r.json()),
+    fetch(`/dashboard/conversations?tenant_id=${{encodeURIComponent(tenant)}}&limit=20`).then(r => r.json())
+  ]);
+  document.getElementById('m_requests').textContent = a.total_requests ?? '-';
+  document.getElementById('m_bookings').textContent = a.total_bookings ?? '-';
+  document.getElementById('m_conv').textContent = (a.conversion_rate ?? 0) + '%';
+  document.getElementById('m_today').textContent = a.today_bookings ?? '-';
+
+  const bt = document.querySelector('#bookings_tbl tbody');
+  bt.innerHTML='';
+  (b.items || []).forEach(item => {{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${{item.client_name || item.user_id || ''}}</td><td>${{item.service || ''}}</td><td>${{item.datetime_iso || ''}}</td><td>${{item.status || ''}}</td><td><span class="muted">${{item.created_at || ''}}</span></td>`;
+    bt.appendChild(tr);
+  }});
+
+  const ct = document.querySelector('#conv_tbl tbody');
+  ct.innerHTML='';
+  (c.items || []).forEach(item => {{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td><span class="muted">${{item.created_at || ''}}</span></td><td>${{item.user_id || ''}}</td><td>${{item.channel || ''}}</td><td>${{item.user_message || ''}}</td><td>${{item.ai_reply || ''}}</td><td>${{item.status || ''}}</td>`;
+    ct.appendChild(tr);
+  }});
+}}
+document.addEventListener('DOMContentLoaded', loadAll);
+</script>
+</body>
+</html>
+    """
+    return HTMLResponse(content=html)
 
 @app.get("/dev_rules")
 def dev_rules(tenant_id: str):
