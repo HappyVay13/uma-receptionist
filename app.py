@@ -3412,6 +3412,45 @@ def handle_user_text(
     pending = c.get("pending") or {}
     t_low = msg.lower()
 
+    ai_data: Optional[Dict[str, Any]] = None
+    llm_data: Optional[Dict[str, Any]] = None
+
+    def get_llm_data() -> Dict[str, Any]:
+        nonlocal llm_data
+        if llm_data is not None:
+            return llm_data
+        llm_data = llm_message_understanding(
+            msg=msg,
+            lang=lang,
+            settings=settings,
+            service_catalog=service_catalog,
+            service_aliases=service_aliases,
+            business_memory=business_memory,
+        )
+        return llm_data
+
+    def get_ai_data() -> Dict[str, Any]:
+        nonlocal ai_data
+        if ai_data is not None:
+            return ai_data
+        alias_hint = ", ".join([f"{k} => {v}" for k, v in list(service_aliases.items())[:50]])
+        sys_pt = (
+            f"You are an appointment receptionist for {settings['biz_name']}. "
+            f"Business hours: {settings['work_start']}-{settings['work_end']}. "
+            f"Known services: {service_catalog_summary(service_catalog, lang)}. "
+            f"Service aliases map to service keys: {alias_hint or 'none'}. "
+            f"Business memory: {business_memory or 'none'}. "
+            "Extract and return strict JSON only with keys: service, time_text, datetime_iso, name. "
+            "service and name must be plain strings, not arrays. "
+            "If a user names a service using an alias, map it to the canonical service name. "
+            "If value is unknown use null."
+        )
+        usr_pt = f"Today: {now_ts().date()}. User language: {lang}. User message: {msg}"
+        ai_data = openai_chat_json(sys_pt, usr_pt)
+        return ai_data
+
+    llm_hint = get_llm_data() if msg else {}
+
     if any(w in t_low for w in ["atcelt", "отменить", "cancel"]) or ((llm_hint or {}).get("intent") == "cancel" and float((llm_hint or {}).get("confidence") or 0.0) >= LLM_INTENT_MIN_CONFIDENCE):
         if not calendar_ready:
             return blocked_result_for_lang(lang)
@@ -3546,43 +3585,6 @@ def handle_user_text(
             result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, dt_sel)
             db_save_conversation(tenant_id, user_key, c)
             return result
-
-    ai_data: Optional[Dict[str, Any]] = None
-    llm_data: Optional[Dict[str, Any]] = None
-
-    def get_llm_data() -> Dict[str, Any]:
-        nonlocal llm_data
-        if llm_data is not None:
-            return llm_data
-        llm_data = llm_message_understanding(
-            msg=msg,
-            lang=lang,
-            settings=settings,
-            service_catalog=service_catalog,
-            service_aliases=service_aliases,
-            business_memory=business_memory,
-        )
-        return llm_data
-
-    def get_ai_data() -> Dict[str, Any]:
-        nonlocal ai_data
-        if ai_data is not None:
-            return ai_data
-        alias_hint = ", ".join([f"{k} => {v}" for k, v in service_aliases.items()][:50])
-        sys_pt = (
-            f"You are an appointment receptionist for {settings['biz_name']}. "
-            f"Business hours: {settings['work_start']}-{settings['work_end']}. "
-            f"Known services: {service_catalog_summary(service_catalog, lang)}. "
-            f"Service aliases map to service keys: {alias_hint or 'none'}. "
-            f"Business memory: {business_memory or 'none'}. "
-            "Extract and return strict JSON only with keys: service, time_text, datetime_iso, name. "
-            "service and name must be plain strings, not arrays. "
-            "If a user names a service using an alias, map it to the canonical service name. "
-            "If value is unknown use null."
-        )
-        usr_pt = f"Today: {now_ts().date()}. User language: {lang}. User message: {msg}"
-        ai_data = openai_chat_json(sys_pt, usr_pt)
-        return ai_data
 
     if active_flow or c["state"] in ACTIVE_BOOKING_STATES or c["state"] == STATE_NEW:
         direct_service_key = canonical_service_key_from_text(msg, service_aliases)
@@ -4449,7 +4451,7 @@ async def dev_chat(req: DevChatRequest):
         conv = db_get_or_create_conversation(req.tenant_id, raw_user, req.lang)
         return {
             "status": result.get("status"),
-            "reply": result.get("msg_out") or result.get("reply_voice"),
+            "reply": result.get("msg_out") or result.get("reply_voice") or "",
             "lang": result.get("lang"),
             "state": conv.get("state"),
             "pending": conv.get("pending"),
@@ -4459,7 +4461,16 @@ async def dev_chat(req: DevChatRequest):
         }
     except Exception as e:
         log.exception("DEV CHAT ERROR")
-        raise HTTPException(status_code=500, detail=str(e))
+        return {
+            "status": "error",
+            "reply": f"DEV_CHAT_ERROR: {str(e)}",
+            "lang": get_lang(req.lang),
+            "state": None,
+            "pending": None,
+            "service": None,
+            "datetime_iso": None,
+            "name": None,
+        }
 
 
 @app.post("/dev_reset")
