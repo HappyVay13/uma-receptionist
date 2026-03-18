@@ -5245,6 +5245,42 @@ document.addEventListener('DOMContentLoaded', loadConfig);
     """
     return HTMLResponse(content=html)
 
+
+def _safe_parse_json_text(value: Any):
+    if value is None:
+        return None
+    if isinstance(value, (dict, list)):
+        return value
+    txt = str(value).strip()
+    if not txt:
+        return None
+    try:
+        return json.loads(txt)
+    except Exception:
+        return None
+
+def _sync_weekly_hours_with_fallback_bounds(
+    weekly_hours_value: Any,
+    work_start: Optional[str],
+    work_end: Optional[str],
+) -> Optional[str]:
+    parsed = _safe_parse_json_text(weekly_hours_value)
+    if not isinstance(parsed, dict):
+        if isinstance(weekly_hours_value, str):
+            return weekly_hours_value
+        return None
+    for day_key, val in list(parsed.items()):
+        if val is None:
+            continue
+        if isinstance(val, (list, tuple)) and len(val) >= 2:
+            start_val = str(val[0]).strip() if val[0] is not None else ""
+            end_val = str(val[1]).strip() if val[1] is not None else ""
+            parsed[day_key] = [
+                work_start.strip() if isinstance(work_start, str) and work_start.strip() else start_val,
+                work_end.strip() if isinstance(work_end, str) and work_end.strip() else end_val,
+            ]
+    return json.dumps(parsed, ensure_ascii=False, indent=2)
+
 class TenantConfigUpdateRequest(BaseModel):
     tenant_id: str
     business_name: Optional[str] = None
@@ -5365,12 +5401,25 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
     add_field("phone_number", normalize_incoming_to_number(payload.phone_number or "") or None)
     add_field("timezone", payload.timezone.strip() if isinstance(payload.timezone, str) and payload.timezone.strip() else payload.timezone)
     add_field("language", get_lang(payload.language) if payload.language is not None else None)
-    add_field("work_start", payload.work_start.strip() if isinstance(payload.work_start, str) and payload.work_start.strip() else payload.work_start)
-    add_field("work_end", payload.work_end.strip() if isinstance(payload.work_end, str) and payload.work_end.strip() else payload.work_end)
+    clean_work_start = payload.work_start.strip() if isinstance(payload.work_start, str) and payload.work_start.strip() else payload.work_start
+    clean_work_end = payload.work_end.strip() if isinstance(payload.work_end, str) and payload.work_end.strip() else payload.work_end
+
+    add_field("work_start", clean_work_start)
+    add_field("work_end", clean_work_end)
     add_field("services_lv", payload.services_lv)
     add_field("services_ru", payload.services_ru)
     add_field("services_en", payload.services_en)
-    add_field("weekly_hours_json", payload.weekly_hours_json)
+
+    weekly_hours_value = payload.weekly_hours_json
+    if weekly_hours_value is None and (((isinstance(clean_work_start, str) and clean_work_start.strip()) or (isinstance(clean_work_end, str) and clean_work_end.strip()))):
+        weekly_hours_value = tenant.get("weekly_hours_json")
+    if weekly_hours_value is not None:
+        weekly_hours_value = _sync_weekly_hours_with_fallback_bounds(
+            weekly_hours_value,
+            clean_work_start,
+            clean_work_end,
+        )
+    add_field("weekly_hours_json", weekly_hours_value)
     add_field("days_off_json", payload.days_off_json)
     add_field("breaks_json", payload.breaks_json)
     add_field("holidays_json", payload.holidays_json)
