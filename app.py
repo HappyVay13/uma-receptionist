@@ -2895,6 +2895,18 @@ def clear_offered_slots(pending: Dict[str, Any]) -> Dict[str, Any]:
     return pending
 
 
+def remember_booking_service(c: Dict[str, Any], pending: Dict[str, Any], service_item: Optional[Dict[str, Any]], lang: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    service_key = str((service_item or {}).get("key") or c.get("service") or pending.get("service") or "").strip()
+    if service_key:
+        c["service"] = service_key
+        pending["service"] = service_key
+    display = service_display_name(service_item, lang) if service_item else str(pending.get("service_display") or "").strip()
+    if display:
+        pending["service_display"] = display
+    c["pending"] = pending or None
+    return c, pending
+
+
 def is_yes_text(text_: Optional[str], lang: str) -> bool:
     low = (text_ or "").strip().lower()
     if not low:
@@ -3656,8 +3668,7 @@ def handle_user_text(
                 c["time_text"] = str(data.get("time_text"))
 
         if service_item and not c.get("service"):
-            c["service"] = str(service_item.get("key") or "").strip()
-            pending["service_display"] = service_display_name(service_item, lang)
+            c, pending = remember_booking_service(c, pending, service_item, lang)
             clear_offered_slots(pending)
             pending.pop("awaiting_time_date_iso", None)
             c["pending"] = pending or None
@@ -3705,6 +3716,8 @@ def handle_user_text(
         if date_only_dt or (dt_start and not (explicit_time_present or has_natural_time_hint(msg))):
             base_date = date_only_dt or dt_start
             pending["booking_intent"] = True
+            service_item_current = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
+            c, pending = remember_booking_service(c, pending, service_item_current, lang)
             pending["awaiting_time_date_iso"] = base_date.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
             clear_offered_slots(pending)
             day_slots = find_first_n_slots_for_day(
@@ -3765,6 +3778,65 @@ def handle_user_text(
         }
 
     if c["state"] == STATE_AWAITING_TIME:
+        service_item_current = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
+        c, pending = remember_booking_service(c, pending, service_item_current, lang)
+
+        if pending.get("awaiting_time_date_iso"):
+            base_day = parse_dt_any_tz(str(pending.get("awaiting_time_date_iso") or "").strip())
+            time_window = parse_time_window(msg)
+            if time_window and base_day:
+                slots = find_first_n_slots_for_day_window(
+                    calendar_id=settings["calendar_id"],
+                    day_dt=base_day,
+                    duration_min=service_duration_min(service_item_current),
+                    work_start=settings["work_start"],
+                    work_end=settings["work_end"],
+                    window_start_hour=time_window[0],
+                    window_end_hour=time_window[1],
+                    limit=3,
+                    business_rules=settings.get("business_rules"),
+                ) if calendar_ready else []
+                if len(slots) >= 3:
+                    pending = set_offered_slots(pending, slots[:3])
+                    c["pending"] = pending
+                    db_save_conversation(tenant_id, user_key, c)
+                    return {
+                        "status": "need_more",
+                        "reply_voice": t(lang, "smart_slots_prompt", opt1=format_dt_short(slots[0]), opt2=format_dt_short(slots[1]), opt3=format_dt_short(slots[2])),
+                        "msg_out": t(lang, "smart_slots_prompt", opt1=format_dt_short(slots[0]), opt2=format_dt_short(slots[1]), opt3=format_dt_short(slots[2])),
+                        "lang": lang,
+                    }
+                if len(slots) >= 2:
+                    pending = set_offered_slots(pending, slots[:2])
+                    c["pending"] = pending
+                    db_save_conversation(tenant_id, user_key, c)
+                    return {
+                        "status": "need_more",
+                        "reply_voice": t(lang, "voice_options_prompt", opt1=format_dt_short(slots[0]), opt2=format_dt_short(slots[1])),
+                        "msg_out": t(lang, "voice_options_prompt", opt1=format_dt_short(slots[0]), opt2=format_dt_short(slots[1])),
+                        "lang": lang,
+                    }
+                if len(slots) == 1:
+                    pending = set_offered_slots(pending, slots[:1])
+                    pending["confirm_slot_iso"] = slots[0].isoformat()
+                    c["pending"] = pending
+                    c["state"] = STATE_AWAITING_CONFIRM
+                    c["datetime_iso"] = slots[0].isoformat()
+                    db_save_conversation(tenant_id, user_key, c)
+                    return {
+                        "status": "need_more",
+                        "reply_voice": t(lang, "ask_booking_confirm", when=format_dt_short(slots[0]), service=pending.get("service_display") or ""),
+                        "msg_out": t(lang, "ask_booking_confirm", when=format_dt_short(slots[0]), service=pending.get("service_display") or ""),
+                        "lang": lang,
+                    }
+                db_save_conversation(tenant_id, user_key, c)
+                return {
+                    "status": "need_more",
+                    "reply_voice": t(lang, "ask_booking_time_only"),
+                    "msg_out": t(lang, "ask_booking_time_only"),
+                    "lang": lang,
+                }
+
         selected_iso = extract_slot_choice(msg, pending)
         if selected_iso:
             dt_sel = parse_dt_any_tz(selected_iso)
