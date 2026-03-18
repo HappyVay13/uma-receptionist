@@ -47,6 +47,7 @@ from typing import Dict, Any, Optional, Tuple, List
 
 import requests
 from fastapi import FastAPI, Request, HTTPException
+from pydantic import BaseModel
 from fastapi.responses import Response, StreamingResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from twilio.request_validator import RequestValidator
@@ -5039,6 +5040,7 @@ async function loadAll() {{
   document.getElementById('lnk_bookings').href = `/dashboard/bookings?tenant_id=${encodeURIComponent(tenant)}`;
   document.getElementById('lnk_conversations').href = `/dashboard/conversations?tenant_id=${encodeURIComponent(tenant)}`;
   document.getElementById('lnk_tenant').href = `/tenant/config?tenant_id=${encodeURIComponent(tenant)}`;
+  if (document.getElementById('lnk_tenant_ui')) document.getElementById('lnk_tenant_ui').href = `/tenant/config/ui?tenant_id=${encodeURIComponent(tenant)}`;
   document.getElementById('m_requests').textContent = a.total_requests ?? '-';
   document.getElementById('m_bookings').textContent = a.total_bookings ?? '-';
   document.getElementById('m_conv').textContent = (a.conversion_rate ?? 0) + '%';
@@ -5068,6 +5070,180 @@ document.addEventListener('DOMContentLoaded', loadAll);
     return HTMLResponse(content=html)
 
 
+
+
+
+@app.get("/tenant/config/ui")
+def tenant_config_ui(tenant_id: str = TENANT_ID_DEFAULT):
+    tenant_id = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    html = f"""
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<title>Tenant Config</title>
+<style>
+body {{ font-family: Arial, sans-serif; background:#f7f7f8; color:#111; margin:0; padding:24px; }}
+.wrap {{ max-width: 1100px; margin:0 auto; }}
+.card {{ background:#fff; border:1px solid #e5e7eb; border-radius:16px; padding:20px; margin-bottom:18px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }}
+h1,h2 {{ margin:0 0 14px 0; }}
+.grid {{ display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:14px; }}
+label {{ display:block; font-size:14px; margin-bottom:6px; color:#374151; }}
+input, select, textarea {{ width:100%; box-sizing:border-box; border:1px solid #d1d5db; border-radius:10px; padding:10px 12px; font-size:14px; }}
+textarea {{ min-height:110px; resize:vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }}
+.actions {{ display:flex; gap:10px; align-items:center; margin-top:14px; }}
+button {{ border:0; background:#111827; color:#fff; padding:10px 16px; border-radius:10px; cursor:pointer; }}
+button.secondary {{ background:#fff; color:#111827; border:1px solid #d1d5db; }}
+.small {{ font-size:12px; color:#6b7280; }}
+.ok {{ color:#065f46; }}
+.err {{ color:#991b1b; white-space:pre-wrap; }}
+.links a {{ margin-right:14px; }}
+.full {{ grid-column: 1 / -1; }}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <h1>Tenant Config Editor</h1>
+    <div class="actions">
+      <input id="tenant_id" value="{tenant_id}" />
+      <button onclick="loadConfig()">Load</button>
+      <button class="secondary" onclick="window.location='/dashboard?tenant_id='+encodeURIComponent(document.getElementById('tenant_id').value)">Open dashboard</button>
+    </div>
+    <div class="small">Edits are saved via <code>POST /tenant/config/update</code>.</div>
+  </div>
+
+  <div class="card">
+    <h2>Basic settings</h2>
+    <div class="grid">
+      <div><label>Business name</label><input id="business_name"/></div>
+      <div><label>Phone number</label><input id="phone_number"/></div>
+      <div><label>Timezone</label><input id="timezone"/></div>
+      <div><label>Language</label>
+        <select id="language">
+          <option value="lv">lv</option>
+          <option value="ru">ru</option>
+          <option value="en">en</option>
+        </select>
+      </div>
+      <div><label>Work start</label><input id="work_start" placeholder="09:00"/></div>
+      <div><label>Work end</label><input id="work_end" placeholder="18:00"/></div>
+      <div><label>Min notice minutes</label><input id="min_notice_minutes" type="number"/></div>
+      <div><label>Buffer minutes</label><input id="buffer_minutes" type="number"/></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Services and rules</h2>
+    <div class="grid">
+      <div><label>Services LV</label><textarea id="services_lv"></textarea></div>
+      <div><label>Services RU</label><textarea id="services_ru"></textarea></div>
+      <div class="full"><label>Services EN</label><textarea id="services_en"></textarea></div>
+      <div class="full"><label>Service catalog JSON</label><textarea id="service_catalog_json" placeholder='[{{"key":"mens_haircut","name_lv":"vīriešu frizūra","name_ru":"мужская стрижка","name_en":"men&#39;s haircut","duration_min":30,"aliases_lv":["matu griezums"],"aliases_ru":["стрижка"],"aliases_en":["haircut"]}}]'></textarea></div>
+      <div><label>Weekly hours JSON</label><textarea id="weekly_hours_json"></textarea></div>
+      <div><label>Days off JSON</label><textarea id="days_off_json"></textarea></div>
+      <div><label>Breaks JSON</label><textarea id="breaks_json"></textarea></div>
+      <div><label>Holidays JSON</label><textarea id="holidays_json"></textarea></div>
+    </div>
+    <div class="actions">
+      <button onclick="saveConfig()">Save config</button>
+      <span id="save_status" class="small"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Quick links</h2>
+    <div class="links">
+      <a id="lnk_json" href="#">JSON config</a>
+      <a id="lnk_routes" href="#">Phone routes</a>
+      <a id="lnk_bookings" href="#">Bookings</a>
+      <a id="lnk_conv" href="#">Conversations</a>
+      <a id="lnk_analytics" href="#">Analytics</a>
+    </div>
+  </div>
+</div>
+
+<script>
+function j(v) {{
+  if (v === null || v === undefined || v === "") return "";
+  if (typeof v === "string") return v;
+  return JSON.stringify(v, null, 2);
+}}
+function setLinks(tid) {{
+  document.getElementById('lnk_json').href = '/tenant/config?tenant_id=' + encodeURIComponent(tid);
+  document.getElementById('lnk_routes').href = '/tenant/routes?tenant_id=' + encodeURIComponent(tid);
+  document.getElementById('lnk_bookings').href = '/bookings?tenant_id=' + encodeURIComponent(tid);
+  document.getElementById('lnk_conv').href = '/conversations?tenant_id=' + encodeURIComponent(tid);
+  document.getElementById('lnk_analytics').href = '/analytics?tenant_id=' + encodeURIComponent(tid);
+}}
+async function loadConfig() {{
+  const tid = document.getElementById('tenant_id').value.trim() || 'default';
+  setLinks(tid);
+  const r = await fetch('/tenant/config?tenant_id=' + encodeURIComponent(tid));
+  const data = await r.json();
+  const t = data.tenant || {{}};
+  document.getElementById('business_name').value = t.business_name || '';
+  document.getElementById('phone_number').value = t.phone_number || '';
+  document.getElementById('timezone').value = t.timezone || '';
+  document.getElementById('language').value = t.language || 'lv';
+  document.getElementById('work_start').value = t.work_start || '';
+  document.getElementById('work_end').value = t.work_end || '';
+  document.getElementById('services_lv').value = t.services_lv || '';
+  document.getElementById('services_ru').value = t.services_ru || '';
+  document.getElementById('services_en').value = t.services_en || '';
+  document.getElementById('weekly_hours_json').value = j(t.weekly_hours_json);
+  document.getElementById('days_off_json').value = j(t.days_off_json);
+  document.getElementById('breaks_json').value = j(t.breaks_json);
+  document.getElementById('holidays_json').value = j(t.holidays_json);
+  document.getElementById('min_notice_minutes').value = t.min_notice_minutes ?? '';
+  document.getElementById('buffer_minutes').value = t.buffer_minutes ?? '';
+  document.getElementById('service_catalog_json').value = j(t.service_catalog_json || t.service_catalog);
+}}
+async function saveConfig() {{
+  const tid = document.getElementById('tenant_id').value.trim() || 'default';
+  const payload = {{
+    tenant_id: tid,
+    business_name: document.getElementById('business_name').value || null,
+    phone_number: document.getElementById('phone_number').value || null,
+    timezone: document.getElementById('timezone').value || null,
+    language: document.getElementById('language').value || null,
+    work_start: document.getElementById('work_start').value || null,
+    work_end: document.getElementById('work_end').value || null,
+    services_lv: document.getElementById('services_lv').value || null,
+    services_ru: document.getElementById('services_ru').value || null,
+    services_en: document.getElementById('services_en').value || null,
+    weekly_hours_json: document.getElementById('weekly_hours_json').value || null,
+    days_off_json: document.getElementById('days_off_json').value || null,
+    breaks_json: document.getElementById('breaks_json').value || null,
+    holidays_json: document.getElementById('holidays_json').value || null,
+    min_notice_minutes: document.getElementById('min_notice_minutes').value ? Number(document.getElementById('min_notice_minutes').value) : null,
+    buffer_minutes: document.getElementById('buffer_minutes').value ? Number(document.getElementById('buffer_minutes').value) : null,
+    service_catalog_json: document.getElementById('service_catalog_json').value || null
+  }};
+  const st = document.getElementById('save_status');
+  st.className = 'small';
+  st.textContent = 'Saving...';
+  const r = await fetch('/tenant/config/update', {{
+    method: 'POST',
+    headers: {{ 'Content-Type': 'application/json' }},
+    body: JSON.stringify(payload)
+  }});
+  const data = await r.json();
+  if (r.ok) {{
+    st.className = 'small ok';
+    st.textContent = 'Saved';
+    await loadConfig();
+  }} else {{
+    st.className = 'small err';
+    st.textContent = (data.detail || JSON.stringify(data, null, 2));
+  }}
+}}
+document.addEventListener('DOMContentLoaded', loadConfig);
+</script>
+</body>
+</html>
+    """
+    return HTMLResponse(content=html)
 
 class TenantConfigUpdateRequest(BaseModel):
     tenant_id: str
