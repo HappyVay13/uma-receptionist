@@ -233,6 +233,10 @@ I18N: Dict[str, Dict[str, str]] = {
         "reschedule_same_time": "Tas ir jūsu pašreizējais pieraksta laiks. Lūdzu, izvēlieties citu laiku.",
         "reschedule_keep_current": "Labi, atstājam pašreizējo pierakstu bez izmaiņām.",
         "reschedule_failed_keep": "Neizdevās pārcelt pierakstu. Esošais pieraksts palika spēkā.",
+        "soft_clarify_service": "Lai pierakstītu, man vēl vajag saprast, kuru pakalpojumu vēlaties.",
+        "soft_clarify_date": "Saprotu. Vēl pasakiet, uz kuru dienu vēlaties pierakstīties.",
+        "soft_clarify_time": "Saprotu. Vēl vajag precīzāku laiku vai izvēli no piedāvātajiem variantiem.",
+        "soft_clarify_confirm": "Vai pareizi sapratu, ka vēlaties apstiprināt piedāvāto laiku? Lūdzu, atbildiet ar jā vai nē.",
     },
     "ru": {
         "service_unavailable_voice": "Извините, сервис недоступен.",
@@ -282,6 +286,10 @@ I18N: Dict[str, Dict[str, str]] = {
         "reschedule_same_time": "Это уже текущее время вашей записи. Пожалуйста, выберите другое время.",
         "reschedule_keep_current": "Хорошо, оставляем текущую запись без изменений.",
         "reschedule_failed_keep": "Не удалось перенести запись. Текущая запись сохранена.",
+        "soft_clarify_service": "Чтобы записать вас, мне нужно понять, на какую услугу вы хотите записаться.",
+        "soft_clarify_date": "Понял. Подскажите, на какой день вам нужна запись.",
+        "soft_clarify_time": "Понял. Нужен более точный вариант времени или выбор из предложенных слотов.",
+        "soft_clarify_confirm": "Правильно ли я понял, что вы хотите подтвердить предложенное время? Пожалуйста, ответьте да или нет.",
     },
     "en": {
         "service_unavailable_voice": "Sorry, the service is unavailable.",
@@ -331,6 +339,10 @@ I18N: Dict[str, Dict[str, str]] = {
         "reschedule_same_time": "That is already your current appointment time. Please choose another time.",
         "reschedule_keep_current": "Okay, we will keep your current appointment unchanged.",
         "reschedule_failed_keep": "I could not move the appointment. Your current appointment was kept unchanged.",
+        "soft_clarify_service": "To book this for you, I still need to know which service you want.",
+        "soft_clarify_date": "Got it. Please tell me which day you would like to book for.",
+        "soft_clarify_time": "Understood. I still need a more specific time or one of the offered options.",
+        "soft_clarify_confirm": "Just to confirm, would you like to confirm the offered time? Please answer yes or no.",
     },
 }
 
@@ -505,7 +517,10 @@ def humanize_result(result: Dict[str, Any], conv: Optional[Dict[str, Any]], tena
             ], result.get("msg_out") or f"Pieejamie laiki: {joined}."))
         return result
 
-    if result.get("status") == "need_more" and state == STATE_AWAITING_CONFIRM and when_text:
+    if result.get("status") == "need_more" and state == STATE_AWAITING_CONFIRM and (when_text or str(conv.get("datetime_iso") or "").strip()):
+        if not when_text:
+            _dtc = parse_dt_any_tz(str(conv.get("datetime_iso") or "").strip())
+            when_text = format_dt_short(_dtc) if _dtc else when_text
         if lang == "ru":
             apply(_pick_variant([
                 f"Тогда подтверждаем запись на {when_text}?",
@@ -3113,6 +3128,32 @@ def is_no_text(text_: Optional[str], lang: str) -> bool:
     allowed.update(NO_WORDS.get(get_lang(lang), set()))
     return low in allowed
 
+def is_short_ack_text(text_: Optional[str], lang: str) -> bool:
+    low = (text_ or "").strip().lower()
+    if not low:
+        return False
+    short_acks = {
+        "lv": {"labi", "skaidrs", "ok", "okej", "der", "nu labi"},
+        "ru": {"ок", "хорошо", "ладно", "давай", "понятно", "угу"},
+        "en": {"ok", "okay", "sure", "alright", "got it"},
+    }
+    allowed = set().union(*short_acks.values())
+    allowed.update(short_acks.get(get_lang(lang), set()))
+    return low in allowed
+
+
+def soft_clarify_for_state(lang: str, c: Dict[str, Any], pending: Dict[str, Any]) -> str:
+    state = conversation_state(c)
+    if state == STATE_AWAITING_SERVICE:
+        return t(lang, "soft_clarify_service")
+    if state == STATE_AWAITING_DATE:
+        return t(lang, "soft_clarify_date")
+    if state == STATE_AWAITING_TIME:
+        return t(lang, "soft_clarify_time")
+    if state == STATE_AWAITING_CONFIRM:
+        return t(lang, "soft_clarify_confirm")
+    return t(lang, "unclear_reply")
+
 
 def next_weekday_date(target_weekday: int, base: Optional[date] = None) -> date:
     base = base or today_local()
@@ -3783,7 +3824,7 @@ def handle_user_text(
             "lang": lang,
         }
 
-    if msg and is_greeting_only(msg):
+    if msg and is_greeting_only(msg) and not active_flow and c["state"] not in ACTIVE_BOOKING_STATES:
         c["state"] = STATE_NEW
         c["service"] = None
         c["datetime_iso"] = None
@@ -3888,10 +3929,11 @@ def handle_user_text(
 
     if c["state"] == STATE_AWAITING_SERVICE and not c.get("service"):
         db_save_conversation(tenant_id, user_key, c)
+        reply_text = t(lang, "ask_booking_service") if is_short_ack_text(msg, lang) else t(lang, "ask_booking_service")
         return {
             "status": "need_more",
-            "reply_voice": t(lang, "ask_booking_service"),
-            "msg_out": t(lang, "ask_booking_service"),
+            "reply_voice": reply_text,
+            "msg_out": reply_text,
             "lang": lang,
         }
 
@@ -3903,6 +3945,14 @@ def handle_user_text(
     explicit_time_present = has_explicit_time(msg)
 
     if c["state"] == STATE_AWAITING_DATE:
+        if is_short_ack_text(msg, lang):
+            db_save_conversation(tenant_id, user_key, c)
+            return {
+                "status": "need_more",
+                "reply_voice": t(lang, "ask_booking_date"),
+                "msg_out": t(lang, "ask_booking_date"),
+                "lang": lang,
+            }
         dt_start = None
         natural_dt = parse_natural_datetime(msg)
         if natural_dt:
@@ -3980,6 +4030,14 @@ def handle_user_text(
 
     if c["state"] == STATE_AWAITING_TIME:
         service_item_current = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
+        if is_short_ack_text(msg, lang):
+            db_save_conversation(tenant_id, user_key, c)
+            return {
+                "status": "need_more",
+                "reply_voice": prompt_for_state(lang, c, pending),
+                "msg_out": prompt_for_state(lang, c, pending),
+                "lang": lang,
+            }
         c, pending = remember_booking_service(c, pending, service_item_current, lang)
 
         if pending.get("awaiting_time_date_iso"):
@@ -4172,6 +4230,14 @@ def handle_user_text(
 
     if msg and conversation_state(c) == STATE_AWAITING_CONFIRM:
         confirm_iso = str(pending.get("confirm_slot_iso") or c.get("datetime_iso") or "").strip()
+        if is_short_ack_text(msg, lang) and not is_yes_text(msg, lang):
+            db_save_conversation(tenant_id, user_key, c)
+            return {
+                "status": "need_more",
+                "reply_voice": t(lang, "soft_clarify_confirm"),
+                "msg_out": t(lang, "soft_clarify_confirm"),
+                "lang": lang,
+            }
         dt_confirm = parse_dt_any_tz(confirm_iso)
         llm_confirmation = (llm_hint or {}).get("confirmation")
         if is_yes_text(msg, lang) or llm_confirmation == "yes":
@@ -4210,7 +4276,7 @@ def handle_user_text(
     c = normalize_booking_state(c)
     db_save_conversation(tenant_id, user_key, c)
     fallback_status = "need_more" if is_active_booking_flow(c) else "info"
-    fallback_reply = prompt_for_state(lang, c, c.get("pending") or {}) if is_active_booking_flow(c) else t(lang, "unclear_reply")
+    fallback_reply = soft_clarify_for_state(lang, c, c.get("pending") or {}) if is_active_booking_flow(c) else t(lang, "unclear_reply")
     if not is_active_booking_flow(c) and llm_intent == "info" and llm_conf >= LLM_INTENT_MIN_CONFIDENCE and is_hours_question(msg):
         fallback_reply = t(lang, "hours_info", biz=settings["biz_name"], start=settings["work_start"], end=settings["work_end"])
     return {
