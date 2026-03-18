@@ -109,18 +109,8 @@ WORK_END_HHMM_DEFAULT = os.getenv("WORK_END_HHMM", "18:00").strip()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
-
-LLM_INTENT_ENABLED = (
-    (os.getenv("LLM_INTENT_ENABLED", "true") or "true").strip().lower()
-    in ("1", "true", "yes", "on")
-)
-LLM_INTENT_MIN_CONFIDENCE = float(
-    (os.getenv("LLM_INTENT_MIN_CONFIDENCE", "0.65") or "0.65").strip()
-)
-LLM_FALLBACK_ENABLED = (
-    (os.getenv("LLM_FALLBACK_ENABLED", "true") or "true").strip().lower()
-    in ("1", "true", "yes", "on")
-)
+LLM_INTELLIGENCE_ENABLED = ((os.getenv("LLM_INTELLIGENCE_ENABLED", "true") or "true").strip().lower() in ("1", "true", "yes", "on"))
+LLM_INTENT_MIN_CONFIDENCE = float((os.getenv("LLM_INTENT_MIN_CONFIDENCE", "0.60") or "0.60").strip())
 
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "").strip()
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "").strip()
@@ -2129,6 +2119,124 @@ def channel_supports_messaging(channel: str, raw_phone: str) -> bool:
     return bool(phone and looks_like_phone_number(phone))
 
 
+
+def llm_understanding_enabled() -> bool:
+    return bool(LLM_INTELLIGENCE_ENABLED and OPENAI_API_KEY)
+
+
+def _normalize_llm_intent(value: Any) -> Optional[str]:
+    low = str(value or "").strip().lower()
+    if not low:
+        return None
+    mapping = {
+        "book": "booking",
+        "booking": "booking",
+        "appointment": "booking",
+        "new_booking": "booking",
+        "reschedule": "reschedule",
+        "move": "reschedule",
+        "change_time": "reschedule",
+        "cancel": "cancel",
+        "cancellation": "cancel",
+        "info": "info",
+        "question": "info",
+        "faq": "info",
+        "other": "other",
+        "unknown": "other",
+    }
+    return mapping.get(low, low if low in {"booking", "reschedule", "cancel", "info", "other"} else None)
+
+
+def _normalize_llm_confirmation(value: Any) -> Optional[str]:
+    low = str(value or "").strip().lower()
+    if low in {"yes", "confirm", "confirmed", "true", "1"}:
+        return "yes"
+    if low in {"no", "decline", "false", "0"}:
+        return "no"
+    return None
+
+
+def openai_understand_message(system: str, user: str) -> Dict[str, Any]:
+    if not llm_understanding_enabled():
+        return {}
+    url = "https://api.openai.com/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": OPENAI_MODEL,
+        "temperature": 0.1,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "response_format": {"type": "json_object"},
+    }
+    try:
+        r = requests.post(url, headers=headers, json=payload, timeout=25)
+        if r.status_code == 200:
+            return json.loads(r.json()["choices"][0]["message"]["content"])
+        log.error("OpenAI understand error status=%s body=%s", r.status_code, r.text[:500])
+    except Exception as e:
+        log.error("OpenAI understand request failed: %s", e)
+    return {}
+
+
+def llm_message_understanding(
+    msg: str,
+    lang: str,
+    settings: Dict[str, Any],
+    service_catalog: List[Dict[str, Any]],
+    service_aliases: Dict[str, str],
+    business_memory: str = "",
+) -> Dict[str, Any]:
+    if not llm_understanding_enabled() or not (msg or "").strip():
+        return {
+            "intent": None,
+            "confidence": 0.0,
+            "service": None,
+            "time_text": None,
+            "datetime_iso": None,
+            "name": None,
+            "confirmation": None,
+        }
+
+    alias_hint = ", ".join([f"{k} => {v}" for k, v in list(service_aliases.items())[:80]])
+    sys_pt = (
+        f"You classify messages for an appointment receptionist of {settings['biz_name']}. "
+        f"Business hours: {settings['work_start']}-{settings['work_end']}. "
+        f"Known services: {service_catalog_summary(service_catalog, lang)}. "
+        f"Alias map to canonical service keys: {alias_hint or 'none'}. "
+        f"Business memory: {business_memory or 'none'}. "
+        "Return strict JSON only with keys: intent, confidence, service, time_text, datetime_iso, name, confirmation. "
+        "intent must be one of: booking, reschedule, cancel, info, other. "
+        "confidence must be a number between 0 and 1. "
+        "service must be the canonical service key if recognized, otherwise null. "
+        "confirmation must be yes, no, or null. "
+        "datetime_iso should only be set if the user clearly provided a date/time. "
+        "Do not invent missing values."
+    )
+    usr_pt = f"Today: {now_ts().date()}. User language: {lang}. User message: {msg}"
+    raw = openai_understand_message(sys_pt, usr_pt)
+    confidence = 0.0
+    try:
+        confidence = float(raw.get("confidence") or 0.0)
+    except Exception:
+        confidence = 0.0
+
+    understood = {
+        "intent": _normalize_llm_intent(raw.get("intent")),
+        "confidence": max(0.0, min(1.0, confidence)),
+        "service": apply_service_aliases(raw.get("service"), service_aliases) or canonical_service_key_from_text(raw.get("service"), service_aliases),
+        "time_text": normalize_service(raw.get("time_text")),
+        "datetime_iso": str(raw.get("datetime_iso") or "").strip() or None,
+        "name": normalize_name(raw.get("name")),
+        "confirmation": _normalize_llm_confirmation(raw.get("confirmation")),
+    }
+    return understood
+
+
 def openai_chat_json(system: str, user: str) -> Dict[str, Any]:
     if not OPENAI_API_KEY:
         return {"service": None, "time_text": None, "datetime_iso": None, "name": None}
@@ -2154,132 +2262,6 @@ def openai_chat_json(system: str, user: str) -> Dict[str, Any]:
     except Exception as e:
         log.error("OpenAI request failed: %s", e)
     return {}
-
-
-def clamp_confidence(value: Any, default: float = 0.0) -> float:
-    try:
-        return max(0.0, min(1.0, float(value)))
-    except Exception:
-        return default
-
-
-def normalize_llm_intent(value: Any) -> str:
-    low = str(value or "").strip().lower()
-    mapping = {
-        "book": "booking",
-        "booking": "booking",
-        "appointment": "booking",
-        "reschedule": "reschedule",
-        "move": "reschedule",
-        "change": "reschedule",
-        "cancel": "cancel",
-        "cancellation": "cancel",
-        "info": "info",
-        "question": "info",
-        "faq": "info",
-    }
-    return mapping.get(low, "unknown")
-
-
-def llm_can_override_intent(intent: str, confidence: float) -> bool:
-    if not LLM_INTENT_ENABLED:
-        return False
-    if intent not in {"booking", "reschedule", "cancel", "info"}:
-        return False
-    return confidence >= LLM_INTENT_MIN_CONFIDENCE
-
-
-def llm_understand_message(
-    msg: str,
-    lang: str,
-    settings: Dict[str, Any],
-    service_catalog: List[Dict[str, Any]],
-    service_aliases: Dict[str, str],
-    business_memory: str,
-    c: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    default = {
-        "intent": "unknown",
-        "confidence": 0.0,
-        "entities": {
-            "service": None,
-            "date": None,
-            "time": None,
-            "datetime_iso": None,
-            "time_text": None,
-            "confirmation": None,
-            "name": None,
-        },
-        "fallback_reply": None,
-    }
-    if not OPENAI_API_KEY or not msg.strip():
-        return default
-
-    alias_hint = ", ".join([f"{k} => {v}" for k, v in service_aliases.items()][:80])
-    sys_pt = (
-        "You are an intent and entity parser for a production appointment receptionist. "
-        "Return strict JSON only. "
-        "Allowed intents: booking, reschedule, cancel, info, unknown. "
-        "Use only provided business context. Do not invent facts. "
-        f"Business name: {settings['biz_name']}. "
-        f"Address: {settings['addr']}. "
-        f"Working hours: {settings['work_start']}-{settings['work_end']}. "
-        f"Known services: {service_catalog_summary(service_catalog, lang)}. "
-        f"Service aliases map to service keys: {alias_hint or 'none'}. "
-        f"Business memory: {business_memory or 'none'}. "
-        "confirmation must be one of yes, no, null. "
-        "If service is recognized from an alias, return the canonical service key when possible. "
-        "fallback_reply should be a short safe reply for the user only if the message is info/unclear; otherwise null. "
-        "Output JSON shape: "
-        '{"intent":"booking|reschedule|cancel|info|unknown","confidence":0.0,"entities":{"service":null,"date":null,"time":null,"datetime_iso":null,"time_text":null,"confirmation":null,"name":null},"fallback_reply":null}'
-    )
-    user_pt = (
-        f"Today: {now_ts().date()}. "
-        f"User language: {lang}. "
-        f"Conversation state: {conversation_state(c or {})}. "
-        f"Current service: {str((c or {}).get('service') or '')}. "
-        f"Current datetime_iso: {str((c or {}).get('datetime_iso') or '')}. "
-        f"User message: {msg}"
-    )
-    raw = openai_chat_json(sys_pt, user_pt)
-    if not isinstance(raw, dict):
-        return default
-
-    entities = raw.get("entities") if isinstance(raw.get("entities"), dict) else {}
-    out = {
-        "intent": normalize_llm_intent(raw.get("intent")),
-        "confidence": clamp_confidence(raw.get("confidence")),
-        "entities": {
-            "service": normalize_service(entities.get("service") if entities else raw.get("service")),
-            "date": str(entities.get("date") or "").strip() or None,
-            "time": str(entities.get("time") or "").strip() or None,
-            "datetime_iso": str(entities.get("datetime_iso") or raw.get("datetime_iso") or "").strip() or None,
-            "time_text": str(entities.get("time_text") or raw.get("time_text") or "").strip() or None,
-            "confirmation": str(entities.get("confirmation") or "").strip().lower() or None,
-            "name": normalize_name(entities.get("name") if entities else raw.get("name")),
-        },
-        "fallback_reply": str(raw.get("fallback_reply") or "").strip() or None,
-    }
-
-    service_value = out["entities"].get("service")
-    if service_value:
-        mapped = apply_service_aliases(service_value, service_aliases) or canonical_service_key_from_text(service_value, service_aliases)
-        out["entities"]["service"] = mapped or service_value
-
-    if out["entities"].get("confirmation") not in ("yes", "no", None):
-        out["entities"]["confirmation"] = None
-
-    return out
-
-
-def llm_extract_legacy_fields(llm_result: Dict[str, Any]) -> Dict[str, Any]:
-    entities = llm_result.get("entities") or {}
-    return {
-        "service": entities.get("service"),
-        "time_text": entities.get("time_text") or entities.get("time"),
-        "datetime_iso": entities.get("datetime_iso"),
-        "name": entities.get("name"),
-    }
 
 
 _GCAL = None
@@ -2777,10 +2759,10 @@ def has_explicit_time(text_: Optional[str]) -> bool:
 
 
 def has_date_reference(text_: Optional[str]) -> bool:
-    src = _normalize_date_text(text_)
+    src = (text_ or "").lower().strip()
     if not src:
         return False
-    if parse_numeric_date(src) or parse_month_name_date(src):
+    if re.search(r"\b(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?\b", src):
         return True
     keywords = [
         "rīt", "rit", "parīt", "šodien", "sodien", "šorīt", "sorit", "šovakar", "sovakar",
@@ -2910,17 +2892,19 @@ def next_weekday_date(target_weekday: int, base: Optional[date] = None) -> date:
 
 
 def parse_date_only_text(text_: Optional[str]) -> Optional[datetime]:
-    src = _normalize_date_text(text_)
+    src = (text_ or "").lower().strip()
     if not src:
         return None
 
-    numeric_dt = parse_numeric_date(src)
-    if numeric_dt:
-        return numeric_dt
-
-    month_name_dt = parse_month_name_date(src)
-    if month_name_dt:
-        return month_name_dt
+    dm = re.search(r"\b(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?\b", src)
+    if dm:
+        dd, mo = int(dm.group(1)), int(dm.group(2))
+        yy = dm.group(3)
+        year = int(yy) + 2000 if yy and len(yy) == 2 else int(yy) if yy else today_local().year
+        try:
+            return datetime(year, mo, dd, 9, 0, tzinfo=TZ)
+        except Exception:
+            pass
 
     base = today_local()
     if any(k in src for k in ["parīt", "послезавтра", "day after tomorrow"]):
@@ -2937,99 +2921,6 @@ def parse_date_only_text(text_: Optional[str]) -> Optional[datetime]:
                 d = base + timedelta(days=(wd - base.weekday()) % 7)
             return datetime.combine(d, datetime.min.time(), tzinfo=TZ).replace(hour=9)
     return None
-
-
-MONTH_NAME_ALIASES = {
-    1: ["january", "jan", "января", "январь", "янв", "janvāris", "janvaris", "janvārī", "janvari"],
-    2: ["february", "feb", "февраля", "февраль", "фев", "februāris", "februaris", "februārī", "februari"],
-    3: ["march", "mar", "марта", "март", "мар", "marts", "martā", "marta"],
-    4: ["april", "apr", "апреля", "апрель", "апр", "aprīlis", "aprilis", "aprīlī", "aprili"],
-    5: ["may", "мая", "май", "maijs", "maijā", "maija"],
-    6: ["june", "jun", "июня", "июнь", "июн", "jūnijs", "junijs", "jūnijā", "junija"],
-    7: ["july", "jul", "июля", "июль", "июл", "jūlijs", "julijs", "jūlijā", "julija"],
-    8: ["august", "aug", "августа", "август", "авг", "augusts", "augustā", "augusta"],
-    9: ["september", "sep", "sept", "сентября", "сентябрь", "сен", "septembris", "septembrī", "septembra"],
-    10: ["october", "oct", "октября", "октябрь", "окт", "oktobris", "oktobrī", "oktobra"],
-    11: ["november", "nov", "ноября", "ноябрь", "ноя", "novembris", "novembrī", "novembra"],
-    12: ["december", "dec", "декабря", "декабрь", "дек", "decembris", "decembrī", "decembra"],
-}
-
-MONTH_ALIAS_TO_NUMBER = {
-    alias: month
-    for month, aliases in MONTH_NAME_ALIASES.items()
-    for alias in aliases
-}
-
-
-def _normalize_date_text(text_: Optional[str]) -> str:
-    src = (text_ or "").lower().strip()
-    if not src:
-        return ""
-    src = src.replace(",", " ")
-    src = re.sub(r"\s+", " ", src)
-    return src
-
-
-def _future_or_same_year_date(day: int, month: int, year: Optional[int] = None) -> Optional[datetime]:
-    base = today_local()
-    target_year = year or base.year
-    try:
-        dt_value = datetime(target_year, month, day, 9, 0, tzinfo=TZ)
-    except Exception:
-        return None
-    if year is None and dt_value.date() < base:
-        try:
-            dt_value = datetime(target_year + 1, month, day, 9, 0, tzinfo=TZ)
-        except Exception:
-            return None
-    return dt_value
-
-
-def parse_month_name_date(text_: Optional[str]) -> Optional[datetime]:
-    src = _normalize_date_text(text_)
-    if not src:
-        return None
-
-    # 19 marts / 19 марта / 19 march / 19 martā
-    m = re.search(r"\b(\d{1,2})\.?\s+([a-zA-Zāčēģīķļņōŗšūžа-яё]+)(?:\s+(\d{2,4}))?\b", src, flags=re.IGNORECASE)
-    if m:
-        day = int(m.group(1))
-        month_name = m.group(2).strip(" .")
-        month = MONTH_ALIAS_TO_NUMBER.get(month_name)
-        if month:
-            year_raw = m.group(3)
-            year = None
-            if year_raw:
-                year = int(year_raw) + 2000 if len(year_raw) == 2 else int(year_raw)
-            return _future_or_same_year_date(day, month, year)
-
-    # march 19 / марта 19 / marts 19
-    m = re.search(r"\b([a-zA-Zāčēģīķļņōŗšūžа-яё]+)\s+(\d{1,2})(?:\,?\s*(\d{2,4}))?\b", src, flags=re.IGNORECASE)
-    if m:
-        month_name = m.group(1).strip(" .")
-        day = int(m.group(2))
-        month = MONTH_ALIAS_TO_NUMBER.get(month_name)
-        if month:
-            year_raw = m.group(3)
-            year = None
-            if year_raw:
-                year = int(year_raw) + 2000 if len(year_raw) == 2 else int(year_raw)
-            return _future_or_same_year_date(day, month, year)
-
-    return None
-
-
-def parse_numeric_date(text_: Optional[str]) -> Optional[datetime]:
-    src = _normalize_date_text(text_)
-    if not src:
-        return None
-    dm = re.search(r"\b(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?\b", src)
-    if not dm:
-        return None
-    dd, mo = int(dm.group(1)), int(dm.group(2))
-    yy = dm.group(3)
-    year = int(yy) + 2000 if yy and len(yy) == 2 else int(yy) if yy else None
-    return _future_or_same_year_date(dd, mo, year)
 
 
 NATURAL_TIME_DEFAULTS = {
@@ -3122,111 +3013,6 @@ def parse_natural_datetime(text_: Optional[str], base_iso: Optional[str] = None)
         return base_dt.replace(hour=hh, minute=mm, second=0, microsecond=0)
 
     return None
-
-
-def parse_time_window_preference(text_: Optional[str]) -> Optional[Dict[str, int]]:
-    src = (text_ or "").lower().strip()
-    if not src:
-        return None
-
-    after_patterns = [
-        r"\bпосле\s+([01]?\d|2[0-3])(?:[:. ]([0-5]\d))?\b",
-        r"\bafter\s+([01]?\d|2[0-3])(?:[:. ]([0-5]\d))?\b",
-        r"\bno\s+([01]?\d|2[0-3])(?:[:. ]([0-5]\d))?\b",
-        r"\bот\s+([01]?\d|2[0-3])(?:[:. ]([0-5]\d))?\b",
-        r"\bс\s+([01]?\d|2[0-3])(?:[:. ]([0-5]\d))?\b",
-        r"\bstarting\s+from\s+([01]?\d|2[0-3])(?:[:. ]([0-5]\d))?\b",
-        r"\bnot\s+earlier\s+than\s+([01]?\d|2[0-3])(?:[:. ]([0-5]\d))?\b",
-        r"\bне\s+раньше\s+([01]?\d|2[0-3])(?:[:. ]([0-5]\d))?\b",
-        r"\bначиная\s+с\s+([01]?\d|2[0-3])(?:[:. ]([0-5]\d))?\b",
-    ]
-    for pat in after_patterns:
-        m = re.search(pat, src)
-        if m:
-            return {
-                "kind": "after",
-                "hour": int(m.group(1)),
-                "minute": int(m.group(2) or 0),
-            }
-
-    if any(x in src for x in ["после обеда", "after lunch", "in the afternoon", "this afternoon", "pēcpusdien", "pecpusdien"]):
-        return {"kind": "after", "hour": 12, "minute": 0}
-    if any(x in src for x in ["вечером", "in the evening", "this evening", "vakarā", "vakara"]):
-        return {"kind": "after", "hour": 17, "minute": 0}
-    if any(x in src for x in ["утром", "in the morning", "this morning", "šorīt", "sorit"]):
-        return {"kind": "after", "hour": 9, "minute": 0}
-
-    return None
-
-
-def slot_matches_time_window(dt_value: datetime, window_pref: Optional[Dict[str, int]]) -> bool:
-    if not dt_value or not window_pref:
-        return False
-    kind = str(window_pref.get("kind") or "").strip().lower()
-    hh = int(window_pref.get("hour") or 0)
-    mm = int(window_pref.get("minute") or 0)
-    if kind == "after":
-        return (dt_value.hour, dt_value.minute) >= (hh, mm)
-    return False
-
-
-def filter_offered_slots_by_time_window(offered_slots: List[str], window_pref: Optional[Dict[str, int]]) -> List[datetime]:
-    matched: List[datetime] = []
-    for iso in offered_slots or []:
-        dt_value = parse_dt_any_tz(iso)
-        if dt_value and slot_matches_time_window(dt_value, window_pref):
-            matched.append(dt_value)
-    return matched
-
-
-def find_first_n_slots_for_day_from_time(
-    calendar_id: str,
-    day_dt: datetime,
-    duration_min: int,
-    work_start: str,
-    work_end: str,
-    from_hour: int,
-    from_minute: int = 0,
-    limit: int = 3,
-    business_rules: Optional[Dict[str, Any]] = None,
-):
-    slots = find_first_n_slots_for_day(
-        calendar_id=calendar_id,
-        day_dt=day_dt,
-        duration_min=duration_min,
-        work_start=work_start,
-        work_end=work_end,
-        limit=96,
-        business_rules=business_rules,
-    )
-    filtered = [
-        dt_value for dt_value in slots
-        if (dt_value.hour, dt_value.minute) >= (int(from_hour), int(from_minute))
-    ]
-    return filtered[:max(1, limit)]
-
-
-def format_slot_prompt_for_lang(lang: str, slots: List[datetime]) -> str:
-    clean = [dt for dt in slots if dt]
-    if len(clean) >= 3:
-        return t(
-            lang,
-            "smart_slots_prompt",
-            opt1=format_dt_short(clean[0]),
-            opt2=format_dt_short(clean[1]),
-            opt3=format_dt_short(clean[2]),
-        )
-    if len(clean) >= 2:
-        return t(
-            lang,
-            "voice_options_prompt",
-            opt1=format_dt_short(clean[0]),
-            opt2=format_dt_short(clean[1]),
-        )
-    if len(clean) == 1:
-        only = format_dt_short(clean[0])
-        return only
-    return t(lang, "ask_booking_time_only")
 
 
 def extract_service_from_text(text_: Optional[str], catalog: List[Dict[str, Any]], lang: str) -> Optional[Dict[str, Any]]:
@@ -3626,41 +3412,7 @@ def handle_user_text(
     pending = c.get("pending") or {}
     t_low = msg.lower()
 
-    llm_result: Optional[Dict[str, Any]] = None
-    def get_llm_result() -> Dict[str, Any]:
-        nonlocal llm_result
-        if llm_result is not None:
-            return llm_result
-        llm_result = llm_understand_message(
-            msg=msg,
-            lang=lang,
-            settings=settings,
-            service_catalog=service_catalog,
-            service_aliases=service_aliases,
-            business_memory=business_memory,
-            c=c,
-        )
-        return llm_result
-
-    if msg and LLM_INTENT_ENABLED:
-        llm_entities = (get_llm_result().get("entities") or {})
-        extracted_name = normalize_name(llm_entities.get("name"))
-        if extracted_name and not c.get("name"):
-            c["name"] = extracted_name
-        if llm_entities.get("time_text") and not c.get("time_text"):
-            c["time_text"] = str(llm_entities.get("time_text"))
-        llm_service_key = str(llm_entities.get("service") or "").strip()
-        if llm_service_key:
-            mapped_item = get_service_item_by_key(service_catalog, llm_service_key) or extract_service_from_text(llm_service_key, service_catalog, lang)
-            if mapped_item and not c.get("service"):
-                c["service"] = str(mapped_item.get("key") or "").strip()
-                pending["service_display"] = service_display_name(mapped_item, lang)
-                c["pending"] = pending or None
-
-    llm_intent = normalize_llm_intent(get_llm_result().get("intent")) if msg and LLM_INTENT_ENABLED else "unknown"
-    llm_confidence = clamp_confidence(get_llm_result().get("confidence")) if msg and LLM_INTENT_ENABLED else 0.0
-
-    if any(w in t_low for w in ["atcelt", "отменить", "cancel"]) or (llm_can_override_intent(llm_intent, llm_confidence) and llm_intent == "cancel"):
+    if any(w in t_low for w in ["atcelt", "отменить", "cancel"]) or ((llm_hint or {}).get("intent") == "cancel" and float((llm_hint or {}).get("confidence") or 0.0) >= LLM_INTENT_MIN_CONFIDENCE):
         if not calendar_ready:
             return blocked_result_for_lang(lang)
         ev = find_next_event_by_phone(settings["calendar_id"], raw_phone, tenant_id)
@@ -3690,7 +3442,7 @@ def handle_user_text(
             "lang": lang,
         }
 
-    if any(w in t_low for w in ["pārcelt", "перенести", "reschedule"]) or (llm_can_override_intent(llm_intent, llm_confidence) and llm_intent == "reschedule"):
+    if any(w in t_low for w in ["pārcelt", "перенести", "reschedule"]) or ((llm_hint or {}).get("intent") == "reschedule" and float((llm_hint or {}).get("confidence") or 0.0) >= LLM_INTENT_MIN_CONFIDENCE):
         if not calendar_ready:
             return blocked_result_for_lang(lang)
         ev = find_next_event_by_phone(settings["calendar_id"], raw_phone, tenant_id)
@@ -3769,7 +3521,19 @@ def handle_user_text(
             "lang": lang,
         }
 
-    fresh_booking_start = bool(msg and (is_booking_opener(msg) or (llm_can_override_intent(llm_intent, llm_confidence) and llm_intent == "booking")))
+    llm_hint = get_llm_data() if msg else {}
+
+    fresh_booking_start = bool(msg and is_booking_opener(msg))
+    llm_intent = _normalize_llm_intent((llm_hint or {}).get("intent"))
+    llm_conf = float((llm_hint or {}).get("confidence") or 0.0)
+    if not fresh_booking_start and llm_intent == "booking" and llm_conf >= LLM_INTENT_MIN_CONFIDENCE:
+        fresh_booking_start = True
+
+    if not c.get("name") and (llm_hint or {}).get("name"):
+        c["name"] = llm_hint.get("name")
+    if not c.get("time_text") and (llm_hint or {}).get("time_text"):
+        c["time_text"] = str(llm_hint.get("time_text"))
+
     if fresh_booking_start:
         c = reset_booking_context(c, keep_name=True)
         pending = c.get("pending") or {}
@@ -3784,11 +3548,40 @@ def handle_user_text(
             return result
 
     ai_data: Optional[Dict[str, Any]] = None
+    llm_data: Optional[Dict[str, Any]] = None
+
+    def get_llm_data() -> Dict[str, Any]:
+        nonlocal llm_data
+        if llm_data is not None:
+            return llm_data
+        llm_data = llm_message_understanding(
+            msg=msg,
+            lang=lang,
+            settings=settings,
+            service_catalog=service_catalog,
+            service_aliases=service_aliases,
+            business_memory=business_memory,
+        )
+        return llm_data
+
     def get_ai_data() -> Dict[str, Any]:
         nonlocal ai_data
         if ai_data is not None:
             return ai_data
-        ai_data = llm_extract_legacy_fields(get_llm_result()) if LLM_INTENT_ENABLED else {}
+        alias_hint = ", ".join([f"{k} => {v}" for k, v in service_aliases.items()][:50])
+        sys_pt = (
+            f"You are an appointment receptionist for {settings['biz_name']}. "
+            f"Business hours: {settings['work_start']}-{settings['work_end']}. "
+            f"Known services: {service_catalog_summary(service_catalog, lang)}. "
+            f"Service aliases map to service keys: {alias_hint or 'none'}. "
+            f"Business memory: {business_memory or 'none'}. "
+            "Extract and return strict JSON only with keys: service, time_text, datetime_iso, name. "
+            "service and name must be plain strings, not arrays. "
+            "If a user names a service using an alias, map it to the canonical service name. "
+            "If value is unknown use null."
+        )
+        usr_pt = f"Today: {now_ts().date()}. User language: {lang}. User message: {msg}"
+        ai_data = openai_chat_json(sys_pt, usr_pt)
         return ai_data
 
     if active_flow or c["state"] in ACTIVE_BOOKING_STATES or c["state"] == STATE_NEW:
@@ -3796,6 +3589,10 @@ def handle_user_text(
         service_item = get_service_item_by_key(service_catalog, direct_service_key) if direct_service_key else None
         if not service_item:
             service_item = extract_service_from_text(msg, service_catalog, lang)
+        if not service_item and msg:
+            llm_service_key = (llm_hint or {}).get("service")
+            if llm_service_key:
+                service_item = get_service_item_by_key(service_catalog, llm_service_key)
         if not service_item and msg:
             data = get_ai_data()
             extracted_service_key = apply_service_aliases(data.get("service"), service_aliases) or canonical_service_key_from_text(data.get("service"), service_aliases)
@@ -3925,51 +3722,6 @@ def handle_user_text(
                 return result
 
         dt_start = None
-        time_window_pref = parse_time_window_preference(msg)
-        base_day_iso = str(pending.get("awaiting_time_date_iso") or "").strip()
-        base_day_dt = parse_dt_any_tz(base_day_iso) if base_day_iso else None
-
-        if time_window_pref and base_day_dt:
-            filtered_offered = filter_offered_slots_by_time_window(get_offered_slots(pending), time_window_pref)
-            if filtered_offered:
-                pending = set_offered_slots(pending, filtered_offered[:3])
-                c["pending"] = pending
-                c["state"] = STATE_AWAITING_TIME
-                db_save_conversation(tenant_id, user_key, c)
-                slot_prompt = format_slot_prompt_for_lang(lang, filtered_offered[:3])
-                return {
-                    "status": "need_more",
-                    "reply_voice": slot_prompt,
-                    "msg_out": slot_prompt,
-                    "lang": lang,
-                }
-
-            service_item_for_time = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
-            time_window_slots = find_first_n_slots_for_day_from_time(
-                calendar_id=settings["calendar_id"],
-                day_dt=base_day_dt,
-                duration_min=service_duration_min(service_item_for_time),
-                work_start=settings["work_start"],
-                work_end=settings["work_end"],
-                from_hour=int(time_window_pref.get("hour") or 0),
-                from_minute=int(time_window_pref.get("minute") or 0),
-                limit=3,
-                business_rules=settings.get("business_rules"),
-            ) if calendar_ready else []
-
-            if time_window_slots:
-                pending = set_offered_slots(pending, time_window_slots[:3])
-                c["pending"] = pending
-                c["state"] = STATE_AWAITING_TIME
-                db_save_conversation(tenant_id, user_key, c)
-                slot_prompt = format_slot_prompt_for_lang(lang, time_window_slots[:3])
-                return {
-                    "status": "need_more",
-                    "reply_voice": slot_prompt,
-                    "msg_out": slot_prompt,
-                    "lang": lang,
-                }
-
         natural_dt = parse_natural_datetime(msg, pending.get("awaiting_time_date_iso"))
         if natural_dt:
             dt_start = natural_dt
@@ -4011,6 +3763,8 @@ def handle_user_text(
         direct_service_key = canonical_service_key_from_text(msg, service_aliases)
         service_item = get_service_item_by_key(service_catalog, direct_service_key) if direct_service_key else None
         data = None
+        if not service_item and (llm_hint or {}).get("service"):
+            service_item = get_service_item_by_key(service_catalog, llm_hint.get("service"))
         if not service_item:
             data = get_ai_data()
             extracted_service_key = apply_service_aliases(data.get("service"), service_aliases) or canonical_service_key_from_text(data.get("service"), service_aliases)
@@ -4044,7 +3798,7 @@ def handle_user_text(
     if msg and conversation_state(c) == STATE_AWAITING_CONFIRM:
         confirm_iso = str(pending.get("confirm_slot_iso") or c.get("datetime_iso") or "").strip()
         dt_confirm = parse_dt_any_tz(confirm_iso)
-        llm_confirmation = str((get_llm_result().get("entities") or {}).get("confirmation") or "").strip().lower() if msg and LLM_INTENT_ENABLED else ""
+        llm_confirmation = (llm_hint or {}).get("confirmation")
         if is_yes_text(msg, lang) or llm_confirmation == "yes":
             if not dt_confirm:
                 c["state"] = STATE_AWAITING_TIME
@@ -4080,24 +3834,14 @@ def handle_user_text(
 
     c = normalize_booking_state(c)
     db_save_conversation(tenant_id, user_key, c)
-    if is_active_booking_flow(c):
-        fallback_text = prompt_for_state(lang, c, c.get("pending") or {})
-        return {
-            "status": "need_more",
-            "reply_voice": fallback_text,
-            "msg_out": fallback_text,
-            "lang": lang,
-        }
-
-    llm_fallback_reply = None
-    if msg and LLM_FALLBACK_ENABLED:
-        llm_fallback_reply = str(get_llm_result().get("fallback_reply") or "").strip() or None
-
-    final_reply = llm_fallback_reply or t(lang, "unclear_reply")
+    fallback_status = "need_more" if is_active_booking_flow(c) else "info"
+    fallback_reply = prompt_for_state(lang, c, c.get("pending") or {}) if is_active_booking_flow(c) else t(lang, "unclear_reply")
+    if not is_active_booking_flow(c) and llm_intent == "info" and llm_conf >= LLM_INTENT_MIN_CONFIDENCE and is_hours_question(msg):
+        fallback_reply = t(lang, "hours_info", biz=settings["biz_name"], start=settings["work_start"], end=settings["work_end"])
     return {
-        "status": "info",
-        "reply_voice": final_reply,
-        "msg_out": final_reply,
+        "status": fallback_status,
+        "reply_voice": fallback_reply,
+        "msg_out": fallback_reply,
         "lang": lang,
     }
 
@@ -4390,8 +4134,6 @@ def health():
         "allow_default_tenant_fallback": ALLOW_DEFAULT_TENANT_FALLBACK,
         "twilio_validate_signature": TWILIO_VALIDATE_SIGNATURE,
         "google_oauth_ready": oauth_ready(),
-        "llm_intent_enabled": LLM_INTENT_ENABLED,
-        "llm_fallback_enabled": LLM_FALLBACK_ENABLED,
     }
 
 
@@ -4689,14 +4431,6 @@ class DevResetRequest(BaseModel):
     tenant_id: str
     user_id: str
 
-class DevFocusTestRequest(BaseModel):
-    tenant_id: str
-    user_id: str = "focus_test_user"
-    inputs: List[str]
-    lang: str = "lv"
-    channel: str = "dev"
-    reset_first: bool = True
-
 def _dev_raw_user(user_id: str) -> str:
     uid = (user_id or "dev_user").strip()
     return f"dev:{uid}"
@@ -4731,97 +4465,111 @@ async def dev_chat(req: DevChatRequest):
 @app.post("/dev_reset")
 async def dev_reset(req: DevResetRequest):
     try:
-        delete_conversation_state(req.tenant_id, _dev_raw_user(req.user_id))
+        with engine.begin() as conn:
+            conn.execute(
+                text("""
+                delete from conversations
+                where tenant_id = :tenant_id
+                and user_key = :user_key
+                """),
+                {
+                    "tenant_id": req.tenant_id,
+                    "user_key": norm_user_key(_dev_raw_user(req.user_id))
+                }
+            )
         return {"status": "reset_ok"}
     except Exception as e:
         log.exception("DEV RESET ERROR")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def delete_conversation_state(tenant_id: str, user_key_raw: str) -> None:
-    with engine.begin() as conn:
-        conn.execute(
-            text("""
-            delete from conversations
-            where tenant_id = :tenant_id
-            and user_key = :user_key
-            """),
-            {
-                "tenant_id": tenant_id,
-                "user_key": norm_user_key(user_key_raw),
-            }
-        )
+
+class DevFocusTestRequest(BaseModel):
+    tenant_id: str
+    user_id: str = "focus_runner"
+    lang: str = "lv"
+    cases: Optional[List[str]] = None
+
+
+@app.post("/dev_understand")
+async def dev_understand(req: DevChatRequest):
+    tenant = get_tenant(req.tenant_id)
+    lang = get_lang(req.lang)
+    settings = tenant_settings(tenant, lang)
+    service_catalog = tenant_service_catalog(tenant)
+    service_aliases = ensure_default_barbershop_aliases(
+        service_catalog,
+        merged_service_alias_map(service_catalog, tenant, lang),
+        lang,
+    )
+    business_memory = tenant_business_memory(tenant, lang)
+    understood = llm_message_understanding(
+        msg=req.message,
+        lang=lang,
+        settings=settings,
+        service_catalog=service_catalog,
+        service_aliases=service_aliases,
+        business_memory=business_memory,
+    )
+    return {"tenant_id": req.tenant_id, "message": req.message, "understanding": understood}
+
 
 @app.post("/dev_focus_test")
 async def dev_focus_test(req: DevFocusTestRequest):
-    try:
-        if not req.inputs:
-            raise HTTPException(status_code=400, detail="inputs required")
-        tenant = get_tenant(req.tenant_id)
-        lang = get_lang(req.lang)
-        settings = tenant_settings(tenant, lang)
-        service_catalog = tenant_service_catalog(tenant)
-        service_aliases = ensure_default_barbershop_aliases(
-            service_catalog,
-            merged_service_alias_map(service_catalog, tenant, lang),
-            lang,
+    tenant = get_tenant(req.tenant_id)
+    lang = get_lang(req.lang)
+    cases = req.cases or [
+        "Labdien, gribu pierakstīties",
+        "Vai ir kaut kas vakarā?",
+        "Man vajag rīt pēc 18",
+        "Varu tikai brīvdienās",
+        "Nevajag, atstājam esošo pierakstu",
+        "Atcelt manu pierakstu",
+    ]
+    settings = tenant_settings(tenant, lang)
+    service_catalog = tenant_service_catalog(tenant)
+    service_aliases = ensure_default_barbershop_aliases(
+        service_catalog,
+        merged_service_alias_map(service_catalog, tenant, lang),
+        lang,
+    )
+    business_memory = tenant_business_memory(tenant, lang)
+    raw_user = _dev_raw_user(req.user_id)
+    items = []
+    for case in cases:
+        understood = llm_message_understanding(
+            msg=case,
+            lang=lang,
+            settings=settings,
+            service_catalog=service_catalog,
+            service_aliases=service_aliases,
+            business_memory=business_memory,
         )
-        business_memory = tenant_business_memory(tenant, lang)
-        raw_user = _dev_raw_user(req.user_id)
-
-        if req.reset_first:
-            delete_conversation_state(req.tenant_id, raw_user)
-
-        results = []
-        for item in req.inputs:
-            conv_before = db_get_or_create_conversation(req.tenant_id, raw_user, lang)
-            llm_result = llm_understand_message(
-                msg=item,
-                lang=lang,
-                settings=settings,
-                service_catalog=service_catalog,
-                service_aliases=service_aliases,
-                business_memory=business_memory,
-                c=conv_before,
-            )
-            system_result = handle_user_text_with_logging(
-                tenant_id=req.tenant_id,
-                raw_phone=raw_user,
-                text_in=item,
-                channel=req.channel,
-                lang_hint=lang,
-            )
-            conv_after = db_get_or_create_conversation(req.tenant_id, raw_user, lang)
-            detected_intent = normalize_llm_intent(llm_result.get("intent"))
-            success = bool(
-                detected_intent in {"booking", "reschedule", "cancel", "info"}
-                or str(system_result.get("status") or "").strip() not in {"info", "blocked"}
-            )
-            failure_reason = None if success else "intent_unknown_and_no_actionable_system_transition"
-            results.append({
-                "input": item,
-                "detected_intent": detected_intent,
-                "intent_confidence": clamp_confidence(llm_result.get("confidence")),
-                "extracted_entities": llm_result.get("entities") or {},
-                "system_response": system_result.get("msg_out") or system_result.get("reply_voice"),
-                "system_status": system_result.get("status"),
-                "conversation_state": conv_after.get("state"),
-                "success": success,
-                "failure_reason": failure_reason,
-            })
-
-        return {
-            "tenant_id": req.tenant_id,
-            "user_id": req.user_id,
-            "lang": lang,
-            "count": len(results),
-            "results": results,
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        log.exception("DEV FOCUS TEST ERROR")
-        raise HTTPException(status_code=500, detail=str(e))
+        result = handle_user_text_with_logging(
+            tenant_id=req.tenant_id,
+            raw_phone=raw_user,
+            text_in=case,
+            channel="dev",
+            lang_hint=lang,
+        )
+        conv = db_get_or_create_conversation(req.tenant_id, raw_user, lang)
+        items.append({
+            "input": case,
+            "intent": understood.get("intent"),
+            "confidence": understood.get("confidence"),
+            "entities": {
+                "service": understood.get("service"),
+                "datetime_iso": understood.get("datetime_iso"),
+                "time_text": understood.get("time_text"),
+                "name": understood.get("name"),
+                "confirmation": understood.get("confirmation"),
+            },
+            "response": result.get("msg_out") or result.get("reply_voice"),
+            "status": result.get("status"),
+            "state": conv.get("state"),
+            "success": bool(result.get("status") not in {"blocked", "booking_failed"}),
+        })
+    return {"tenant_id": req.tenant_id, "lang": lang, "items": items}
 
 @app.get("/dev_chat_ui", response_class=HTMLResponse)
 def dev_chat_ui():
