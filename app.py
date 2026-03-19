@@ -4670,6 +4670,76 @@ def safe_calendar_check(tenant: dict):
 from fastapi import Body
 
 
+def default_onboarding_services(language_value: str, business_type: str = "barbershop") -> Dict[str, str]:
+    business_type = (business_type or "barbershop").strip().lower()
+    if business_type == "clinic":
+        return {
+            "lv": "konsultācija",
+            "ru": "консультация",
+            "en": "consultation",
+        }
+    if business_type == "salon":
+        return {
+            "lv": "matu griezums",
+            "ru": "стрижка",
+            "en": "haircut",
+        }
+    return {
+        "lv": "vīriešu frizūra, bārda",
+        "ru": "мужская стрижка, борода",
+        "en": "men's haircut, beard trim",
+    }
+
+
+def default_onboarding_service_catalog(business_type: str = "barbershop") -> List[Dict[str, Any]]:
+    business_type = (business_type or "barbershop").strip().lower()
+    if business_type == "clinic":
+        return [{
+            "key": "consultation",
+            "name_lv": "konsultācija",
+            "name_ru": "консультация",
+            "name_en": "consultation",
+            "duration_min": 30,
+            "aliases_lv": ["konsultācija"],
+            "aliases_ru": ["консультация"],
+            "aliases_en": ["consultation"],
+        }]
+    return [
+        {
+            "key": "mens_haircut",
+            "name_lv": "vīriešu frizūra",
+            "name_ru": "мужская стрижка",
+            "name_en": "men's haircut",
+            "duration_min": 30,
+            "aliases_lv": ["vīriešu frizūra", "matu griezums", "frizūra"],
+            "aliases_ru": ["мужская стрижка", "стрижка", "подстричься"],
+            "aliases_en": ["men's haircut", "haircut"],
+        },
+        {
+            "key": "beard_trim",
+            "name_lv": "bārda",
+            "name_ru": "борода",
+            "name_en": "beard trim",
+            "duration_min": 20,
+            "aliases_lv": ["bārda", "bārdas korekcija"],
+            "aliases_ru": ["борода", "подровнять бороду"],
+            "aliases_en": ["beard trim", "beard"],
+        },
+    ]
+
+
+def onboarding_links_payload(tenant_id: str) -> Dict[str, str]:
+    base = SERVER_BASE_URL or ""
+    return {
+        "dashboard_url": f"{base}/dashboard?tenant_id={tenant_id}",
+        "config_ui_url": f"{base}/tenant/config/ui?tenant_id={tenant_id}",
+        "config_json_url": f"{base}/tenant/config?tenant_id={tenant_id}",
+        "routes_url": f"{base}/tenant/routes?tenant_id={tenant_id}",
+        "onboarding_status_url": f"{base}/onboarding/status?tenant_id={tenant_id}",
+        "google_connect_url": f"{base}/google/connect?tenant_id={tenant_id}",
+    }
+
+
 def onboarding_status_payload(tenant: Dict[str, Any]) -> Dict[str, Any]:
     tenant = normalize_tenant_saas_fields(tenant or {})
     tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip()
@@ -4767,6 +4837,7 @@ def onboarding_finish(payload: dict = Body(...)):
     }
 
 @app.post("/onboarding/create_tenant")
+@app.post("/tenant/create")
 def onboarding_create_tenant(payload: dict = Body(...)):
     business_name = (payload.get("business_name") or "").strip()
     owner_email = (payload.get("owner_email") or "").strip()
@@ -4774,6 +4845,10 @@ def onboarding_create_tenant(payload: dict = Body(...)):
     business_type = (payload.get("business_type") or "barbershop").strip()
     timezone_value = (payload.get("timezone") or "Europe/Riga").strip()
     language_value = get_lang((payload.get("language") or "lv").strip())
+    work_start_value = str(payload.get("work_start") or WORK_START_HHMM_DEFAULT).strip()
+    work_end_value = str(payload.get("work_end") or WORK_END_HHMM_DEFAULT).strip()
+    min_notice_minutes = _safe_int(payload.get("min_notice_minutes"), 0)
+    buffer_minutes = _safe_int(payload.get("buffer_minutes"), 0)
 
     if not business_name:
         raise HTTPException(status_code=400, detail="business_name required")
@@ -4785,25 +4860,42 @@ def onboarding_create_tenant(payload: dict = Body(...)):
 
     cols = tenants_columns()
     col_names = {c["name"] for c in cols}
+    services_defaults = default_onboarding_services(language_value, business_type)
+    weekly_hours = default_weekly_hours(work_start_value, work_end_value)
+    service_catalog = default_onboarding_service_catalog(business_type)
 
     fields = {
         "id": tenant_id,
+        "tenant_id": tenant_id,
         "business_name": business_name,
         "owner_email": owner_email,
         "status": "active",
-        "timezone": timezone_value,
         "subscription_status": "trial",
+        "client_status": "trial",
         "google_connected": False,
         "onboarding_completed": False,
         "business_type": business_type,
         "language": language_value,
+        "timezone": timezone_value,
         "phone_number": phone_number or None,
         "plan": "starter",
+        "work_start": work_start_value,
+        "work_end": work_end_value,
+        "services_lv": str(payload.get("services_lv") or services_defaults["lv"]),
+        "services_ru": str(payload.get("services_ru") or services_defaults["ru"]),
+        "services_en": str(payload.get("services_en") or services_defaults["en"]),
+        "weekly_hours_json": json.dumps(payload.get("weekly_hours_json") or weekly_hours, ensure_ascii=False),
+        "breaks_json": json.dumps(payload.get("breaks_json") or {}, ensure_ascii=False),
+        "days_off_json": json.dumps(payload.get("days_off_json") or [], ensure_ascii=False),
+        "holidays_json": json.dumps(payload.get("holidays_json") or [], ensure_ascii=False),
+        "min_notice_minutes": min_notice_minutes,
+        "buffer_minutes": buffer_minutes,
+        "service_catalog_json": json.dumps(payload.get("service_catalog_json") or service_catalog, ensure_ascii=False),
+        "service_catalog": json.dumps(payload.get("service_catalog_json") or service_catalog, ensure_ascii=False),
     }
 
     insert_cols = []
     insert_vals: Dict[str, Any] = {}
-
     for k, v in fields.items():
         if k in col_names:
             insert_cols.append(k)
@@ -4816,20 +4908,21 @@ def onboarding_create_tenant(payload: dict = Body(...)):
     sql_params = ", ".join([f":{c}" for c in insert_cols])
 
     with engine.begin() as conn:
-        conn.execute(
-            text(f"INSERT INTO tenants ({sql_cols}) VALUES ({sql_params})"),
-            insert_vals,
-        )
+        conn.execute(text(f"INSERT INTO tenants ({sql_cols}) VALUES ({sql_params})"), insert_vals)
 
     if phone_number:
         upsert_phone_route(phone_number, tenant_id)
 
-    google_path = f"/google/connect?tenant_id={tenant_id}"
+    tenant = get_tenant(tenant_id)
     return {
+        "status": "ok",
         "tenant_id": tenant_id,
         "business_name": business_name,
         "phone_number": phone_number or None,
-        "onboarding_google_url": f"{SERVER_BASE_URL}{google_path}" if SERVER_BASE_URL else google_path,
+        "language": language_value,
+        "timezone": timezone_value,
+        "onboarding": onboarding_status_payload(tenant),
+        "links": onboarding_links_payload(tenant_id),
     }
 
 
