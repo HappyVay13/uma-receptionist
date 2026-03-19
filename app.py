@@ -848,6 +848,34 @@ def get_tenant(tenant_id: str) -> Dict[str, Any]:
     return normalize_tenant_saas_fields(out)
 
 
+def get_existing_tenant(tenant_id: str) -> Dict[str, Any]:
+    tenant_id = (tenant_id or "").strip()
+    if not tenant_id:
+        return {}
+    cols = tenants_columns()
+    pk = tenants_pk(cols)
+    col_names = [c["name"] for c in cols]
+    select_cols = ", ".join(col_names)
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(f"SELECT {select_cols} FROM tenants WHERE {pk}=:tid LIMIT 1"),
+            {"tid": tenant_id},
+        ).fetchone()
+    if not row:
+        return {}
+    out: Dict[str, Any] = {"_id": tenant_id}
+    for i, name in enumerate(col_names):
+        out[name] = row[i]
+    return normalize_tenant_saas_fields(out)
+
+
+def get_tenant_or_404(tenant_id: str) -> Dict[str, Any]:
+    tenant = get_existing_tenant(tenant_id)
+    if not tenant.get("_id"):
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    return tenant
+
+
 
 # -------------------------
 # GOOGLE OAUTH HELPERS (Phase 3 Foundation)
@@ -1038,6 +1066,54 @@ def select_tenant_calendar_id(tenant_id: str, calendar_id: str) -> None:
         return
     with engine.begin() as conn:
         conn.execute(text(f"UPDATE tenants SET calendar_id=:cid WHERE {pk}=:tid"), {"cid": calendar_id, "tid": tenant_id})
+
+
+def token_expiry_from_google(expires_in: Any) -> Optional[datetime]:
+    try:
+        seconds = int(expires_in)
+    except Exception:
+        return None
+    if seconds <= 0:
+        return None
+    return now_ts() + timedelta(seconds=seconds)
+
+
+def google_calendar_choice(calendars: List[Dict[str, Any]]) -> Optional[str]:
+    if not calendars:
+        return None
+    for cal in calendars:
+        if cal.get("primary") and str(cal.get("id") or "").strip():
+            return str(cal.get("id")).strip()
+    if len(calendars) == 1 and str(calendars[0].get("id") or "").strip():
+        return str(calendars[0].get("id")).strip()
+    return None
+
+
+def sync_tenant_onboarding_state(tenant_id: str) -> Dict[str, Any]:
+    tenant = get_tenant_or_404(tenant_id)
+    cols = tenants_columns()
+    pk = tenants_pk(cols)
+    col_names = {c["name"] for c in cols}
+    google_connected = tenant_google_connected_effective(tenant)
+    calendar_selected = bool(str(tenant.get("calendar_id") or "").strip())
+    onboarding_completed = bool(google_connected and calendar_selected)
+
+    sets = []
+    params: Dict[str, Any] = {"tid": tenant_id}
+    if "google_connected" in col_names:
+        sets.append("google_connected=:google_connected")
+        params["google_connected"] = google_connected
+    if "onboarding_completed" in col_names:
+        sets.append("onboarding_completed=:onboarding_completed")
+        params["onboarding_completed"] = onboarding_completed
+    if "updated_at" in col_names:
+        sets.append("updated_at=NOW()")
+
+    if sets:
+        with engine.begin() as conn:
+            conn.execute(text(f"UPDATE tenants SET {', '.join(sets)} WHERE {pk}=:tid"), params)
+
+    return get_tenant_or_404(tenant_id)
 
 
 # -------------------------
@@ -4472,22 +4548,36 @@ def google_connect(tenant_id: str):
     if not oauth_ready():
         raise HTTPException(status_code=500, detail="Google OAuth is not configured")
     tenant = get_tenant_or_404(tenant_id)
+    tenant = sync_tenant_onboarding_state(tenant["_id"])
+    if bool(tenant.get("onboarding_completed")):
+        return RedirectResponse(url=f"/dashboard?tenant_id={tenant['_id']}")
+    if tenant_google_connected_effective(tenant):
+        if str(tenant.get("calendar_id") or "").strip():
+            return RedirectResponse(url=f"/dashboard?tenant_id={tenant['_id']}")
+        return RedirectResponse(url=f"/google/calendars/ui?tenant_id={tenant['_id']}")
     auth_url = build_google_oauth_url(tenant["_id"])
-    from fastapi.responses import RedirectResponse
     return RedirectResponse(url=auth_url)
 
 @app.get("/google/callback")
-def google_callback(code: str = "", state: str = ""):
+def google_callback(code: str = "", state: str = "", error: str = ""):
     if not oauth_ready():
         raise HTTPException(status_code=500, detail="Google OAuth is not configured")
     state_data = parse_google_oauth_state(state)
-    tenant_id = state_data.get("tenant_id")
+    tenant_id = str(state_data.get("tenant_id") or "").strip()
     if not tenant_id:
         raise HTTPException(status_code=400, detail="Invalid state")
+    get_tenant_or_404(tenant_id)
+
+    if error:
+        return RedirectResponse(url=f"/google/calendars/ui?tenant_id={tenant_id}&oauth_error={requests.utils.quote(error)}")
+    if not code:
+        return RedirectResponse(url=f"/google/calendars/ui?tenant_id={tenant_id}&oauth_error=missing_code")
+
     token_data = exchange_google_code_for_tokens(code)
-    access_token = token_data.get("access_token")
-    refresh_token = token_data.get("refresh_token")
-    expires_in = token_data.get("expires_in")
+    access_token = str(token_data.get("access_token") or "").strip()
+    refresh_token = str(token_data.get("refresh_token") or "").strip() or None
+    if not access_token:
+        return RedirectResponse(url=f"/google/calendars/ui?tenant_id={tenant_id}&oauth_error=token_exchange_failed")
 
     userinfo = fetch_google_userinfo(access_token)
     google_email = str(userinfo.get("email") or "").strip() or None
@@ -4497,18 +4587,27 @@ def google_callback(code: str = "", state: str = ""):
         google_email=google_email,
         access_token=access_token,
         refresh_token=refresh_token,
-        token_expiry=expires_in,
-        scope=GOOGLE_OAUTH_SCOPE
+        token_expiry=token_expiry_from_google(token_data.get("expires_in")),
+        scope=str(token_data.get("scope") or GOOGLE_OAUTH_SCOPE).strip() or GOOGLE_OAUTH_SCOPE,
     )
 
     mark_tenant_google_connected(tenant_id, True, owner_email=google_email)
 
-    from fastapi.responses import RedirectResponse
-    return RedirectResponse(url=f"/onboarding/status?tenant_id={tenant_id}")
+    calendars = fetch_google_calendar_list(access_token)
+    chosen_calendar_id = google_calendar_choice(calendars)
+    if chosen_calendar_id:
+        select_tenant_calendar_id(tenant_id, chosen_calendar_id)
+        tenant = sync_tenant_onboarding_state(tenant_id)
+        if bool(tenant.get("onboarding_completed")):
+            return RedirectResponse(url=f"/dashboard?tenant_id={tenant_id}&google=connected&calendar=selected")
+
+    sync_tenant_onboarding_state(tenant_id)
+    return RedirectResponse(url=f"/google/calendars/ui?tenant_id={tenant_id}&google=connected")
 
 @app.get("/google/calendars")
 def google_calendars(tenant_id: str):
-    acct = get_tenant_google_account(tenant_id)
+    tenant = get_tenant_or_404(tenant_id)
+    acct = get_tenant_google_account(tenant["_id"])
     access_token = str(acct.get("access_token") or "").strip()
     if not access_token:
         raise HTTPException(status_code=404, detail="Google account is not connected")
@@ -4521,8 +4620,110 @@ def google_calendars(tenant_id: str):
             "timeZone": c.get("timeZone"),
         }
         for c in calendars
+        if str(c.get("id") or "").strip()
     ]
-    return {"tenant_id": tenant_id, "items": simplified}
+    tenant = sync_tenant_onboarding_state(tenant["_id"])
+    return {"tenant_id": tenant["_id"], "items": simplified, "onboarding": onboarding_status_payload(tenant)}
+
+@app.get("/google/calendars/ui", response_class=HTMLResponse)
+def google_calendars_ui(tenant_id: str, google: str = "", oauth_error: str = ""):
+    tenant = get_tenant_or_404(tenant_id)
+    status = onboarding_status_payload(sync_tenant_onboarding_state(tenant["_id"]))
+    html = f"""
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Select Google Calendar</title>
+<style>
+body {{ font-family: Arial, sans-serif; background:#f6f7fb; color:#111827; margin:0; padding:24px; }}
+.wrap {{ max-width: 880px; margin:0 auto; }}
+.card {{ background:#fff; border:1px solid #e5e7eb; border-radius:18px; padding:22px; box-shadow: 0 10px 28px rgba(15,23,42,.06); margin-bottom:16px; }}
+button {{ border:0; background:#111827; color:#fff; padding:10px 14px; border-radius:12px; cursor:pointer; font-size:14px; }}
+button.secondary {{ background:#fff; color:#111827; border:1px solid #d1d5db; }}
+.row {{ display:flex; justify-content:space-between; gap:12px; padding:12px 0; border-bottom:1px solid #e5e7eb; align-items:center; }}
+.small {{ font-size:12px; color:#6b7280; }}
+.ok {{ color:#065f46; }}
+.err {{ color:#991b1b; }}
+.hidden {{ display:none; }}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <h2>Google Calendar connection</h2>
+    <p>Business: <strong>{tenant.get('business_name') or tenant['_id']}</strong></p>
+    <p class="small">Tenant ID: {tenant['_id']}</p>
+    <p id="status_line" class="small {'err' if oauth_error else 'ok' if google else ''}">{'OAuth error: ' + oauth_error if oauth_error else ('Google account connected. Select the calendar for Repliq.' if google or status.get('google_connected') else 'Connect Google to continue.')}</p>
+    <div style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap;">
+      <a href="/google/connect?tenant_id={tenant['_id']}"><button>Connect Google</button></a>
+      <a href="/dashboard?tenant_id={tenant['_id']}"><button class="secondary">Open dashboard</button></a>
+      <a href="/onboarding/ui?tenant_id={tenant['_id']}"><button class="secondary">Open onboarding</button></a>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Calendars</h3>
+    <div id="loading" class="small">Loading calendars...</div>
+    <div id="calendar_list"></div>
+    <div id="done" class="small ok hidden">Calendar saved. Redirecting to dashboard...</div>
+  </div>
+</div>
+<script>
+const tenantId = {json.dumps(tenant['_id'])};
+async function loadCalendars() {{
+  const loading = document.getElementById('loading');
+  const list = document.getElementById('calendar_list');
+  try {{
+    const r = await fetch('/google/calendars?tenant_id=' + encodeURIComponent(tenantId));
+    const data = await r.json();
+    if (!r.ok) {{
+      loading.className = 'small err';
+      loading.textContent = data.detail || 'Could not load calendars';
+      return;
+    }}
+    loading.className = 'small';
+    loading.textContent = data.items && data.items.length ? 'Select the calendar Repliq should use:' : 'No calendars available for this account.';
+    list.innerHTML = '';
+    (data.items || []).forEach(item => {{
+      const row = document.createElement('div');
+      row.className = 'row';
+      const left = document.createElement('div');
+      left.innerHTML = '<div><strong>' + (item.summary || item.id) + '</strong>' + (item.primary ? ' <span class="small ok">(primary)</span>' : '') + '</div><div class="small">' + (item.id || '') + (item.timeZone ? ' · ' + item.timeZone : '') + '</div>';
+      const btn = document.createElement('button');
+      btn.textContent = 'Use this calendar';
+      btn.onclick = async () => {{
+        btn.disabled = true;
+        const res = await fetch('/google/select_calendar', {{
+          method: 'POST',
+          headers: {{ 'Content-Type': 'application/json' }},
+          body: JSON.stringify({{ tenant_id: tenantId, calendar_id: item.id }})
+        }});
+        const payload = await res.json();
+        if (!res.ok) {{
+          btn.disabled = false;
+          alert(payload.detail || 'Could not save calendar');
+          return;
+        }}
+        document.getElementById('done').classList.remove('hidden');
+        window.location = '/dashboard?tenant_id=' + encodeURIComponent(tenantId);
+      }};
+      row.appendChild(left);
+      row.appendChild(btn);
+      list.appendChild(row);
+    }});
+  }} catch (e) {{
+    loading.className = 'small err';
+    loading.textContent = 'Could not load calendars';
+  }}
+}}
+loadCalendars();
+</script>
+</body>
+</html>
+    """
+    return HTMLResponse(content=html)
 
 @app.post("/google/select_calendar")
 async def google_select_calendar(request: Request):
@@ -4531,24 +4732,9 @@ async def google_select_calendar(request: Request):
     calendar_id = str(data.get("calendar_id") or "").strip()
     if not tenant_id or not calendar_id:
         raise HTTPException(status_code=400, detail="tenant_id and calendar_id are required")
+    get_tenant_or_404(tenant_id)
     select_tenant_calendar_id(tenant_id, calendar_id)
-
-    cols = tenants_columns()
-    pk = tenants_pk(cols)
-    col_names = {c["name"] for c in cols}
-    sets = []
-    params: Dict[str, Any] = {"tid": tenant_id}
-    if "google_connected" in col_names:
-        sets.append("google_connected=true")
-    if "onboarding_completed" in col_names:
-        sets.append("onboarding_completed=true")
-    if "updated_at" in col_names:
-        sets.append("updated_at=NOW()")
-    if sets:
-        with engine.begin() as conn:
-            conn.execute(text(f"UPDATE tenants SET {', '.join(sets)} WHERE {pk}=:tid"), params)
-
-    tenant = get_tenant(tenant_id)
+    tenant = sync_tenant_onboarding_state(tenant_id)
     return {
         "status": "ok",
         "tenant_id": tenant_id,
@@ -4742,6 +4928,7 @@ def onboarding_links_payload(tenant_id: str) -> Dict[str, str]:
         "routes_url": f"{base}/tenant/routes?tenant_id={tenant_id}",
         "onboarding_status_url": f"{base}/onboarding/status?tenant_id={tenant_id}",
         "google_connect_url": f"{base}/google/connect?tenant_id={tenant_id}",
+        "google_calendars_ui_url": f"{base}/google/calendars/ui?tenant_id={tenant_id}",
     }
 
 
@@ -4781,9 +4968,7 @@ def onboarding_status_payload(tenant: Dict[str, Any]) -> Dict[str, Any]:
 
 @app.get("/onboarding/status")
 def onboarding_status(tenant_id: str):
-    tenant = get_tenant((tenant_id or "").strip())
-    if not tenant.get("_id"):
-        raise HTTPException(status_code=404, detail="Tenant not found")
+    tenant = sync_tenant_onboarding_state((tenant_id or "").strip())
     return onboarding_status_payload(tenant)
 
 
@@ -4793,16 +4978,11 @@ def onboarding_finish(payload: dict = Body(...)):
     if not tenant_id:
         raise HTTPException(status_code=400, detail="tenant_id required")
 
-    tenant = get_tenant(tenant_id)
-    if not tenant.get("_id"):
-        raise HTTPException(status_code=404, detail="Tenant not found")
-
-    tenant = normalize_tenant_saas_fields(tenant)
-
-    google_connected = tenant_google_connected_effective(tenant)
+    tenant = get_tenant_or_404(tenant_id)
+    tenant = sync_tenant_onboarding_state(tenant_id)
 
     missing = []
-    if not google_connected:
+    if not tenant_google_connected_effective(tenant):
         missing.append("google_connected")
     if not str(tenant.get("calendar_id") or "").strip():
         missing.append("calendar_id")
@@ -4815,26 +4995,7 @@ def onboarding_finish(payload: dict = Body(...)):
             "onboarding": onboarding_status_payload(tenant),
         }
 
-    cols = tenants_columns()
-    pk = tenants_pk(cols)
-    col_names = {c["name"] for c in cols}
-    sets = []
-    params: Dict[str, Any] = {"tid": tenant_id}
-    if "google_connected" in col_names:
-        sets.append("google_connected=true")
-    if "onboarding_completed" in col_names:
-        sets.append("onboarding_completed=true")
-    if "updated_at" in col_names:
-        sets.append("updated_at=NOW()")
-
-    if sets:
-        with engine.begin() as conn:
-            conn.execute(
-                text(f"UPDATE tenants SET {', '.join(sets)} WHERE {pk}=:tid"),
-                params,
-            )
-
-    tenant = get_tenant(tenant_id)
+    tenant = sync_tenant_onboarding_state(tenant_id)
     return {
         "status": "ok",
         "tenant_id": tenant_id,
@@ -4932,6 +5093,7 @@ ul.links li {{ margin:6px 0; }}
       <li><a id="r_routes" href="#">Phone routes</a></li>
       <li><a id="r_status" href="#">Onboarding status</a></li>
       <li><a id="r_google" href="#">Connect Google Calendar</a></li>
+      <li><a id="r_calendars_ui" href="#">Select Google Calendar</a></li>
     </ul>
     <div class="actions">
       <button onclick="openNewDashboard()">Open dashboard</button>
@@ -4953,7 +5115,7 @@ function fillResult(data) {{
   document.getElementById('k_tenant').textContent = data.tenant_id || '-';
   document.getElementById('k_google').textContent = (data.onboarding && data.onboarding.google_connected) ? 'connected' : 'pending';
   document.getElementById('k_next').textContent = (data.onboarding && data.onboarding.next_step) || '-';
-  document.getElementById('result_sub').textContent = `Business “${{data.business_name || ''}}” is ready. Next step: connect Google Calendar.`;
+  document.getElementById('result_sub').textContent = `Business “${{data.business_name || ''}}” is ready. Next step: connect Google Calendar and confirm the working calendar.`;
   const links = data.links || {{}};
   document.getElementById('r_dashboard').href = links.dashboard_url || '#';
   document.getElementById('r_config_ui').href = links.config_ui_url || '#';
@@ -4961,6 +5123,7 @@ function fillResult(data) {{
   document.getElementById('r_routes').href = links.routes_url || '#';
   document.getElementById('r_status').href = links.onboarding_status_url || '#';
   document.getElementById('r_google').href = links.google_connect_url || '#';
+  document.getElementById('r_calendars_ui').href = links.google_calendars_ui_url || '#';
   document.getElementById('raw_response').textContent = JSON.stringify(data, null, 2);
 }}
 async function createTenant() {{
