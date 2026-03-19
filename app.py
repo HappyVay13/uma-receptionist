@@ -6179,3 +6179,19 @@ def violates_min_notice(dt_value: datetime, business_rules: Optional[Dict[str, A
     if cutoff is None:
         return False
     return dt_value < cutoff
+
+
+def exchange_code_for_tokens(*args, **kwargs):
+    pass
+
+
+def get_current_tenant(*args, **kwargs):
+    pass
+
+
+def save_tokens(*args, **kwargs):
+    pass
+
+
+def mark_onboarding_completed(*args, **kwargs):
+    pass
