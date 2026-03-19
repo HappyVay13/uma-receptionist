@@ -4836,6 +4836,185 @@ def onboarding_finish(payload: dict = Body(...)):
         "onboarding": onboarding_status_payload(tenant),
     }
 
+@app.get("/onboarding/ui", response_class=HTMLResponse)
+def onboarding_ui(tenant_id: str = ""):
+    tenant_id = (tenant_id or "").strip()
+    html = f"""
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Repliq Onboarding</title>
+<style>
+body {{ font-family: Arial, sans-serif; background:#f6f7fb; color:#111827; margin:0; padding:24px; }}
+.wrap {{ max-width: 980px; margin:0 auto; }}
+.hero {{ margin-bottom:18px; }}
+.card {{ background:#fff; border:1px solid #e5e7eb; border-radius:18px; padding:22px; box-shadow: 0 10px 28px rgba(15,23,42,.06); margin-bottom:16px; }}
+h1,h2,h3 {{ margin:0 0 12px 0; }}
+p {{ margin:0; color:#4b5563; line-height:1.5; }}
+.grid {{ display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:14px; }}
+label {{ display:block; font-size:14px; color:#374151; margin-bottom:6px; }}
+input, select {{ width:100%; box-sizing:border-box; border:1px solid #d1d5db; border-radius:12px; padding:12px 14px; font-size:14px; background:#fff; }}
+button {{ border:0; background:#111827; color:#fff; padding:12px 18px; border-radius:12px; cursor:pointer; font-size:14px; }}
+button.secondary {{ background:#fff; color:#111827; border:1px solid #d1d5db; }}
+.actions {{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:16px; }}
+.small {{ font-size:12px; color:#6b7280; }}
+.ok {{ color:#065f46; }}
+.err {{ color:#991b1b; white-space:pre-wrap; }}
+.kpis {{ display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap:12px; margin-top:14px; }}
+.kpi {{ background:#fafafa; border:1px solid #e5e7eb; border-radius:14px; padding:14px; }}
+.kpi .num {{ font-size:22px; font-weight:700; margin-top:6px; }}
+.hidden {{ display:none; }}
+ul.links {{ margin:8px 0 0 0; padding-left:18px; }}
+ul.links li {{ margin:6px 0; }}
+.code {{ background:#f9fafb; border:1px solid #e5e7eb; border-radius:12px; padding:12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; overflow:auto; }}
+@media (max-width: 768px) {{ .grid, .kpis {{ grid-template-columns: 1fr; }} body {{ padding:16px; }} }}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hero">
+    <h1>Create new business</h1>
+    <p>Quick SaaS onboarding for Repliq. Fill in the business details, create the tenant, then continue with Google Calendar connection.</p>
+  </div>
+
+  <div class="card">
+    <h2>Business setup</h2>
+    <div class="grid">
+      <div><label>Business name</label><input id="business_name" placeholder="Barbershop Riga"/></div>
+      <div><label>Owner email (optional)</label><input id="owner_email" placeholder="owner@business.com"/></div>
+      <div><label>Phone number (optional)</label><input id="phone_number" placeholder="+37120000000"/></div>
+      <div><label>Business type</label>
+        <select id="business_type">
+          <option value="barbershop">barbershop</option>
+          <option value="salon">salon</option>
+          <option value="clinic">clinic</option>
+        </select>
+      </div>
+      <div><label>Language</label>
+        <select id="language">
+          <option value="lv">lv</option>
+          <option value="ru">ru</option>
+          <option value="en">en</option>
+        </select>
+      </div>
+      <div><label>Timezone</label><input id="timezone" value="Europe/Riga"/></div>
+      <div><label>Work start</label><input id="work_start" value="09:00"/></div>
+      <div><label>Work end</label><input id="work_end" value="18:00"/></div>
+    </div>
+    <div class="actions">
+      <button onclick="createTenant()">Create business</button>
+      <button class="secondary" onclick="openTenantConfig()">Open tenant config</button>
+      <span id="create_status" class="small"></span>
+    </div>
+    <div class="small">This page calls <code>POST /tenant/create</code> and returns ready-to-use links for the new tenant.</div>
+  </div>
+
+  <div class="card hidden" id="result_card">
+    <h2>Business created</h2>
+    <p id="result_sub">Your new tenant is ready.</p>
+    <div class="kpis">
+      <div class="kpi"><div>Tenant ID</div><div class="num" id="k_tenant">-</div></div>
+      <div class="kpi"><div>Google status</div><div class="num" id="k_google">-</div></div>
+      <div class="kpi"><div>Next step</div><div class="num" id="k_next">-</div></div>
+    </div>
+    <h3 style="margin-top:18px">Quick links</h3>
+    <ul class="links">
+      <li><a id="r_dashboard" href="#">Dashboard</a></li>
+      <li><a id="r_config_ui" href="#">Tenant config UI</a></li>
+      <li><a id="r_config_json" href="#">Tenant config JSON</a></li>
+      <li><a id="r_routes" href="#">Phone routes</a></li>
+      <li><a id="r_status" href="#">Onboarding status</a></li>
+      <li><a id="r_google" href="#">Connect Google Calendar</a></li>
+    </ul>
+    <div class="actions">
+      <button onclick="openNewDashboard()">Open dashboard</button>
+      <button class="secondary" onclick="copyTenantId()">Copy tenant_id</button>
+    </div>
+    <div class="small" style="margin-top:10px">Raw response</div>
+    <div class="code" id="raw_response"></div>
+  </div>
+</div>
+
+<script>
+let latestResponse = null;
+function currentTenantId() {{
+  return document.getElementById('tenant_id_prefill') ? document.getElementById('tenant_id_prefill').value.trim() : '';
+}}
+function fillResult(data) {{
+  latestResponse = data;
+  document.getElementById('result_card').classList.remove('hidden');
+  document.getElementById('k_tenant').textContent = data.tenant_id || '-';
+  document.getElementById('k_google').textContent = (data.onboarding && data.onboarding.google_connected) ? 'connected' : 'pending';
+  document.getElementById('k_next').textContent = (data.onboarding && data.onboarding.next_step) || '-';
+  document.getElementById('result_sub').textContent = `Business “${{data.business_name || ''}}” is ready. Next step: connect Google Calendar.`;
+  const links = data.links || {{}};
+  document.getElementById('r_dashboard').href = links.dashboard_url || '#';
+  document.getElementById('r_config_ui').href = links.config_ui_url || '#';
+  document.getElementById('r_config_json').href = links.config_json_url || '#';
+  document.getElementById('r_routes').href = links.routes_url || '#';
+  document.getElementById('r_status').href = links.onboarding_status_url || '#';
+  document.getElementById('r_google').href = links.google_connect_url || '#';
+  document.getElementById('raw_response').textContent = JSON.stringify(data, null, 2);
+}}
+async function createTenant() {{
+  const payload = {{
+    business_name: document.getElementById('business_name').value.trim(),
+    owner_email: document.getElementById('owner_email').value.trim() || null,
+    phone_number: document.getElementById('phone_number').value.trim() || null,
+    business_type: document.getElementById('business_type').value,
+    language: document.getElementById('language').value,
+    timezone: document.getElementById('timezone').value.trim() || 'Europe/Riga',
+    work_start: document.getElementById('work_start').value.trim() || '09:00',
+    work_end: document.getElementById('work_end').value.trim() || '18:00'
+  }};
+  const st = document.getElementById('create_status');
+  if (!payload.business_name) {{
+    st.className = 'small err';
+    st.textContent = 'business_name is required';
+    return;
+  }}
+  st.className = 'small';
+  st.textContent = 'Creating...';
+  const r = await fetch('/tenant/create', {{
+    method: 'POST',
+    headers: {{ 'Content-Type': 'application/json' }},
+    body: JSON.stringify(payload)
+  }});
+  const data = await r.json();
+  if (r.ok) {{
+    st.className = 'small ok';
+    st.textContent = 'Created';
+    fillResult(data);
+  }} else {{
+    st.className = 'small err';
+    st.textContent = data.detail || JSON.stringify(data, null, 2);
+  }}
+}}
+function openNewDashboard() {{
+  if (latestResponse && latestResponse.links && latestResponse.links.dashboard_url) {{
+    window.location = latestResponse.links.dashboard_url;
+  }}
+}}
+function openTenantConfig() {{
+  const tid = (latestResponse && latestResponse.tenant_id) || '{tenant_id}';
+  if (!tid) return;
+  window.location = '/tenant/config/ui?tenant_id=' + encodeURIComponent(tid);
+}}
+async function copyTenantId() {{
+  if (!latestResponse || !latestResponse.tenant_id) return;
+  try {{
+    await navigator.clipboard.writeText(latestResponse.tenant_id);
+  }} catch (e) {{}}
+}}
+</script>
+</body>
+</html>
+    """
+    return HTMLResponse(content=html)
+
+
 @app.post("/onboarding/create_tenant")
 @app.post("/tenant/create")
 def onboarding_create_tenant(payload: dict = Body(...)):
@@ -5096,7 +5275,7 @@ def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
         <input id="tenant" value="{tenant_id}" placeholder="tenant_id" />
         <button onclick="loadAll()">Refresh</button>
       </div>
-      <div class="muted">JSON endpoints: <a id="lnk_analytics" href="#">analytics</a> · <a id="lnk_bookings" href="#">bookings</a> · <a id="lnk_conversations" href="#">conversations</a> · <a id="lnk_tenant" href="#">tenant config</a></div>
+      <div class="muted">JSON endpoints: <a id="lnk_analytics" href="#">analytics</a> · <a id="lnk_bookings" href="#">bookings</a> · <a id="lnk_conversations" href="#">conversations</a> · <a id="lnk_tenant" href="#">tenant config</a> · <a id="lnk_onboarding" href="/onboarding/ui">create business</a></div>
       <div class="metrics">
         <div class="card"><div>Total requests</div><div id="m_requests" class="num">-</div></div>
         <div class="card"><div>Total bookings</div><div id="m_bookings" class="num">-</div></div>
@@ -5133,6 +5312,7 @@ async function loadAll() {{
   document.getElementById('lnk_bookings').href = `/dashboard/bookings?tenant_id=${encodeURIComponent(tenant)}`;
   document.getElementById('lnk_conversations').href = `/dashboard/conversations?tenant_id=${encodeURIComponent(tenant)}`;
   document.getElementById('lnk_tenant').href = `/tenant/config?tenant_id=${encodeURIComponent(tenant)}`;
+  document.getElementById('lnk_onboarding').href = `/onboarding/ui?tenant_id=${encodeURIComponent(tenant)}`;
   if (document.getElementById('lnk_tenant_ui')) document.getElementById('lnk_tenant_ui').href = `/tenant/config/ui?tenant_id=${encodeURIComponent(tenant)}`;
   document.getElementById('m_requests').textContent = a.total_requests ?? '-';
   document.getElementById('m_bookings').textContent = a.total_bookings ?? '-';
