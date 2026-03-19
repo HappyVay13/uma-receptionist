@@ -5476,12 +5476,12 @@ async function loadAll() {{
     fetch(`/dashboard/bookings?tenant_id=${{encodeURIComponent(tenant)}}&limit=20`).then(r => r.json()),
     fetch(`/dashboard/conversations?tenant_id=${{encodeURIComponent(tenant)}}&limit=20`).then(r => r.json())
   ]);
-  document.getElementById('lnk_analytics').href = `/dashboard/analytics?tenant_id=${encodeURIComponent(tenant)}`;
-  document.getElementById('lnk_bookings').href = `/dashboard/bookings?tenant_id=${encodeURIComponent(tenant)}`;
-  document.getElementById('lnk_conversations').href = `/dashboard/conversations?tenant_id=${encodeURIComponent(tenant)}`;
-  document.getElementById('lnk_tenant').href = `/tenant/config?tenant_id=${encodeURIComponent(tenant)}`;
-  document.getElementById('lnk_onboarding').href = `/onboarding/ui?tenant_id=${encodeURIComponent(tenant)}`;
-  if (document.getElementById('lnk_tenant_ui')) document.getElementById('lnk_tenant_ui').href = `/tenant/config/ui?tenant_id=${encodeURIComponent(tenant)}`;
+  document.getElementById('lnk_analytics').href = `/dashboard/analytics?tenant_id=${{encodeURIComponent(tenant)}}`;
+  document.getElementById('lnk_bookings').href = `/dashboard/bookings?tenant_id=${{encodeURIComponent(tenant)}}`;
+  document.getElementById('lnk_conversations').href = `/dashboard/conversations?tenant_id=${{encodeURIComponent(tenant)}}`;
+  document.getElementById('lnk_tenant').href = `/tenant/config?tenant_id=${{encodeURIComponent(tenant)}}`;
+  document.getElementById('lnk_onboarding').href = `/onboarding/ui?tenant_id=${{encodeURIComponent(tenant)}}`;
+  if (document.getElementById('lnk_tenant_ui')) document.getElementById('lnk_tenant_ui').href = `/tenant/config/ui?tenant_id=${{encodeURIComponent(tenant)}}`;
   document.getElementById('m_requests').textContent = a.total_requests ?? '-';
   document.getElementById('m_bookings').textContent = a.total_bookings ?? '-';
   document.getElementById('m_conv').textContent = (a.conversion_rate ?? 0) + '%';
