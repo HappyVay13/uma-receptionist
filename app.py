@@ -48,7 +48,7 @@ from typing import Dict, Any, Optional, Tuple, List
 import requests
 from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel
-from fastapi.responses import Response, StreamingResponse, HTMLResponse
+from fastapi.responses import Response, StreamingResponse, HTMLResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from twilio.request_validator import RequestValidator
 from twilio.twiml.voice_response import VoiceResponse, Gather
@@ -4484,6 +4484,11 @@ def google_callback(code: str = "", state: str = ""):
     tenant_id = str(state_data.get("tenant_id") or "").strip()
     if not tenant_id:
         raise HTTPException(status_code=400, detail="Invalid OAuth state")
+
+    tenant = get_tenant(tenant_id)
+    if not tenant.get("_id"):
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
     token_data = exchange_google_code_for_tokens(code)
     access_token = str(token_data.get("access_token") or "").strip()
     refresh_token = str(token_data.get("refresh_token") or "").strip() or None
@@ -4491,9 +4496,11 @@ def google_callback(code: str = "", state: str = ""):
     scope = str(token_data.get("scope") or "").strip() or None
     if not access_token:
         raise HTTPException(status_code=400, detail="Failed to exchange OAuth code")
+
     token_expiry = now_ts() + timedelta(seconds=expires_in) if expires_in else None
     userinfo = fetch_google_userinfo(access_token)
     google_email = str(userinfo.get("email") or "").strip() or None
+
     upsert_tenant_google_account(
         tenant_id=tenant_id,
         google_email=google_email,
@@ -4503,13 +4510,51 @@ def google_callback(code: str = "", state: str = ""):
         scope=scope,
     )
     mark_tenant_google_connected(tenant_id, True, owner_email=google_email)
+
     calendars = fetch_google_calendar_list(access_token)
+    selected_calendar_id = ""
+    if calendars:
+        primary = next((c for c in calendars if c.get("primary")), None)
+        selected = primary or (calendars[0] if calendars else None)
+        selected_calendar_id = str((selected or {}).get("id") or "").strip()
+        if selected_calendar_id:
+            select_tenant_calendar_id(tenant_id, selected_calendar_id)
+
+    tenant_after = get_tenant(tenant_id)
+    completed = False
+    if tenant_google_connected_effective(tenant_after) and str(tenant_after.get("calendar_id") or "").strip():
+        cols = tenants_columns()
+        pk = tenants_pk(cols)
+        col_names = {c["name"] for c in cols}
+        sets = []
+        params: Dict[str, Any] = {"tid": tenant_id}
+        if "google_connected" in col_names:
+            sets.append("google_connected=true")
+        if "onboarding_completed" in col_names:
+            sets.append("onboarding_completed=true")
+            completed = True
+        if "updated_at" in col_names:
+            sets.append("updated_at=NOW()")
+        if sets:
+            with engine.begin() as conn:
+                conn.execute(text(f"UPDATE tenants SET {', '.join(sets)} WHERE {pk}=:tid"), params)
+        tenant_after = get_tenant(tenant_id)
+
+    links = onboarding_links_payload(tenant_id)
+    onboarding = onboarding_status_payload(tenant_after)
+    if SERVER_BASE_URL and links.get("dashboard_url"):
+        return RedirectResponse(links["dashboard_url"])
+
     return {
         "status": "connected",
         "tenant_id": tenant_id,
         "google_email": google_email,
         "calendars_found": len(calendars),
-        "next": "/google/calendars?tenant_id=" + tenant_id,
+        "selected_calendar_id": selected_calendar_id or None,
+        "onboarding_completed": completed or bool(onboarding.get("onboarding_completed")),
+        "onboarding": onboarding,
+        "links": links,
+        "next": onboarding.get("next_step"),
     }
 
 @app.get("/google/calendars")
@@ -4544,13 +4589,24 @@ async def google_select_calendar(request: Request):
     col_names = {c["name"] for c in cols}
     sets = []
     params: Dict[str, Any] = {"tid": tenant_id}
+    if "google_connected" in col_names:
+        sets.append("google_connected=true")
+    if "onboarding_completed" in col_names:
+        sets.append("onboarding_completed=true")
     if "updated_at" in col_names:
         sets.append("updated_at=NOW()")
     if sets:
         with engine.begin() as conn:
             conn.execute(text(f"UPDATE tenants SET {', '.join(sets)} WHERE {pk}=:tid"), params)
 
-    return {"status": "ok", "tenant_id": tenant_id, "calendar_id": calendar_id}
+    tenant = get_tenant(tenant_id)
+    return {
+        "status": "ok",
+        "tenant_id": tenant_id,
+        "calendar_id": calendar_id,
+        "onboarding": onboarding_status_payload(tenant),
+        "links": onboarding_links_payload(tenant_id),
+    }
 
 
 # -------------------------
