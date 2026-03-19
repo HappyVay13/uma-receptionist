@@ -4469,35 +4469,26 @@ async def whatsapp_incoming(request: Request):
 # -------------------------
 @app.get("/google/connect")
 def google_connect(tenant_id: str):
-    tenant = get_tenant(tenant_id)
-    if not tenant.get("_id"):
-        raise HTTPException(status_code=404, detail="Tenant not found")
     if not oauth_ready():
         raise HTTPException(status_code=500, detail="Google OAuth is not configured")
-    return {"auth_url": build_google_oauth_url(tenant["_id"]), "tenant_id": tenant["_id"]}
+    tenant = get_tenant_or_404(tenant_id)
+    auth_url = build_google_oauth_url(tenant["_id"])
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url=auth_url)
 
 @app.get("/google/callback")
 def google_callback(code: str = "", state: str = ""):
     if not oauth_ready():
         raise HTTPException(status_code=500, detail="Google OAuth is not configured")
     state_data = parse_google_oauth_state(state)
-    tenant_id = str(state_data.get("tenant_id") or "").strip()
+    tenant_id = state_data.get("tenant_id")
     if not tenant_id:
-        raise HTTPException(status_code=400, detail="Invalid OAuth state")
-
-    tenant = get_tenant(tenant_id)
-    if not tenant.get("_id"):
-        raise HTTPException(status_code=404, detail="Tenant not found")
-
+        raise HTTPException(status_code=400, detail="Invalid state")
     token_data = exchange_google_code_for_tokens(code)
-    access_token = str(token_data.get("access_token") or "").strip()
-    refresh_token = str(token_data.get("refresh_token") or "").strip() or None
-    expires_in = int(token_data.get("expires_in") or 0)
-    scope = str(token_data.get("scope") or "").strip() or None
-    if not access_token:
-        raise HTTPException(status_code=400, detail="Failed to exchange OAuth code")
+    access_token = token_data.get("access_token")
+    refresh_token = token_data.get("refresh_token")
+    expires_in = token_data.get("expires_in")
 
-    token_expiry = now_ts() + timedelta(seconds=expires_in) if expires_in else None
     userinfo = fetch_google_userinfo(access_token)
     google_email = str(userinfo.get("email") or "").strip() or None
 
@@ -4506,56 +4497,14 @@ def google_callback(code: str = "", state: str = ""):
         google_email=google_email,
         access_token=access_token,
         refresh_token=refresh_token,
-        token_expiry=token_expiry,
-        scope=scope,
+        token_expiry=expires_in,
+        scope=GOOGLE_OAUTH_SCOPE
     )
+
     mark_tenant_google_connected(tenant_id, True, owner_email=google_email)
 
-    calendars = fetch_google_calendar_list(access_token)
-    selected_calendar_id = ""
-    if calendars:
-        primary = next((c for c in calendars if c.get("primary")), None)
-        selected = primary or (calendars[0] if calendars else None)
-        selected_calendar_id = str((selected or {}).get("id") or "").strip()
-        if selected_calendar_id:
-            select_tenant_calendar_id(tenant_id, selected_calendar_id)
-
-    tenant_after = get_tenant(tenant_id)
-    completed = False
-    if tenant_google_connected_effective(tenant_after) and str(tenant_after.get("calendar_id") or "").strip():
-        cols = tenants_columns()
-        pk = tenants_pk(cols)
-        col_names = {c["name"] for c in cols}
-        sets = []
-        params: Dict[str, Any] = {"tid": tenant_id}
-        if "google_connected" in col_names:
-            sets.append("google_connected=true")
-        if "onboarding_completed" in col_names:
-            sets.append("onboarding_completed=true")
-            completed = True
-        if "updated_at" in col_names:
-            sets.append("updated_at=NOW()")
-        if sets:
-            with engine.begin() as conn:
-                conn.execute(text(f"UPDATE tenants SET {', '.join(sets)} WHERE {pk}=:tid"), params)
-        tenant_after = get_tenant(tenant_id)
-
-    links = onboarding_links_payload(tenant_id)
-    onboarding = onboarding_status_payload(tenant_after)
-    if SERVER_BASE_URL and links.get("dashboard_url"):
-        return RedirectResponse(links["dashboard_url"])
-
-    return {
-        "status": "connected",
-        "tenant_id": tenant_id,
-        "google_email": google_email,
-        "calendars_found": len(calendars),
-        "selected_calendar_id": selected_calendar_id or None,
-        "onboarding_completed": completed or bool(onboarding.get("onboarding_completed")),
-        "onboarding": onboarding,
-        "links": links,
-        "next": onboarding.get("next_step"),
-    }
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url=f"/onboarding/status?tenant_id={tenant_id}")
 
 @app.get("/google/calendars")
 def google_calendars(tenant_id: str):
