@@ -42,13 +42,16 @@ import base64
 import uuid
 import logging
 import random
+import time
+import threading
+from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone, date
 from typing import Dict, Any, Optional, Tuple, List
 
 import requests
 from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel
-from fastapi.responses import Response, StreamingResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import Response, StreamingResponse, HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from twilio.request_validator import RequestValidator
 from twilio.twiml.voice_response import VoiceResponse, Gather
@@ -180,6 +183,103 @@ BUSINESS_DAYS_OFF = os.getenv("BIZ_DAYS_OFF", "").strip()
 BUSINESS_MIN_NOTICE_MINUTES = int((os.getenv("BIZ_MIN_NOTICE_MINUTES", "0") or "0").strip())
 BUSINESS_BUFFER_MINUTES = int((os.getenv("BIZ_BUFFER_MINUTES", "0") or "0").strip())
 
+RATE_LIMIT_ENABLED = ((os.getenv("RATE_LIMIT_ENABLED", "true") or "true").strip().lower() in ("1", "true", "yes", "on"))
+RATE_LIMIT_WINDOW_SECONDS = int((os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60") or "60").strip())
+RATE_LIMIT_MAX_REQUESTS = int((os.getenv("RATE_LIMIT_MAX_REQUESTS", "60") or "60").strip())
+HTTP_RETRY_ATTEMPTS = max(1, int((os.getenv("HTTP_RETRY_ATTEMPTS", "3") or "3").strip()))
+HTTP_RETRY_BACKOFF_SECONDS = float((os.getenv("HTTP_RETRY_BACKOFF_SECONDS", "0.6") or "0.6").strip())
+
+
+# -------------------------
+# PRODUCTION READINESS HELPERS (Phase 7)
+# -------------------------
+_rate_limit_store: Dict[str, deque] = defaultdict(deque)
+_rate_limit_lock = threading.Lock()
+
+def client_ip_from_request(request: Optional[Request]) -> str:
+    if request is None:
+        return "unknown"
+    xff = request.headers.get("x-forwarded-for", "").strip()
+    if xff:
+        return xff.split(",")[0].strip() or "unknown"
+    if request.client and request.client.host:
+        return request.client.host
+    return "unknown"
+
+def enforce_basic_rate_limit(bucket_key: str, max_requests: Optional[int] = None, window_seconds: Optional[int] = None) -> None:
+    if not RATE_LIMIT_ENABLED:
+        return
+    key = str(bucket_key or "").strip()
+    if not key:
+        return
+    max_requests = max(1, int(max_requests or RATE_LIMIT_MAX_REQUESTS))
+    window_seconds = max(1, int(window_seconds or RATE_LIMIT_WINDOW_SECONDS))
+    now_monotonic = time.monotonic()
+    with _rate_limit_lock:
+        bucket = _rate_limit_store[key]
+        while bucket and now_monotonic - bucket[0] > window_seconds:
+            bucket.popleft()
+        if len(bucket) >= max_requests:
+            raise HTTPException(status_code=429, detail="Rate limit exceeded")
+        bucket.append(now_monotonic)
+
+def request_with_retry(method: str, url: str, **kwargs):
+    last_exc = None
+    response = None
+    for attempt in range(1, HTTP_RETRY_ATTEMPTS + 1):
+        try:
+            response = requests.request(method=method.upper(), url=url, **kwargs)
+            if response.status_code < 500 and response.status_code != 429:
+                return response
+            last_exc = Exception(f"HTTP {response.status_code}")
+            log.warning("http_retryable_response method=%s url=%s attempt=%s status=%s", method.upper(), url, attempt, response.status_code)
+        except Exception as e:
+            last_exc = e
+            log.warning("http_request_attempt_failed method=%s url=%s attempt=%s err=%s", method.upper(), url, attempt, e)
+        if attempt < HTTP_RETRY_ATTEMPTS:
+            time.sleep(HTTP_RETRY_BACKOFF_SECONDS * attempt)
+    if last_exc:
+        raise last_exc
+    return response
+
+def twilio_safe_error_response(path: str) -> Optional[Response]:
+    p = (path or "").lower()
+    if p.startswith("/voice/"):
+        vr = VoiceResponse()
+        try:
+            vr.say(t("lv", "service_unavailable_voice"), language="lv-LV", voice="alice")
+        except Exception:
+            vr.say("Service unavailable.")
+        vr.hangup()
+        return Response(content=str(vr), media_type="application/xml", status_code=200)
+    if p.startswith("/sms") or p.startswith("/whatsapp"):
+        return Response(status_code=204)
+    return None
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    if isinstance(exc, HTTPException):
+        return await http_exception_handler(request, exc)
+    log.exception("unhandled_exception path=%s method=%s err=%s", request.url.path, request.method, exc)
+    safe = twilio_safe_error_response(request.url.path)
+    if safe is not None:
+        return safe
+    accept = (request.headers.get("accept", "") or "").lower()
+    if "text/html" in accept:
+        return HTMLResponse(content="Internal Server Error", status_code=500)
+    return JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    if exc.status_code >= 500:
+        log.error("http_exception path=%s method=%s status=%s detail=%s", request.url.path, request.method, exc.status_code, exc.detail)
+    safe = twilio_safe_error_response(request.url.path) if exc.status_code >= 500 else None
+    if safe is not None:
+        return safe
+    accept = (request.headers.get("accept", "") or "").lower()
+    if "text/html" in accept and exc.status_code >= 500:
+        return HTMLResponse(content=str(exc.detail or "Internal Server Error"), status_code=exc.status_code)
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 
 # -------------------------
@@ -1013,7 +1113,7 @@ def exchange_google_code_for_tokens(code_value: str) -> Dict[str, Any]:
         "grant_type": "authorization_code",
     }
     try:
-        r = requests.post("https://oauth2.googleapis.com/token", data=data, timeout=30)
+        r = request_with_retry("POST", "https://oauth2.googleapis.com/token", data=data, timeout=30)
         if r.status_code == 200:
             return r.json()
         log.error("google_token_exchange_failed status=%s body=%s", r.status_code, r.text[:500])
@@ -1025,7 +1125,8 @@ def fetch_google_userinfo(access_token: str) -> Dict[str, Any]:
     if not access_token:
         return {}
     try:
-        r = requests.get(
+        r = request_with_retry(
+            "GET",
             "https://www.googleapis.com/oauth2/v2/userinfo",
             headers={"Authorization": f"Bearer {access_token}"},
             timeout=20,
@@ -1041,7 +1142,8 @@ def fetch_google_calendar_list(access_token: str) -> List[Dict[str, Any]]:
     if not access_token:
         return []
     try:
-        r = requests.get(
+        r = request_with_retry(
+            "GET",
             "https://www.googleapis.com/calendar/v3/users/me/calendarList",
             headers={"Authorization": f"Bearer {access_token}"},
             timeout=20,
@@ -2507,7 +2609,7 @@ def openai_understand_message(system: str, user: str) -> Dict[str, Any]:
         "response_format": {"type": "json_object"},
     }
     try:
-        r = requests.post(url, headers=headers, json=payload, timeout=25)
+        r = request_with_retry("POST", url, headers=headers, json=payload, timeout=25)
         if r.status_code == 200:
             return json.loads(r.json()["choices"][0]["message"]["content"])
         log.error("OpenAI understand error status=%s body=%s", r.status_code, r.text[:500])
@@ -2588,7 +2690,7 @@ def openai_chat_json(system: str, user: str) -> Dict[str, Any]:
         "response_format": {"type": "json_object"},
     }
     try:
-        r = requests.post(url, headers=headers, json=payload, timeout=25)
+        r = request_with_retry("POST", url, headers=headers, json=payload, timeout=25)
         if r.status_code == 200:
             return json.loads(r.json()["choices"][0]["message"]["content"])
         log.error("OpenAI error status=%s body=%s", r.status_code, r.text[:500])
@@ -2756,7 +2858,8 @@ def elevenlabs_tts_mp3(text_: str, voice_id: str) -> bytes:
     if not (ELEVENLABS_API_KEY and voice_id and text_):
         return b""
     try:
-        r = requests.post(
+        r = request_with_retry(
+            "POST",
             f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
             headers={
                 "xi-api-key": ELEVENLABS_API_KEY,
@@ -4574,7 +4677,8 @@ async def whatsapp_incoming(request: Request):
 # GOOGLE OAUTH ENDPOINTS (Phase 3 Foundation)
 # -------------------------
 @app.get("/google/connect")
-def google_connect(tenant_id: str):
+def google_connect(tenant_id: str, request: Request):
+    enforce_basic_rate_limit(f"google_connect:{client_ip_from_request(request)}", max_requests=30, window_seconds=60)
     if not oauth_ready():
         raise HTTPException(status_code=500, detail="Google OAuth is not configured")
     tenant = get_tenant_or_404(tenant_id)
@@ -4589,7 +4693,8 @@ def google_connect(tenant_id: str):
     return RedirectResponse(url=auth_url)
 
 @app.get("/google/callback")
-def google_callback(code: str = "", state: str = "", error: str = ""):
+def google_callback(request: Request, code: str = "", state: str = "", error: str = ""):
+    enforce_basic_rate_limit(f"google_callback:{client_ip_from_request(request)}", max_requests=60, window_seconds=60)
     if not oauth_ready():
         raise HTTPException(status_code=500, detail="Google OAuth is not configured")
     state_data = parse_google_oauth_state(state)
@@ -4778,7 +4883,8 @@ async def google_select_calendar(request: Request):
 # BROWSER SDK TOKEN
 # -------------------------
 @app.get("/voice/token")
-def get_voice_token(client_id: str = "default", tenant_id: str = ""):
+def get_voice_token(request: Request, client_id: str = "default", tenant_id: str = ""):
+    enforce_basic_rate_limit(f"voice_token:{client_ip_from_request(request)}", max_requests=20, window_seconds=60)
     if not (
         TWILIO_ACCOUNT_SID
         and TWILIO_API_KEY_SID
@@ -4820,6 +4926,8 @@ def health():
         "allow_default_tenant_fallback": ALLOW_DEFAULT_TENANT_FALLBACK,
         "twilio_validate_signature": TWILIO_VALIDATE_SIGNATURE,
         "google_oauth_ready": oauth_ready(),
+        "rate_limit_enabled": RATE_LIMIT_ENABLED,
+        "http_retry_attempts": HTTP_RETRY_ATTEMPTS,
     }
 
 
@@ -5278,7 +5386,8 @@ async function copyTenantId() {{
 
 @app.post("/onboarding/create_tenant")
 @app.post("/tenant/create")
-def onboarding_create_tenant(payload: dict = Body(...)):
+def onboarding_create_tenant(request: Request, payload: dict = Body(...)):
+    enforce_basic_rate_limit(f"tenant_create:{client_ip_from_request(request)}", max_requests=20, window_seconds=300)
     business_name = (payload.get("business_name") or "").strip()
     owner_email = (payload.get("owner_email") or "").strip()
     phone_number = normalize_incoming_to_number(payload.get("phone_number") or "")
@@ -5911,7 +6020,8 @@ def tenant_config(tenant_id: str = TENANT_ID_DEFAULT):
     }
 
 @app.post("/tenant/config/update")
-def tenant_config_update(payload: TenantConfigUpdateRequest):
+def tenant_config_update(request: Request, payload: TenantConfigUpdateRequest):
+    enforce_basic_rate_limit(f"tenant_config_update:{client_ip_from_request(request)}", max_requests=60, window_seconds=300)
     tenant_id = (payload.tenant_id or "").strip()
     if not tenant_id:
         raise HTTPException(status_code=400, detail="tenant_id required")
