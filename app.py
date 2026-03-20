@@ -1089,14 +1089,44 @@ def google_calendar_choice(calendars: List[Dict[str, Any]]) -> Optional[str]:
     return None
 
 
+def is_tenant_ready(tenant: Dict[str, Any]) -> bool:
+    tenant = normalize_tenant_saas_fields(tenant or {})
+    google_connected = tenant_google_connected_effective(tenant)
+    required_text_fields = [
+        str(tenant.get("calendar_id") or "").strip(),
+        str(tenant.get("business_name") or tenant.get("name") or "").strip(),
+        str(tenant.get("timezone") or "").strip(),
+        str(tenant.get("work_start") or "").strip(),
+        str(tenant.get("work_end") or "").strip(),
+    ]
+    return bool(google_connected and all(required_text_fields))
+
+
+def tenant_ready_missing_fields(tenant: Dict[str, Any]) -> List[str]:
+    tenant = normalize_tenant_saas_fields(tenant or {})
+    missing: List[str] = []
+    if not tenant_google_connected_effective(tenant):
+        missing.append("google_connected")
+    if not str(tenant.get("calendar_id") or "").strip():
+        missing.append("calendar_id")
+    if not str(tenant.get("business_name") or tenant.get("name") or "").strip():
+        missing.append("business_name")
+    if not str(tenant.get("timezone") or "").strip():
+        missing.append("timezone")
+    if not str(tenant.get("work_start") or "").strip():
+        missing.append("work_start")
+    if not str(tenant.get("work_end") or "").strip():
+        missing.append("work_end")
+    return missing
+
+
 def sync_tenant_onboarding_state(tenant_id: str) -> Dict[str, Any]:
     tenant = get_tenant_or_404(tenant_id)
     cols = tenants_columns()
     pk = tenants_pk(cols)
     col_names = {c["name"] for c in cols}
     google_connected = tenant_google_connected_effective(tenant)
-    calendar_selected = bool(str(tenant.get("calendar_id") or "").strip())
-    onboarding_completed = bool(google_connected and calendar_selected)
+    onboarding_completed = is_tenant_ready(tenant)
 
     sets = []
     params: Dict[str, Any] = {"tid": tenant_id}
@@ -4550,10 +4580,10 @@ def google_connect(tenant_id: str):
     tenant = get_tenant_or_404(tenant_id)
     tenant = sync_tenant_onboarding_state(tenant["_id"])
     if bool(tenant.get("onboarding_completed")):
-        return RedirectResponse(url=f"/dashboard?tenant_id={tenant['_id']}")
+        return RedirectResponse(url=f"/onboarding/done?tenant_id={tenant['_id']}")
     if tenant_google_connected_effective(tenant):
         if str(tenant.get("calendar_id") or "").strip():
-            return RedirectResponse(url=f"/dashboard?tenant_id={tenant['_id']}")
+            return RedirectResponse(url=f"/onboarding/done?tenant_id={tenant['_id']}")
         return RedirectResponse(url=f"/google/calendars/ui?tenant_id={tenant['_id']}")
     auth_url = build_google_oauth_url(tenant["_id"])
     return RedirectResponse(url=auth_url)
@@ -4599,7 +4629,7 @@ def google_callback(code: str = "", state: str = "", error: str = ""):
         select_tenant_calendar_id(tenant_id, chosen_calendar_id)
         tenant = sync_tenant_onboarding_state(tenant_id)
         if bool(tenant.get("onboarding_completed")):
-            return RedirectResponse(url=f"/dashboard?tenant_id={tenant_id}&google=connected&calendar=selected")
+            return RedirectResponse(url=f"/onboarding/done?tenant_id={tenant_id}&google=connected&calendar=selected")
 
     sync_tenant_onboarding_state(tenant_id)
     return RedirectResponse(url=f"/google/calendars/ui?tenant_id={tenant_id}&google=connected")
@@ -4707,7 +4737,7 @@ async function loadCalendars() {{
           return;
         }}
         document.getElementById('done').classList.remove('hidden');
-        window.location = '/dashboard?tenant_id=' + encodeURIComponent(tenantId);
+        window.location = ((payload.links && payload.links.onboarding_done_url) || ('/onboarding/done?tenant_id=' + encodeURIComponent(tenantId)));
       }};
       row.appendChild(left);
       row.appendChild(btn);
@@ -4929,6 +4959,7 @@ def onboarding_links_payload(tenant_id: str) -> Dict[str, str]:
         "onboarding_status_url": f"{base}/onboarding/status?tenant_id={tenant_id}",
         "google_connect_url": f"{base}/google/connect?tenant_id={tenant_id}",
         "google_calendars_ui_url": f"{base}/google/calendars/ui?tenant_id={tenant_id}",
+        "onboarding_done_url": f"{base}/onboarding/done?tenant_id={tenant_id}",
     }
 
 
@@ -4937,16 +4968,17 @@ def onboarding_status_payload(tenant: Dict[str, Any]) -> Dict[str, Any]:
     tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip()
     calendar_id = str(tenant.get("calendar_id") or "").strip()
     google_connected = tenant_google_connected_effective(tenant)
-    onboarding_completed = bool(tenant.get("onboarding_completed"))
     calendar_selected = bool(calendar_id)
+    onboarding_completed = is_tenant_ready(tenant)
     phone_number = normalize_incoming_to_number(tenant.get("phone_number") or "")
+    missing = tenant_ready_missing_fields(tenant)
 
     next_step = "create_tenant"
     if tenant_id:
         next_step = "connect_google"
     if google_connected:
         next_step = "select_calendar"
-    if google_connected and calendar_selected:
+    if google_connected and calendar_selected and not onboarding_completed:
         next_step = "finish"
     if onboarding_completed:
         next_step = "done"
@@ -4962,6 +4994,8 @@ def onboarding_status_payload(tenant: Dict[str, Any]) -> Dict[str, Any]:
         "onboarding_completed": onboarding_completed,
         "subscription_status": tenant.get("subscription_status"),
         "plan": tenant.get("plan"),
+        "missing": missing,
+        "is_ready": onboarding_completed,
         "next_step": next_step,
     }
 
@@ -4978,14 +5012,9 @@ def onboarding_finish(payload: dict = Body(...)):
     if not tenant_id:
         raise HTTPException(status_code=400, detail="tenant_id required")
 
-    tenant = get_tenant_or_404(tenant_id)
+    get_tenant_or_404(tenant_id)
     tenant = sync_tenant_onboarding_state(tenant_id)
-
-    missing = []
-    if not tenant_google_connected_effective(tenant):
-        missing.append("google_connected")
-    if not str(tenant.get("calendar_id") or "").strip():
-        missing.append("calendar_id")
+    missing = tenant_ready_missing_fields(tenant)
 
     if missing:
         return {
@@ -4993,18 +5022,82 @@ def onboarding_finish(payload: dict = Body(...)):
             "tenant_id": tenant_id,
             "missing": missing,
             "onboarding": onboarding_status_payload(tenant),
+            "links": onboarding_links_payload(tenant_id),
         }
 
-    tenant = sync_tenant_onboarding_state(tenant_id)
     return {
         "status": "ok",
         "tenant_id": tenant_id,
         "onboarding": onboarding_status_payload(tenant),
+        "links": onboarding_links_payload(tenant_id),
     }
+
+@app.get("/onboarding/done", response_class=HTMLResponse)
+def onboarding_done_ui(tenant_id: str):
+    tenant_id = (tenant_id or "").strip()
+    tenant = sync_tenant_onboarding_state(tenant_id)
+    status = onboarding_status_payload(tenant)
+    if not status.get("onboarding_completed"):
+        return RedirectResponse(url=f"/onboarding/ui?tenant_id={tenant_id}")
+    links = onboarding_links_payload(tenant_id)
+    biz_name = tenant.get("business_name") or tenant_id
+    phone_number = normalize_incoming_to_number(tenant.get("phone_number") or "") or "Not set"
+    html = f"""
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Repliq Bot Ready</title>
+<style>
+body {{ font-family: Arial, sans-serif; background:#f6f7fb; color:#111827; margin:0; padding:24px; }}
+.wrap {{ max-width: 900px; margin:0 auto; }}
+.card {{ background:#fff; border:1px solid #e5e7eb; border-radius:18px; padding:24px; box-shadow: 0 10px 28px rgba(15,23,42,.06); margin-bottom:16px; }}
+h1,h2 {{ margin:0 0 12px 0; }}
+p {{ margin:0; color:#4b5563; line-height:1.6; }}
+.kpis {{ display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap:12px; margin-top:16px; }}
+.kpi {{ background:#fafafa; border:1px solid #e5e7eb; border-radius:14px; padding:14px; }}
+.kpi .num {{ font-size:20px; font-weight:700; margin-top:6px; }}
+button {{ border:0; background:#111827; color:#fff; padding:12px 18px; border-radius:12px; cursor:pointer; font-size:14px; }}
+button.secondary {{ background:#fff; color:#111827; border:1px solid #d1d5db; }}
+.actions {{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:16px; }}
+.small {{ font-size:12px; color:#6b7280; }}
+.code {{ background:#f9fafb; border:1px solid #e5e7eb; border-radius:12px; padding:12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; overflow:auto; margin-top:12px; }}
+@media (max-width: 768px) {{ .kpis {{ grid-template-columns: 1fr; }} body {{ padding:16px; }} }}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <h1>🎉 Bot is ready</h1>
+    <p>Business <strong>{biz_name}</strong> finished onboarding. Google is connected, a working calendar is selected, and Repliq can now handle bookings for this tenant.</p>
+    <div class="kpis">
+      <div class="kpi"><div>Tenant ID</div><div class="num">{tenant_id}</div></div>
+      <div class="kpi"><div>Calendar</div><div class="num">{status.get('calendar_id') or '-'}</div></div>
+      <div class="kpi"><div>Phone</div><div class="num">{phone_number}</div></div>
+    </div>
+    <div class="actions">
+      <a href="{links['dashboard_url']}"><button>Open dashboard</button></a>
+      <a href="{links['config_ui_url']}"><button class="secondary">Tenant config</button></a>
+      <a href="{links['onboarding_status_url']}"><button class="secondary">Onboarding status</button></a>
+    </div>
+    <div class="small" style="margin-top:12px">Next steps: test one booking, connect the production phone route, then continue with tenant configuration.</div>
+    <div class="code">{json.dumps(status, ensure_ascii=False, indent=2)}</div>
+  </div>
+</div>
+</body>
+</html>
+    """
+    return HTMLResponse(content=html)
+
 
 @app.get("/onboarding/ui", response_class=HTMLResponse)
 def onboarding_ui(tenant_id: str = ""):
     tenant_id = (tenant_id or "").strip()
+    if tenant_id:
+        tenant = sync_tenant_onboarding_state(tenant_id)
+        if is_tenant_ready(tenant):
+            return RedirectResponse(url=f"/onboarding/done?tenant_id={tenant_id}")
     html = f"""
 <!doctype html>
 <html>
@@ -5887,11 +5980,12 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
     if new_phone:
         upsert_phone_route(new_phone, tenant_id)
 
-    updated = get_tenant(tenant_id)
+    updated = sync_tenant_onboarding_state(tenant_id)
     return {
         "status": "ok",
         "tenant": _jsonable_tenant_view(updated),
         "resolved_settings": tenant_settings(updated, get_lang(updated.get("language") or "lv")),
+        "onboarding": onboarding_status_payload(updated),
     }
 
 @app.get("/tenant/routes")
