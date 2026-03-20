@@ -3321,7 +3321,9 @@ def detect_time_bucket(text_: Optional[str]) -> Optional[str]:
         return None
     patterns = {
         "morning": [
-            "no rīta", "no rita", "rīt no rīta", "rit no rita", "šorīt", "sorit", "утром", "сегодня утром", "in the morning", "this morning", "morning"
+            "no rīta", "no rita", "rīt no rīta", "rit no rita", "šorīt", "sorit", "rīta", "rita",
+            "утром", "сегодня утром", "утра",
+            "in the morning", "this morning", "morning"
         ],
         "midday": [
             "pusdienlaikā", "pusdienlaika", "ap pusdienlaiku", "днём", "днем", "сегодня днем", "сегодня днём", "at noon", "noon", "midday"
@@ -3330,14 +3332,14 @@ def detect_time_bucket(text_: Optional[str]) -> Optional[str]:
             "pēcpusdienā", "pecpusdiena", "pecpusdienā", "šopēcpusdien", "sopecpusdien", "after lunch", "in the afternoon", "this afternoon", "afternoon", "днём", "днем", "после обеда"
         ],
         "evening": [
-            "vakarā", "vakara", "uz vakaru", "vakarpusē", "vakarpuse", "šovakar", "sovakar",
-            "вечером", "сегодня вечером", "к вечеру", "ближе к вечеру",
+            "vakarā", "vakara", "vakaru", "uz vakaru", "vakarpusē", "vakarpuse", "šovakar", "sovakar",
+            "вечером", "вечеру", "сегодня вечером", "к вечеру", "ближе к вечеру", "на вечер", "на вечернее время",
             "in the evening", "this evening", "later in the evening", "towards evening", "evening", "tonight",
             "pēc darba", "pec darba", "после работы", "after work"
         ],
     }
     for bucket, hints in patterns.items():
-        if any(h in src for h in hints):
+        if _contains_any_phrase(src, hints):
             return bucket
     return None
 
@@ -3346,9 +3348,13 @@ def parse_time_window(text_: Optional[str]) -> Optional[Tuple[int, int]]:
     if not src:
         return None
 
-    if any(h in src for h in ["pēc darba", "pec darba", "после работы", "after work"]):
+    if _contains_any_phrase(src, ["pēc darba", "pec darba", "после работы", "after work"]):
         return (17, 21)
-    if any(h in src for h in ["ближе к вечеру", "к вечеру", "uz vakaru", "vakarpusē", "vakarpuse", "towards evening", "later in the evening"]):
+    if _contains_any_phrase(src, [
+        "ближе к вечеру", "к вечеру", "на вечер", "на вечернее время",
+        "uz vakaru", "vakarpusē", "vakarpuse", "vakaru",
+        "towards evening", "later in the evening", "in the evening", "tonight"
+    ]):
         return (16, 21)
 
     bucket = detect_time_bucket(src)
@@ -4195,14 +4201,32 @@ def handle_user_text(
             c, pending = remember_booking_service(c, pending, service_item_current, lang)
             pending["awaiting_time_date_iso"] = base_date.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
             clear_offered_slots(pending)
-            day_slots = find_first_n_slots_for_day(
-                settings["calendar_id"],
-                base_date,
-                service_duration_min(get_service_item_by_key(service_catalog, c.get("service"))),
-                settings["work_start"],
-                settings["work_end"],
-                limit=3,
-                business_rules=settings.get("business_rules"),
+            stored_window = parse_time_window(msg) or pending_time_window_tuple(pending)
+            if stored_window:
+                pending["preferred_time_window"] = [stored_window[0], stored_window[1]]
+            service_item_for_slots = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
+            day_slots = (
+                find_first_n_slots_for_day_window(
+                    calendar_id=settings["calendar_id"],
+                    day_dt=base_date,
+                    duration_min=service_duration_min(service_item_for_slots),
+                    work_start=settings["work_start"],
+                    work_end=settings["work_end"],
+                    window_start_hour=stored_window[0],
+                    window_end_hour=stored_window[1],
+                    limit=3,
+                    business_rules=settings.get("business_rules"),
+                )
+                if calendar_ready and stored_window
+                else find_first_n_slots_for_day(
+                    settings["calendar_id"],
+                    base_date,
+                    service_duration_min(service_item_for_slots),
+                    settings["work_start"],
+                    settings["work_end"],
+                    limit=3,
+                    business_rules=settings.get("business_rules"),
+                )
             ) if calendar_ready else []
             c["state"] = STATE_AWAITING_TIME
             c["datetime_iso"] = None
