@@ -3268,7 +3268,7 @@ def soft_clarify_for_state(lang: str, c: Dict[str, Any], pending: Dict[str, Any]
 
 
 def next_weekday_date(target_weekday: int, base: Optional[date] = None) -> date:
-    base = base or today_local().date()
+    base = base or today_local()
     days_ahead = (target_weekday - base.weekday()) % 7
     if days_ahead == 0:
         days_ahead = 7
@@ -3291,19 +3291,20 @@ def parse_date_only_text(text_: Optional[str]) -> Optional[datetime]:
             pass
 
     base = today_local()
-    if any(k in src for k in ["parīt", "послезавтра", "day after tomorrow"]):
+
+    # Weekdays must win over relative substrings like "rīt" inside "rīta".
+    for wd, hints in WEEKDAY_HINTS.items():
+        if _contains_any_phrase(src, hints):
+            d = next_weekday_date(wd, base)
+            return datetime.combine(d, datetime.min.time(), tzinfo=TZ).replace(hour=9)
+
+    if _contains_any_phrase(src, ["parīt", "послезавтра", "day after tomorrow"]):
         return datetime.combine(base + timedelta(days=2), datetime.min.time(), tzinfo=TZ).replace(hour=9)
-    if any(k in src for k in ["rīt", "rit", "завтра", "tomorrow"]):
+    if _contains_any_phrase(src, ["rīt", "rit", "завтра", "tomorrow"]):
         return datetime.combine(base + timedelta(days=1), datetime.min.time(), tzinfo=TZ).replace(hour=9)
-    if any(k in src for k in ["šodien", "sodien", "šorīt", "sorit", "šovakar", "sovakar", "сегодня", "сегодня утром", "сегодня днем", "сегодня днём", "сегодня вечером", "today", "this morning", "this afternoon", "this evening", "tonight"]):
+    if _contains_any_phrase(src, ["šodien", "sodien", "šorīt", "sorit", "šovakar", "sovakar", "сегодня", "сегодня утром", "сегодня днем", "сегодня днём", "сегодня вечером", "today", "this morning", "this afternoon", "this evening", "tonight"]):
         return datetime.combine(base, datetime.min.time(), tzinfo=TZ).replace(hour=9)
 
-    for wd, hints in WEEKDAY_HINTS.items():
-        if any(h in src for h in hints):
-            d = next_weekday_date(wd, base)
-            if src.startswith("this ") and d > base + timedelta(days=7):
-                d = base + timedelta(days=(wd - base.weekday()) % 7)
-            return datetime.combine(d, datetime.min.time(), tzinfo=TZ).replace(hour=9)
     return None
 
 
