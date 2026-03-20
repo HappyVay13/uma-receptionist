@@ -5509,6 +5509,141 @@ def dashboard_recent_conversations(tenant_id: str, limit: int = 100) -> List[Dic
         })
     return items
 
+
+def dashboard_channel_breakdown(tenant_id: str) -> List[Dict[str, Any]]:
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT COALESCE(channel, 'unknown') AS channel, COUNT(*) AS total
+                FROM call_logs
+                WHERE tenant_id=:tenant_id
+                GROUP BY COALESCE(channel, 'unknown')
+                ORDER BY total DESC, channel ASC
+                """
+            ),
+            {"tenant_id": tenant_id},
+        ).fetchall()
+    return [{"channel": str(r[0] or 'unknown'), "count": int(r[1] or 0)} for r in rows]
+
+
+def dashboard_top_services(tenant_id: str, limit: int = 5) -> List[Dict[str, Any]]:
+    limit = max(1, min(int(limit or 5), 20))
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT COALESCE(NULLIF(TRIM(service), ''), 'unknown') AS service, COUNT(*) AS total
+                FROM call_logs
+                WHERE tenant_id=:tenant_id
+                  AND status='booked'
+                GROUP BY COALESCE(NULLIF(TRIM(service), ''), 'unknown')
+                ORDER BY total DESC, service ASC
+                LIMIT :limit
+                """
+            ),
+            {"tenant_id": tenant_id, "limit": limit},
+        ).fetchall()
+    return [{"service": str(r[0] or 'unknown'), "count": int(r[1] or 0)} for r in rows]
+
+
+def dashboard_daily_usage(tenant_id: str, days: int = 14) -> List[Dict[str, Any]]:
+    days = max(1, min(int(days or 14), 60))
+    start_date = today_local() - timedelta(days=days - 1)
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT DATE(created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Riga') AS d,
+                       COUNT(*) AS total_requests,
+                       COUNT(*) FILTER (WHERE status='booked') AS total_bookings,
+                       COUNT(*) FILTER (WHERE status='cancelled') AS total_cancelled
+                FROM call_logs
+                WHERE tenant_id=:tenant_id
+                  AND created_at >= :start_ts
+                GROUP BY DATE(created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Riga')
+                ORDER BY d ASC
+                """
+            ),
+            {"tenant_id": tenant_id, "start_ts": datetime.combine(start_date, datetime.min.time(), tzinfo=TZ)},
+        ).fetchall()
+    by_day = {}
+    for r in rows:
+        key = r[0].isoformat() if hasattr(r[0], 'isoformat') else str(r[0])
+        by_day[key] = {
+            "date": key,
+            "requests": int(r[1] or 0),
+            "bookings": int(r[2] or 0),
+            "cancelled": int(r[3] or 0),
+        }
+    out = []
+    for i in range(days):
+        d = start_date + timedelta(days=i)
+        key = d.isoformat()
+        out.append(by_day.get(key, {"date": key, "requests": 0, "bookings": 0, "cancelled": 0}))
+    return out
+
+
+def dashboard_usage_summary(tenant_id: str, days: int = 14) -> Dict[str, Any]:
+    days = max(1, min(int(days or 14), 60))
+    since_ts = now_ts() - timedelta(days=days)
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT
+                    COUNT(*) AS total_requests,
+                    COUNT(*) FILTER (WHERE status='booked') AS total_bookings,
+                    COUNT(*) FILTER (WHERE status='cancelled') AS total_cancelled,
+                    COUNT(*) FILTER (WHERE intent='reschedule') AS total_reschedules,
+                    COUNT(DISTINCT COALESCE(user_id, 'unknown')) AS unique_users
+                FROM call_logs
+                WHERE tenant_id=:tenant_id
+                  AND created_at >= :since_ts
+                """
+            ),
+            {"tenant_id": tenant_id, "since_ts": since_ts},
+        ).fetchone()
+    total_requests = int((row[0] if row else 0) or 0)
+    total_bookings = int((row[1] if row else 0) or 0)
+    total_cancelled = int((row[2] if row else 0) or 0)
+    total_reschedules = int((row[3] if row else 0) or 0)
+    unique_users = int((row[4] if row else 0) or 0)
+    booking_rate = round((float(total_bookings) / float(total_requests) * 100.0), 1) if total_requests else 0.0
+    return {
+        "tenant_id": tenant_id,
+        "window_days": days,
+        "total_requests": total_requests,
+        "total_bookings": total_bookings,
+        "total_cancelled": total_cancelled,
+        "total_reschedules": total_reschedules,
+        "unique_users": unique_users,
+        "booking_rate": booking_rate,
+        "channels": dashboard_channel_breakdown(tenant_id),
+        "top_services": dashboard_top_services(tenant_id, limit=5),
+        "daily": dashboard_daily_usage(tenant_id, days=days),
+    }
+
+
+def dashboard_tenant_activity(tenant_id: str, limit: int = 25) -> List[Dict[str, Any]]:
+    limit = max(1, min(int(limit or 25), 100))
+    items = dashboard_recent_conversations(tenant_id, limit=limit)
+    out = []
+    for item in items:
+        out.append({
+            "id": item.get("id"),
+            "type": item.get("intent") or item.get("status") or "activity",
+            "channel": item.get("channel") or "unknown",
+            "status": item.get("status") or "unknown",
+            "service": item.get("service"),
+            "user_id": item.get("user_id"),
+            "message": item.get("user_message"),
+            "reply": item.get("ai_reply"),
+            "created_at": item.get("created_at"),
+        })
+    return out
+
+
 def dashboard_analytics(tenant_id: str) -> Dict[str, Any]:
     today_start = datetime.combine(today_local(), datetime.min.time(), tzinfo=TZ)
     with engine.connect() as conn:
@@ -5560,6 +5695,25 @@ def dashboard_analytics_endpoint(tenant_id: str = TENANT_ID_DEFAULT):
         raise HTTPException(status_code=404, detail='Tenant not found')
     return dashboard_analytics(tenant.get('_id'))
 
+@app.get("/dashboard/usage")
+@app.get("/usage")
+def dashboard_usage_endpoint(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    tenant = get_tenant((tenant_id or '').strip() or TENANT_ID_DEFAULT)
+    if not tenant.get('_id'):
+        raise HTTPException(status_code=404, detail='Tenant not found')
+    return dashboard_usage_summary(tenant.get('_id'), days=days)
+
+@app.get("/dashboard/activity")
+@app.get("/activity")
+def dashboard_activity_endpoint(tenant_id: str = TENANT_ID_DEFAULT, limit: int = 25):
+    tenant = get_tenant((tenant_id or '').strip() or TENANT_ID_DEFAULT)
+    if not tenant.get('_id'):
+        raise HTTPException(status_code=404, detail='Tenant not found')
+    return {
+        "tenant_id": tenant.get('_id'),
+        "items": dashboard_tenant_activity(tenant.get('_id'), limit=limit),
+    }
+
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
     tenant_id = (tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
@@ -5595,12 +5749,18 @@ def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
         <input id="tenant" value="{tenant_id}" placeholder="tenant_id" />
         <button onclick="loadAll()">Refresh</button>
       </div>
-      <div class="muted">JSON endpoints: <a id="lnk_analytics" href="#">analytics</a> · <a id="lnk_bookings" href="#">bookings</a> · <a id="lnk_conversations" href="#">conversations</a> · <a id="lnk_tenant" href="#">tenant config</a> · <a id="lnk_onboarding" href="/onboarding/ui">create business</a></div>
+      <div class="muted">JSON endpoints: <a id="lnk_analytics" href="#">analytics</a> · <a id="lnk_usage" href="#">usage</a> · <a id="lnk_activity" href="#">activity</a> · <a id="lnk_bookings" href="#">bookings</a> · <a id="lnk_conversations" href="#">conversations</a> · <a id="lnk_tenant" href="#">tenant config</a> · <a id="lnk_onboarding" href="/onboarding/ui">create business</a></div>
       <div class="metrics">
         <div class="card"><div>Total requests</div><div id="m_requests" class="num">-</div></div>
         <div class="card"><div>Total bookings</div><div id="m_bookings" class="num">-</div></div>
         <div class="card"><div>Conversion</div><div id="m_conv" class="num">-</div></div>
         <div class="card"><div>Today bookings</div><div id="m_today" class="num">-</div></div>
+      </div>
+      <div class="metrics" style="margin-top:12px;">
+        <div class="card"><div>14d unique users</div><div id="m_users" class="num">-</div></div>
+        <div class="card"><div>14d reschedules</div><div id="m_reschedules" class="num">-</div></div>
+        <div class="card"><div>14d cancelled</div><div id="m_cancelled" class="num">-</div></div>
+        <div class="card"><div>Main channel</div><div id="m_channel" class="num" style="font-size:20px">-</div></div>
       </div>
     </div>
 
@@ -5608,6 +5768,22 @@ def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
       <h3 class="section-title">Recent bookings</h3>
       <table id="bookings_tbl">
         <thead><tr><th>User</th><th>Service</th><th>Date/Time</th><th>Status</th><th>Created</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div class="panel">
+      <h3 class="section-title">Top services (last 14 days)</h3>
+      <table id="services_tbl">
+        <thead><tr><th>Service</th><th>Bookings</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div class="panel">
+      <h3 class="section-title">Recent activity</h3>
+      <table id="activity_tbl">
+        <thead><tr><th>Time</th><th>Type</th><th>Channel</th><th>User</th><th>Message</th><th>Status</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -5623,8 +5799,10 @@ def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
 <script>
 async function loadAll() {{
   const tenant = document.getElementById('tenant').value.trim() || 'default';
-  const [a,b,c] = await Promise.all([
+  const [a,u,act,b,c] = await Promise.all([
     fetch(`/dashboard/analytics?tenant_id=${{encodeURIComponent(tenant)}}`).then(r => r.json()),
+    fetch(`/dashboard/usage?tenant_id=${{encodeURIComponent(tenant)}}&days=14`).then(r => r.json()),
+    fetch(`/dashboard/activity?tenant_id=${{encodeURIComponent(tenant)}}&limit=20`).then(r => r.json()),
     fetch(`/dashboard/bookings?tenant_id=${{encodeURIComponent(tenant)}}&limit=20`).then(r => r.json()),
     fetch(`/dashboard/conversations?tenant_id=${{encodeURIComponent(tenant)}}&limit=20`).then(r => r.json())
   ]);
@@ -5638,6 +5816,11 @@ async function loadAll() {{
   document.getElementById('m_bookings').textContent = a.total_bookings ?? '-';
   document.getElementById('m_conv').textContent = (a.conversion_rate ?? 0) + '%';
   document.getElementById('m_today').textContent = a.today_bookings ?? '-';
+  document.getElementById('m_users').textContent = u.unique_users ?? '-';
+  document.getElementById('m_reschedules').textContent = u.total_reschedules ?? '-';
+  document.getElementById('m_cancelled').textContent = u.total_cancelled ?? '-';
+  const topChannel = ((u.channels || [])[0] || {{}}).channel || '-';
+  document.getElementById('m_channel').textContent = topChannel;
 
   const bt = document.querySelector('#bookings_tbl tbody');
   bt.innerHTML='';
@@ -5645,6 +5828,22 @@ async function loadAll() {{
     const tr = document.createElement('tr');
     tr.innerHTML = `<td>${{item.client_name || item.user_id || ''}}</td><td>${{item.service || ''}}</td><td>${{item.datetime_iso || ''}}</td><td>${{item.status || ''}}</td><td><span class="muted">${{item.created_at || ''}}</span></td>`;
     bt.appendChild(tr);
+  }});
+
+  const st = document.querySelector('#services_tbl tbody');
+  st.innerHTML='';
+  (u.top_services || []).forEach(item => {{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${{item.service || ''}}</td><td>${{item.count ?? 0}}</td>`;
+    st.appendChild(tr);
+  }});
+
+  const at = document.querySelector('#activity_tbl tbody');
+  at.innerHTML='';
+  (act.items || []).forEach(item => {{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td><span class="muted">${{item.created_at || ''}}</span></td><td>${{item.type || ''}}</td><td>${{item.channel || ''}}</td><td>${{item.user_id || ''}}</td><td>${{item.message || ''}}</td><td>${{item.status || ''}}</td>`;
+    at.appendChild(tr);
   }});
 
   const ct = document.querySelector('#conv_tbl tbody');
