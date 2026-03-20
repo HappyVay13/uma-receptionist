@@ -3025,6 +3025,19 @@ def delete_calendar_event(calendar_id: str, event_id: str):
 # -------------------------
 # DATE PARSING Fallbacks
 # -------------------------
+def _phrase_in_text(src: str, phrase: str) -> bool:
+    src = (src or "").lower().strip()
+    phrase = (phrase or "").lower().strip()
+    if not src or not phrase:
+        return False
+    pattern = r"(?<![\wĀ-žА-Яа-яЁё])" + re.escape(phrase) + r"(?![\wĀ-žА-Яа-яЁё])"
+    return re.search(pattern, src, flags=re.IGNORECASE | re.UNICODE) is not None
+
+
+def _contains_any_phrase(src: str, phrases: List[str]) -> bool:
+    return any(_phrase_in_text(src, p) for p in (phrases or []))
+
+
 def parse_time_text_to_dt(text_: str) -> Optional[datetime]:
     src = (text_ or "")
     m = re.search(r"\b([01]?\d|2[0-3])[:. ]([0-5]\d)\b", src.lower())
@@ -3034,9 +3047,9 @@ def parse_time_text_to_dt(text_: str) -> Optional[datetime]:
     base = today_local()
     t_low = src.lower()
 
-    if any(k in t_low for k in ["parīt", "послезавтра", "day after tomorrow"]):
+    if _contains_any_phrase(t_low, ["parīt", "послезавтра", "day after tomorrow"]):
         base += timedelta(days=2)
-    elif any(k in t_low for k in ["rīt", "rit", "завтра", "tomorrow"]):
+    elif _contains_any_phrase(t_low, ["rīt", "rit", "завтра", "tomorrow"]):
         base += timedelta(days=1)
 
     dm = re.search(r"\b(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?\b", src)
@@ -3103,10 +3116,10 @@ def has_date_reference(text_: Optional[str]) -> bool:
         "tomorrow", "day after tomorrow", "today", "this morning", "this afternoon", "this evening", "tonight",
         "next monday", "next tuesday", "next wednesday", "next thursday", "next friday", "next saturday", "next sunday",
     ]
-    if any(k in src for k in keywords):
+    if _contains_any_phrase(src, keywords):
         return True
     for hints in WEEKDAY_HINTS.values():
-        if any(h in src for h in hints):
+        if _contains_any_phrase(src, hints):
             return True
     return False
 
@@ -3139,13 +3152,13 @@ ACTIVE_BOOKING_STATES = {
 }
 
 WEEKDAY_HINTS = {
-    0: ["monday", "mondays", "monday's", "next monday", "понедельник", "понедельника", "в понедельник", "на понедельник", "pirmdien", "pirmdiena", "pirmdienas", "uz pirmdienu", "pirmdien vakarā", "pirmdienas vakarā", "pirmdien vakara", "pirmdienas vakara"],
-    1: ["tuesday", "tuesdays", "tuesday's", "next tuesday", "вторник", "вторника", "во вторник", "на вторник", "otrdien", "otrdiena", "otrdienas", "uz otrdienu", "otrdien vakarā", "otrdienas vakarā", "otrdien vakara", "otrdienas vakara"],
-    2: ["wednesday", "wednesdays", "wednesday's", "next wednesday", "среда", "среду", "среды", "в среду", "на среду", "trešdien", "tresdien", "trešdiena", "tresdiena", "trešdienas", "tresdienas", "uz trešdienu", "uz tresdienu", "trešdien vakarā", "tresdien vakarā", "trešdienas vakarā", "tresdienas vakarā", "trešdien vakara", "tresdien vakara"],
-    3: ["thursday", "thursdays", "thursday's", "next thursday", "четверг", "четверга", "в четверг", "на четверг", "ceturtdien", "ceturtdiena", "ceturtdienas", "uz ceturtdienu", "ceturtdien vakarā", "ceturtdienas vakarā", "ceturtdien vakara"],
-    4: ["friday", "fridays", "friday's", "next friday", "пятница", "пятницу", "пятницы", "в пятницу", "на пятницу", "piektdien", "piektdiena", "piektdienas", "uz piektdienu", "piektdien vakarā", "piektdienas vakarā", "piektdien vakara"],
-    5: ["saturday", "saturdays", "saturday's", "next saturday", "суббота", "субботу", "субботы", "в субботу", "на субботу", "sestdien", "sestdiena", "sestdienas", "uz sestdienu", "sestdien vakarā", "sestdienas vakarā", "sestdien vakara"],
-    6: ["sunday", "sundays", "sunday's", "next sunday", "воскресенье", "воскресенья", "в воскресенье", "на воскресенье", "svētdien", "svetdien", "svētdiena", "svetdiena", "svētdienas", "svetdienas", "uz svētdienu", "uz svetdienu", "svētdien vakarā", "svetdien vakarā", "svētdienas vakarā", "svetdienas vakarā", "svētdien vakara", "svetdien vakara"],
+    0: ["monday", "mondays", "monday's", "next monday", "понедельник", "понедельника", "в понедельник", "на понедельник", "pirmdien", "pirmdiena", "pirmdienas", "uz pirmdienu", "pirmdien vakarā", "pirmdienas vakarā", "pirmdien vakara", "pirmdienas vakara", "pirmdienu"],
+    1: ["tuesday", "tuesdays", "tuesday's", "next tuesday", "вторник", "вторника", "во вторник", "на вторник", "otrdien", "otrdiena", "otrdienas", "uz otrdienu", "otrdien vakarā", "otrdienas vakarā", "otrdien vakara", "otrdienas vakara", "otrdienu"],
+    2: ["wednesday", "wednesdays", "wednesday's", "next wednesday", "среда", "среду", "среды", "в среду", "на среду", "trešdien", "tresdien", "trešdiena", "tresdiena", "trešdienas", "tresdienas", "uz trešdienu", "uz tresdienu", "trešdien vakarā", "tresdien vakarā", "trešdienas vakarā", "tresdienas vakarā", "trešdien vakara", "tresdien vakara", "trešdienu", "tresdienu"],
+    3: ["thursday", "thursdays", "thursday's", "next thursday", "четверг", "четверга", "в четверг", "на четверг", "ceturtdien", "ceturtdiena", "ceturtdienas", "uz ceturtdienu", "ceturtdien vakarā", "ceturtdienas vakarā", "ceturtdien vakara", "ceturtdienu"],
+    4: ["friday", "fridays", "friday's", "next friday", "пятница", "пятницу", "пятницы", "в пятницу", "на пятницу", "piektdien", "piektdiena", "piektdienas", "uz piektdienu", "piektdien vakarā", "piektdienas vakarā", "piektdien vakara", "piektdienu"],
+    5: ["saturday", "saturdays", "saturday's", "next saturday", "суббота", "субботу", "субботы", "в субботу", "на субботу", "sestdien", "sestdiena", "sestdienas", "uz sestdienu", "sestdien vakarā", "sestdienas vakarā", "sestdien vakara", "sestdienu"],
+    6: ["sunday", "sundays", "sunday's", "next sunday", "воскресенье", "воскресенья", "в воскресенье", "на воскресенье", "svētdien", "svetdien", "svētdiena", "svetdiena", "svētdienas", "svetdienas", "uz svētdienu", "uz svetdienu", "svētdien vakarā", "svetdien vakarā", "svētdienas vakarā", "svetdienas vakarā", "svētdien vakara", "svetdien vakara", "svētdienu", "svetdienu"],
 }
 
 YES_WORDS = {
@@ -3307,7 +3320,7 @@ def detect_time_bucket(text_: Optional[str]) -> Optional[str]:
         return None
     patterns = {
         "morning": [
-            "no rīta", "no rita", "rīt no rīta", "rit no rita", "šorīt", "sorit", "rīta", "rita", "утром", "сегодня утром", "утра", "in the morning", "this morning", "morning"
+            "no rīta", "no rita", "rīt no rīta", "rit no rita", "šorīt", "sorit", "утром", "сегодня утром", "in the morning", "this morning", "morning"
         ],
         "midday": [
             "pusdienlaikā", "pusdienlaika", "ap pusdienlaiku", "днём", "днем", "сегодня днем", "сегодня днём", "at noon", "noon", "midday"
@@ -3316,9 +3329,9 @@ def detect_time_bucket(text_: Optional[str]) -> Optional[str]:
             "pēcpusdienā", "pecpusdiena", "pecpusdienā", "šopēcpusdien", "sopecpusdien", "after lunch", "in the afternoon", "this afternoon", "afternoon", "днём", "днем", "после обеда"
         ],
         "evening": [
-            "vakarā", "vakara", "vakaru", "uz vakaru", "vakarpusē", "vakarpuse", "šovakar", "sovakar",
-            "вечером", "вечеру", "сегодня вечером", "к вечеру", "ближе к вечеру", "на вечер", "на вечернее время",
-            "in the evening", "this evening", "later in the evening", "towards evening", "evening", "tonight", "monday evening", "tuesday evening", "wednesday evening", "thursday evening", "friday evening", "saturday evening", "sunday evening",
+            "vakarā", "vakara", "uz vakaru", "vakarpusē", "vakarpuse", "šovakar", "sovakar",
+            "вечером", "сегодня вечером", "к вечеру", "ближе к вечеру",
+            "in the evening", "this evening", "later in the evening", "towards evening", "evening", "tonight",
             "pēc darba", "pec darba", "после работы", "after work"
         ],
     }
@@ -3334,7 +3347,7 @@ def parse_time_window(text_: Optional[str]) -> Optional[Tuple[int, int]]:
 
     if any(h in src for h in ["pēc darba", "pec darba", "после работы", "after work"]):
         return (17, 21)
-    if any(h in src for h in ["ближе к вечеру", "к вечеру", "на вечер", "uz vakaru", "vakarpusē", "vakarpuse", "vakaru", "towards evening", "later in the evening", "in the evening", "tonight"]):
+    if any(h in src for h in ["ближе к вечеру", "к вечеру", "uz vakaru", "vakarpusē", "vakarpuse", "towards evening", "later in the evening"]):
         return (16, 21)
 
     bucket = detect_time_bucket(src)
@@ -4181,30 +4194,15 @@ def handle_user_text(
             c, pending = remember_booking_service(c, pending, service_item_current, lang)
             pending["awaiting_time_date_iso"] = base_date.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
             clear_offered_slots(pending)
-            stored_window = pending_time_window_tuple(pending)
-            current_service_item = get_service_item_by_key(service_catalog, c.get("service"))
-            if calendar_ready and stored_window:
-                day_slots = find_first_n_slots_for_day_window(
-                    calendar_id=settings["calendar_id"],
-                    day_dt=base_date,
-                    duration_min=service_duration_min(current_service_item),
-                    work_start=settings["work_start"],
-                    work_end=settings["work_end"],
-                    window_start_hour=stored_window[0],
-                    window_end_hour=stored_window[1],
-                    limit=3,
-                    business_rules=settings.get("business_rules"),
-                )
-            else:
-                day_slots = find_first_n_slots_for_day(
-                    settings["calendar_id"],
-                    base_date,
-                    service_duration_min(current_service_item),
-                    settings["work_start"],
-                    settings["work_end"],
-                    limit=3,
-                    business_rules=settings.get("business_rules"),
-                ) if calendar_ready else []
+            day_slots = find_first_n_slots_for_day(
+                settings["calendar_id"],
+                base_date,
+                service_duration_min(get_service_item_by_key(service_catalog, c.get("service"))),
+                settings["work_start"],
+                settings["work_end"],
+                limit=3,
+                business_rules=settings.get("business_rules"),
+            ) if calendar_ready else []
             c["state"] = STATE_AWAITING_TIME
             c["datetime_iso"] = None
             if is_holiday_for_rules(base_date, settings.get("business_rules")):
