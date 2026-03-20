@@ -3268,7 +3268,7 @@ def soft_clarify_for_state(lang: str, c: Dict[str, Any], pending: Dict[str, Any]
 
 
 def next_weekday_date(target_weekday: int, base: Optional[date] = None) -> date:
-    base = base or today_local()
+    base = base or today_local().date()
     days_ahead = (target_weekday - base.weekday()) % 7
     if days_ahead == 0:
         days_ahead = 7
