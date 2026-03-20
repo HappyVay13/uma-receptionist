@@ -5510,7 +5510,9 @@ def dashboard_recent_conversations(tenant_id: str, limit: int = 100) -> List[Dic
     return items
 
 
-def dashboard_channel_breakdown(tenant_id: str) -> List[Dict[str, Any]]:
+def dashboard_channel_breakdown(tenant_id: str, days: int = 14) -> List[Dict[str, Any]]:
+    days = max(1, min(int(days or 14), 60))
+    since_ts = now_ts() - timedelta(days=days)
     with engine.connect() as conn:
         rows = conn.execute(
             text(
@@ -5518,17 +5520,20 @@ def dashboard_channel_breakdown(tenant_id: str) -> List[Dict[str, Any]]:
                 SELECT COALESCE(channel, 'unknown') AS channel, COUNT(*) AS total
                 FROM call_logs
                 WHERE tenant_id=:tenant_id
+                  AND created_at >= :since_ts
                 GROUP BY COALESCE(channel, 'unknown')
                 ORDER BY total DESC, channel ASC
                 """
             ),
-            {"tenant_id": tenant_id},
+            {"tenant_id": tenant_id, "since_ts": since_ts},
         ).fetchall()
     return [{"channel": str(r[0] or 'unknown'), "count": int(r[1] or 0)} for r in rows]
 
 
-def dashboard_top_services(tenant_id: str, limit: int = 5) -> List[Dict[str, Any]]:
+def dashboard_top_services(tenant_id: str, limit: int = 5, days: int = 14) -> List[Dict[str, Any]]:
     limit = max(1, min(int(limit or 5), 20))
+    days = max(1, min(int(days or 14), 60))
+    since_ts = now_ts() - timedelta(days=days)
     with engine.connect() as conn:
         rows = conn.execute(
             text(
@@ -5537,12 +5542,13 @@ def dashboard_top_services(tenant_id: str, limit: int = 5) -> List[Dict[str, Any
                 FROM call_logs
                 WHERE tenant_id=:tenant_id
                   AND status='booked'
+                  AND created_at >= :since_ts
                 GROUP BY COALESCE(NULLIF(TRIM(service), ''), 'unknown')
                 ORDER BY total DESC, service ASC
                 LIMIT :limit
                 """
             ),
-            {"tenant_id": tenant_id, "limit": limit},
+            {"tenant_id": tenant_id, "limit": limit, "since_ts": since_ts},
         ).fetchall()
     return [{"service": str(r[0] or 'unknown'), "count": int(r[1] or 0)} for r in rows]
 
@@ -5619,8 +5625,8 @@ def dashboard_usage_summary(tenant_id: str, days: int = 14) -> Dict[str, Any]:
         "total_reschedules": total_reschedules,
         "unique_users": unique_users,
         "booking_rate": booking_rate,
-        "channels": dashboard_channel_breakdown(tenant_id),
-        "top_services": dashboard_top_services(tenant_id, limit=5),
+        "channels": dashboard_channel_breakdown(tenant_id, days=days),
+        "top_services": dashboard_top_services(tenant_id, limit=5, days=days),
         "daily": dashboard_daily_usage(tenant_id, days=days),
     }
 
@@ -5714,6 +5720,21 @@ def dashboard_activity_endpoint(tenant_id: str = TENANT_ID_DEFAULT, limit: int =
         "items": dashboard_tenant_activity(tenant.get('_id'), limit=limit),
     }
 
+@app.get("/dashboard/chart-data")
+@app.get("/chart-data")
+def dashboard_chart_data_endpoint(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    tenant = get_tenant((tenant_id or '').strip() or TENANT_ID_DEFAULT)
+    if not tenant.get('_id'):
+        raise HTTPException(status_code=404, detail='Tenant not found')
+    usage = dashboard_usage_summary(tenant.get('_id'), days=days)
+    return {
+        "tenant_id": tenant.get('_id'),
+        "window_days": usage.get("window_days", days),
+        "daily": usage.get("daily", []),
+        "channels": usage.get("channels", []),
+        "top_services": usage.get("top_services", []),
+    }
+
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
     tenant_id = (tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
@@ -5724,9 +5745,10 @@ def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Repliq Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
     body {{ font-family: Arial, sans-serif; margin: 0; background: #f6f7fb; color: #111827; }}
-    .wrap {{ max-width: 1280px; margin: 0 auto; padding: 20px; }}
+    .wrap {{ max-width: 1320px; margin: 0 auto; padding: 20px; }}
     .panel {{ background: white; border-radius: 16px; box-shadow: 0 8px 24px rgba(0,0,0,0.08); padding: 16px; margin-bottom: 16px; }}
     .top {{ display:flex; gap:12px; align-items:center; margin-bottom:16px; flex-wrap:wrap; }}
     input, button, select {{ font: inherit; }}
@@ -5743,11 +5765,16 @@ def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
     .muted {{ color:#6b7280; font-size:12px; }}
     .section-title {{ margin:0 0 12px 0; }}
     .grid-2 {{ display:grid; grid-template-columns: 1.15fr .85fr; gap:16px; }}
+    .grid-3 {{ display:grid; grid-template-columns: 1.3fr .85fr .85fr; gap:16px; }}
     .toolbar-label {{ font-size:12px; color:#6b7280; margin-bottom:4px; display:block; }}
     .empty {{ color:#9ca3af; font-style:italic; padding: 8px 0; }}
-    @media (max-width: 980px) {{
-      .metrics {{ grid-template-columns: repeat(2, minmax(0,1fr)); }}
+    .chart-wrap {{ height: 280px; }}
+    .mini-chart-wrap {{ height: 240px; }}
+    .badge {{ display:inline-block; font-size:12px; color:#374151; background:#f3f4f6; border:1px solid #e5e7eb; padding:6px 10px; border-radius:999px; }}
+    @media (max-width: 1120px) {{
+      .grid-3 {{ grid-template-columns: 1fr; }}
       .grid-2 {{ grid-template-columns: 1fr; }}
+      .metrics {{ grid-template-columns: repeat(2, minmax(0,1fr)); }}
     }}
   </style>
 </head>
@@ -5780,18 +5807,48 @@ def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
           <button class="secondary" onclick="window.location='/tenant/config/ui?tenant_id='+encodeURIComponent(document.getElementById('tenant').value.trim() || 'default')">Open tenant config</button>
         </div>
       </div>
-      <div class="muted">JSON endpoints: <a id="lnk_analytics" href="#">analytics</a> · <a id="lnk_usage" href="#">usage</a> · <a id="lnk_activity" href="#">activity</a> · <a id="lnk_bookings" href="#">bookings</a> · <a id="lnk_conversations" href="#">conversations</a> · <a id="lnk_tenant" href="#">tenant config</a> · <a id="lnk_tenant_ui" href="#">tenant config ui</a> · <a id="lnk_onboarding" href="/onboarding/ui">create business</a></div>
+      <div class="muted">JSON endpoints:
+        <a id="lnk_analytics" href="#">analytics</a> ·
+        <a id="lnk_usage" href="#">usage</a> ·
+        <a id="lnk_activity" href="#">activity</a> ·
+        <a id="lnk_chart_data" href="#">chart data</a> ·
+        <a id="lnk_bookings" href="#">bookings</a> ·
+        <a id="lnk_conversations" href="#">conversations</a> ·
+        <a id="lnk_tenant" href="#">tenant config</a> ·
+        <a id="lnk_tenant_ui" href="#">tenant config ui</a> ·
+        <a id="lnk_onboarding" href="/onboarding/ui">create business</a>
+      </div>
       <div class="metrics" style="margin-top:16px;">
-        <div class="card"><div>Total requests</div><div id="m_requests" class="num">-</div></div>
-        <div class="card"><div>Total bookings</div><div id="m_bookings" class="num">-</div></div>
-        <div class="card"><div>Conversion</div><div id="m_conv" class="num">-</div></div>
-        <div class="card"><div>Today bookings</div><div id="m_today" class="num">-</div></div>
+        <div class="card"><div>Total requests</div><div id="m_requests" class="num">-</div><div class="sub">All-time requests</div></div>
+        <div class="card"><div>Total bookings</div><div id="m_bookings" class="num">-</div><div class="sub">All-time successful bookings</div></div>
+        <div class="card"><div>Conversion</div><div id="m_conv" class="num">-</div><div class="sub">All-time booking rate</div></div>
+        <div class="card"><div>Today bookings</div><div id="m_today" class="num">-</div><div class="sub">Booked today</div></div>
       </div>
       <div class="metrics" style="margin-top:12px;">
-        <div class="card"><div>Window unique users</div><div id="m_users" class="num">-</div></div>
-        <div class="card"><div>Window reschedules</div><div id="m_reschedules" class="num">-</div></div>
-        <div class="card"><div>Window cancelled</div><div id="m_cancelled" class="num">-</div></div>
+        <div class="card"><div>Window unique users</div><div id="m_users" class="num">-</div><div class="sub">Distinct users in selected window</div></div>
+        <div class="card"><div>Window reschedules</div><div id="m_reschedules" class="num">-</div><div class="sub">Intent=reschedule in selected window</div></div>
+        <div class="card"><div>Window cancelled</div><div id="m_cancelled" class="num">-</div><div class="sub">Cancelled in selected window</div></div>
         <div class="card"><div>Main channel</div><div id="m_channel" class="num" style="font-size:20px">-</div><div id="m_channel_sub" class="sub"></div></div>
+      </div>
+    </div>
+
+    <div class="grid-3">
+      <div class="panel">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <h3 class="section-title">Usage trend</h3>
+          <span class="badge" id="usage_badge">Selected window</span>
+        </div>
+        <div class="chart-wrap"><canvas id="trend_chart"></canvas></div>
+      </div>
+
+      <div class="panel">
+        <h3 class="section-title">Channel mix</h3>
+        <div class="mini-chart-wrap"><canvas id="channel_chart"></canvas></div>
+      </div>
+
+      <div class="panel">
+        <h3 class="section-title">Top services</h3>
+        <div class="mini-chart-wrap"><canvas id="services_chart"></canvas></div>
       </div>
     </div>
 
@@ -5805,7 +5862,7 @@ def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
       </div>
 
       <div class="panel">
-        <h3 class="section-title">Top services</h3>
+        <h3 class="section-title">Top services (table)</h3>
         <table id="services_tbl">
           <thead><tr><th>Service</th><th>Bookings</th></tr></thead>
           <tbody></tbody>
@@ -5823,7 +5880,7 @@ def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
       </div>
 
       <div class="panel">
-        <h3 class="section-title">Daily usage</h3>
+        <h3 class="section-title">Daily usage (table)</h3>
         <table id="daily_tbl">
           <thead><tr><th>Date</th><th>Requests</th><th>Bookings</th><th>Cancelled</th></tr></thead>
           <tbody></tbody>
@@ -5840,6 +5897,10 @@ def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
     </div>
   </div>
 <script>
+let trendChart = null;
+let channelChart = null;
+let servicesChart = null;
+
 function esc(v) {{
   if (v === null || v === undefined) return '';
   return String(v)
@@ -5860,27 +5921,92 @@ async function fetchJson(url) {{
   }}
   return r.json();
 }}
+function destroyIf(chartObj) {{
+  if (chartObj) chartObj.destroy();
+}}
+function renderTrendChart(daily) {{
+  const ctx = document.getElementById('trend_chart').getContext('2d');
+  destroyIf(trendChart);
+  trendChart = new Chart(ctx, {{
+    type: 'line',
+    data: {{
+      labels: (daily || []).map(x => x.date || ''),
+      datasets: [
+        {{ label: 'Requests', data: (daily || []).map(x => x.requests || 0), borderWidth: 2, tension: 0.3 }},
+        {{ label: 'Bookings', data: (daily || []).map(x => x.bookings || 0), borderWidth: 2, tension: 0.3 }},
+        {{ label: 'Cancelled', data: (daily || []).map(x => x.cancelled || 0), borderWidth: 2, tension: 0.3 }}
+      ]
+    }},
+    options: {{
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: {{ mode: 'index', intersect: false }},
+      plugins: {{ legend: {{ position: 'bottom' }} }},
+      scales: {{ y: {{ beginAtZero: true, ticks: {{ precision: 0 }} }} }}
+    }}
+  }});
+}}
+function renderChannelChart(channels) {{
+  const ctx = document.getElementById('channel_chart').getContext('2d');
+  destroyIf(channelChart);
+  channelChart = new Chart(ctx, {{
+    type: 'doughnut',
+    data: {{
+      labels: (channels || []).map(x => x.channel || 'unknown'),
+      datasets: [{{ data: (channels || []).map(x => x.count || 0), borderWidth: 1 }}]
+    }},
+    options: {{
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {{ legend: {{ position: 'bottom' }} }}
+    }}
+  }});
+}}
+function renderServicesChart(items) {{
+  const ctx = document.getElementById('services_chart').getContext('2d');
+  destroyIf(servicesChart);
+  servicesChart = new Chart(ctx, {{
+    type: 'bar',
+    data: {{
+      labels: (items || []).map(x => x.service || 'unknown'),
+      datasets: [{{ label: 'Bookings', data: (items || []).map(x => x.count || 0), borderWidth: 1 }}]
+    }},
+    options: {{
+      responsive: true,
+      maintainAspectRatio: false,
+      indexAxis: 'y',
+      plugins: {{ legend: {{ display: false }} }},
+      scales: {{ x: {{ beginAtZero: true, ticks: {{ precision: 0 }} }} }}
+    }}
+  }});
+}}
 async function loadAll() {{
   const tenant = document.getElementById('tenant').value.trim() || 'default';
   const days = document.getElementById('days').value || '14';
   const limit = document.getElementById('limit').value || '20';
 
+  document.getElementById('usage_badge').textContent = `${{days}} day window`;
   document.getElementById('lnk_analytics').href = `/dashboard/analytics?tenant_id=${{encodeURIComponent(tenant)}}`;
   document.getElementById('lnk_usage').href = `/dashboard/usage?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
   document.getElementById('lnk_activity').href = `/dashboard/activity?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
+  document.getElementById('lnk_chart_data').href = `/dashboard/chart-data?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
   document.getElementById('lnk_bookings').href = `/dashboard/bookings?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
   document.getElementById('lnk_conversations').href = `/dashboard/conversations?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
   document.getElementById('lnk_tenant').href = `/tenant/config?tenant_id=${{encodeURIComponent(tenant)}}`;
   document.getElementById('lnk_tenant_ui').href = `/tenant/config/ui?tenant_id=${{encodeURIComponent(tenant)}}`;
   document.getElementById('lnk_onboarding').href = `/onboarding/ui?tenant_id=${{encodeURIComponent(tenant)}}`;
 
+  const existingBanner = document.getElementById('dash_error_banner');
+  if (existingBanner) existingBanner.remove();
+
   try {{
-    const [a,u,act,b,c] = await Promise.all([
+    const [a,u,act,b,c,chartData] = await Promise.all([
       fetchJson(`/dashboard/analytics?tenant_id=${{encodeURIComponent(tenant)}}`),
       fetchJson(`/dashboard/usage?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`),
       fetchJson(`/dashboard/activity?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`),
       fetchJson(`/dashboard/bookings?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`),
-      fetchJson(`/dashboard/conversations?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`)
+      fetchJson(`/dashboard/conversations?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`),
+      fetchJson(`/dashboard/chart-data?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`)
     ]);
 
     document.getElementById('m_requests').textContent = a?.total_requests ?? '-';
@@ -5893,6 +6019,10 @@ async function loadAll() {{
     const topChannelObj = Array.isArray(u?.channels) && u.channels.length ? u.channels[0] : null;
     document.getElementById('m_channel').textContent = topChannelObj?.channel || '-';
     document.getElementById('m_channel_sub').textContent = topChannelObj ? `${{topChannelObj.count || 0}} events in selected window` : '';
+
+    renderTrendChart(chartData?.daily || u?.daily || []);
+    renderChannelChart(chartData?.channels || u?.channels || []);
+    renderServicesChart(chartData?.top_services || u?.top_services || []);
 
     const bt = document.querySelector('#bookings_tbl tbody');
     bt.innerHTML='';
@@ -5954,7 +6084,11 @@ async function loadAll() {{
       }});
     }}
   }} catch (err) {{
-    document.body.insertAdjacentHTML('afterbegin', `<div style="background:#fee2e2;color:#991b1b;padding:12px 16px;font-size:14px;">Dashboard load failed: ${{esc(err?.message || err)}}</div>`);
+    const banner = document.createElement('div');
+    banner.id = 'dash_error_banner';
+    banner.style = 'background:#fee2e2;color:#991b1b;padding:12px 16px;font-size:14px;margin-bottom:12px;border-radius:12px;';
+    banner.textContent = `Dashboard load failed: ${{err?.message || err}}`;
+    document.querySelector('.wrap').prepend(banner);
   }}
 }}
 document.addEventListener('DOMContentLoaded', loadAll);
