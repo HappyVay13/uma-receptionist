@@ -3316,7 +3316,9 @@ def detect_time_bucket(text_: Optional[str]) -> Optional[str]:
             "pēcpusdienā", "pecpusdiena", "pecpusdienā", "šopēcpusdien", "sopecpusdien", "after lunch", "in the afternoon", "this afternoon", "afternoon", "днём", "днем", "после обеда"
         ],
         "evening": [
-            "vakarā", "vakara", "šovakar", "sovakar", "вечером", "сегодня вечером", "in the evening", "this evening", "evening", "tonight",
+            "vakarā", "vakara", "uz vakaru", "vakarpusē", "vakarpuse", "šovakar", "sovakar",
+            "вечером", "сегодня вечером", "к вечеру", "ближе к вечеру",
+            "in the evening", "this evening", "later in the evening", "towards evening", "evening", "tonight",
             "pēc darba", "pec darba", "после работы", "after work"
         ],
     }
@@ -3332,6 +3334,8 @@ def parse_time_window(text_: Optional[str]) -> Optional[Tuple[int, int]]:
 
     if any(h in src for h in ["pēc darba", "pec darba", "после работы", "after work"]):
         return (17, 21)
+    if any(h in src for h in ["ближе к вечеру", "к вечеру", "uz vakaru", "vakarpusē", "vakarpuse", "towards evening", "later in the evening"]):
+        return (16, 21)
 
     bucket = detect_time_bucket(src)
     if bucket == "morning":
