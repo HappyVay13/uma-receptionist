@@ -5726,66 +5726,109 @@ def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
   <title>Repliq Dashboard</title>
   <style>
     body {{ font-family: Arial, sans-serif; margin: 0; background: #f6f7fb; color: #111827; }}
-    .wrap {{ max-width: 1200px; margin: 0 auto; padding: 20px; }}
+    .wrap {{ max-width: 1280px; margin: 0 auto; padding: 20px; }}
     .panel {{ background: white; border-radius: 16px; box-shadow: 0 8px 24px rgba(0,0,0,0.08); padding: 16px; margin-bottom: 16px; }}
-    .top {{ display:flex; gap:12px; align-items:center; margin-bottom:16px; }}
-    input, button {{ font: inherit; }}
-    input {{ padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 10px; }}
+    .top {{ display:flex; gap:12px; align-items:center; margin-bottom:16px; flex-wrap:wrap; }}
+    input, button, select {{ font: inherit; }}
+    input, select {{ padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 10px; background:#fff; }}
     button {{ border:none; border-radius: 10px; padding:10px 14px; background:#111827; color:white; cursor:pointer; }}
+    button.secondary {{ background:#fff; color:#111827; border:1px solid #d1d5db; }}
     .metrics {{ display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:12px; }}
     .card {{ background:#fafafa; border:1px solid #e5e7eb; border-radius: 12px; padding: 14px; }}
     .card .num {{ font-size: 28px; font-weight: bold; margin-top: 6px; }}
+    .card .sub {{ font-size:12px; color:#6b7280; margin-top:6px; }}
     table {{ width:100%; border-collapse: collapse; font-size:14px; }}
     th, td {{ text-align:left; padding:10px 8px; border-bottom:1px solid #e5e7eb; vertical-align:top; }}
     th {{ background:#fafafa; }}
     .muted {{ color:#6b7280; font-size:12px; }}
     .section-title {{ margin:0 0 12px 0; }}
+    .grid-2 {{ display:grid; grid-template-columns: 1.15fr .85fr; gap:16px; }}
+    .toolbar-label {{ font-size:12px; color:#6b7280; margin-bottom:4px; display:block; }}
+    .empty {{ color:#9ca3af; font-style:italic; padding: 8px 0; }}
+    @media (max-width: 980px) {{
+      .metrics {{ grid-template-columns: repeat(2, minmax(0,1fr)); }}
+      .grid-2 {{ grid-template-columns: 1fr; }}
+    }}
   </style>
 </head>
 <body>
   <div class="wrap">
     <div class="panel">
       <div class="top">
-        <input id="tenant" value="{tenant_id}" placeholder="tenant_id" />
-        <button onclick="loadAll()">Refresh</button>
+        <div>
+          <label class="toolbar-label">Tenant</label>
+          <input id="tenant" value="{tenant_id}" placeholder="tenant_id" />
+        </div>
+        <div>
+          <label class="toolbar-label">Window</label>
+          <select id="days">
+            <option value="7">7 days</option>
+            <option value="14" selected>14 days</option>
+            <option value="30">30 days</option>
+          </select>
+        </div>
+        <div>
+          <label class="toolbar-label">Table limit</label>
+          <select id="limit">
+            <option value="10">10</option>
+            <option value="20" selected>20</option>
+            <option value="50">50</option>
+          </select>
+        </div>
+        <div style="display:flex; gap:12px; align-items:end; margin-left:auto;">
+          <button onclick="loadAll()">Refresh</button>
+          <button class="secondary" onclick="window.location='/tenant/config/ui?tenant_id='+encodeURIComponent(document.getElementById('tenant').value.trim() || 'default')">Open tenant config</button>
+        </div>
       </div>
-      <div class="muted">JSON endpoints: <a id="lnk_analytics" href="#">analytics</a> · <a id="lnk_usage" href="#">usage</a> · <a id="lnk_activity" href="#">activity</a> · <a id="lnk_bookings" href="#">bookings</a> · <a id="lnk_conversations" href="#">conversations</a> · <a id="lnk_tenant" href="#">tenant config</a> · <a id="lnk_onboarding" href="/onboarding/ui">create business</a></div>
-      <div class="metrics">
+      <div class="muted">JSON endpoints: <a id="lnk_analytics" href="#">analytics</a> · <a id="lnk_usage" href="#">usage</a> · <a id="lnk_activity" href="#">activity</a> · <a id="lnk_bookings" href="#">bookings</a> · <a id="lnk_conversations" href="#">conversations</a> · <a id="lnk_tenant" href="#">tenant config</a> · <a id="lnk_tenant_ui" href="#">tenant config ui</a> · <a id="lnk_onboarding" href="/onboarding/ui">create business</a></div>
+      <div class="metrics" style="margin-top:16px;">
         <div class="card"><div>Total requests</div><div id="m_requests" class="num">-</div></div>
         <div class="card"><div>Total bookings</div><div id="m_bookings" class="num">-</div></div>
         <div class="card"><div>Conversion</div><div id="m_conv" class="num">-</div></div>
         <div class="card"><div>Today bookings</div><div id="m_today" class="num">-</div></div>
       </div>
       <div class="metrics" style="margin-top:12px;">
-        <div class="card"><div>14d unique users</div><div id="m_users" class="num">-</div></div>
-        <div class="card"><div>14d reschedules</div><div id="m_reschedules" class="num">-</div></div>
-        <div class="card"><div>14d cancelled</div><div id="m_cancelled" class="num">-</div></div>
-        <div class="card"><div>Main channel</div><div id="m_channel" class="num" style="font-size:20px">-</div></div>
+        <div class="card"><div>Window unique users</div><div id="m_users" class="num">-</div></div>
+        <div class="card"><div>Window reschedules</div><div id="m_reschedules" class="num">-</div></div>
+        <div class="card"><div>Window cancelled</div><div id="m_cancelled" class="num">-</div></div>
+        <div class="card"><div>Main channel</div><div id="m_channel" class="num" style="font-size:20px">-</div><div id="m_channel_sub" class="sub"></div></div>
       </div>
     </div>
 
-    <div class="panel">
-      <h3 class="section-title">Recent bookings</h3>
-      <table id="bookings_tbl">
-        <thead><tr><th>User</th><th>Service</th><th>Date/Time</th><th>Status</th><th>Created</th></tr></thead>
-        <tbody></tbody>
-      </table>
+    <div class="grid-2">
+      <div class="panel">
+        <h3 class="section-title">Recent bookings</h3>
+        <table id="bookings_tbl">
+          <thead><tr><th>User</th><th>Service</th><th>Date/Time</th><th>Status</th><th>Created</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div class="panel">
+        <h3 class="section-title">Top services</h3>
+        <table id="services_tbl">
+          <thead><tr><th>Service</th><th>Bookings</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </div>
 
-    <div class="panel">
-      <h3 class="section-title">Top services (last 14 days)</h3>
-      <table id="services_tbl">
-        <thead><tr><th>Service</th><th>Bookings</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
+    <div class="grid-2">
+      <div class="panel">
+        <h3 class="section-title">Recent activity</h3>
+        <table id="activity_tbl">
+          <thead><tr><th>Time</th><th>Type</th><th>Channel</th><th>User</th><th>Message</th><th>Status</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
 
-    <div class="panel">
-      <h3 class="section-title">Recent activity</h3>
-      <table id="activity_tbl">
-        <thead><tr><th>Time</th><th>Type</th><th>Channel</th><th>User</th><th>Message</th><th>Status</th></tr></thead>
-        <tbody></tbody>
-      </table>
+      <div class="panel">
+        <h3 class="section-title">Daily usage</h3>
+        <table id="daily_tbl">
+          <thead><tr><th>Date</th><th>Requests</th><th>Bookings</th><th>Cancelled</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </div>
 
     <div class="panel">
@@ -5797,62 +5840,122 @@ def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
     </div>
   </div>
 <script>
+function esc(v) {{
+  if (v === null || v === undefined) return '';
+  return String(v)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}}
+function setEmpty(tbody, colSpan, label='No data yet') {{
+  tbody.innerHTML = `<tr><td colspan="${{colSpan}}" class="empty">${{esc(label)}}</td></tr>`;
+}}
+async function fetchJson(url) {{
+  const r = await fetch(url);
+  if (!r.ok) {{
+    const text = await r.text();
+    throw new Error(text || `HTTP ${{r.status}}`);
+  }}
+  return r.json();
+}}
 async function loadAll() {{
   const tenant = document.getElementById('tenant').value.trim() || 'default';
-  const [a,u,act,b,c] = await Promise.all([
-    fetch(`/dashboard/analytics?tenant_id=${{encodeURIComponent(tenant)}}`).then(r => r.json()),
-    fetch(`/dashboard/usage?tenant_id=${{encodeURIComponent(tenant)}}&days=14`).then(r => r.json()),
-    fetch(`/dashboard/activity?tenant_id=${{encodeURIComponent(tenant)}}&limit=20`).then(r => r.json()),
-    fetch(`/dashboard/bookings?tenant_id=${{encodeURIComponent(tenant)}}&limit=20`).then(r => r.json()),
-    fetch(`/dashboard/conversations?tenant_id=${{encodeURIComponent(tenant)}}&limit=20`).then(r => r.json())
-  ]);
-  document.getElementById('lnk_analytics').href = `/dashboard/analytics?tenant_id=${encodeURIComponent(tenant)}`;
-  document.getElementById('lnk_bookings').href = `/dashboard/bookings?tenant_id=${encodeURIComponent(tenant)}`;
-  document.getElementById('lnk_conversations').href = `/dashboard/conversations?tenant_id=${encodeURIComponent(tenant)}`;
-  document.getElementById('lnk_tenant').href = `/tenant/config?tenant_id=${encodeURIComponent(tenant)}`;
-  document.getElementById('lnk_onboarding').href = `/onboarding/ui?tenant_id=${encodeURIComponent(tenant)}`;
-  if (document.getElementById('lnk_tenant_ui')) document.getElementById('lnk_tenant_ui').href = `/tenant/config/ui?tenant_id=${encodeURIComponent(tenant)}`;
-  document.getElementById('m_requests').textContent = a.total_requests ?? '-';
-  document.getElementById('m_bookings').textContent = a.total_bookings ?? '-';
-  document.getElementById('m_conv').textContent = (a.conversion_rate ?? 0) + '%';
-  document.getElementById('m_today').textContent = a.today_bookings ?? '-';
-  document.getElementById('m_users').textContent = u.unique_users ?? '-';
-  document.getElementById('m_reschedules').textContent = u.total_reschedules ?? '-';
-  document.getElementById('m_cancelled').textContent = u.total_cancelled ?? '-';
-  const topChannel = ((u.channels || [])[0] || {{}}).channel || '-';
-  document.getElementById('m_channel').textContent = topChannel;
+  const days = document.getElementById('days').value || '14';
+  const limit = document.getElementById('limit').value || '20';
 
-  const bt = document.querySelector('#bookings_tbl tbody');
-  bt.innerHTML='';
-  (b.items || []).forEach(item => {{
-    const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${{item.client_name || item.user_id || ''}}</td><td>${{item.service || ''}}</td><td>${{item.datetime_iso || ''}}</td><td>${{item.status || ''}}</td><td><span class="muted">${{item.created_at || ''}}</span></td>`;
-    bt.appendChild(tr);
-  }});
+  document.getElementById('lnk_analytics').href = `/dashboard/analytics?tenant_id=${{encodeURIComponent(tenant)}}`;
+  document.getElementById('lnk_usage').href = `/dashboard/usage?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
+  document.getElementById('lnk_activity').href = `/dashboard/activity?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
+  document.getElementById('lnk_bookings').href = `/dashboard/bookings?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
+  document.getElementById('lnk_conversations').href = `/dashboard/conversations?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
+  document.getElementById('lnk_tenant').href = `/tenant/config?tenant_id=${{encodeURIComponent(tenant)}}`;
+  document.getElementById('lnk_tenant_ui').href = `/tenant/config/ui?tenant_id=${{encodeURIComponent(tenant)}}`;
+  document.getElementById('lnk_onboarding').href = `/onboarding/ui?tenant_id=${{encodeURIComponent(tenant)}}`;
 
-  const st = document.querySelector('#services_tbl tbody');
-  st.innerHTML='';
-  (u.top_services || []).forEach(item => {{
-    const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${{item.service || ''}}</td><td>${{item.count ?? 0}}</td>`;
-    st.appendChild(tr);
-  }});
+  try {{
+    const [a,u,act,b,c] = await Promise.all([
+      fetchJson(`/dashboard/analytics?tenant_id=${{encodeURIComponent(tenant)}}`),
+      fetchJson(`/dashboard/usage?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`),
+      fetchJson(`/dashboard/activity?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`),
+      fetchJson(`/dashboard/bookings?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`),
+      fetchJson(`/dashboard/conversations?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`)
+    ]);
 
-  const at = document.querySelector('#activity_tbl tbody');
-  at.innerHTML='';
-  (act.items || []).forEach(item => {{
-    const tr = document.createElement('tr');
-    tr.innerHTML = `<td><span class="muted">${{item.created_at || ''}}</span></td><td>${{item.type || ''}}</td><td>${{item.channel || ''}}</td><td>${{item.user_id || ''}}</td><td>${{item.message || ''}}</td><td>${{item.status || ''}}</td>`;
-    at.appendChild(tr);
-  }});
+    document.getElementById('m_requests').textContent = a?.total_requests ?? '-';
+    document.getElementById('m_bookings').textContent = a?.total_bookings ?? '-';
+    document.getElementById('m_conv').textContent = `${{a?.conversion_rate ?? 0}}%`;
+    document.getElementById('m_today').textContent = a?.today_bookings ?? '-';
+    document.getElementById('m_users').textContent = u?.unique_users ?? '-';
+    document.getElementById('m_reschedules').textContent = u?.total_reschedules ?? '-';
+    document.getElementById('m_cancelled').textContent = u?.total_cancelled ?? '-';
+    const topChannelObj = Array.isArray(u?.channels) && u.channels.length ? u.channels[0] : null;
+    document.getElementById('m_channel').textContent = topChannelObj?.channel || '-';
+    document.getElementById('m_channel_sub').textContent = topChannelObj ? `${{topChannelObj.count || 0}} events in selected window` : '';
 
-  const ct = document.querySelector('#conv_tbl tbody');
-  ct.innerHTML='';
-  (c.items || []).forEach(item => {{
-    const tr = document.createElement('tr');
-    tr.innerHTML = `<td><span class="muted">${{item.created_at || ''}}</span></td><td>${{item.user_id || ''}}</td><td>${{item.channel || ''}}</td><td>${{item.user_message || ''}}</td><td>${{item.ai_reply || ''}}</td><td>${{item.status || ''}}</td>`;
-    ct.appendChild(tr);
-  }});
+    const bt = document.querySelector('#bookings_tbl tbody');
+    bt.innerHTML='';
+    if (!Array.isArray(b?.items) || !b.items.length) {{
+      setEmpty(bt, 5, 'No bookings yet');
+    }} else {{
+      b.items.forEach(item => {{
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${{esc(item?.client_name || item?.user_id || '')}}</td><td>${{esc(item?.service || 'unknown')}}</td><td>${{esc(item?.datetime_iso || '')}}</td><td>${{esc(item?.status || '')}}</td><td><span class="muted">${{esc(item?.created_at || '')}}</span></td>`;
+        bt.appendChild(tr);
+      }});
+    }}
+
+    const st = document.querySelector('#services_tbl tbody');
+    st.innerHTML='';
+    if (!Array.isArray(u?.top_services) || !u.top_services.length) {{
+      setEmpty(st, 2, 'No booked services in selected window');
+    }} else {{
+      u.top_services.forEach(item => {{
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${{esc(item?.service || 'unknown')}}</td><td>${{esc(item?.count ?? 0)}}</td>`;
+        st.appendChild(tr);
+      }});
+    }}
+
+    const at = document.querySelector('#activity_tbl tbody');
+    at.innerHTML='';
+    if (!Array.isArray(act?.items) || !act.items.length) {{
+      setEmpty(at, 6, 'No activity yet');
+    }} else {{
+      act.items.forEach(item => {{
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td><span class="muted">${{esc(item?.created_at || '')}}</span></td><td>${{esc(item?.type || '')}}</td><td>${{esc(item?.channel || '')}}</td><td>${{esc(item?.user_id || '')}}</td><td>${{esc(item?.message || '')}}</td><td>${{esc(item?.status || '')}}</td>`;
+        at.appendChild(tr);
+      }});
+    }}
+
+    const dt = document.querySelector('#daily_tbl tbody');
+    dt.innerHTML='';
+    if (!Array.isArray(u?.daily) || !u.daily.length) {{
+      setEmpty(dt, 4, 'No daily usage yet');
+    }} else {{
+      u.daily.forEach(item => {{
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${{esc(item?.date || '')}}</td><td>${{esc(item?.requests ?? 0)}}</td><td>${{esc(item?.bookings ?? 0)}}</td><td>${{esc(item?.cancelled ?? 0)}}</td>`;
+        dt.appendChild(tr);
+      }});
+    }}
+
+    const ct = document.querySelector('#conv_tbl tbody');
+    ct.innerHTML='';
+    if (!Array.isArray(c?.items) || !c.items.length) {{
+      setEmpty(ct, 6, 'No conversations yet');
+    }} else {{
+      c.items.forEach(item => {{
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td><span class="muted">${{esc(item?.created_at || '')}}</span></td><td>${{esc(item?.user_id || '')}}</td><td>${{esc(item?.channel || '')}}</td><td>${{esc(item?.user_message || '')}}</td><td>${{esc(item?.ai_reply || '')}}</td><td>${{esc(item?.status || '')}}</td>`;
+        ct.appendChild(tr);
+      }});
+    }}
+  }} catch (err) {{
+    document.body.insertAdjacentHTML('afterbegin', `<div style="background:#fee2e2;color:#991b1b;padding:12px 16px;font-size:14px;">Dashboard load failed: ${{esc(err?.message || err)}}</div>`);
+  }}
 }}
 document.addEventListener('DOMContentLoaded', loadAll);
 </script>
@@ -5860,9 +5963,6 @@ document.addEventListener('DOMContentLoaded', loadAll);
 </html>
     """
     return HTMLResponse(content=html)
-
-
-
 
 
 @app.get("/tenant/config/ui")
