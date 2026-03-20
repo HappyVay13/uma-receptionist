@@ -5783,10 +5783,28 @@ button.secondary {{ background:#fff; color:#111827; border:1px solid #d1d5db; }}
       <div><label>Services RU</label><textarea id="services_ru"></textarea></div>
       <div class="full"><label>Services EN</label><textarea id="services_en"></textarea></div>
       <div class="full"><label>Service catalog JSON</label><textarea id="service_catalog_json" placeholder='[{{"key":"mens_haircut","name_lv":"vīriešu frizūra","name_ru":"мужская стрижка","name_en":"men&#39;s haircut","duration_min":30,"aliases_lv":["matu griezums"],"aliases_ru":["стрижка"],"aliases_en":["haircut"]}}]'></textarea></div>
+      <div><label>Service aliases LV (JSON object or lines alias: canonical)</label><textarea id="service_aliases_lv"></textarea></div>
+      <div><label>Service aliases RU (JSON object or lines alias: canonical)</label><textarea id="service_aliases_ru"></textarea></div>
+      <div class="full"><label>Service aliases EN (JSON object or lines alias: canonical)</label><textarea id="service_aliases_en"></textarea></div>
       <div><label>Weekly hours JSON</label><textarea id="weekly_hours_json"></textarea></div>
       <div><label>Days off JSON</label><textarea id="days_off_json"></textarea></div>
       <div><label>Breaks JSON</label><textarea id="breaks_json"></textarea></div>
       <div><label>Holidays JSON</label><textarea id="holidays_json"></textarea></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Business memory / FAQ</h2>
+    <div class="grid">
+      <div><label>Business memory LV</label><textarea id="business_memory_lv"></textarea></div>
+      <div><label>Business memory RU</label><textarea id="business_memory_ru"></textarea></div>
+      <div class="full"><label>Business memory EN</label><textarea id="business_memory_en"></textarea></div>
+      <div><label>FAQ LV</label><textarea id="faq_lv"></textarea></div>
+      <div><label>FAQ RU</label><textarea id="faq_ru"></textarea></div>
+      <div class="full"><label>FAQ EN</label><textarea id="faq_en"></textarea></div>
+      <div><label>Booking rules LV</label><textarea id="booking_rules_lv"></textarea></div>
+      <div><label>Booking rules RU</label><textarea id="booking_rules_ru"></textarea></div>
+      <div class="full"><label>Booking rules EN</label><textarea id="booking_rules_en"></textarea></div>
     </div>
     <div class="actions">
       <button onclick="saveConfig()">Save config</button>
@@ -5841,6 +5859,18 @@ async function loadConfig() {{
   document.getElementById('min_notice_minutes').value = t.min_notice_minutes ?? '';
   document.getElementById('buffer_minutes').value = t.buffer_minutes ?? '';
   document.getElementById('service_catalog_json').value = j(t.service_catalog_json || t.service_catalog);
+  document.getElementById('service_aliases_lv').value = j(t.service_aliases_lv || t.aliases_lv);
+  document.getElementById('service_aliases_ru').value = j(t.service_aliases_ru || t.aliases_ru);
+  document.getElementById('service_aliases_en').value = j(t.service_aliases_en || t.aliases_en);
+  document.getElementById('business_memory_lv').value = t.business_memory_lv || '';
+  document.getElementById('business_memory_ru').value = t.business_memory_ru || '';
+  document.getElementById('business_memory_en').value = t.business_memory_en || '';
+  document.getElementById('faq_lv').value = t.faq_lv || '';
+  document.getElementById('faq_ru').value = t.faq_ru || '';
+  document.getElementById('faq_en').value = t.faq_en || '';
+  document.getElementById('booking_rules_lv').value = t.booking_rules_lv || '';
+  document.getElementById('booking_rules_ru').value = t.booking_rules_ru || '';
+  document.getElementById('booking_rules_en').value = t.booking_rules_en || '';
 }}
 async function saveConfig() {{
   const tid = document.getElementById('tenant_id').value.trim() || 'default';
@@ -5861,7 +5891,19 @@ async function saveConfig() {{
     holidays_json: document.getElementById('holidays_json').value || null,
     min_notice_minutes: document.getElementById('min_notice_minutes').value ? Number(document.getElementById('min_notice_minutes').value) : null,
     buffer_minutes: document.getElementById('buffer_minutes').value ? Number(document.getElementById('buffer_minutes').value) : null,
-    service_catalog_json: document.getElementById('service_catalog_json').value || null
+    service_catalog_json: document.getElementById('service_catalog_json').value || null,
+    service_aliases_lv: document.getElementById('service_aliases_lv').value || null,
+    service_aliases_ru: document.getElementById('service_aliases_ru').value || null,
+    service_aliases_en: document.getElementById('service_aliases_en').value || null,
+    business_memory_lv: document.getElementById('business_memory_lv').value || null,
+    business_memory_ru: document.getElementById('business_memory_ru').value || null,
+    business_memory_en: document.getElementById('business_memory_en').value || null,
+    faq_lv: document.getElementById('faq_lv').value || null,
+    faq_ru: document.getElementById('faq_ru').value || null,
+    faq_en: document.getElementById('faq_en').value || null,
+    booking_rules_lv: document.getElementById('booking_rules_lv').value || null,
+    booking_rules_ru: document.getElementById('booking_rules_ru').value || null,
+    booking_rules_en: document.getElementById('booking_rules_en').value || null
   }};
   const st = document.getElementById('save_status');
   st.className = 'small';
@@ -5901,6 +5943,56 @@ def _safe_parse_json_text(value: Any):
         return json.loads(txt)
     except Exception:
         return None
+
+def _validate_hhmm_field(value: Optional[str], field_name: str) -> Optional[str]:
+    if value is None:
+        return None
+    clean = str(value).strip()
+    if not clean:
+        return None
+    if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", clean):
+        raise HTTPException(status_code=400, detail=f"{field_name} must be HH:MM")
+    return clean
+
+
+def _validate_json_text_field(value: Optional[str], field_name: str, expected_type: Optional[type] = None) -> Optional[str]:
+    if value is None:
+        return None
+    clean = str(value).strip()
+    if not clean:
+        return None
+    parsed = _safe_parse_json_text(clean)
+    if parsed is None:
+        raise HTTPException(status_code=400, detail=f"{field_name} must be valid JSON")
+    if expected_type and not isinstance(parsed, expected_type):
+        expected_name = "object" if expected_type is dict else "array" if expected_type is list else expected_type.__name__
+        raise HTTPException(status_code=400, detail=f"{field_name} must be a JSON {expected_name}")
+    return clean
+
+
+def _validate_service_catalog_text(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    clean = str(value).strip()
+    if not clean:
+        return None
+    parsed = parse_service_catalog(clean)
+    if not parsed:
+        raise HTTPException(status_code=400, detail="service_catalog_json must be a valid JSON array of service objects")
+    return json.dumps(parsed, ensure_ascii=False)
+
+
+def _positive_or_zero(value: Optional[int], field_name: str) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        iv = int(value)
+    except Exception:
+        raise HTTPException(status_code=400, detail=f"{field_name} must be an integer")
+    if iv < 0:
+        raise HTTPException(status_code=400, detail=f"{field_name} must be >= 0")
+    return iv
+
 
 def _sync_weekly_hours_with_fallback_bounds(
     weekly_hours_value: Any,
@@ -5942,6 +6034,18 @@ class TenantConfigUpdateRequest(BaseModel):
     min_notice_minutes: Optional[int] = None
     buffer_minutes: Optional[int] = None
     service_catalog_json: Optional[str] = None
+    service_aliases_lv: Optional[str] = None
+    service_aliases_ru: Optional[str] = None
+    service_aliases_en: Optional[str] = None
+    business_memory_lv: Optional[str] = None
+    business_memory_ru: Optional[str] = None
+    business_memory_en: Optional[str] = None
+    faq_lv: Optional[str] = None
+    faq_ru: Optional[str] = None
+    faq_en: Optional[str] = None
+    booking_rules_lv: Optional[str] = None
+    booking_rules_ru: Optional[str] = None
+    booking_rules_en: Optional[str] = None
 
 def _jsonable_tenant_view(tenant: Dict[str, Any]) -> Dict[str, Any]:
     tenant = dict(tenant or {})
@@ -6017,6 +6121,17 @@ def tenant_config(tenant_id: str = TENANT_ID_DEFAULT):
         "tenant": _jsonable_tenant_view(tenant),
         "resolved_settings": settings,
         "phone_routes": routes,
+        "service_catalog": tenant_service_catalog(tenant),
+        "service_aliases": {
+            "lv": tenant_service_aliases(tenant, "lv"),
+            "ru": tenant_service_aliases(tenant, "ru"),
+            "en": tenant_service_aliases(tenant, "en"),
+        },
+        "business_memory": {
+            "lv": tenant_business_memory(tenant, "lv"),
+            "ru": tenant_business_memory(tenant, "ru"),
+            "en": tenant_business_memory(tenant, "en"),
+        },
     }
 
 @app.post("/tenant/config/update")
@@ -6041,20 +6156,45 @@ def tenant_config_update(request: Request, payload: TenantConfigUpdateRequest):
             updates.append(f"{field_name}=:{field_name}")
             params[field_name] = value
 
-    add_field("business_name", payload.business_name.strip() if isinstance(payload.business_name, str) and payload.business_name.strip() else payload.business_name)
-    add_field("phone_number", normalize_incoming_to_number(payload.phone_number or "") or None)
-    add_field("timezone", payload.timezone.strip() if isinstance(payload.timezone, str) and payload.timezone.strip() else payload.timezone)
-    add_field("language", get_lang(payload.language) if payload.language is not None else None)
-    clean_work_start = payload.work_start.strip() if isinstance(payload.work_start, str) and payload.work_start.strip() else payload.work_start
-    clean_work_end = payload.work_end.strip() if isinstance(payload.work_end, str) and payload.work_end.strip() else payload.work_end
+    def add_first_existing(field_names, value):
+        if value is None:
+            return
+        for fname in field_names:
+            if fname in col_names:
+                add_field(fname, value)
+                return
 
+    clean_business_name = payload.business_name.strip() if isinstance(payload.business_name, str) and payload.business_name.strip() else payload.business_name
+    clean_phone_number = normalize_incoming_to_number(payload.phone_number or "") or None
+    clean_timezone = payload.timezone.strip() if isinstance(payload.timezone, str) and payload.timezone.strip() else payload.timezone
+    clean_work_start = _validate_hhmm_field(payload.work_start, "work_start")
+    clean_work_end = _validate_hhmm_field(payload.work_end, "work_end")
+
+    if clean_work_start and clean_work_end and clean_work_start >= clean_work_end:
+        raise HTTPException(status_code=400, detail="work_end must be later than work_start")
+
+    validated_weekly_hours = _validate_json_text_field(payload.weekly_hours_json, "weekly_hours_json", dict)
+    validated_days_off = _validate_json_text_field(payload.days_off_json, "days_off_json", list)
+    validated_breaks = _validate_json_text_field(payload.breaks_json, "breaks_json", dict)
+    validated_holidays = _validate_json_text_field(payload.holidays_json, "holidays_json", list)
+    validated_service_catalog = _validate_service_catalog_text(payload.service_catalog_json)
+    validated_aliases_lv = _validate_json_text_field(payload.service_aliases_lv, "service_aliases_lv")
+    validated_aliases_ru = _validate_json_text_field(payload.service_aliases_ru, "service_aliases_ru")
+    validated_aliases_en = _validate_json_text_field(payload.service_aliases_en, "service_aliases_en")
+    validated_min_notice = _positive_or_zero(payload.min_notice_minutes, "min_notice_minutes")
+    validated_buffer = _positive_or_zero(payload.buffer_minutes, "buffer_minutes")
+
+    add_field("business_name", clean_business_name)
+    add_field("phone_number", clean_phone_number)
+    add_field("timezone", clean_timezone)
+    add_field("language", get_lang(payload.language) if payload.language is not None else None)
     add_field("work_start", clean_work_start)
     add_field("work_end", clean_work_end)
     add_field("services_lv", payload.services_lv)
     add_field("services_ru", payload.services_ru)
     add_field("services_en", payload.services_en)
 
-    weekly_hours_value = payload.weekly_hours_json
+    weekly_hours_value = validated_weekly_hours
     if weekly_hours_value is None and (((isinstance(clean_work_start, str) and clean_work_start.strip()) or (isinstance(clean_work_end, str) and clean_work_end.strip()))):
         weekly_hours_value = tenant.get("weekly_hours_json")
     if weekly_hours_value is not None:
@@ -6064,17 +6204,25 @@ def tenant_config_update(request: Request, payload: TenantConfigUpdateRequest):
             clean_work_end,
         )
     add_field("weekly_hours_json", weekly_hours_value)
-    add_field("days_off_json", payload.days_off_json)
-    add_field("breaks_json", payload.breaks_json)
-    add_field("holidays_json", payload.holidays_json)
-    add_field("min_notice_minutes", payload.min_notice_minutes)
-    add_field("buffer_minutes", payload.buffer_minutes)
-    # support either service_catalog_json or service_catalog depending on schema
-    if payload.service_catalog_json is not None:
-        if "service_catalog_json" in col_names:
-            add_field("service_catalog_json", payload.service_catalog_json)
-        elif "service_catalog" in col_names:
-            add_field("service_catalog", payload.service_catalog_json)
+    add_field("days_off_json", validated_days_off)
+    add_field("breaks_json", validated_breaks)
+    add_field("holidays_json", validated_holidays)
+    add_field("min_notice_minutes", validated_min_notice)
+    add_field("buffer_minutes", validated_buffer)
+    if validated_service_catalog is not None:
+        add_first_existing(["service_catalog_json", "service_catalog"], validated_service_catalog)
+    add_first_existing(["service_aliases_lv", "aliases_lv"], validated_aliases_lv)
+    add_first_existing(["service_aliases_ru", "aliases_ru"], validated_aliases_ru)
+    add_first_existing(["service_aliases_en", "aliases_en"], validated_aliases_en)
+    add_first_existing(["business_memory_lv"], payload.business_memory_lv)
+    add_first_existing(["business_memory_ru"], payload.business_memory_ru)
+    add_first_existing(["business_memory_en"], payload.business_memory_en)
+    add_first_existing(["faq_lv"], payload.faq_lv)
+    add_first_existing(["faq_ru"], payload.faq_ru)
+    add_first_existing(["faq_en"], payload.faq_en)
+    add_first_existing(["booking_rules_lv"], payload.booking_rules_lv)
+    add_first_existing(["booking_rules_ru"], payload.booking_rules_ru)
+    add_first_existing(["booking_rules_en"], payload.booking_rules_en)
 
     if "updated_at" in col_names:
         updates.append("updated_at=NOW()")
