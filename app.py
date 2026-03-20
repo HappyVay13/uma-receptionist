@@ -42,16 +42,13 @@ import base64
 import uuid
 import logging
 import random
-import time
-import threading
-from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone, date
 from typing import Dict, Any, Optional, Tuple, List
 
 import requests
 from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel
-from fastapi.responses import Response, StreamingResponse, HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.responses import Response, StreamingResponse, HTMLResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from twilio.request_validator import RequestValidator
 from twilio.twiml.voice_response import VoiceResponse, Gather
@@ -183,103 +180,6 @@ BUSINESS_DAYS_OFF = os.getenv("BIZ_DAYS_OFF", "").strip()
 BUSINESS_MIN_NOTICE_MINUTES = int((os.getenv("BIZ_MIN_NOTICE_MINUTES", "0") or "0").strip())
 BUSINESS_BUFFER_MINUTES = int((os.getenv("BIZ_BUFFER_MINUTES", "0") or "0").strip())
 
-RATE_LIMIT_ENABLED = ((os.getenv("RATE_LIMIT_ENABLED", "true") or "true").strip().lower() in ("1", "true", "yes", "on"))
-RATE_LIMIT_WINDOW_SECONDS = int((os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60") or "60").strip())
-RATE_LIMIT_MAX_REQUESTS = int((os.getenv("RATE_LIMIT_MAX_REQUESTS", "60") or "60").strip())
-HTTP_RETRY_ATTEMPTS = max(1, int((os.getenv("HTTP_RETRY_ATTEMPTS", "3") or "3").strip()))
-HTTP_RETRY_BACKOFF_SECONDS = float((os.getenv("HTTP_RETRY_BACKOFF_SECONDS", "0.6") or "0.6").strip())
-
-
-# -------------------------
-# PRODUCTION READINESS HELPERS (Phase 7)
-# -------------------------
-_rate_limit_store: Dict[str, deque] = defaultdict(deque)
-_rate_limit_lock = threading.Lock()
-
-def client_ip_from_request(request: Optional[Request]) -> str:
-    if request is None:
-        return "unknown"
-    xff = request.headers.get("x-forwarded-for", "").strip()
-    if xff:
-        return xff.split(",")[0].strip() or "unknown"
-    if request.client and request.client.host:
-        return request.client.host
-    return "unknown"
-
-def enforce_basic_rate_limit(bucket_key: str, max_requests: Optional[int] = None, window_seconds: Optional[int] = None) -> None:
-    if not RATE_LIMIT_ENABLED:
-        return
-    key = str(bucket_key or "").strip()
-    if not key:
-        return
-    max_requests = max(1, int(max_requests or RATE_LIMIT_MAX_REQUESTS))
-    window_seconds = max(1, int(window_seconds or RATE_LIMIT_WINDOW_SECONDS))
-    now_monotonic = time.monotonic()
-    with _rate_limit_lock:
-        bucket = _rate_limit_store[key]
-        while bucket and now_monotonic - bucket[0] > window_seconds:
-            bucket.popleft()
-        if len(bucket) >= max_requests:
-            raise HTTPException(status_code=429, detail="Rate limit exceeded")
-        bucket.append(now_monotonic)
-
-def request_with_retry(method: str, url: str, **kwargs):
-    last_exc = None
-    response = None
-    for attempt in range(1, HTTP_RETRY_ATTEMPTS + 1):
-        try:
-            response = requests.request(method=method.upper(), url=url, **kwargs)
-            if response.status_code < 500 and response.status_code != 429:
-                return response
-            last_exc = Exception(f"HTTP {response.status_code}")
-            log.warning("http_retryable_response method=%s url=%s attempt=%s status=%s", method.upper(), url, attempt, response.status_code)
-        except Exception as e:
-            last_exc = e
-            log.warning("http_request_attempt_failed method=%s url=%s attempt=%s err=%s", method.upper(), url, attempt, e)
-        if attempt < HTTP_RETRY_ATTEMPTS:
-            time.sleep(HTTP_RETRY_BACKOFF_SECONDS * attempt)
-    if last_exc:
-        raise last_exc
-    return response
-
-def twilio_safe_error_response(path: str) -> Optional[Response]:
-    p = (path or "").lower()
-    if p.startswith("/voice/"):
-        vr = VoiceResponse()
-        try:
-            vr.say(t("lv", "service_unavailable_voice"), language="lv-LV", voice="alice")
-        except Exception:
-            vr.say("Service unavailable.")
-        vr.hangup()
-        return Response(content=str(vr), media_type="application/xml", status_code=200)
-    if p.startswith("/sms") or p.startswith("/whatsapp"):
-        return Response(status_code=204)
-    return None
-
-@app.exception_handler(Exception)
-async def unhandled_exception_handler(request: Request, exc: Exception):
-    if isinstance(exc, HTTPException):
-        return await http_exception_handler(request, exc)
-    log.exception("unhandled_exception path=%s method=%s err=%s", request.url.path, request.method, exc)
-    safe = twilio_safe_error_response(request.url.path)
-    if safe is not None:
-        return safe
-    accept = (request.headers.get("accept", "") or "").lower()
-    if "text/html" in accept:
-        return HTMLResponse(content="Internal Server Error", status_code=500)
-    return JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
-
-@app.exception_handler(HTTPException)
-async def http_exception_handler(request: Request, exc: HTTPException):
-    if exc.status_code >= 500:
-        log.error("http_exception path=%s method=%s status=%s detail=%s", request.url.path, request.method, exc.status_code, exc.detail)
-    safe = twilio_safe_error_response(request.url.path) if exc.status_code >= 500 else None
-    if safe is not None:
-        return safe
-    accept = (request.headers.get("accept", "") or "").lower()
-    if "text/html" in accept and exc.status_code >= 500:
-        return HTMLResponse(content=str(exc.detail or "Internal Server Error"), status_code=exc.status_code)
-    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 
 # -------------------------
@@ -1113,7 +1013,7 @@ def exchange_google_code_for_tokens(code_value: str) -> Dict[str, Any]:
         "grant_type": "authorization_code",
     }
     try:
-        r = request_with_retry("POST", "https://oauth2.googleapis.com/token", data=data, timeout=30)
+        r = requests.post("https://oauth2.googleapis.com/token", data=data, timeout=30)
         if r.status_code == 200:
             return r.json()
         log.error("google_token_exchange_failed status=%s body=%s", r.status_code, r.text[:500])
@@ -1125,8 +1025,7 @@ def fetch_google_userinfo(access_token: str) -> Dict[str, Any]:
     if not access_token:
         return {}
     try:
-        r = request_with_retry(
-            "GET",
+        r = requests.get(
             "https://www.googleapis.com/oauth2/v2/userinfo",
             headers={"Authorization": f"Bearer {access_token}"},
             timeout=20,
@@ -1142,8 +1041,7 @@ def fetch_google_calendar_list(access_token: str) -> List[Dict[str, Any]]:
     if not access_token:
         return []
     try:
-        r = request_with_retry(
-            "GET",
+        r = requests.get(
             "https://www.googleapis.com/calendar/v3/users/me/calendarList",
             headers={"Authorization": f"Bearer {access_token}"},
             timeout=20,
@@ -1191,44 +1089,14 @@ def google_calendar_choice(calendars: List[Dict[str, Any]]) -> Optional[str]:
     return None
 
 
-def is_tenant_ready(tenant: Dict[str, Any]) -> bool:
-    tenant = normalize_tenant_saas_fields(tenant or {})
-    google_connected = tenant_google_connected_effective(tenant)
-    required_text_fields = [
-        str(tenant.get("calendar_id") or "").strip(),
-        str(tenant.get("business_name") or tenant.get("name") or "").strip(),
-        str(tenant.get("timezone") or "").strip(),
-        str(tenant.get("work_start") or "").strip(),
-        str(tenant.get("work_end") or "").strip(),
-    ]
-    return bool(google_connected and all(required_text_fields))
-
-
-def tenant_ready_missing_fields(tenant: Dict[str, Any]) -> List[str]:
-    tenant = normalize_tenant_saas_fields(tenant or {})
-    missing: List[str] = []
-    if not tenant_google_connected_effective(tenant):
-        missing.append("google_connected")
-    if not str(tenant.get("calendar_id") or "").strip():
-        missing.append("calendar_id")
-    if not str(tenant.get("business_name") or tenant.get("name") or "").strip():
-        missing.append("business_name")
-    if not str(tenant.get("timezone") or "").strip():
-        missing.append("timezone")
-    if not str(tenant.get("work_start") or "").strip():
-        missing.append("work_start")
-    if not str(tenant.get("work_end") or "").strip():
-        missing.append("work_end")
-    return missing
-
-
 def sync_tenant_onboarding_state(tenant_id: str) -> Dict[str, Any]:
     tenant = get_tenant_or_404(tenant_id)
     cols = tenants_columns()
     pk = tenants_pk(cols)
     col_names = {c["name"] for c in cols}
     google_connected = tenant_google_connected_effective(tenant)
-    onboarding_completed = is_tenant_ready(tenant)
+    calendar_selected = bool(str(tenant.get("calendar_id") or "").strip())
+    onboarding_completed = bool(google_connected and calendar_selected)
 
     sets = []
     params: Dict[str, Any] = {"tid": tenant_id}
@@ -1765,7 +1633,7 @@ def db_save_conversation(tenant_id: str, user_key: str, c: Dict[str, Any]) -> No
                 "service": c.get("service"),
                 "name": c.get("name"),
                 "dtiso": c.get("datetime_iso"),
-                "tt": c.get("time_text"),
+                "tt": sanitize_conversation_time_text(c.get("time_text")),
                 "pj": pending_json,
             },
         )
@@ -2609,7 +2477,7 @@ def openai_understand_message(system: str, user: str) -> Dict[str, Any]:
         "response_format": {"type": "json_object"},
     }
     try:
-        r = request_with_retry("POST", url, headers=headers, json=payload, timeout=25)
+        r = requests.post(url, headers=headers, json=payload, timeout=25)
         if r.status_code == 200:
             return json.loads(r.json()["choices"][0]["message"]["content"])
         log.error("OpenAI understand error status=%s body=%s", r.status_code, r.text[:500])
@@ -2690,7 +2558,7 @@ def openai_chat_json(system: str, user: str) -> Dict[str, Any]:
         "response_format": {"type": "json_object"},
     }
     try:
-        r = request_with_retry("POST", url, headers=headers, json=payload, timeout=25)
+        r = requests.post(url, headers=headers, json=payload, timeout=25)
         if r.status_code == 200:
             return json.loads(r.json()["choices"][0]["message"]["content"])
         log.error("OpenAI error status=%s body=%s", r.status_code, r.text[:500])
@@ -2858,8 +2726,7 @@ def elevenlabs_tts_mp3(text_: str, voice_id: str) -> bytes:
     if not (ELEVENLABS_API_KEY and voice_id and text_):
         return b""
     try:
-        r = request_with_retry(
-            "POST",
+        r = requests.post(
             f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
             headers={
                 "xi-api-key": ELEVENLABS_API_KEY,
@@ -3099,135 +2966,6 @@ def find_first_n_slots_for_day_window(
             if len(filtered) >= max(1, limit):
                 return filtered
     return filtered
-
-def get_pending_time_window(pending: Dict[str, Any]) -> Optional[Tuple[int, int]]:
-    raw = pending.get("preferred_time_window")
-    if isinstance(raw, (list, tuple)) and len(raw) >= 2:
-        try:
-            start_h = int(raw[0])
-            end_h = int(raw[1])
-            if 0 <= start_h < end_h <= 24:
-                return (start_h, end_h)
-        except Exception:
-            return None
-    return None
-
-def set_pending_time_window(pending: Dict[str, Any], window: Optional[Tuple[int, int]]) -> Dict[str, Any]:
-    if window and len(window) >= 2:
-        pending["preferred_time_window"] = [int(window[0]), int(window[1])]
-    else:
-        pending.pop("preferred_time_window", None)
-    return pending
-
-def find_slots_for_requested_day(
-    calendar_id: str,
-    day_dt: datetime,
-    duration_min: int,
-    work_start: str,
-    work_end: str,
-    business_rules: Optional[Dict[str, Any]] = None,
-    preferred_window: Optional[Tuple[int, int]] = None,
-    limit: int = 3,
-) -> List[datetime]:
-    if preferred_window:
-        slots = find_first_n_slots_for_day_window(
-            calendar_id=calendar_id,
-            day_dt=day_dt,
-            duration_min=duration_min,
-            work_start=work_start,
-            work_end=work_end,
-            window_start_hour=preferred_window[0],
-            window_end_hour=preferred_window[1],
-            limit=limit,
-            business_rules=business_rules,
-        )
-        if slots:
-            return slots
-    return find_first_n_slots_for_day(
-        calendar_id=calendar_id,
-        day_dt=day_dt,
-        duration_min=duration_min,
-        work_start=work_start,
-        work_end=work_end,
-        limit=limit,
-        business_rules=business_rules,
-    )
-
-def build_day_slot_response(
-    lang: str,
-    c: Dict[str, Any],
-    pending: Dict[str, Any],
-    settings: Dict[str, Any],
-    base_date: datetime,
-    duration_min: int,
-    calendar_ready: bool,
-) -> Dict[str, Any]:
-    pending["booking_intent"] = True
-    pending["awaiting_time_date_iso"] = base_date.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
-    clear_offered_slots(pending)
-    c["state"] = STATE_AWAITING_TIME
-    c["datetime_iso"] = None
-
-    if is_holiday_for_rules(base_date, settings.get("business_rules")):
-        c["pending"] = pending
-        c["state"] = STATE_AWAITING_DATE
-        return {
-            "status": "need_more",
-            "reply_voice": t(lang, "holiday_closed_voice"),
-            "msg_out": t(lang, "holiday_closed_text"),
-            "lang": lang,
-        }
-
-    preferred_window = get_pending_time_window(pending)
-    day_slots = find_slots_for_requested_day(
-        calendar_id=settings["calendar_id"],
-        day_dt=base_date,
-        duration_min=duration_min,
-        work_start=settings["work_start"],
-        work_end=settings["work_end"],
-        limit=3,
-        business_rules=settings.get("business_rules"),
-        preferred_window=preferred_window,
-    ) if calendar_ready else []
-
-    c["pending"] = pending
-
-    if len(day_slots) >= 3:
-        pending = set_offered_slots(pending, day_slots[:3])
-        c["pending"] = pending
-        return {
-            "status": "need_more",
-            "reply_voice": t(lang, "smart_slots_prompt", opt1=format_dt_short(day_slots[0]), opt2=format_dt_short(day_slots[1]), opt3=format_dt_short(day_slots[2])),
-            "msg_out": t(lang, "smart_slots_prompt", opt1=format_dt_short(day_slots[0]), opt2=format_dt_short(day_slots[1]), opt3=format_dt_short(day_slots[2])),
-            "lang": lang,
-        }
-    if len(day_slots) >= 2:
-        pending = set_offered_slots(pending, day_slots[:2])
-        c["pending"] = pending
-        return {
-            "status": "need_more",
-            "reply_voice": t(lang, "voice_options_prompt", opt1=format_dt_short(day_slots[0]), opt2=format_dt_short(day_slots[1])),
-            "msg_out": t(lang, "voice_options_prompt", opt1=format_dt_short(day_slots[0]), opt2=format_dt_short(day_slots[1])),
-            "lang": lang,
-        }
-    if len(day_slots) == 1:
-        pending = set_offered_slots(pending, day_slots[:1])
-        pending["confirm_slot_iso"] = day_slots[0].isoformat()
-        c["pending"] = pending
-        c["state"] = STATE_AWAITING_CONFIRM
-        c["datetime_iso"] = day_slots[0].isoformat()
-        return {
-            "status": "need_more",
-            "reply_voice": t(lang, "ask_booking_confirm", when=format_dt_short(day_slots[0]), service=pending.get("service_display") or ""),
-            "msg_out": t(lang, "ask_booking_confirm", when=format_dt_short(day_slots[0]), service=pending.get("service_display") or ""),
-            "lang": lang,
-        }
-    return {
-        "status": "need_more",
-        "reply_voice": t(lang, "ask_booking_time_only"),
-        "msg_out": t(lang, "ask_booking_time_only"),
-        "lang": lang,
-    }
 
 def find_next_event_by_phone(calendar_id: str, phone: str, tenant_id: Optional[str] = None):
     svc = get_gcal()
@@ -3619,23 +3357,27 @@ def has_natural_time_hint(text_: Optional[str]) -> bool:
         return True
     return False
 
-def has_specific_time_point(text_: Optional[str]) -> bool:
-    src = (text_ or "").lower().strip()
-    if not src:
-        return False
-    if parse_explicit_time_parts(src):
-        return True
-    specific_patterns = [
-        r"\bap\s+([01]?\d|2[0-3])\b",
-        r"\bapmēram\s+([01]?\d|2[0-3])\b",
-        r"\bapmeram\s+([01]?\d|2[0-3])\b",
-        r"\bkaut\s+kur\s+([01]?\d|2[0-3])\b",
-        r"\baround\s+([01]?\d|2[0-3])\b",
-        r"\babout\s+([01]?\d|2[0-3])\b",
-        r"\bоколо\s+([01]?\d|2[0-3])\b",
-        r"\bпримерно(?:\s+на)?\s+([01]?\d|2[0-3])(?:[:. ]([0-5]\d))?\b",
-    ]
-    return any(re.search(pat, src) for pat in specific_patterns)
+
+def sanitize_conversation_time_text(value: Any) -> Optional[str]:
+    txt = str(value or "").strip()
+    if not txt:
+        return None
+    # Store only short user-provided temporal hints to avoid DB truncation and polluted state.
+    if len(txt) > 64:
+        return None
+    if has_explicit_time(txt) or has_date_reference(txt) or has_natural_time_hint(txt):
+        return txt
+    return None
+
+
+def pending_time_window_tuple(pending: Dict[str, Any]) -> Optional[Tuple[int, int]]:
+    raw = (pending or {}).get("preferred_time_window")
+    if isinstance(raw, (list, tuple)) and len(raw) >= 2:
+        try:
+            return int(raw[0]), int(raw[1])
+        except Exception:
+            return None
+    return None
 
 def parse_natural_datetime(text_: Optional[str], base_iso: Optional[str] = None) -> Optional[datetime]:
     src = (text_ or "").lower().strip()
@@ -4024,6 +3766,8 @@ def book_appointment_for_datetime(
 
     pending.pop("confirm_slot_iso", None)
     pending.pop("awaiting_time_date_iso", None)
+    pending.pop("candidate_datetime_iso", None)
+    pending.pop("preferred_time_window", None)
     clear_offered_slots(pending)
     was_rescheduled = bool(pending.get("reschedule_event_id"))
     if pending.get("reschedule_event_id"):
@@ -4236,6 +3980,10 @@ def handle_user_text(
     fresh_booking_start = bool(msg and is_booking_opener(msg))
     llm_intent = _normalize_llm_intent((llm_hint or {}).get("intent"))
     llm_conf = float((llm_hint or {}).get("confidence") or 0.0)
+    explicit_time_present = has_explicit_time(msg)
+    date_only_dt_for_msg = parse_date_only_text(msg)
+    natural_dt_for_msg = parse_natural_datetime(msg)
+    time_window_for_msg = parse_time_window(msg)
 
     # IMPORTANT:
     # Do not restart an already active booking flow just because the LLM
@@ -4253,13 +4001,28 @@ def handle_user_text(
 
     if not c.get("name") and (llm_hint or {}).get("name"):
         c["name"] = llm_hint.get("name")
-    if not c.get("time_text") and (llm_hint or {}).get("time_text"):
-        c["time_text"] = str(llm_hint.get("time_text"))
+    llm_time_text = sanitize_conversation_time_text((llm_hint or {}).get("time_text"))
+    if not c.get("time_text") and llm_time_text:
+        c["time_text"] = llm_time_text
 
     if fresh_booking_start:
         c = reset_booking_context(c, keep_name=True)
         pending = c.get("pending") or {}
         active_flow = True
+
+    pending = c.get("pending") or {}
+    if msg and (natural_dt_for_msg or date_only_dt_for_msg or time_window_for_msg or explicit_time_present):
+        pending["booking_intent"] = True
+        if time_window_for_msg:
+            pending["preferred_time_window"] = [time_window_for_msg[0], time_window_for_msg[1]]
+        if natural_dt_for_msg and explicit_time_present:
+            pending["candidate_datetime_iso"] = natural_dt_for_msg.isoformat()
+            pending["awaiting_time_date_iso"] = natural_dt_for_msg.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+        elif natural_dt_for_msg:
+            pending["awaiting_time_date_iso"] = natural_dt_for_msg.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+        elif date_only_dt_for_msg:
+            pending["awaiting_time_date_iso"] = date_only_dt_for_msg.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+        c["pending"] = pending
 
     selected_iso = extract_slot_choice(msg, pending)
     if selected_iso:
@@ -4285,46 +4048,77 @@ def handle_user_text(
             extracted_name = normalize_name(data.get("name"))
             if extracted_name and not c.get("name"):
                 c["name"] = extracted_name
-            if data.get("time_text") and not c.get("time_text"):
-                c["time_text"] = str(data.get("time_text"))
+            ai_time_text = sanitize_conversation_time_text(data.get("time_text"))
+            if ai_time_text and not c.get("time_text"):
+                c["time_text"] = ai_time_text
 
         if service_item and not c.get("service"):
             c, pending = remember_booking_service(c, pending, service_item, lang)
-            full_dt_candidate = natural_dt_for_msg
-            if not full_dt_candidate and msg:
-                data = get_ai_data()
-                full_dt_candidate = parse_dt_from_iso_or_fallback(data.get("datetime_iso"), data.get("time_text"), msg)
-            if full_dt_candidate and specific_time_point:
-                clear_offered_slots(pending)
-                pending.pop("awaiting_time_date_iso", None)
-                set_pending_time_window(pending, None)
-                c["pending"] = pending or None
-                result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, full_dt_candidate)
-                db_save_conversation(tenant_id, user_key, c)
-                return result
-
-            inferred_base_date = None
-            if date_only_dt:
-                inferred_base_date = date_only_dt
-            elif full_dt_candidate:
-                inferred_base_date = full_dt_candidate
-            elif pending.get("awaiting_time_date_iso"):
-                inferred_base_date = parse_dt_any_tz(str(pending.get("awaiting_time_date_iso") or "").strip())
-
             clear_offered_slots(pending)
-            if inferred_base_date:
+            candidate_dt = parse_dt_any_tz(str(pending.get("candidate_datetime_iso") or "").strip())
+            if candidate_dt:
+                pending.pop("candidate_datetime_iso", None)
                 c["pending"] = pending or None
-                result = build_day_slot_response(
-                    lang=lang,
-                    c=c,
-                    pending=pending,
-                    settings=settings,
-                    base_date=inferred_base_date,
-                    duration_min=service_duration_min(service_item),
-                    calendar_ready=calendar_ready,
-                )
+                result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, candidate_dt)
                 db_save_conversation(tenant_id, user_key, c)
                 return result
+
+            base_day = parse_dt_any_tz(str(pending.get("awaiting_time_date_iso") or "").strip())
+            stored_window = pending_time_window_tuple(pending)
+            if base_day:
+                slots = []
+                if stored_window and calendar_ready:
+                    slots = find_first_n_slots_for_day_window(
+                        calendar_id=settings["calendar_id"],
+                        day_dt=base_day,
+                        duration_min=service_duration_min(service_item),
+                        work_start=settings["work_start"],
+                        work_end=settings["work_end"],
+                        window_start_hour=stored_window[0],
+                        window_end_hour=stored_window[1],
+                        limit=3,
+                        business_rules=settings.get("business_rules"),
+                    )
+                elif calendar_ready:
+                    slots = find_first_n_slots_for_day(
+                        settings["calendar_id"],
+                        base_day,
+                        service_duration_min(service_item),
+                        settings["work_start"],
+                        settings["work_end"],
+                        limit=3,
+                        business_rules=settings.get("business_rules"),
+                    )
+                c["state"] = STATE_AWAITING_TIME
+                c["datetime_iso"] = None
+                c["pending"] = pending or None
+                if len(slots) >= 3:
+                    pending = set_offered_slots(pending, slots[:3])
+                    c["pending"] = pending
+                    db_save_conversation(tenant_id, user_key, c)
+                    return {
+                        "status": "need_more",
+                        "reply_voice": t(lang, "smart_slots_prompt", opt1=format_dt_short(slots[0]), opt2=format_dt_short(slots[1]), opt3=format_dt_short(slots[2])),
+                        "msg_out": t(lang, "smart_slots_prompt", opt1=format_dt_short(slots[0]), opt2=format_dt_short(slots[1]), opt3=format_dt_short(slots[2])),
+                        "lang": lang,
+                    }
+                if len(slots) >= 2:
+                    pending = set_offered_slots(pending, slots[:2])
+                    c["pending"] = pending
+                    db_save_conversation(tenant_id, user_key, c)
+                    return {
+                        "status": "need_more",
+                        "reply_voice": t(lang, "voice_options_prompt", opt1=format_dt_short(slots[0]), opt2=format_dt_short(slots[1])),
+                        "msg_out": t(lang, "voice_options_prompt", opt1=format_dt_short(slots[0]), opt2=format_dt_short(slots[1])),
+                        "lang": lang,
+                    }
+                db_save_conversation(tenant_id, user_key, c)
+                return {
+                    "status": "need_more",
+                    "reply_voice": t(lang, "ask_booking_time_only"),
+                    "msg_out": t(lang, "ask_booking_time_only"),
+                    "lang": lang,
+                }
 
             c["pending"] = pending or None
             c = normalize_booking_state(c)
@@ -4354,14 +4148,7 @@ def handle_user_text(
         c["state"] = STATE_AWAITING_DATE
         c = normalize_booking_state(c)
 
-    date_only_dt = parse_date_only_text(msg)
-    explicit_time_present = has_explicit_time(msg)
-    specific_time_point = has_specific_time_point(msg)
-    natural_dt_for_msg = parse_natural_datetime(msg, pending.get("awaiting_time_date_iso")) if msg else None
-    message_time_window = parse_time_window(msg) if msg else None
-    if message_time_window:
-        pending = set_pending_time_window(pending, message_time_window)
-        c["pending"] = pending
+    date_only_dt = date_only_dt_for_msg
 
     if c["state"] == STATE_AWAITING_DATE:
         if is_short_ack_text(msg, lang):
@@ -4373,34 +4160,72 @@ def handle_user_text(
                 "lang": lang,
             }
         dt_start = None
-        natural_dt = natural_dt_for_msg
+        natural_dt = parse_natural_datetime(msg)
         if natural_dt:
             dt_start = natural_dt
         elif msg:
             data = get_ai_data()
             dt_start = parse_dt_from_iso_or_fallback(data.get("datetime_iso"), data.get("time_text"), msg)
-        if dt_start and specific_time_point:
-            set_pending_time_window(pending, None)
+        if dt_start and (explicit_time_present or has_natural_time_hint(msg)):
             result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, dt_start)
             db_save_conversation(tenant_id, user_key, c)
             return result
-        if date_only_dt or (dt_start and not specific_time_point):
+        if date_only_dt or (dt_start and not (explicit_time_present or has_natural_time_hint(msg))):
             base_date = date_only_dt or dt_start
             pending["booking_intent"] = True
             service_item_current = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
             c, pending = remember_booking_service(c, pending, service_item_current, lang)
-            c["pending"] = pending or None
-            result = build_day_slot_response(
-                lang=lang,
-                c=c,
-                pending=pending,
-                settings=settings,
-                base_date=base_date,
-                duration_min=service_duration_min(get_service_item_by_key(service_catalog, c.get("service"))),
-                calendar_ready=calendar_ready,
-            )
+            pending["awaiting_time_date_iso"] = base_date.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+            clear_offered_slots(pending)
+            day_slots = find_first_n_slots_for_day(
+                settings["calendar_id"],
+                base_date,
+                service_duration_min(get_service_item_by_key(service_catalog, c.get("service"))),
+                settings["work_start"],
+                settings["work_end"],
+                limit=3,
+                business_rules=settings.get("business_rules"),
+            ) if calendar_ready else []
+            c["state"] = STATE_AWAITING_TIME
+            c["datetime_iso"] = None
+            if is_holiday_for_rules(base_date, settings.get("business_rules")):
+                c["pending"] = pending
+                c["state"] = STATE_AWAITING_DATE
+                db_save_conversation(tenant_id, user_key, c)
+                return {
+                    "status": "need_more",
+                    "reply_voice": t(lang, "holiday_closed_voice"),
+                    "msg_out": t(lang, "holiday_closed_text"),
+                    "lang": lang,
+                }
+            if len(day_slots) >= 3:
+                pending = set_offered_slots(pending, day_slots[:3])
+                c["pending"] = pending
+                db_save_conversation(tenant_id, user_key, c)
+                return {
+                    "status": "need_more",
+                    "reply_voice": t(lang, "smart_slots_prompt", opt1=format_dt_short(day_slots[0]), opt2=format_dt_short(day_slots[1]), opt3=format_dt_short(day_slots[2])),
+                    "msg_out": t(lang, "smart_slots_prompt", opt1=format_dt_short(day_slots[0]), opt2=format_dt_short(day_slots[1]), opt3=format_dt_short(day_slots[2])),
+                    "lang": lang,
+                }
+            if len(day_slots) >= 2:
+                pending = set_offered_slots(pending, day_slots[:2])
+                c["pending"] = pending
+                db_save_conversation(tenant_id, user_key, c)
+                return {
+                    "status": "need_more",
+                    "reply_voice": t(lang, "voice_options_prompt", opt1=format_dt_short(day_slots[0]), opt2=format_dt_short(day_slots[1])),
+                    "msg_out": t(lang, "voice_options_prompt", opt1=format_dt_short(day_slots[0]), opt2=format_dt_short(day_slots[1])),
+                    "lang": lang,
+                }
+            c["pending"] = pending
             db_save_conversation(tenant_id, user_key, c)
-            return result
+            return {
+                "status": "need_more",
+                "reply_voice": t(lang, "ask_booking_time_only"),
+                "msg_out": t(lang, "ask_booking_time_only"),
+                "lang": lang,
+            }
         db_save_conversation(tenant_id, user_key, c)
         return {
             "status": "need_more",
@@ -4422,19 +4247,22 @@ def handle_user_text(
         c, pending = remember_booking_service(c, pending, service_item_current, lang)
 
         if pending.get("awaiting_time_date_iso"):
+            if date_only_dt_for_msg:
+                pending["awaiting_time_date_iso"] = date_only_dt_for_msg.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
             base_day = parse_dt_any_tz(str(pending.get("awaiting_time_date_iso") or "").strip())
-            time_window = parse_time_window(msg)
+            time_window = parse_time_window(msg) or pending_time_window_tuple(pending)
             if time_window and base_day:
-                set_pending_time_window(pending, time_window)
-                slots = find_slots_for_requested_day(
+                pending["preferred_time_window"] = [time_window[0], time_window[1]]
+                slots = find_first_n_slots_for_day_window(
                     calendar_id=settings["calendar_id"],
                     day_dt=base_day,
                     duration_min=service_duration_min(service_item_current),
                     work_start=settings["work_start"],
                     work_end=settings["work_end"],
+                    window_start_hour=time_window[0],
+                    window_end_hour=time_window[1],
                     limit=3,
                     business_rules=settings.get("business_rules"),
-                    preferred_window=time_window,
                 ) if calendar_ready else []
                 if len(slots) >= 3:
                     pending = set_offered_slots(pending, slots[:3])
@@ -4499,20 +4327,20 @@ def handle_user_text(
                 c["name"] = extracted_name
 
         if not dt_start and pending.get("awaiting_time_date_iso"):
-            time_window = parse_time_window(msg) or get_pending_time_window(pending)
+            time_window = parse_time_window(msg)
             base_day = parse_dt_any_tz(str(pending.get("awaiting_time_date_iso") or "").strip())
             if time_window and base_day:
-                set_pending_time_window(pending, time_window)
                 service_item = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
-                slots = find_slots_for_requested_day(
+                slots = find_first_n_slots_for_day_window(
                     calendar_id=settings["calendar_id"],
                     day_dt=base_day,
                     duration_min=service_duration_min(service_item),
                     work_start=settings["work_start"],
                     work_end=settings["work_end"],
+                    window_start_hour=time_window[0],
+                    window_end_hour=time_window[1],
                     limit=3,
                     business_rules=settings.get("business_rules"),
-                    preferred_window=time_window,
                 ) if calendar_ready else []
                 if len(slots) >= 3:
                     pending = set_offered_slots(pending, slots[:3])
@@ -4551,7 +4379,6 @@ def handle_user_text(
         if dt_start:
             clear_offered_slots(pending)
             pending.pop("awaiting_time_date_iso", None)
-            set_pending_time_window(pending, None)
             c["pending"] = pending or None
             result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, dt_start)
             db_save_conversation(tenant_id, user_key, c)
@@ -4827,24 +4654,22 @@ async def whatsapp_incoming(request: Request):
 # GOOGLE OAUTH ENDPOINTS (Phase 3 Foundation)
 # -------------------------
 @app.get("/google/connect")
-def google_connect(tenant_id: str, request: Request):
-    enforce_basic_rate_limit(f"google_connect:{client_ip_from_request(request)}", max_requests=30, window_seconds=60)
+def google_connect(tenant_id: str):
     if not oauth_ready():
         raise HTTPException(status_code=500, detail="Google OAuth is not configured")
     tenant = get_tenant_or_404(tenant_id)
     tenant = sync_tenant_onboarding_state(tenant["_id"])
     if bool(tenant.get("onboarding_completed")):
-        return RedirectResponse(url=f"/onboarding/done?tenant_id={tenant['_id']}")
+        return RedirectResponse(url=f"/dashboard?tenant_id={tenant['_id']}")
     if tenant_google_connected_effective(tenant):
         if str(tenant.get("calendar_id") or "").strip():
-            return RedirectResponse(url=f"/onboarding/done?tenant_id={tenant['_id']}")
+            return RedirectResponse(url=f"/dashboard?tenant_id={tenant['_id']}")
         return RedirectResponse(url=f"/google/calendars/ui?tenant_id={tenant['_id']}")
     auth_url = build_google_oauth_url(tenant["_id"])
     return RedirectResponse(url=auth_url)
 
 @app.get("/google/callback")
-def google_callback(request: Request, code: str = "", state: str = "", error: str = ""):
-    enforce_basic_rate_limit(f"google_callback:{client_ip_from_request(request)}", max_requests=60, window_seconds=60)
+def google_callback(code: str = "", state: str = "", error: str = ""):
     if not oauth_ready():
         raise HTTPException(status_code=500, detail="Google OAuth is not configured")
     state_data = parse_google_oauth_state(state)
@@ -4884,7 +4709,7 @@ def google_callback(request: Request, code: str = "", state: str = "", error: st
         select_tenant_calendar_id(tenant_id, chosen_calendar_id)
         tenant = sync_tenant_onboarding_state(tenant_id)
         if bool(tenant.get("onboarding_completed")):
-            return RedirectResponse(url=f"/onboarding/done?tenant_id={tenant_id}&google=connected&calendar=selected")
+            return RedirectResponse(url=f"/dashboard?tenant_id={tenant_id}&google=connected&calendar=selected")
 
     sync_tenant_onboarding_state(tenant_id)
     return RedirectResponse(url=f"/google/calendars/ui?tenant_id={tenant_id}&google=connected")
@@ -4992,7 +4817,7 @@ async function loadCalendars() {{
           return;
         }}
         document.getElementById('done').classList.remove('hidden');
-        window.location = ((payload.links && payload.links.onboarding_done_url) || ('/onboarding/done?tenant_id=' + encodeURIComponent(tenantId)));
+        window.location = '/dashboard?tenant_id=' + encodeURIComponent(tenantId);
       }};
       row.appendChild(left);
       row.appendChild(btn);
@@ -5033,8 +4858,7 @@ async def google_select_calendar(request: Request):
 # BROWSER SDK TOKEN
 # -------------------------
 @app.get("/voice/token")
-def get_voice_token(request: Request, client_id: str = "default", tenant_id: str = ""):
-    enforce_basic_rate_limit(f"voice_token:{client_ip_from_request(request)}", max_requests=20, window_seconds=60)
+def get_voice_token(client_id: str = "default", tenant_id: str = ""):
     if not (
         TWILIO_ACCOUNT_SID
         and TWILIO_API_KEY_SID
@@ -5076,8 +4900,6 @@ def health():
         "allow_default_tenant_fallback": ALLOW_DEFAULT_TENANT_FALLBACK,
         "twilio_validate_signature": TWILIO_VALIDATE_SIGNATURE,
         "google_oauth_ready": oauth_ready(),
-        "rate_limit_enabled": RATE_LIMIT_ENABLED,
-        "http_retry_attempts": HTTP_RETRY_ATTEMPTS,
     }
 
 
@@ -5217,7 +5039,6 @@ def onboarding_links_payload(tenant_id: str) -> Dict[str, str]:
         "onboarding_status_url": f"{base}/onboarding/status?tenant_id={tenant_id}",
         "google_connect_url": f"{base}/google/connect?tenant_id={tenant_id}",
         "google_calendars_ui_url": f"{base}/google/calendars/ui?tenant_id={tenant_id}",
-        "onboarding_done_url": f"{base}/onboarding/done?tenant_id={tenant_id}",
     }
 
 
@@ -5226,17 +5047,16 @@ def onboarding_status_payload(tenant: Dict[str, Any]) -> Dict[str, Any]:
     tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip()
     calendar_id = str(tenant.get("calendar_id") or "").strip()
     google_connected = tenant_google_connected_effective(tenant)
+    onboarding_completed = bool(tenant.get("onboarding_completed"))
     calendar_selected = bool(calendar_id)
-    onboarding_completed = is_tenant_ready(tenant)
     phone_number = normalize_incoming_to_number(tenant.get("phone_number") or "")
-    missing = tenant_ready_missing_fields(tenant)
 
     next_step = "create_tenant"
     if tenant_id:
         next_step = "connect_google"
     if google_connected:
         next_step = "select_calendar"
-    if google_connected and calendar_selected and not onboarding_completed:
+    if google_connected and calendar_selected:
         next_step = "finish"
     if onboarding_completed:
         next_step = "done"
@@ -5252,8 +5072,6 @@ def onboarding_status_payload(tenant: Dict[str, Any]) -> Dict[str, Any]:
         "onboarding_completed": onboarding_completed,
         "subscription_status": tenant.get("subscription_status"),
         "plan": tenant.get("plan"),
-        "missing": missing,
-        "is_ready": onboarding_completed,
         "next_step": next_step,
     }
 
@@ -5270,9 +5088,14 @@ def onboarding_finish(payload: dict = Body(...)):
     if not tenant_id:
         raise HTTPException(status_code=400, detail="tenant_id required")
 
-    get_tenant_or_404(tenant_id)
+    tenant = get_tenant_or_404(tenant_id)
     tenant = sync_tenant_onboarding_state(tenant_id)
-    missing = tenant_ready_missing_fields(tenant)
+
+    missing = []
+    if not tenant_google_connected_effective(tenant):
+        missing.append("google_connected")
+    if not str(tenant.get("calendar_id") or "").strip():
+        missing.append("calendar_id")
 
     if missing:
         return {
@@ -5280,82 +5103,18 @@ def onboarding_finish(payload: dict = Body(...)):
             "tenant_id": tenant_id,
             "missing": missing,
             "onboarding": onboarding_status_payload(tenant),
-            "links": onboarding_links_payload(tenant_id),
         }
 
+    tenant = sync_tenant_onboarding_state(tenant_id)
     return {
         "status": "ok",
         "tenant_id": tenant_id,
         "onboarding": onboarding_status_payload(tenant),
-        "links": onboarding_links_payload(tenant_id),
     }
-
-@app.get("/onboarding/done", response_class=HTMLResponse)
-def onboarding_done_ui(tenant_id: str):
-    tenant_id = (tenant_id or "").strip()
-    tenant = sync_tenant_onboarding_state(tenant_id)
-    status = onboarding_status_payload(tenant)
-    if not status.get("onboarding_completed"):
-        return RedirectResponse(url=f"/onboarding/ui?tenant_id={tenant_id}")
-    links = onboarding_links_payload(tenant_id)
-    biz_name = tenant.get("business_name") or tenant_id
-    phone_number = normalize_incoming_to_number(tenant.get("phone_number") or "") or "Not set"
-    html = f"""
-<!doctype html>
-<html>
-<head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>Repliq Bot Ready</title>
-<style>
-body {{ font-family: Arial, sans-serif; background:#f6f7fb; color:#111827; margin:0; padding:24px; }}
-.wrap {{ max-width: 900px; margin:0 auto; }}
-.card {{ background:#fff; border:1px solid #e5e7eb; border-radius:18px; padding:24px; box-shadow: 0 10px 28px rgba(15,23,42,.06); margin-bottom:16px; }}
-h1,h2 {{ margin:0 0 12px 0; }}
-p {{ margin:0; color:#4b5563; line-height:1.6; }}
-.kpis {{ display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap:12px; margin-top:16px; }}
-.kpi {{ background:#fafafa; border:1px solid #e5e7eb; border-radius:14px; padding:14px; }}
-.kpi .num {{ font-size:20px; font-weight:700; margin-top:6px; }}
-button {{ border:0; background:#111827; color:#fff; padding:12px 18px; border-radius:12px; cursor:pointer; font-size:14px; }}
-button.secondary {{ background:#fff; color:#111827; border:1px solid #d1d5db; }}
-.actions {{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:16px; }}
-.small {{ font-size:12px; color:#6b7280; }}
-.code {{ background:#f9fafb; border:1px solid #e5e7eb; border-radius:12px; padding:12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; overflow:auto; margin-top:12px; }}
-@media (max-width: 768px) {{ .kpis {{ grid-template-columns: 1fr; }} body {{ padding:16px; }} }}
-</style>
-</head>
-<body>
-<div class="wrap">
-  <div class="card">
-    <h1>🎉 Bot is ready</h1>
-    <p>Business <strong>{biz_name}</strong> finished onboarding. Google is connected, a working calendar is selected, and Repliq can now handle bookings for this tenant.</p>
-    <div class="kpis">
-      <div class="kpi"><div>Tenant ID</div><div class="num">{tenant_id}</div></div>
-      <div class="kpi"><div>Calendar</div><div class="num">{status.get('calendar_id') or '-'}</div></div>
-      <div class="kpi"><div>Phone</div><div class="num">{phone_number}</div></div>
-    </div>
-    <div class="actions">
-      <a href="{links['dashboard_url']}"><button>Open dashboard</button></a>
-      <a href="{links['config_ui_url']}"><button class="secondary">Tenant config</button></a>
-      <a href="{links['onboarding_status_url']}"><button class="secondary">Onboarding status</button></a>
-    </div>
-    <div class="small" style="margin-top:12px">Next steps: test one booking, connect the production phone route, then continue with tenant configuration.</div>
-    <div class="code">{json.dumps(status, ensure_ascii=False, indent=2)}</div>
-  </div>
-</div>
-</body>
-</html>
-    """
-    return HTMLResponse(content=html)
-
 
 @app.get("/onboarding/ui", response_class=HTMLResponse)
 def onboarding_ui(tenant_id: str = ""):
     tenant_id = (tenant_id or "").strip()
-    if tenant_id:
-        tenant = sync_tenant_onboarding_state(tenant_id)
-        if is_tenant_ready(tenant):
-            return RedirectResponse(url=f"/onboarding/done?tenant_id={tenant_id}")
     html = f"""
 <!doctype html>
 <html>
@@ -5536,8 +5295,7 @@ async function copyTenantId() {{
 
 @app.post("/onboarding/create_tenant")
 @app.post("/tenant/create")
-def onboarding_create_tenant(request: Request, payload: dict = Body(...)):
-    enforce_basic_rate_limit(f"tenant_create:{client_ip_from_request(request)}", max_requests=20, window_seconds=300)
+def onboarding_create_tenant(payload: dict = Body(...)):
     business_name = (payload.get("business_name") or "").strip()
     owner_email = (payload.get("owner_email") or "").strip()
     phone_number = normalize_incoming_to_number(payload.get("phone_number") or "")
@@ -5828,12 +5586,12 @@ async function loadAll() {{
     fetch(`/dashboard/bookings?tenant_id=${{encodeURIComponent(tenant)}}&limit=20`).then(r => r.json()),
     fetch(`/dashboard/conversations?tenant_id=${{encodeURIComponent(tenant)}}&limit=20`).then(r => r.json())
   ]);
-  document.getElementById('lnk_analytics').href = `/dashboard/analytics?tenant_id=${{encodeURIComponent(tenant)}}`;
-  document.getElementById('lnk_bookings').href = `/dashboard/bookings?tenant_id=${{encodeURIComponent(tenant)}}`;
-  document.getElementById('lnk_conversations').href = `/dashboard/conversations?tenant_id=${{encodeURIComponent(tenant)}}`;
-  document.getElementById('lnk_tenant').href = `/tenant/config?tenant_id=${{encodeURIComponent(tenant)}}`;
-  document.getElementById('lnk_onboarding').href = `/onboarding/ui?tenant_id=${{encodeURIComponent(tenant)}}`;
-  if (document.getElementById('lnk_tenant_ui')) document.getElementById('lnk_tenant_ui').href = `/tenant/config/ui?tenant_id=${{encodeURIComponent(tenant)}}`;
+  document.getElementById('lnk_analytics').href = `/dashboard/analytics?tenant_id=${encodeURIComponent(tenant)}`;
+  document.getElementById('lnk_bookings').href = `/dashboard/bookings?tenant_id=${encodeURIComponent(tenant)}`;
+  document.getElementById('lnk_conversations').href = `/dashboard/conversations?tenant_id=${encodeURIComponent(tenant)}`;
+  document.getElementById('lnk_tenant').href = `/tenant/config?tenant_id=${encodeURIComponent(tenant)}`;
+  document.getElementById('lnk_onboarding').href = `/onboarding/ui?tenant_id=${encodeURIComponent(tenant)}`;
+  if (document.getElementById('lnk_tenant_ui')) document.getElementById('lnk_tenant_ui').href = `/tenant/config/ui?tenant_id=${encodeURIComponent(tenant)}`;
   document.getElementById('m_requests').textContent = a.total_requests ?? '-';
   document.getElementById('m_bookings').textContent = a.total_bookings ?? '-';
   document.getElementById('m_conv').textContent = (a.conversion_rate ?? 0) + '%';
@@ -5933,28 +5691,10 @@ button.secondary {{ background:#fff; color:#111827; border:1px solid #d1d5db; }}
       <div><label>Services RU</label><textarea id="services_ru"></textarea></div>
       <div class="full"><label>Services EN</label><textarea id="services_en"></textarea></div>
       <div class="full"><label>Service catalog JSON</label><textarea id="service_catalog_json" placeholder='[{{"key":"mens_haircut","name_lv":"vīriešu frizūra","name_ru":"мужская стрижка","name_en":"men&#39;s haircut","duration_min":30,"aliases_lv":["matu griezums"],"aliases_ru":["стрижка"],"aliases_en":["haircut"]}}]'></textarea></div>
-      <div><label>Service aliases LV (JSON object or lines alias: canonical)</label><textarea id="service_aliases_lv"></textarea></div>
-      <div><label>Service aliases RU (JSON object or lines alias: canonical)</label><textarea id="service_aliases_ru"></textarea></div>
-      <div class="full"><label>Service aliases EN (JSON object or lines alias: canonical)</label><textarea id="service_aliases_en"></textarea></div>
       <div><label>Weekly hours JSON</label><textarea id="weekly_hours_json"></textarea></div>
       <div><label>Days off JSON</label><textarea id="days_off_json"></textarea></div>
       <div><label>Breaks JSON</label><textarea id="breaks_json"></textarea></div>
       <div><label>Holidays JSON</label><textarea id="holidays_json"></textarea></div>
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>Business memory / FAQ</h2>
-    <div class="grid">
-      <div><label>Business memory LV</label><textarea id="business_memory_lv"></textarea></div>
-      <div><label>Business memory RU</label><textarea id="business_memory_ru"></textarea></div>
-      <div class="full"><label>Business memory EN</label><textarea id="business_memory_en"></textarea></div>
-      <div><label>FAQ LV</label><textarea id="faq_lv"></textarea></div>
-      <div><label>FAQ RU</label><textarea id="faq_ru"></textarea></div>
-      <div class="full"><label>FAQ EN</label><textarea id="faq_en"></textarea></div>
-      <div><label>Booking rules LV</label><textarea id="booking_rules_lv"></textarea></div>
-      <div><label>Booking rules RU</label><textarea id="booking_rules_ru"></textarea></div>
-      <div class="full"><label>Booking rules EN</label><textarea id="booking_rules_en"></textarea></div>
     </div>
     <div class="actions">
       <button onclick="saveConfig()">Save config</button>
@@ -6009,18 +5749,6 @@ async function loadConfig() {{
   document.getElementById('min_notice_minutes').value = t.min_notice_minutes ?? '';
   document.getElementById('buffer_minutes').value = t.buffer_minutes ?? '';
   document.getElementById('service_catalog_json').value = j(t.service_catalog_json || t.service_catalog);
-  document.getElementById('service_aliases_lv').value = j(t.service_aliases_lv || t.aliases_lv);
-  document.getElementById('service_aliases_ru').value = j(t.service_aliases_ru || t.aliases_ru);
-  document.getElementById('service_aliases_en').value = j(t.service_aliases_en || t.aliases_en);
-  document.getElementById('business_memory_lv').value = t.business_memory_lv || '';
-  document.getElementById('business_memory_ru').value = t.business_memory_ru || '';
-  document.getElementById('business_memory_en').value = t.business_memory_en || '';
-  document.getElementById('faq_lv').value = t.faq_lv || '';
-  document.getElementById('faq_ru').value = t.faq_ru || '';
-  document.getElementById('faq_en').value = t.faq_en || '';
-  document.getElementById('booking_rules_lv').value = t.booking_rules_lv || '';
-  document.getElementById('booking_rules_ru').value = t.booking_rules_ru || '';
-  document.getElementById('booking_rules_en').value = t.booking_rules_en || '';
 }}
 async function saveConfig() {{
   const tid = document.getElementById('tenant_id').value.trim() || 'default';
@@ -6041,19 +5769,7 @@ async function saveConfig() {{
     holidays_json: document.getElementById('holidays_json').value || null,
     min_notice_minutes: document.getElementById('min_notice_minutes').value ? Number(document.getElementById('min_notice_minutes').value) : null,
     buffer_minutes: document.getElementById('buffer_minutes').value ? Number(document.getElementById('buffer_minutes').value) : null,
-    service_catalog_json: document.getElementById('service_catalog_json').value || null,
-    service_aliases_lv: document.getElementById('service_aliases_lv').value || null,
-    service_aliases_ru: document.getElementById('service_aliases_ru').value || null,
-    service_aliases_en: document.getElementById('service_aliases_en').value || null,
-    business_memory_lv: document.getElementById('business_memory_lv').value || null,
-    business_memory_ru: document.getElementById('business_memory_ru').value || null,
-    business_memory_en: document.getElementById('business_memory_en').value || null,
-    faq_lv: document.getElementById('faq_lv').value || null,
-    faq_ru: document.getElementById('faq_ru').value || null,
-    faq_en: document.getElementById('faq_en').value || null,
-    booking_rules_lv: document.getElementById('booking_rules_lv').value || null,
-    booking_rules_ru: document.getElementById('booking_rules_ru').value || null,
-    booking_rules_en: document.getElementById('booking_rules_en').value || null
+    service_catalog_json: document.getElementById('service_catalog_json').value || null
   }};
   const st = document.getElementById('save_status');
   st.className = 'small';
@@ -6093,56 +5809,6 @@ def _safe_parse_json_text(value: Any):
         return json.loads(txt)
     except Exception:
         return None
-
-def _validate_hhmm_field(value: Optional[str], field_name: str) -> Optional[str]:
-    if value is None:
-        return None
-    clean = str(value).strip()
-    if not clean:
-        return None
-    if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", clean):
-        raise HTTPException(status_code=400, detail=f"{field_name} must be HH:MM")
-    return clean
-
-
-def _validate_json_text_field(value: Optional[str], field_name: str, expected_type: Optional[type] = None) -> Optional[str]:
-    if value is None:
-        return None
-    clean = str(value).strip()
-    if not clean:
-        return None
-    parsed = _safe_parse_json_text(clean)
-    if parsed is None:
-        raise HTTPException(status_code=400, detail=f"{field_name} must be valid JSON")
-    if expected_type and not isinstance(parsed, expected_type):
-        expected_name = "object" if expected_type is dict else "array" if expected_type is list else expected_type.__name__
-        raise HTTPException(status_code=400, detail=f"{field_name} must be a JSON {expected_name}")
-    return clean
-
-
-def _validate_service_catalog_text(value: Optional[str]) -> Optional[str]:
-    if value is None:
-        return None
-    clean = str(value).strip()
-    if not clean:
-        return None
-    parsed = parse_service_catalog(clean)
-    if not parsed:
-        raise HTTPException(status_code=400, detail="service_catalog_json must be a valid JSON array of service objects")
-    return json.dumps(parsed, ensure_ascii=False)
-
-
-def _positive_or_zero(value: Optional[int], field_name: str) -> Optional[int]:
-    if value is None:
-        return None
-    try:
-        iv = int(value)
-    except Exception:
-        raise HTTPException(status_code=400, detail=f"{field_name} must be an integer")
-    if iv < 0:
-        raise HTTPException(status_code=400, detail=f"{field_name} must be >= 0")
-    return iv
-
 
 def _sync_weekly_hours_with_fallback_bounds(
     weekly_hours_value: Any,
@@ -6184,18 +5850,6 @@ class TenantConfigUpdateRequest(BaseModel):
     min_notice_minutes: Optional[int] = None
     buffer_minutes: Optional[int] = None
     service_catalog_json: Optional[str] = None
-    service_aliases_lv: Optional[str] = None
-    service_aliases_ru: Optional[str] = None
-    service_aliases_en: Optional[str] = None
-    business_memory_lv: Optional[str] = None
-    business_memory_ru: Optional[str] = None
-    business_memory_en: Optional[str] = None
-    faq_lv: Optional[str] = None
-    faq_ru: Optional[str] = None
-    faq_en: Optional[str] = None
-    booking_rules_lv: Optional[str] = None
-    booking_rules_ru: Optional[str] = None
-    booking_rules_en: Optional[str] = None
 
 def _jsonable_tenant_view(tenant: Dict[str, Any]) -> Dict[str, Any]:
     tenant = dict(tenant or {})
@@ -6271,22 +5925,10 @@ def tenant_config(tenant_id: str = TENANT_ID_DEFAULT):
         "tenant": _jsonable_tenant_view(tenant),
         "resolved_settings": settings,
         "phone_routes": routes,
-        "service_catalog": tenant_service_catalog(tenant),
-        "service_aliases": {
-            "lv": tenant_service_aliases(tenant, "lv"),
-            "ru": tenant_service_aliases(tenant, "ru"),
-            "en": tenant_service_aliases(tenant, "en"),
-        },
-        "business_memory": {
-            "lv": tenant_business_memory(tenant, "lv"),
-            "ru": tenant_business_memory(tenant, "ru"),
-            "en": tenant_business_memory(tenant, "en"),
-        },
     }
 
 @app.post("/tenant/config/update")
-def tenant_config_update(request: Request, payload: TenantConfigUpdateRequest):
-    enforce_basic_rate_limit(f"tenant_config_update:{client_ip_from_request(request)}", max_requests=60, window_seconds=300)
+def tenant_config_update(payload: TenantConfigUpdateRequest):
     tenant_id = (payload.tenant_id or "").strip()
     if not tenant_id:
         raise HTTPException(status_code=400, detail="tenant_id required")
@@ -6306,45 +5948,20 @@ def tenant_config_update(request: Request, payload: TenantConfigUpdateRequest):
             updates.append(f"{field_name}=:{field_name}")
             params[field_name] = value
 
-    def add_first_existing(field_names, value):
-        if value is None:
-            return
-        for fname in field_names:
-            if fname in col_names:
-                add_field(fname, value)
-                return
-
-    clean_business_name = payload.business_name.strip() if isinstance(payload.business_name, str) and payload.business_name.strip() else payload.business_name
-    clean_phone_number = normalize_incoming_to_number(payload.phone_number or "") or None
-    clean_timezone = payload.timezone.strip() if isinstance(payload.timezone, str) and payload.timezone.strip() else payload.timezone
-    clean_work_start = _validate_hhmm_field(payload.work_start, "work_start")
-    clean_work_end = _validate_hhmm_field(payload.work_end, "work_end")
-
-    if clean_work_start and clean_work_end and clean_work_start >= clean_work_end:
-        raise HTTPException(status_code=400, detail="work_end must be later than work_start")
-
-    validated_weekly_hours = _validate_json_text_field(payload.weekly_hours_json, "weekly_hours_json", dict)
-    validated_days_off = _validate_json_text_field(payload.days_off_json, "days_off_json", list)
-    validated_breaks = _validate_json_text_field(payload.breaks_json, "breaks_json", dict)
-    validated_holidays = _validate_json_text_field(payload.holidays_json, "holidays_json", list)
-    validated_service_catalog = _validate_service_catalog_text(payload.service_catalog_json)
-    validated_aliases_lv = _validate_json_text_field(payload.service_aliases_lv, "service_aliases_lv")
-    validated_aliases_ru = _validate_json_text_field(payload.service_aliases_ru, "service_aliases_ru")
-    validated_aliases_en = _validate_json_text_field(payload.service_aliases_en, "service_aliases_en")
-    validated_min_notice = _positive_or_zero(payload.min_notice_minutes, "min_notice_minutes")
-    validated_buffer = _positive_or_zero(payload.buffer_minutes, "buffer_minutes")
-
-    add_field("business_name", clean_business_name)
-    add_field("phone_number", clean_phone_number)
-    add_field("timezone", clean_timezone)
+    add_field("business_name", payload.business_name.strip() if isinstance(payload.business_name, str) and payload.business_name.strip() else payload.business_name)
+    add_field("phone_number", normalize_incoming_to_number(payload.phone_number or "") or None)
+    add_field("timezone", payload.timezone.strip() if isinstance(payload.timezone, str) and payload.timezone.strip() else payload.timezone)
     add_field("language", get_lang(payload.language) if payload.language is not None else None)
+    clean_work_start = payload.work_start.strip() if isinstance(payload.work_start, str) and payload.work_start.strip() else payload.work_start
+    clean_work_end = payload.work_end.strip() if isinstance(payload.work_end, str) and payload.work_end.strip() else payload.work_end
+
     add_field("work_start", clean_work_start)
     add_field("work_end", clean_work_end)
     add_field("services_lv", payload.services_lv)
     add_field("services_ru", payload.services_ru)
     add_field("services_en", payload.services_en)
 
-    weekly_hours_value = validated_weekly_hours
+    weekly_hours_value = payload.weekly_hours_json
     if weekly_hours_value is None and (((isinstance(clean_work_start, str) and clean_work_start.strip()) or (isinstance(clean_work_end, str) and clean_work_end.strip()))):
         weekly_hours_value = tenant.get("weekly_hours_json")
     if weekly_hours_value is not None:
@@ -6354,25 +5971,17 @@ def tenant_config_update(request: Request, payload: TenantConfigUpdateRequest):
             clean_work_end,
         )
     add_field("weekly_hours_json", weekly_hours_value)
-    add_field("days_off_json", validated_days_off)
-    add_field("breaks_json", validated_breaks)
-    add_field("holidays_json", validated_holidays)
-    add_field("min_notice_minutes", validated_min_notice)
-    add_field("buffer_minutes", validated_buffer)
-    if validated_service_catalog is not None:
-        add_first_existing(["service_catalog_json", "service_catalog"], validated_service_catalog)
-    add_first_existing(["service_aliases_lv", "aliases_lv"], validated_aliases_lv)
-    add_first_existing(["service_aliases_ru", "aliases_ru"], validated_aliases_ru)
-    add_first_existing(["service_aliases_en", "aliases_en"], validated_aliases_en)
-    add_first_existing(["business_memory_lv"], payload.business_memory_lv)
-    add_first_existing(["business_memory_ru"], payload.business_memory_ru)
-    add_first_existing(["business_memory_en"], payload.business_memory_en)
-    add_first_existing(["faq_lv"], payload.faq_lv)
-    add_first_existing(["faq_ru"], payload.faq_ru)
-    add_first_existing(["faq_en"], payload.faq_en)
-    add_first_existing(["booking_rules_lv"], payload.booking_rules_lv)
-    add_first_existing(["booking_rules_ru"], payload.booking_rules_ru)
-    add_first_existing(["booking_rules_en"], payload.booking_rules_en)
+    add_field("days_off_json", payload.days_off_json)
+    add_field("breaks_json", payload.breaks_json)
+    add_field("holidays_json", payload.holidays_json)
+    add_field("min_notice_minutes", payload.min_notice_minutes)
+    add_field("buffer_minutes", payload.buffer_minutes)
+    # support either service_catalog_json or service_catalog depending on schema
+    if payload.service_catalog_json is not None:
+        if "service_catalog_json" in col_names:
+            add_field("service_catalog_json", payload.service_catalog_json)
+        elif "service_catalog" in col_names:
+            add_field("service_catalog", payload.service_catalog_json)
 
     if "updated_at" in col_names:
         updates.append("updated_at=NOW()")
@@ -6388,12 +5997,11 @@ def tenant_config_update(request: Request, payload: TenantConfigUpdateRequest):
     if new_phone:
         upsert_phone_route(new_phone, tenant_id)
 
-    updated = sync_tenant_onboarding_state(tenant_id)
+    updated = get_tenant(tenant_id)
     return {
         "status": "ok",
         "tenant": _jsonable_tenant_view(updated),
         "resolved_settings": tenant_settings(updated, get_lang(updated.get("language") or "lv")),
-        "onboarding": onboarding_status_payload(updated),
     }
 
 @app.get("/tenant/routes")
