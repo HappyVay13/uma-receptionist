@@ -388,6 +388,14 @@ def humanize_result(result: Dict[str, Any], conv: Optional[Dict[str, Any]], tena
         result["msg_out"] = text_value
         result["reply_voice"] = text_value
 
+    if result.get("flow_preserved"):
+        preserved_text = str(result.get("msg_out") or result.get("reply_voice") or "").strip()
+        if preserved_text:
+            result["msg_out"] = preserved_text
+            result["reply_voice"] = preserved_text
+            result["lang"] = lang
+            return result
+
     if result.get("status") == "greeting":
         if lang == "ru":
             apply(_pick_variant([
