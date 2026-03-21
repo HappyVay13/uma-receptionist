@@ -388,6 +388,9 @@ def humanize_result(result: Dict[str, Any], conv: Optional[Dict[str, Any]], tena
         result["msg_out"] = text_value
         result["reply_voice"] = text_value
 
+    if result.get("preserve_text"):
+        return result
+
     if result.get("status") == "greeting":
         if lang == "ru":
             apply(_pick_variant([
@@ -4371,7 +4374,7 @@ def handle_user_text(
                 c["state"] = STATE_AWAITING_DATE
                 db_save_conversation(tenant_id, user_key, c)
                 reply_text = build_barbershop_upsell_prompt(lang, service_item, beard_item)
-                return {"status": "need_more", "reply_voice": reply_text, "msg_out": reply_text, "lang": lang}
+                return {"status": "need_more", "reply_voice": reply_text, "msg_out": reply_text, "lang": lang, "preserve_text": True}
             candidate_dt = parse_dt_any_tz(str(pending.get("candidate_datetime_iso") or "").strip())
             if candidate_dt:
                 pending.pop("candidate_datetime_iso", None)
@@ -4463,7 +4466,7 @@ def handle_user_text(
             c["state"] = STATE_AWAITING_DATE
             db_save_conversation(tenant_id, user_key, c)
             reply_text = build_upsell_followup_reply(lang, True, haircut_item, beard_item)
-            return {"status": "need_more", "reply_voice": reply_text, "msg_out": reply_text, "lang": lang}
+            return {"status": "need_more", "reply_voice": reply_text, "msg_out": reply_text, "lang": lang, "preserve_text": True}
         if is_no_text(msg, lang):
             pending["pending_upsell"] = False
             pending.pop("addon_service", None)
@@ -4471,7 +4474,7 @@ def handle_user_text(
             c["state"] = STATE_AWAITING_DATE
             db_save_conversation(tenant_id, user_key, c)
             reply_text = build_upsell_followup_reply(lang, False, haircut_item, beard_item)
-            return {"status": "need_more", "reply_voice": reply_text, "msg_out": reply_text, "lang": lang}
+            return {"status": "need_more", "reply_voice": reply_text, "msg_out": reply_text, "lang": lang, "preserve_text": True}
         # if user ignores upsell and provides a date/time, treat that as implicit 'no'
         if msg and (date_only_dt_for_msg or natural_dt_for_msg or time_window_for_msg or explicit_time_present):
             pending["pending_upsell"] = False
