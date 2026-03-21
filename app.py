@@ -7432,6 +7432,17 @@ def violates_min_notice(dt_value: datetime, business_rules: Optional[Dict[str, A
     return dt_value < cutoff
 
 
+def is_closed_day_for_rules(dt_value: datetime, business_rules: Optional[Dict[str, Any]] = None) -> bool:
+    if not business_rules:
+        return False
+    if is_holiday_for_rules(dt_value, business_rules):
+        return True
+    weekday_key = _weekday_key_for_date(dt_value)
+    weekly_hours = (business_rules.get("weekly_hours") or {})
+    rule_hours = weekly_hours.get(weekday_key)
+    return not rule_hours
+
+
 def exchange_code_for_tokens(*args, **kwargs):
     pass
 
