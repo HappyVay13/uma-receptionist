@@ -4454,6 +4454,29 @@ def handle_user_text(
 
     pending = c.get("pending") or {}
 
+    # Safety net: if a base haircut has already been selected but the upsell
+    # prompt was skipped by an earlier branch, show it BEFORE asking for date.
+    # This protects flows like: booking -> service selected -> bot jumps straight
+    # to AWAITING_DATE without offering beard trim.
+    if (
+        c.get("service")
+        and c["state"] in (STATE_AWAITING_SERVICE, STATE_AWAITING_DATE)
+        and not pending.get("pending_upsell")
+        and not pending.get("upsell_shown")
+        and not pending.get("addon_service")
+    ):
+        current_item = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
+        beard_item = find_service_item_by_group(service_catalog, "beard")
+        if service_group_key(current_item) == "haircut" and beard_item:
+            pending["booking_intent"] = True
+            pending["pending_upsell"] = True
+            pending["upsell_shown"] = True
+            c["pending"] = pending
+            c["state"] = STATE_AWAITING_DATE
+            db_save_conversation(tenant_id, user_key, c)
+            reply_text = build_barbershop_upsell_prompt(lang, current_item, beard_item)
+            return {"status": "need_more", "reply_voice": reply_text, "msg_out": reply_text, "lang": lang, "preserve_text": True}
+
     # Handle barber upsell reply before normal date parsing.
     if pending.get("pending_upsell"):
         haircut_item = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
