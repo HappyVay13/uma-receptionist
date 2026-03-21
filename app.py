@@ -2512,6 +2512,37 @@ def barbershop_upsell_resolution_text(lang: str, accepted: bool) -> str:
     return "Labi 👍 Tad paliekam pie vīriešu frizūras. Kurā dienā jums būtu ērti?"
 
 
+def should_trigger_barbershop_upsell(service_key: Optional[str], pending: Dict[str, Any], service_catalog: List[Dict[str, Any]]) -> bool:
+    service_key = str(service_key or pending.get("service") or "").strip()
+    if not service_key:
+        return False
+    if pending.get("pending_upsell") or pending.get("upsell_shown"):
+        return False
+    return is_barbershop_base_haircut_service(service_key, service_catalog)
+
+
+def build_barbershop_upsell_result(
+    tenant_id: str,
+    user_key: str,
+    lang: str,
+    c: Dict[str, Any],
+    pending: Dict[str, Any],
+) -> Dict[str, Any]:
+    pending["pending_upsell"] = True
+    pending["upsell_shown"] = True
+    c["state"] = STATE_AWAITING_DATE
+    c["pending"] = pending or None
+    db_save_conversation(tenant_id, user_key, c)
+    reply_text = barbershop_upsell_offer_text(lang, str(pending.get("service_display") or "").strip())
+    return {
+        "status": "need_more",
+        "reply_voice": reply_text,
+        "msg_out": reply_text,
+        "lang": lang,
+        "flow_preserved": True,
+    }
+
+
 def calendar_is_configured(calendar_id: str) -> bool:
     return bool((calendar_id or "").strip())
 
@@ -4415,22 +4446,10 @@ def handle_user_text(
         if service_item and not c.get("service"):
             c, pending = remember_booking_service(c, pending, service_item, lang)
             clear_offered_slots(pending)
-            if is_barbershop_base_haircut_service(c.get("service") or pending.get("service"), service_catalog) and not pending.get("upsell_shown") and not pending.get("pending_upsell"):
+            if should_trigger_barbershop_upsell(c.get("service") or pending.get("service"), pending, service_catalog):
                 combo_item = get_barbershop_combo_service_item(service_catalog)
                 if combo_item:
-                    pending["pending_upsell"] = True
-                    pending["upsell_shown"] = True
-                    c["state"] = STATE_AWAITING_DATE
-                    c["pending"] = pending or None
-                    db_save_conversation(tenant_id, user_key, c)
-                    reply_text = barbershop_upsell_offer_text(lang, str(pending.get("service_display") or "").strip())
-                    return {
-                        "status": "need_more",
-                        "reply_voice": reply_text,
-                        "msg_out": reply_text,
-                        "lang": lang,
-                        "flow_preserved": True,
-                    }
+                    return build_barbershop_upsell_result(tenant_id, user_key, lang, c, pending)
             candidate_dt = parse_dt_any_tz(str(pending.get("candidate_datetime_iso") or "").strip())
             if candidate_dt:
                 pending.pop("candidate_datetime_iso", None)
@@ -4509,6 +4528,11 @@ def handle_user_text(
                 }
 
     pending = c.get("pending") or {}
+
+    if c.get("service") and conversation_state(c) in {STATE_AWAITING_SERVICE, STATE_AWAITING_DATE} and should_trigger_barbershop_upsell(c.get("service"), pending, service_catalog):
+        combo_item = get_barbershop_combo_service_item(service_catalog)
+        if combo_item:
+            return build_barbershop_upsell_result(tenant_id, user_key, lang, c, pending)
 
     if c["state"] == STATE_AWAITING_SERVICE and not c.get("service"):
         db_save_conversation(tenant_id, user_key, c)
