@@ -1507,6 +1507,32 @@ def try_barbershop_faq(
     return None
 
 
+def faq_with_flow_followup(
+    faq_result: Dict[str, Any],
+    lang: str,
+    c: Dict[str, Any],
+    pending: Dict[str, Any],
+    service_catalog: List[Dict[str, Any]],
+    active_flow: bool,
+) -> Dict[str, Any]:
+    result = dict(faq_result or {})
+    if not active_flow:
+        return result
+
+    followup = prompt_for_state(lang, c, pending or {}, service_catalog)
+    answer_text = str(result.get("msg_out") or result.get("reply_voice") or "").strip()
+    if followup:
+        combined = f"{answer_text}\n\n{followup}".strip() if answer_text else followup
+    else:
+        combined = answer_text
+
+    result["status"] = "need_more"
+    result["msg_out"] = combined
+    result["reply_voice"] = combined
+    result["lang"] = lang
+    result["flow_preserved"] = True
+    return result
+
 
 LANG_HINTS = {
     "lv": {
@@ -4140,6 +4166,22 @@ def handle_user_text(
             "lang": lang,
         }
 
+    if msg:
+        faq_result = try_barbershop_faq(
+            msg=msg,
+            lang=lang,
+            tenant=tenant,
+            settings=settings,
+            service_catalog=service_catalog,
+            service_aliases=service_aliases,
+            business_memory=business_memory,
+        )
+        if faq_result:
+            faq_result = faq_with_flow_followup(faq_result, lang, c, pending, service_catalog, active_flow)
+            if active_flow:
+                db_save_conversation(tenant_id, user_key, c)
+            return faq_result
+
     if msg and is_greeting_only(msg) and not active_flow and c["state"] not in ACTIVE_BOOKING_STATES:
         c["state"] = STATE_NEW
         c["service"] = None
@@ -4167,19 +4209,6 @@ def handle_user_text(
             "msg_out": t(lang, "hours_info", biz=settings["biz_name"], start=settings["work_start"], end=settings["work_end"]),
             "lang": lang,
         }
-
-    if not active_flow and msg:
-        faq_result = try_barbershop_faq(
-            msg=msg,
-            lang=lang,
-            tenant=tenant,
-            settings=settings,
-            service_catalog=service_catalog,
-            service_aliases=service_aliases,
-            business_memory=business_memory,
-        )
-        if faq_result:
-            return faq_result
 
     llm_hint = get_llm_data() if msg else {}
 
@@ -4713,18 +4742,6 @@ def handle_user_text(
     fallback_reply = soft_clarify_for_state(lang, c, c.get("pending") or {}) if is_active_booking_flow(c) else t(lang, "unclear_reply")
     if not is_active_booking_flow(c) and llm_intent == "info" and llm_conf >= LLM_INTENT_MIN_CONFIDENCE and is_hours_question(msg):
         fallback_reply = t(lang, "hours_info", biz=settings["biz_name"], start=settings["work_start"], end=settings["work_end"])
-    if not is_active_booking_flow(c) and msg:
-        faq_result = try_barbershop_faq(
-            msg=msg,
-            lang=lang,
-            tenant=tenant,
-            settings=settings,
-            service_catalog=service_catalog,
-            service_aliases=service_aliases,
-            business_memory=business_memory,
-        )
-        if faq_result:
-            return faq_result
     return {
         "status": fallback_status,
         "reply_voice": fallback_reply,
