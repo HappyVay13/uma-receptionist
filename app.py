@@ -372,6 +372,45 @@ def _slot_labels_from_pending(pending: Dict[str, Any]) -> List[str]:
             labels.append(format_dt_short(dtv))
     return labels
 
+
+def _service_prompt_examples(tenant: Dict[str, Any], lang: str) -> Tuple[str, str]:
+    try:
+        catalog = tenant_service_catalog(tenant or {})
+    except Exception:
+        catalog = []
+    labels = [service_display_name(item, lang) for item in catalog if service_display_name(item, lang)]
+    labels = [x for x in labels if x]
+    if len(labels) >= 2:
+        return labels[0], labels[1]
+    if len(labels) == 1:
+        return labels[0], labels[0]
+    defaults = {
+        "lv": ("matu griezums", "matu griezums ar bārdu"),
+        "ru": ("стрижка", "стрижка и борода"),
+        "en": ("haircut", "haircut and beard"),
+    }
+    return defaults.get(get_lang(lang), defaults["lv"])
+
+
+def _warm_booking_success_text(lang: str, when_text: str) -> str:
+    if lang == "ru":
+        return _pick_variant([
+            f"Отлично! Вы записаны на {when_text}. Ждём вас 👍",
+            f"Готово — запись на {when_text} подтверждена. Будем ждать вас 👍",
+            f"Супер, записал вас на {when_text}. До встречи 👍",
+        ], f"Вы записаны на {when_text}.")
+    if lang == "en":
+        return _pick_variant([
+            f"Great! You are booked for {when_text}. See you then 👍",
+            f"Done — your appointment for {when_text} is confirmed. See you soon 👍",
+            f"Perfect, I booked you for {when_text}. Looking forward to seeing you 👍",
+        ], f"You are booked for {when_text}.")
+    return _pick_variant([
+        f"Perfekti! Jūs esat pierakstīts uz {when_text}. Gaidīsim jūs 👍",
+        f"Lieliski — pieraksts uz {when_text} ir apstiprināts. Gaidīsim jūs 👍",
+        f"Super, pierakstīju jūs uz {when_text}. Uz tikšanos 👍",
+    ], f"Jūs esat pierakstīts uz {when_text}.")
+
 def humanize_result(result: Dict[str, Any], conv: Optional[Dict[str, Any]], tenant: Dict[str, Any]) -> Dict[str, Any]:
     result = dict(result or {})
     conv = conv or {}
@@ -415,23 +454,7 @@ def humanize_result(result: Dict[str, Any], conv: Optional[Dict[str, Any]], tena
         return result
 
     if result.get("status") == "booked" and when_text:
-        if lang == "ru":
-            apply(_pick_variant([
-                f"Отлично, записал вас на {when_text}.",
-                f"Готово, запись подтверждена на {when_text}.",
-                f"Хорошо, подтверждаю запись на {when_text}.",
-            ], result.get("msg_out") or f"Запись подтверждена на {when_text}."))
-        elif lang == "en":
-            apply(_pick_variant([
-                f"Great, you are booked for {when_text}.",
-                f"Done, your appointment is confirmed for {when_text}.",
-            ], result.get("msg_out") or f"Your appointment is confirmed for {when_text}."))
-        else:
-            apply(_pick_variant([
-                f"Lieliski, pierakstīju jūs uz {when_text}.",
-                f"Gatavs, jūsu pieraksts ir apstiprināts uz {when_text}.",
-                f"Labi, apstiprinu pierakstu uz {when_text}.",
-            ], result.get("msg_out") or f"Pieraksts apstiprināts uz {when_text}."))
+        apply(_warm_booking_success_text(lang, when_text))
         return result
 
     if result.get("status") == "reschedule_wait" and when_text:
@@ -463,42 +486,45 @@ def humanize_result(result: Dict[str, Any], conv: Optional[Dict[str, Any]], tena
         return result
 
     if result.get("status") in {"busy", "need_more"} and state == STATE_AWAITING_SERVICE:
+        opt1, opt2 = _service_prompt_examples(tenant, lang)
         if lang == "ru":
             apply(_pick_variant([
-                "Конечно. На какую услугу вас записать?",
-                "Хорошо. Что именно хотите сделать?",
-                "Подскажите, на какую услугу хотите записаться?",
-            ], result.get("msg_out") or "На какую услугу вас записать?"))
+                f"Отлично! На что записываем — {opt1} или {opt2}?",
+                f"Супер. Какую услугу выбираем — {opt1} или {opt2}?",
+                f"Подскажите, что вам нужно — {opt1} или {opt2}?",
+            ], result.get("msg_out") or f"На какую услугу вас записать — {opt1} или {opt2}?"))
         elif lang == "en":
             apply(_pick_variant([
-                "Of course. Which service would you like to book?",
-                "Sure — what would you like to book?",
-            ], result.get("msg_out") or "Which service would you like to book?"))
+                f"Great! What would you like to book — {opt1} or {opt2}?",
+                f"Perfect. Which service would you prefer — {opt1} or {opt2}?",
+                f"Sure — shall we book {opt1} or {opt2}?",
+            ], result.get("msg_out") or f"Which service would you like to book — {opt1} or {opt2}?"))
         else:
             apply(_pick_variant([
-                "Protams. Uz kādu pakalpojumu vēlaties pierakstīties?",
-                "Labi. Pasakiet, lūdzu, kuru pakalpojumu vēlaties.",
-                "Uz kuru pakalpojumu jūs pierakstīt?",
-            ], result.get("msg_out") or "Uz kādu pakalpojumu vēlaties pierakstīties?"))
+                f"Super! Uz kuru pakalpojumu pierakstām — {opt1} vai {opt2}?",
+                f"Lieliski. Ko izvēlamies — {opt1} vai {opt2}?",
+                f"Pasakiet, lūdzu, ko vēlaties — {opt1} vai {opt2}?",
+            ], result.get("msg_out") or f"Uz kuru pakalpojumu vēlaties pierakstīties — {opt1} vai {opt2}?"))
         return result
 
     if result.get("status") in {"busy", "need_more"} and state == STATE_AWAITING_DATE:
+        service_name = service_text or ""
         if lang == "ru":
             apply(_pick_variant([
-                "Хорошо. На какой день вас записать?",
-                "Отлично. Какая дата вам удобна?",
-                "Подскажите, на какой день хотите запись?",
+                f"Отлично. На какой день вас записать{' на ' + service_name if service_name else ''}?",
+                f"Хорошо, двигаемся дальше. Какая дата вам удобна{' для ' + service_name if service_name else ''}?",
+                f"Супер. Подскажите, на какой день хотите запись{' на ' + service_name if service_name else ''}?",
             ], result.get("msg_out") or "На какой день вас записать?"))
         elif lang == "en":
             apply(_pick_variant([
-                "Sure. Which day would work for you?",
-                "Okay. What date would you prefer?",
+                f"Great. Which day would work for you{' for ' + service_name if service_name else ''}?",
+                f"Perfect — what date would you prefer{' for ' + service_name if service_name else ''}?",
             ], result.get("msg_out") or "Which day would work for you?"))
         else:
             apply(_pick_variant([
-                "Labi. Uz kuru dienu vēlaties pierakstīties?",
-                "Skaidrs. Kurš datums jums būtu ērts?",
-                "Pasakiet, lūdzu, kuru dienu vēlaties.",
+                f"Super. Uz kuru dienu pierakstām{' uz ' + service_name if service_name else ''}?",
+                f"Labi, ejam tālāk. Kurš datums jums būtu ērts{' priekš ' + service_name if service_name else ''}?",
+                f"Skaidrs. Pasakiet, lūdzu, kuru dienu vēlaties{' uz ' + service_name if service_name else ''}?",
             ], result.get("msg_out") or "Uz kuru dienu vēlaties pierakstīties?"))
         return result
 
@@ -509,19 +535,19 @@ def humanize_result(result: Dict[str, Any], conv: Optional[Dict[str, Any]], tena
             joined = ", ".join(slots[:2])
         if lang == "ru":
             apply(_pick_variant([
-                f"Могу предложить такие варианты: {joined}. Что вам удобнее?",
-                f"Есть несколько свободных вариантов: {joined}. Какое время подойдёт?",
-                f"Свободно вот так: {joined}. Что выбираем?",
+                f"Есть несколько удобных вариантов: {joined}. Что вам подходит больше?",
+                f"Могу предложить такие слоты: {joined}. Какое время выбираем?",
+                f"Свободно вот так: {joined}. Что вам удобнее?",
             ], result.get("msg_out") or f"Доступны варианты: {joined}."))
         elif lang == "en":
             apply(_pick_variant([
-                f"I can offer these times: {joined}. What works best for you?",
-                f"There are a few available options: {joined}. Which one suits you?",
+                f"I have a few good options: {joined}. Which time works best for you?",
+                f"These slots are available: {joined}. What would you prefer?",
             ], result.get("msg_out") or f"Available times: {joined}."))
         else:
             apply(_pick_variant([
-                f"Varu piedāvāt šādus laikus: {joined}. Kurš jums der?",
-                f"Ir pieejami vairāki varianti: {joined}. Ko izvēlamies?",
+                f"Ir vairāki ērti varianti: {joined}. Kurš jums der vislabāk?",
+                f"Varu piedāvāt šādus laikus: {joined}. Ko izvēlamies?",
                 f"Brīvie laiki ir šādi: {joined}. Kurš jums būtu ērtāks?",
             ], result.get("msg_out") or f"Pieejamie laiki: {joined}."))
         return result
@@ -532,18 +558,18 @@ def humanize_result(result: Dict[str, Any], conv: Optional[Dict[str, Any]], tena
             when_text = format_dt_short(_dtc) if _dtc else when_text
         if lang == "ru":
             apply(_pick_variant([
-                f"Тогда подтверждаем запись на {when_text}?",
-                f"Подтверждаем время {when_text}?",
+                f"Отлично, подтверждаем запись на {when_text}?",
+                f"Тогда фиксируем время {when_text}?",
             ], result.get("msg_out") or f"Подтвердить запись на {when_text}?"))
         elif lang == "en":
             apply(_pick_variant([
-                f"Shall I confirm the booking for {when_text}?",
-                f"Would you like me to confirm {when_text}?",
+                f"Great — shall I confirm the booking for {when_text}?",
+                f"Perfect. Would you like me to lock in {when_text}?",
             ], result.get("msg_out") or f"Confirm the booking for {when_text}?"))
         else:
             apply(_pick_variant([
-                f"Tad apstiprinām pierakstu uz {when_text}?",
-                f"Vai apstiprināt laiku {when_text}?",
+                f"Lieliski — tad apstiprinām pierakstu uz {when_text}?",
+                f"Super. Vai fiksējam laiku {when_text}?",
             ], result.get("msg_out") or f"Apstiprināt pierakstu uz {when_text}?"))
         return result
 
