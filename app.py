@@ -1339,6 +1339,174 @@ def tenant_business_memory(tenant: Dict[str, Any], lang: str) -> str:
     return "\n".join(parts)
 
 
+def default_business_memory_payload(business_type: str = "barbershop") -> Dict[str, str]:
+    business_type = (business_type or "barbershop").strip().lower()
+    if business_type == "clinic":
+        return {
+            "lv": "Biežākie jautājumi: konsultācija, atrašanās vieta, darba laiks. Atbildi mierīgi un profesionāli.",
+            "ru": "Частые вопросы: консультация, адрес, часы работы. Отвечай спокойно и профессионально.",
+            "en": "Common questions: consultation, location, opening hours. Answer calmly and professionally.",
+        }
+    if business_type == "salon":
+        return {
+            "lv": "Biežākie jautājumi: matu griezums, krāsošana, atrašanās vieta, darba laiks. Tonis — draudzīgs un pieklājīgs.",
+            "ru": "Частые вопросы: стрижка, окрашивание, адрес, часы работы. Тон — дружелюбный и вежливый.",
+            "en": "Common questions: haircut, coloring, location, opening hours. Tone should be friendly and polite.",
+        }
+    return {
+        "lv": "Barberšopa piezīmes: galvenie pakalpojumi ir vīriešu frizūra un bārda. Ja klients jautā par pakalpojumiem, vari minēt populārākos variantus un piedāvāt pierakstu.",
+        "ru": "Заметки барбершопа: основные услуги — мужская стрижка и борода. Если клиент спрашивает об услугах, можно назвать самые популярные варианты и предложить запись.",
+        "en": "Barbershop notes: core services are men's haircut and beard trim. If the client asks about services, mention the most popular options and offer a booking.",
+    }
+
+
+def _line_candidates_from_memory(memory: str) -> List[str]:
+    return [line.strip(" -•\t") for line in str(memory or "").splitlines() if line.strip()]
+
+
+def _extract_price_from_line(line: str) -> Optional[str]:
+    src = str(line or "")
+    patterns = [
+        r"(€\s*\d+(?:[\.,]\d{1,2})?)",
+        r"(\d+(?:[\.,]\d{1,2})?\s*€)",
+        r"(\d+(?:[\.,]\d{1,2})?\s*eur)",
+    ]
+    for pat in patterns:
+        m = re.search(pat, src, flags=re.IGNORECASE)
+        if m:
+            return m.group(1).replace("eur", "EUR")
+    return None
+
+
+def _memory_line_for_service(memory: str, service_item: Optional[Dict[str, Any]]) -> Optional[str]:
+    if not memory or not service_item:
+        return None
+    hay = " ".join([
+        str(service_item.get("key") or ""),
+        str(service_item.get("name_lv") or ""),
+        str(service_item.get("name_ru") or ""),
+        str(service_item.get("name_en") or ""),
+        " ".join(service_item.get("aliases_lv") or []),
+        " ".join(service_item.get("aliases_ru") or []),
+        " ".join(service_item.get("aliases_en") or []),
+    ]).lower()
+    for line in _line_candidates_from_memory(memory):
+        low = line.lower()
+        if any(part and part in low for part in hay.split()):
+            return line
+    return None
+
+
+def barber_service_options_text(lang: str, catalog: List[Dict[str, Any]], max_items: int = 3) -> str:
+    lang = get_lang(lang)
+    names = []
+    for item in catalog[:max_items]:
+        display = service_display_name(item, lang)
+        if display:
+            names.append(display)
+    if not names:
+        return ""
+    if lang == "ru":
+        return ", ".join(names[:-1]) + (" или " + names[-1] if len(names) > 1 else names[0])
+    if lang == "en":
+        return ", ".join(names[:-1]) + (" or " + names[-1] if len(names) > 1 else names[0])
+    return ", ".join(names[:-1]) + (" vai " + names[-1] if len(names) > 1 else names[0])
+
+
+def barber_service_prompt(lang: str, catalog: List[Dict[str, Any]]) -> str:
+    options = barber_service_options_text(lang, catalog)
+    if lang == "ru":
+        return f"На какую услугу вас записать? Например: {options}." if options else "На какую услугу вас записать?"
+    if lang == "en":
+        return f"Which service would you like to book? For example: {options}." if options else "Which service would you like to book?"
+    return f"Uz kādu pakalpojumu vēlaties pierakstīties? Piemēram: {options}." if options else "Uz kādu pakalpojumu vēlaties pierakstīties?"
+
+
+def try_barbershop_faq(
+    msg: str,
+    lang: str,
+    tenant: Dict[str, Any],
+    settings: Dict[str, Any],
+    service_catalog: List[Dict[str, Any]],
+    service_aliases: Dict[str, str],
+    business_memory: str,
+) -> Optional[Dict[str, Any]]:
+    business_type = str(tenant.get("business_type") or "barbershop").strip().lower()
+    if business_type != "barbershop":
+        return None
+
+    low = (msg or "").strip().lower()
+    if not low:
+        return None
+
+    price_markers = ["цена", "сколько стоит", "price", "how much", "cena", "cik maksā", "cik maksa"]
+    location_markers = ["where", "address", "адрес", "где вы", "где находитесь", "kur jūs", "adrese", "kur atrodaties"]
+    services_markers = ["какие услуги", "что делаете", "services", "what services", "pakalpojumi", "ko jūs darāt", "ko jus darat"]
+    duration_markers = ["сколько по времени", "сколько длится", "how long", "duration", "cik ilgi", "ilgums"]
+
+    if any(x in low for x in location_markers):
+        addr = str(settings.get("addr") or tenant.get("address") or "").strip()
+        if not addr:
+            return None
+        if lang == "ru":
+            text = f"Мы находимся по адресу: {addr}."
+        elif lang == "en":
+            text = f"We are located at: {addr}."
+        else:
+            text = f"Mēs atrodamies: {addr}."
+        return {"status": "info", "reply_voice": text, "msg_out": text, "lang": lang}
+
+    if any(x in low for x in services_markers):
+        options = barber_service_options_text(lang, service_catalog, max_items=4)
+        if lang == "ru":
+            text = f"Обычно у нас доступны такие услуги: {options}. Если хотите, могу сразу помочь с записью."
+        elif lang == "en":
+            text = f"We usually offer services such as {options}. If you want, I can help you book right away."
+        else:
+            text = f"Parasti pie mums ir pieejami šādi pakalpojumi: {options}. Ja vēlaties, varu uzreiz palīdzēt ar pierakstu."
+        return {"status": "info", "reply_voice": text, "msg_out": text, "lang": lang}
+
+    if any(x in low for x in duration_markers):
+        service_key = canonical_service_key_from_text(low, service_aliases)
+        service_item = get_service_item_by_key(service_catalog, service_key) if service_key else extract_service_from_text(low, service_catalog, lang)
+        if service_item:
+            duration = service_duration_min(service_item)
+            display = service_display_name(service_item, lang)
+            if lang == "ru":
+                text = f"{display} обычно занимает около {duration} минут."
+            elif lang == "en":
+                text = f"{display} usually takes about {duration} minutes."
+            else:
+                text = f"{display} parasti aizņem apmēram {duration} minūtes."
+            return {"status": "info", "reply_voice": text, "msg_out": text, "lang": lang}
+
+    if any(x in low for x in price_markers):
+        service_key = canonical_service_key_from_text(low, service_aliases)
+        service_item = get_service_item_by_key(service_catalog, service_key) if service_key else extract_service_from_text(low, service_catalog, lang)
+        if service_item:
+            line = _memory_line_for_service(business_memory, service_item)
+            price = _extract_price_from_line(line or "")
+            display = service_display_name(service_item, lang)
+            if price:
+                if lang == "ru":
+                    text = f"{display} стоит {price}."
+                elif lang == "en":
+                    text = f"{display} costs {price}."
+                else:
+                    text = f"{display} maksā {price}."
+            else:
+                duration = service_duration_min(service_item)
+                if lang == "ru":
+                    text = f"По услуге {display} лучше уточнить цену у мастера. По времени это обычно около {duration} минут."
+                elif lang == "en":
+                    text = f"For {display}, it is best to confirm the price with the barber. It usually takes about {duration} minutes."
+                else:
+                    text = f"Par pakalpojumu {display} cenu vislabāk precizēt pie meistara. Parasti tas aizņem apmēram {duration} minūtes."
+            return {"status": "info", "reply_voice": text, "msg_out": text, "lang": lang}
+
+    return None
+
+
 
 LANG_HINTS = {
     "lv": {
@@ -1994,6 +2162,7 @@ def tenant_settings(tenant: Dict[str, Any], lang: str) -> Dict[str, Any]:
         "work_end": work_end,
         "calendar_id": resolve_tenant_calendar_id(tenant) or tenant_calendar_id(tenant),
         "business_rules": tenant_business_rules(tenant, work_start, work_end),
+        "business_type": str(tenant.get("business_type") or "barbershop").strip().lower(),
     }
 
 
@@ -3506,10 +3675,10 @@ def extract_slot_choice(msg: Optional[str], pending: Dict[str, Any]) -> Optional
     return None
 
 
-def prompt_for_state(lang: str, c: Dict[str, Any], pending: Dict[str, Any]) -> str:
+def prompt_for_state(lang: str, c: Dict[str, Any], pending: Dict[str, Any], service_catalog: Optional[List[Dict[str, Any]]] = None) -> str:
     state = conversation_state(c)
     if state == STATE_AWAITING_SERVICE:
-        return t(lang, "ask_booking_service")
+        return barber_service_prompt(lang, service_catalog or default_onboarding_service_catalog("barbershop"))
     if state == STATE_AWAITING_DATE:
         return t(lang, "ask_booking_date")
     if state == STATE_AWAITING_TIME:
@@ -3999,6 +4168,19 @@ def handle_user_text(
             "lang": lang,
         }
 
+    if not active_flow and msg:
+        faq_result = try_barbershop_faq(
+            msg=msg,
+            lang=lang,
+            tenant=tenant,
+            settings=settings,
+            service_catalog=service_catalog,
+            service_aliases=service_aliases,
+            business_memory=business_memory,
+        )
+        if faq_result:
+            return faq_result
+
     llm_hint = get_llm_data() if msg else {}
 
     fresh_booking_start = bool(msg and is_booking_opener(msg))
@@ -4160,7 +4342,7 @@ def handle_user_text(
 
     if c["state"] == STATE_AWAITING_SERVICE and not c.get("service"):
         db_save_conversation(tenant_id, user_key, c)
-        reply_text = t(lang, "ask_booking_service") if is_short_ack_text(msg, lang) else t(lang, "ask_booking_service")
+        reply_text = barber_service_prompt(lang, service_catalog)
         return {
             "status": "need_more",
             "reply_voice": reply_text,
@@ -4282,8 +4464,8 @@ def handle_user_text(
             db_save_conversation(tenant_id, user_key, c)
             return {
                 "status": "need_more",
-                "reply_voice": prompt_for_state(lang, c, pending),
-                "msg_out": prompt_for_state(lang, c, pending),
+                "reply_voice": prompt_for_state(lang, c, pending, service_catalog),
+                "msg_out": prompt_for_state(lang, c, pending, service_catalog),
                 "lang": lang,
             }
         c, pending = remember_booking_service(c, pending, service_item_current, lang)
@@ -4430,7 +4612,7 @@ def handle_user_text(
             db_save_conversation(tenant_id, user_key, c)
             return {
                 "status": "need_more",
-                "reply_voice": t(lang, "invalid_time_choice") + " " + prompt_for_state(lang, c, pending),
+                "reply_voice": t(lang, "invalid_time_choice") + " " + prompt_for_state(lang, c, pending, service_catalog),
                 "msg_out": t(lang, "invalid_time_choice"),
                 "lang": lang,
             }
@@ -4472,10 +4654,11 @@ def handle_user_text(
 
     if fresh_booking_start:
         db_save_conversation(tenant_id, user_key, c)
+        service_prompt = barber_service_prompt(lang, service_catalog) if conversation_state(c) == STATE_AWAITING_SERVICE else prompt_for_state(lang, c, pending, service_catalog)
         return {
             "status": "need_more",
-            "reply_voice": prompt_for_state(lang, c, pending),
-            "msg_out": prompt_for_state(lang, c, pending),
+            "reply_voice": service_prompt,
+            "msg_out": service_prompt,
             "lang": lang,
         }
 
@@ -4497,8 +4680,8 @@ def handle_user_text(
                 db_save_conversation(tenant_id, user_key, c)
                 return {
                     "status": "need_more",
-                    "reply_voice": prompt_for_state(lang, c, pending),
-                    "msg_out": prompt_for_state(lang, c, pending),
+                    "reply_voice": prompt_for_state(lang, c, pending, service_catalog),
+                    "msg_out": prompt_for_state(lang, c, pending, service_catalog),
                     "lang": lang,
                 }
             result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, dt_confirm, require_confirmation=False)
@@ -4512,8 +4695,8 @@ def handle_user_text(
             db_save_conversation(tenant_id, user_key, c)
             return {
                 "status": "need_more",
-                "reply_voice": prompt_for_state(lang, c, c.get("pending") or {}),
-                "msg_out": prompt_for_state(lang, c, c.get("pending") or {}),
+                "reply_voice": prompt_for_state(lang, c, c.get("pending") or {}, service_catalog),
+                "msg_out": prompt_for_state(lang, c, c.get("pending") or {}, service_catalog),
                 "lang": lang,
             }
         db_save_conversation(tenant_id, user_key, c)
@@ -4530,6 +4713,18 @@ def handle_user_text(
     fallback_reply = soft_clarify_for_state(lang, c, c.get("pending") or {}) if is_active_booking_flow(c) else t(lang, "unclear_reply")
     if not is_active_booking_flow(c) and llm_intent == "info" and llm_conf >= LLM_INTENT_MIN_CONFIDENCE and is_hours_question(msg):
         fallback_reply = t(lang, "hours_info", biz=settings["biz_name"], start=settings["work_start"], end=settings["work_end"])
+    if not is_active_booking_flow(c) and msg:
+        faq_result = try_barbershop_faq(
+            msg=msg,
+            lang=lang,
+            tenant=tenant,
+            settings=settings,
+            service_catalog=service_catalog,
+            service_aliases=service_aliases,
+            business_memory=business_memory,
+        )
+        if faq_result:
+            return faq_result
     return {
         "status": fallback_status,
         "reply_voice": fallback_reply,
@@ -5472,6 +5667,7 @@ def onboarding_create_tenant(payload: dict = Body(...)):
     services_defaults = default_onboarding_services(language_value, business_type)
     weekly_hours = default_weekly_hours(work_start_value, work_end_value)
     service_catalog = default_onboarding_service_catalog(business_type)
+    business_memory_defaults = default_business_memory_payload(business_type)
 
     fields = {
         "id": tenant_id,
@@ -5501,6 +5697,9 @@ def onboarding_create_tenant(payload: dict = Body(...)):
         "buffer_minutes": buffer_minutes,
         "service_catalog_json": json.dumps(payload.get("service_catalog_json") or service_catalog, ensure_ascii=False),
         "service_catalog": json.dumps(payload.get("service_catalog_json") or service_catalog, ensure_ascii=False),
+        "business_memory_lv": str(payload.get("business_memory_lv") or business_memory_defaults["lv"]),
+        "business_memory_ru": str(payload.get("business_memory_ru") or business_memory_defaults["ru"]),
+        "business_memory_en": str(payload.get("business_memory_en") or business_memory_defaults["en"]),
     }
 
     insert_cols = []
@@ -6218,6 +6417,9 @@ button.secondary {{ background:#fff; color:#111827; border:1px solid #d1d5db; }}
       <div><label>Days off JSON</label><textarea id="days_off_json"></textarea></div>
       <div><label>Breaks JSON</label><textarea id="breaks_json"></textarea></div>
       <div><label>Holidays JSON</label><textarea id="holidays_json"></textarea></div>
+      <div><label>Business memory LV</label><textarea id="business_memory_lv" placeholder="Piemēram: Vīriešu frizūra 20€, bārda 12€, atrodamies Brīvības ielā 10"></textarea></div>
+      <div><label>Business memory RU</label><textarea id="business_memory_ru" placeholder="Например: Мужская стрижка 20€, борода 12€, адрес: Brīvības iela 10"></textarea></div>
+      <div class="full"><label>Business memory EN</label><textarea id="business_memory_en" placeholder="For example: Men's haircut 20€, beard trim 12€, address: Brīvības iela 10"></textarea></div>
     </div>
     <div class="actions">
       <button onclick="saveConfig()">Save config</button>
@@ -6272,6 +6474,9 @@ async function loadConfig() {{
   document.getElementById('min_notice_minutes').value = t.min_notice_minutes ?? '';
   document.getElementById('buffer_minutes').value = t.buffer_minutes ?? '';
   document.getElementById('service_catalog_json').value = j(t.service_catalog_json || t.service_catalog);
+  document.getElementById('business_memory_lv').value = t.business_memory_lv || '';
+  document.getElementById('business_memory_ru').value = t.business_memory_ru || '';
+  document.getElementById('business_memory_en').value = t.business_memory_en || '';
 }}
 async function saveConfig() {{
   const tid = document.getElementById('tenant_id').value.trim() || 'default';
@@ -6292,7 +6497,10 @@ async function saveConfig() {{
     holidays_json: document.getElementById('holidays_json').value || null,
     min_notice_minutes: document.getElementById('min_notice_minutes').value ? Number(document.getElementById('min_notice_minutes').value) : null,
     buffer_minutes: document.getElementById('buffer_minutes').value ? Number(document.getElementById('buffer_minutes').value) : null,
-    service_catalog_json: document.getElementById('service_catalog_json').value || null
+    service_catalog_json: document.getElementById('service_catalog_json').value || null,
+    business_memory_lv: document.getElementById('business_memory_lv').value || null,
+    business_memory_ru: document.getElementById('business_memory_ru').value || null,
+    business_memory_en: document.getElementById('business_memory_en').value || null
   }};
   const st = document.getElementById('save_status');
   st.className = 'small';
@@ -6373,6 +6581,9 @@ class TenantConfigUpdateRequest(BaseModel):
     min_notice_minutes: Optional[int] = None
     buffer_minutes: Optional[int] = None
     service_catalog_json: Optional[str] = None
+    business_memory_lv: Optional[str] = None
+    business_memory_ru: Optional[str] = None
+    business_memory_en: Optional[str] = None
 
 def _jsonable_tenant_view(tenant: Dict[str, Any]) -> Dict[str, Any]:
     tenant = dict(tenant or {})
@@ -6605,6 +6816,9 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
     add_field("holidays_json", payload.holidays_json)
     add_field("min_notice_minutes", payload.min_notice_minutes)
     add_field("buffer_minutes", payload.buffer_minutes)
+    add_field("business_memory_lv", payload.business_memory_lv)
+    add_field("business_memory_ru", payload.business_memory_ru)
+    add_field("business_memory_en", payload.business_memory_en)
     # support either service_catalog_json or service_catalog depending on schema
     if payload.service_catalog_json is not None:
         if "service_catalog_json" in col_names:
