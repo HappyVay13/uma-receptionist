@@ -2371,6 +2371,32 @@ def build_upsell_followup_reply(lang: str, added: bool, haircut_item: Optional[D
     return f"Labi 👍 Tad pierakstām uz {haircut_name}. Kurā dienā jums būtu ērti?"
 
 
+def build_confirm_upsell_prompt(lang: str, when_text: str, haircut_item: Optional[Dict[str, Any]], beard_item: Optional[Dict[str, Any]]) -> str:
+    haircut_name = service_display_name(haircut_item, lang)
+    beard_name = service_display_name(beard_item, lang) or ("bārdu" if lang == "lv" else "борodu" if lang == "ru" else "a beard trim")
+    if lang == "ru":
+        return f"Отлично — можем записать вас на {haircut_name} {when_text}. Если хотите, можем добавить и {beard_name}. Добавляем?"
+    if lang == "en":
+        return f"Great — we can book your {haircut_name} for {when_text}. If you want, we can add {beard_name} too. Shall I add it?"
+    return f"Lieliski — varam pierakstīt jūs uz {haircut_name} {when_text}. Ja vēlaties, varam pievienot arī {beard_name}. Vai pievienojam?"
+
+
+def build_confirm_upsell_resolution(lang: str, when_text: str, added: bool, haircut_item: Optional[Dict[str, Any]], beard_item: Optional[Dict[str, Any]]) -> str:
+    haircut_name = service_display_name(haircut_item, lang)
+    beard_name = service_display_name(beard_item, lang) or ("bārdu" if lang == "lv" else "бороду" if lang == "ru" else "a beard trim")
+    if added:
+        if lang == "ru":
+            return f"Отлично 👍 Добавляю {beard_name}. Тогда подтверждаем запись на {when_text}?"
+        if lang == "en":
+            return f"Great 👍 I’ll add {beard_name}. Shall I confirm the booking for {when_text}?"
+        return f"Lieliski 👍 Pievienoju arī {beard_name}. Vai apstiprinām pierakstu uz {when_text}?"
+    if lang == "ru":
+        return f"Хорошо 👍 Оставляем {haircut_name}. Подтверждаем запись на {when_text}?"
+    if lang == "en":
+        return f"No problem 👍 We’ll keep {haircut_name}. Shall I confirm the booking for {when_text}?"
+    return f"Labi 👍 Paliekam pie {haircut_name}. Vai apstiprinām pierakstu uz {when_text}?"
+
+
 def service_catalog_summary(catalog: List[Dict[str, Any]], lang: str) -> str:
     parts = []
     for item in catalog:
@@ -3974,6 +4000,27 @@ def book_appointment_for_datetime(
         c["name"] = final_name
         c["service"] = pending["service"]
         c["datetime_iso"] = dt_start.isoformat()
+
+        beard_item = find_service_item_by_group(service_catalog, "beard")
+        if (
+            service_group_key(final_service_item) == "haircut"
+            and beard_item
+            and not addon_service_item
+            and not pending.get("confirm_upsell_done")
+        ):
+            pending["pending_confirm_upsell"] = True
+            pending["confirm_upsell_done"] = True
+            c["pending"] = pending
+            when_txt = format_dt_short(dt_start)
+            reply_text = build_confirm_upsell_prompt(lang, when_txt, final_service_item, beard_item)
+            return {
+                "status": "need_more",
+                "reply_voice": reply_text,
+                "msg_out": reply_text,
+                "lang": lang,
+                "preserve_text": True,
+            }
+
         return {
             "status": "need_more",
             "reply_voice": t(lang, "ask_booking_confirm", when=format_dt_short(dt_start), service=final_service),
@@ -4035,6 +4082,8 @@ def book_appointment_for_datetime(
     pending.pop("preferred_time_window", None)
     pending.pop("pending_upsell", None)
     pending.pop("upsell_shown", None)
+    pending.pop("pending_confirm_upsell", None)
+    pending.pop("confirm_upsell_done", None)
     pending.pop("addon_service", None)
     clear_offered_slots(pending)
     was_rescheduled = bool(pending.get("reschedule_event_id"))
@@ -4363,18 +4412,6 @@ def handle_user_text(
         if service_item and not c.get("service"):
             c, pending = remember_booking_service(c, pending, service_item, lang)
             clear_offered_slots(pending)
-            service_group = service_group_key(service_item)
-            beard_item = find_service_item_by_group(service_catalog, "beard")
-            if service_group == "haircut" and beard_item and not pending.get("upsell_shown"):
-                pending["booking_intent"] = True
-                pending["pending_upsell"] = True
-                pending["upsell_shown"] = True
-                pending.pop("addon_service", None)
-                c["pending"] = pending
-                c["state"] = STATE_AWAITING_DATE
-                db_save_conversation(tenant_id, user_key, c)
-                reply_text = build_barbershop_upsell_prompt(lang, service_item, beard_item)
-                return {"status": "need_more", "reply_voice": reply_text, "msg_out": reply_text, "lang": lang, "preserve_text": True}
             candidate_dt = parse_dt_any_tz(str(pending.get("candidate_datetime_iso") or "").strip())
             if candidate_dt:
                 pending.pop("candidate_datetime_iso", None)
@@ -4454,58 +4491,6 @@ def handle_user_text(
 
     pending = c.get("pending") or {}
 
-    # Safety net: if a base haircut has already been selected but the upsell
-    # prompt was skipped by an earlier branch, show it BEFORE asking for date.
-    # This protects flows like: booking -> service selected -> bot jumps straight
-    # to AWAITING_DATE without offering beard trim.
-    if (
-        c.get("service")
-        and c["state"] in (STATE_AWAITING_SERVICE, STATE_AWAITING_DATE)
-        and not pending.get("pending_upsell")
-        and not pending.get("upsell_shown")
-        and not pending.get("addon_service")
-    ):
-        current_item = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
-        beard_item = find_service_item_by_group(service_catalog, "beard")
-        if service_group_key(current_item) == "haircut" and beard_item:
-            pending["booking_intent"] = True
-            pending["pending_upsell"] = True
-            pending["upsell_shown"] = True
-            c["pending"] = pending
-            c["state"] = STATE_AWAITING_DATE
-            db_save_conversation(tenant_id, user_key, c)
-            reply_text = build_barbershop_upsell_prompt(lang, current_item, beard_item)
-            return {"status": "need_more", "reply_voice": reply_text, "msg_out": reply_text, "lang": lang, "preserve_text": True}
-
-    # Handle barber upsell reply before normal date parsing.
-    if pending.get("pending_upsell"):
-        haircut_item = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
-        beard_item = find_service_item_by_group(service_catalog, "beard")
-        if is_yes_text(msg, lang):
-            pending["pending_upsell"] = False
-            if beard_item:
-                pending["addon_service"] = str(beard_item.get("key") or "").strip()
-            c["pending"] = pending
-            c["state"] = STATE_AWAITING_DATE
-            db_save_conversation(tenant_id, user_key, c)
-            reply_text = build_upsell_followup_reply(lang, True, haircut_item, beard_item)
-            return {"status": "need_more", "reply_voice": reply_text, "msg_out": reply_text, "lang": lang, "preserve_text": True}
-        if is_no_text(msg, lang):
-            pending["pending_upsell"] = False
-            pending.pop("addon_service", None)
-            c["pending"] = pending
-            c["state"] = STATE_AWAITING_DATE
-            db_save_conversation(tenant_id, user_key, c)
-            reply_text = build_upsell_followup_reply(lang, False, haircut_item, beard_item)
-            return {"status": "need_more", "reply_voice": reply_text, "msg_out": reply_text, "lang": lang, "preserve_text": True}
-        # if user ignores upsell and provides a date/time, treat that as implicit 'no'
-        if msg and (date_only_dt_for_msg or natural_dt_for_msg or time_window_for_msg or explicit_time_present):
-            pending["pending_upsell"] = False
-            pending.pop("addon_service", None)
-            c["pending"] = pending
-            c["state"] = STATE_AWAITING_DATE
-            pending = c.get("pending") or {}
-
     if c["state"] == STATE_AWAITING_SERVICE and not c.get("service"):
         db_save_conversation(tenant_id, user_key, c)
         reply_text = barber_service_prompt(lang, service_catalog)
@@ -4578,7 +4563,7 @@ def handle_user_text(
             ) if calendar_ready else []
             c["state"] = STATE_AWAITING_TIME
             c["datetime_iso"] = None
-            if is_holiday_for_rules(base_date, settings.get("business_rules")):
+            if is_closed_day_for_rules(base_date, settings.get("business_rules")):
                 c["pending"] = pending
                 c["state"] = STATE_AWAITING_DATE
                 db_save_conversation(tenant_id, user_key, c)
@@ -4587,6 +4572,7 @@ def handle_user_text(
                     "reply_voice": t(lang, "holiday_closed_voice"),
                     "msg_out": t(lang, "holiday_closed_text"),
                     "lang": lang,
+                    "preserve_text": True,
                 }
             if len(day_slots) >= 3:
                 pending = set_offered_slots(pending, day_slots[:3])
@@ -4830,6 +4816,37 @@ def handle_user_text(
 
     if msg and conversation_state(c) == STATE_AWAITING_CONFIRM:
         confirm_iso = str(pending.get("confirm_slot_iso") or c.get("datetime_iso") or "").strip()
+        dt_confirm = parse_dt_any_tz(confirm_iso)
+        if pending.get("pending_confirm_upsell") and dt_confirm:
+            haircut_item = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
+            beard_item = find_service_item_by_group(service_catalog, "beard")
+            when_txt = format_dt_short(dt_confirm)
+            llm_confirmation = (llm_hint or {}).get("confirmation")
+            if is_yes_text(msg, lang) or llm_confirmation == "yes":
+                pending["pending_confirm_upsell"] = False
+                if beard_item:
+                    pending["addon_service"] = str(beard_item.get("key") or "").strip()
+                c["pending"] = pending
+                db_save_conversation(tenant_id, user_key, c)
+                reply_text = build_confirm_upsell_resolution(lang, when_txt, True, haircut_item, beard_item)
+                return {"status": "need_more", "reply_voice": reply_text, "msg_out": reply_text, "lang": lang, "preserve_text": True}
+            if is_no_text(msg, lang) or llm_confirmation == "no":
+                pending["pending_confirm_upsell"] = False
+                pending.pop("addon_service", None)
+                c["pending"] = pending
+                db_save_conversation(tenant_id, user_key, c)
+                reply_text = build_confirm_upsell_resolution(lang, when_txt, False, haircut_item, beard_item)
+                return {"status": "need_more", "reply_voice": reply_text, "msg_out": reply_text, "lang": lang, "preserve_text": True}
+            if is_short_ack_text(msg, lang):
+                pending["pending_confirm_upsell"] = False
+                pending.pop("addon_service", None)
+                c["pending"] = pending
+                db_save_conversation(tenant_id, user_key, c)
+                # treat generic ack as plain confirm path without addon
+            else:
+                db_save_conversation(tenant_id, user_key, c)
+                return {"status": "need_more", "reply_voice": t(lang, "repeat_yes_no"), "msg_out": t(lang, "repeat_yes_no"), "lang": lang}
+
         if is_short_ack_text(msg, lang) and not is_yes_text(msg, lang):
             db_save_conversation(tenant_id, user_key, c)
             return {
@@ -4838,7 +4855,6 @@ def handle_user_text(
                 "msg_out": t(lang, "soft_clarify_confirm"),
                 "lang": lang,
             }
-        dt_confirm = parse_dt_any_tz(confirm_iso)
         llm_confirmation = (llm_hint or {}).get("confirmation")
         if is_yes_text(msg, lang) or llm_confirmation == "yes":
             if not dt_confirm:
