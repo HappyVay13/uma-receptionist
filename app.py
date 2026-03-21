@@ -5118,6 +5118,102 @@ def onboarding_status_payload(tenant: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+PLAN_CATALOG = {
+    "starter": {
+        "dialogs_per_month": 300,
+        "llm_calls_per_month": 0,
+        "llm_mode": "off",
+        "includes_advanced_ai": False,
+    },
+    "pro": {
+        "dialogs_per_month": 1000,
+        "llm_calls_per_month": 800,
+        "llm_mode": "smart",
+        "includes_advanced_ai": True,
+    },
+    "ai": {
+        "dialogs_per_month": 2000,
+        "llm_calls_per_month": 2500,
+        "llm_mode": "full",
+        "includes_advanced_ai": True,
+    },
+    "business": {
+        "dialogs_per_month": 3000,
+        "llm_calls_per_month": 5000,
+        "llm_mode": "full",
+        "includes_advanced_ai": True,
+    },
+}
+
+def tenant_plan_meta(tenant: Dict[str, Any]) -> Dict[str, Any]:
+    tenant = normalize_tenant_saas_fields(tenant or {})
+    plan = str(tenant.get("plan") or "starter").strip().lower()
+    defaults = PLAN_CATALOG.get(plan, PLAN_CATALOG["starter"])
+    return {
+        "plan": plan,
+        "subscription_status": str(tenant.get("subscription_status") or "trial").strip().lower() or "trial",
+        "limits": dict(defaults),
+    }
+
+
+def tenant_missing_setup_items(tenant: Dict[str, Any]) -> List[str]:
+    tenant = normalize_tenant_saas_fields(tenant or {})
+    missing: List[str] = []
+    if not str(tenant.get("business_name") or "").strip():
+        missing.append("business_name")
+    if not str(tenant.get("timezone") or "").strip():
+        missing.append("timezone")
+    if not str(tenant.get("work_start") or "").strip():
+        missing.append("work_start")
+    if not str(tenant.get("work_end") or "").strip():
+        missing.append("work_end")
+    if not tenant_google_connected_effective(tenant):
+        missing.append("google_connected")
+    if not str(tenant.get("calendar_id") or "").strip():
+        missing.append("calendar_id")
+    return missing
+
+
+def tenant_ready_status_payload(tenant: Dict[str, Any]) -> Dict[str, Any]:
+    tenant = normalize_tenant_saas_fields(tenant or {})
+    missing = tenant_missing_setup_items(tenant)
+    onboarding = onboarding_status_payload(tenant)
+    return {
+        "tenant_id": onboarding.get("tenant_id"),
+        "ready": len(missing) == 0,
+        "missing": missing,
+        "next_step": onboarding.get("next_step"),
+        "google_connected": onboarding.get("google_connected"),
+        "calendar_selected": onboarding.get("calendar_selected"),
+        "onboarding_completed": onboarding.get("onboarding_completed"),
+    }
+
+
+def tenant_phone_routes_count(tenant_id: str) -> int:
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT COUNT(*) FROM phone_routes WHERE tenant_id=:tenant_id"),
+                {"tenant_id": tenant_id},
+            ).fetchone()
+        return int(row[0] or 0) if row else 0
+    except Exception:
+        return 0
+
+
+def tenant_overview_payload(tenant: Dict[str, Any]) -> Dict[str, Any]:
+    tenant = normalize_tenant_saas_fields(tenant or {})
+    tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip()
+    return {
+        "tenant": _jsonable_tenant_view(tenant),
+        "onboarding": onboarding_status_payload(tenant),
+        "readiness": tenant_ready_status_payload(tenant),
+        "plan_meta": tenant_plan_meta(tenant),
+        "links": onboarding_links_payload(tenant_id),
+        "phone_routes_count": tenant_phone_routes_count(tenant_id) if tenant_id else 0,
+    }
+
+
 @app.get("/onboarding/status")
 def onboarding_status(tenant_id: str):
     tenant = sync_tenant_onboarding_state((tenant_id or "").strip())
@@ -5153,6 +5249,20 @@ def onboarding_finish(payload: dict = Body(...)):
         "tenant_id": tenant_id,
         "onboarding": onboarding_status_payload(tenant),
     }
+
+
+@app.get("/tenant/status")
+def tenant_status(tenant_id: str = TENANT_ID_DEFAULT):
+    tenant = get_tenant_or_404((tenant_id or "").strip() or TENANT_ID_DEFAULT)
+    tenant = sync_tenant_onboarding_state(tenant["_id"])
+    return tenant_ready_status_payload(tenant)
+
+
+@app.get("/tenant/overview")
+def tenant_overview(tenant_id: str = TENANT_ID_DEFAULT):
+    tenant = get_tenant_or_404((tenant_id or "").strip() or TENANT_ID_DEFAULT)
+    tenant = sync_tenant_onboarding_state(tenant["_id"])
+    return tenant_overview_payload(tenant)
 
 @app.get("/onboarding/ui", response_class=HTMLResponse)
 def onboarding_ui(tenant_id: str = ""):
@@ -5421,6 +5531,8 @@ def onboarding_create_tenant(payload: dict = Body(...)):
         "language": language_value,
         "timezone": timezone_value,
         "onboarding": onboarding_status_payload(tenant),
+        "readiness": tenant_ready_status_payload(tenant),
+        "plan_meta": tenant_plan_meta(tenant),
         "links": onboarding_links_payload(tenant_id),
     }
 
@@ -5770,10 +5882,17 @@ def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
     .empty {{ color:#9ca3af; font-style:italic; padding: 8px 0; }}
     .chart-wrap {{ height: 280px; }}
     .mini-chart-wrap {{ height: 240px; }}
-    .badge {{ display:inline-block; font-size:12px; color:#374151; background:#f3f4f6; border:1px solid #e5e7eb; padding:6px 10px; border-radius:999px; }}
+    .badge {{ display:inline-block; font-size:12px; color:#374151; background:#f3f4f6; border:1px solid #e5e7eb; padding:6px 10px; border-radius:999px; margin-right:6px; margin-bottom:6px; }}
+    .ok {{ color:#065f46; background:#ecfdf5; border-color:#a7f3d0; }}
+    .warn {{ color:#92400e; background:#fffbeb; border-color:#fde68a; }}
+    .err {{ color:#991b1b; background:#fef2f2; border-color:#fecaca; }}
+    .status-grid {{ display:grid; grid-template-columns: 1.2fr .8fr; gap:16px; }}
+    .status-list {{ margin:8px 0 0 18px; color:#6b7280; }}
+    .nav-links a {{ margin-right:10px; }}
     @media (max-width: 1120px) {{
       .grid-3 {{ grid-template-columns: 1fr; }}
       .grid-2 {{ grid-template-columns: 1fr; }}
+      .status-grid {{ grid-template-columns: 1fr; }}
       .metrics {{ grid-template-columns: repeat(2, minmax(0,1fr)); }}
     }}
   </style>
@@ -5802,12 +5921,14 @@ def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
             <option value="50">50</option>
           </select>
         </div>
-        <div style="display:flex; gap:12px; align-items:end; margin-left:auto;">
+        <div style="display:flex; gap:12px; align-items:end; margin-left:auto; flex-wrap:wrap;">
           <button onclick="loadAll()">Refresh</button>
-          <button class="secondary" onclick="window.location='/tenant/config/ui?tenant_id='+encodeURIComponent(document.getElementById('tenant').value.trim() || 'default')">Open tenant config</button>
+          <button class="secondary" onclick="openPath('/tenants/ui')">Tenants</button>
+          <button class="secondary" onclick="openPath('/onboarding/ui?tenant_id='+encodeURIComponent(currentTenant()))">Onboarding</button>
+          <button class="secondary" onclick="openPath('/tenant/config/ui?tenant_id='+encodeURIComponent(currentTenant()))">Tenant config</button>
         </div>
       </div>
-      <div class="muted">JSON endpoints:
+      <div class="muted nav-links">JSON endpoints:
         <a id="lnk_analytics" href="#">analytics</a> ·
         <a id="lnk_usage" href="#">usage</a> ·
         <a id="lnk_activity" href="#">activity</a> ·
@@ -5816,9 +5937,47 @@ def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
         <a id="lnk_conversations" href="#">conversations</a> ·
         <a id="lnk_tenant" href="#">tenant config</a> ·
         <a id="lnk_tenant_ui" href="#">tenant config ui</a> ·
-        <a id="lnk_onboarding" href="/onboarding/ui">create business</a>
+        <a id="lnk_status" href="#">tenant status</a> ·
+        <a id="lnk_overview" href="#">tenant overview</a> ·
+        <a id="lnk_tenants_ui" href="/tenants/ui">tenants ui</a>
       </div>
-      <div class="metrics" style="margin-top:16px;">
+    </div>
+
+    <div class="status-grid">
+      <div class="panel">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:12px;">
+          <div>
+            <h3 class="section-title" id="biz_title">Business status</h3>
+            <div class="muted" id="biz_sub">Loading tenant status…</div>
+          </div>
+          <div id="ready_badges"></div>
+        </div>
+        <div class="metrics" style="margin-top:14px;">
+          <div class="card"><div>Plan</div><div id="m_plan" class="num" style="font-size:22px">-</div><div id="m_plan_sub" class="sub"></div></div>
+          <div class="card"><div>Dialogs limit</div><div id="m_limit_dialogs" class="num">-</div><div class="sub">Monthly cap by plan</div></div>
+          <div class="card"><div>LLM mode</div><div id="m_llm_mode" class="num" style="font-size:22px">-</div><div id="m_llm_calls" class="sub"></div></div>
+          <div class="card"><div>Phone routes</div><div id="m_routes" class="num">-</div><div class="sub">Connected incoming numbers</div></div>
+        </div>
+        <div style="margin-top:14px;">
+          <div class="muted">Missing setup items</div>
+          <ul id="missing_list" class="status-list"></ul>
+        </div>
+      </div>
+      <div class="panel">
+        <h3 class="section-title">Setup checkpoints</h3>
+        <div id="checkpoint_block"></div>
+        <div style="margin-top:14px;" class="muted">Quick actions</div>
+        <div style="margin-top:8px; display:flex; flex-wrap:wrap; gap:8px;">
+          <button class="secondary" onclick="openPath(document.getElementById('lnk_status').href)">Open status JSON</button>
+          <button class="secondary" onclick="openPath(document.getElementById('lnk_overview').href)">Open overview JSON</button>
+          <button class="secondary" onclick="openPath('/google/connect?tenant_id='+encodeURIComponent(currentTenant()))">Connect Google</button>
+          <button class="secondary" onclick="openPath('/google/calendars/ui?tenant_id='+encodeURIComponent(currentTenant()))">Select calendar</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="metrics">
         <div class="card"><div>Total requests</div><div id="m_requests" class="num">-</div><div class="sub">All-time requests</div></div>
         <div class="card"><div>Total bookings</div><div id="m_bookings" class="num">-</div><div class="sub">All-time successful bookings</div></div>
         <div class="card"><div>Conversion</div><div id="m_conv" class="num">-</div><div class="sub">All-time booking rate</div></div>
@@ -5840,12 +5999,10 @@ def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
         </div>
         <div class="chart-wrap"><canvas id="trend_chart"></canvas></div>
       </div>
-
       <div class="panel">
         <h3 class="section-title">Channel mix</h3>
         <div class="mini-chart-wrap"><canvas id="channel_chart"></canvas></div>
       </div>
-
       <div class="panel">
         <h3 class="section-title">Top services</h3>
         <div class="mini-chart-wrap"><canvas id="services_chart"></canvas></div>
@@ -5855,136 +6012,79 @@ def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
     <div class="grid-2">
       <div class="panel">
         <h3 class="section-title">Recent bookings</h3>
-        <table id="bookings_tbl">
-          <thead><tr><th>User</th><th>Service</th><th>Date/Time</th><th>Status</th><th>Created</th></tr></thead>
-          <tbody></tbody>
-        </table>
+        <table id="bookings_tbl"><thead><tr><th>User</th><th>Service</th><th>Date/Time</th><th>Status</th><th>Created</th></tr></thead><tbody></tbody></table>
       </div>
-
       <div class="panel">
         <h3 class="section-title">Top services (table)</h3>
-        <table id="services_tbl">
-          <thead><tr><th>Service</th><th>Bookings</th></tr></thead>
-          <tbody></tbody>
-        </table>
+        <table id="services_tbl"><thead><tr><th>Service</th><th>Bookings</th></tr></thead><tbody></tbody></table>
       </div>
     </div>
 
     <div class="grid-2">
       <div class="panel">
         <h3 class="section-title">Recent activity</h3>
-        <table id="activity_tbl">
-          <thead><tr><th>Time</th><th>Type</th><th>Channel</th><th>User</th><th>Message</th><th>Status</th></tr></thead>
-          <tbody></tbody>
-        </table>
+        <table id="activity_tbl"><thead><tr><th>Time</th><th>Type</th><th>Channel</th><th>User</th><th>Message</th><th>Status</th></tr></thead><tbody></tbody></table>
       </div>
-
       <div class="panel">
         <h3 class="section-title">Daily usage (table)</h3>
-        <table id="daily_tbl">
-          <thead><tr><th>Date</th><th>Requests</th><th>Bookings</th><th>Cancelled</th></tr></thead>
-          <tbody></tbody>
-        </table>
+        <table id="daily_tbl"><thead><tr><th>Date</th><th>Requests</th><th>Bookings</th><th>Cancelled</th></tr></thead><tbody></tbody></table>
       </div>
     </div>
 
     <div class="panel">
       <h3 class="section-title">Recent conversations</h3>
-      <table id="conv_tbl">
-        <thead><tr><th>Time</th><th>User</th><th>Channel</th><th>User message</th><th>AI reply</th><th>Status</th></tr></thead>
-        <tbody></tbody>
-      </table>
+      <table id="conv_tbl"><thead><tr><th>Time</th><th>User</th><th>Channel</th><th>User message</th><th>AI reply</th><th>Status</th></tr></thead><tbody></tbody></table>
     </div>
   </div>
 <script>
 let trendChart = null;
 let channelChart = null;
 let servicesChart = null;
-
-function esc(v) {{
-  if (v === null || v === undefined) return '';
-  return String(v)
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;');
-}}
-function setEmpty(tbody, colSpan, label='No data yet') {{
-  tbody.innerHTML = `<tr><td colspan="${{colSpan}}" class="empty">${{esc(label)}}</td></tr>`;
-}}
-async function fetchJson(url) {{
-  const r = await fetch(url);
-  if (!r.ok) {{
-    const text = await r.text();
-    throw new Error(text || `HTTP ${{r.status}}`);
-  }}
-  return r.json();
-}}
-function destroyIf(chartObj) {{
-  if (chartObj) chartObj.destroy();
-}}
-function renderTrendChart(daily) {{
-  const ctx = document.getElementById('trend_chart').getContext('2d');
-  destroyIf(trendChart);
-  trendChart = new Chart(ctx, {{
-    type: 'line',
-    data: {{
-      labels: (daily || []).map(x => x.date || ''),
-      datasets: [
-        {{ label: 'Requests', data: (daily || []).map(x => x.requests || 0), borderWidth: 2, tension: 0.3 }},
-        {{ label: 'Bookings', data: (daily || []).map(x => x.bookings || 0), borderWidth: 2, tension: 0.3 }},
-        {{ label: 'Cancelled', data: (daily || []).map(x => x.cancelled || 0), borderWidth: 2, tension: 0.3 }}
-      ]
-    }},
-    options: {{
-      responsive: true,
-      maintainAspectRatio: false,
-      interaction: {{ mode: 'index', intersect: false }},
-      plugins: {{ legend: {{ position: 'bottom' }} }},
-      scales: {{ y: {{ beginAtZero: true, ticks: {{ precision: 0 }} }} }}
-    }}
-  }});
-}}
-function renderChannelChart(channels) {{
-  const ctx = document.getElementById('channel_chart').getContext('2d');
-  destroyIf(channelChart);
-  channelChart = new Chart(ctx, {{
-    type: 'doughnut',
-    data: {{
-      labels: (channels || []).map(x => x.channel || 'unknown'),
-      datasets: [{{ data: (channels || []).map(x => x.count || 0), borderWidth: 1 }}]
-    }},
-    options: {{
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {{ legend: {{ position: 'bottom' }} }}
-    }}
-  }});
-}}
-function renderServicesChart(items) {{
-  const ctx = document.getElementById('services_chart').getContext('2d');
-  destroyIf(servicesChart);
-  servicesChart = new Chart(ctx, {{
-    type: 'bar',
-    data: {{
-      labels: (items || []).map(x => x.service || 'unknown'),
-      datasets: [{{ label: 'Bookings', data: (items || []).map(x => x.count || 0), borderWidth: 1 }}]
-    }},
-    options: {{
-      responsive: true,
-      maintainAspectRatio: false,
-      indexAxis: 'y',
-      plugins: {{ legend: {{ display: false }} }},
-      scales: {{ x: {{ beginAtZero: true, ticks: {{ precision: 0 }} }} }}
-    }}
-  }});
+function currentTenant() {{ return document.getElementById('tenant').value.trim() || 'default'; }}
+function openPath(url) {{ if (url) window.location = url; }}
+function esc(v) {{ if (v === null || v === undefined) return ''; return String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'", '&#39;'); }}
+function setEmpty(tbody, colSpan, label='No data yet') {{ tbody.innerHTML = `<tr><td colspan="${{colSpan}}" class="empty">${{esc(label)}}</td></tr>`; }}
+async function fetchJson(url) {{ const r = await fetch(url); if (!r.ok) {{ const text = await r.text(); throw new Error(text || `HTTP ${{r.status}}`); }} return r.json(); }}
+function destroyIf(chartObj) {{ if (chartObj) chartObj.destroy(); }}
+function statusBadge(label, cls) {{ return `<span class="badge ${{cls||''}}">${{esc(label)}}</span>`; }}
+function renderTrendChart(daily) {{ const ctx = document.getElementById('trend_chart').getContext('2d'); destroyIf(trendChart); trendChart = new Chart(ctx, {{ type:'line', data:{{ labels:(daily||[]).map(x=>x.date||''), datasets:[{{label:'Requests',data:(daily||[]).map(x=>x.requests||0),borderWidth:2,tension:0.3}},{{label:'Bookings',data:(daily||[]).map(x=>x.bookings||0),borderWidth:2,tension:0.3}},{{label:'Cancelled',data:(daily||[]).map(x=>x.cancelled||0),borderWidth:2,tension:0.3}}]}}, options:{{responsive:true,maintainAspectRatio:false,interaction:{{mode:'index',intersect:false}},plugins:{{legend:{{position:'bottom'}}}},scales:{{y:{{beginAtZero:true,ticks:{{precision:0}}}}}} }}); }}
+function renderChannelChart(channels) {{ const ctx = document.getElementById('channel_chart').getContext('2d'); destroyIf(channelChart); channelChart = new Chart(ctx, {{ type:'doughnut', data:{{labels:(channels||[]).map(x=>x.channel||'unknown'), datasets:[{{data:(channels||[]).map(x=>x.count||0), borderWidth:1}}]}}, options:{{responsive:true,maintainAspectRatio:false,plugins:{{legend:{{position:'bottom'}}}} }}); }}
+function renderServicesChart(items) {{ const ctx = document.getElementById('services_chart').getContext('2d'); destroyIf(servicesChart); servicesChart = new Chart(ctx, {{ type:'bar', data:{{labels:(items||[]).map(x=>x.service||'unknown'), datasets:[{{label:'Bookings',data:(items||[]).map(x=>x.count||0), borderWidth:1}}]}}, options:{{responsive:true,maintainAspectRatio:false,indexAxis:'y',plugins:{{legend:{{display:false}}}},scales:{{x:{{beginAtZero:true,ticks:{{precision:0}}}}}} }}); }}
+function renderOverview(ov) {{
+  const tenant = ov?.tenant || {{}};
+  const readiness = ov?.readiness || {{}};
+  const onboarding = ov?.onboarding || {{}};
+  const planMeta = ov?.plan_meta || {{}};
+  const limits = planMeta?.limits || {{}};
+  document.getElementById('biz_title').textContent = tenant.business_name || tenant._id || currentTenant();
+  document.getElementById('biz_sub').textContent = `Tenant ${{tenant._id || currentTenant()}} · timezone ${{tenant.timezone || '—'}} · language ${{tenant.language || '—'}}`;
+  document.getElementById('m_plan').textContent = planMeta.plan || 'starter';
+  document.getElementById('m_plan_sub').textContent = planMeta.subscription_status || 'trial';
+  document.getElementById('m_limit_dialogs').textContent = limits.dialogs_per_month ?? '-';
+  document.getElementById('m_llm_mode').textContent = limits.llm_mode || '-';
+  document.getElementById('m_llm_calls').textContent = `LLM calls/month: ${{limits.llm_calls_per_month ?? 0}}`;
+  document.getElementById('m_routes').textContent = ov?.phone_routes_count ?? 0;
+  const badges = [];
+  badges.push(readiness.ready ? statusBadge('Ready','ok') : statusBadge('Setup incomplete','warn'));
+  badges.push(onboarding.google_connected ? statusBadge('Google connected','ok') : statusBadge('Google pending','warn'));
+  badges.push(onboarding.calendar_selected ? statusBadge('Calendar selected','ok') : statusBadge('Calendar missing','warn'));
+  document.getElementById('ready_badges').innerHTML = badges.join(' ');
+  const ml = document.getElementById('missing_list');
+  ml.innerHTML = '';
+  const missing = Array.isArray(readiness.missing) ? readiness.missing : [];
+  if (!missing.length) {{ ml.innerHTML = '<li>No blocking setup issues</li>'; }} else {{ missing.forEach(x => {{ const li = document.createElement('li'); li.textContent = x; ml.appendChild(li); }}); }}
+  const checkpoints = [];
+  checkpoints.push(`<div>${{statusBadge(onboarding.google_connected ? 'Google connected' : 'Google not connected', onboarding.google_connected ? 'ok' : 'warn')}}</div>`);
+  checkpoints.push(`<div>${{statusBadge(onboarding.calendar_selected ? 'Calendar selected' : 'Calendar not selected', onboarding.calendar_selected ? 'ok' : 'warn')}}</div>`);
+  checkpoints.push(`<div>${{statusBadge(onboarding.onboarding_completed ? 'Onboarding completed' : 'Onboarding in progress', onboarding.onboarding_completed ? 'ok' : 'warn')}}</div>`);
+  checkpoints.push(`<div class="muted" style="margin-top:8px;">Next step: ${{esc(onboarding.next_step || readiness.next_step || 'done')}}</div>`);
+  checkpoints.push(`<div class="muted">Owner: ${{esc(tenant.owner_email || '—')}} · Phone: ${{esc(tenant.phone_number || '—')}}</div>`);
+  document.getElementById('checkpoint_block').innerHTML = checkpoints.join('');
 }}
 async function loadAll() {{
-  const tenant = document.getElementById('tenant').value.trim() || 'default';
+  const tenant = currentTenant();
   const days = document.getElementById('days').value || '14';
   const limit = document.getElementById('limit').value || '20';
-
   document.getElementById('usage_badge').textContent = `${{days}} day window`;
   document.getElementById('lnk_analytics').href = `/dashboard/analytics?tenant_id=${{encodeURIComponent(tenant)}}`;
   document.getElementById('lnk_usage').href = `/dashboard/usage?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
@@ -5994,21 +6094,20 @@ async function loadAll() {{
   document.getElementById('lnk_conversations').href = `/dashboard/conversations?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
   document.getElementById('lnk_tenant').href = `/tenant/config?tenant_id=${{encodeURIComponent(tenant)}}`;
   document.getElementById('lnk_tenant_ui').href = `/tenant/config/ui?tenant_id=${{encodeURIComponent(tenant)}}`;
-  document.getElementById('lnk_onboarding').href = `/onboarding/ui?tenant_id=${{encodeURIComponent(tenant)}}`;
-
-  const existingBanner = document.getElementById('dash_error_banner');
-  if (existingBanner) existingBanner.remove();
-
+  document.getElementById('lnk_status').href = `/tenant/status?tenant_id=${{encodeURIComponent(tenant)}}`;
+  document.getElementById('lnk_overview').href = `/tenant/overview?tenant_id=${{encodeURIComponent(tenant)}}`;
+  const existingBanner = document.getElementById('dash_error_banner'); if (existingBanner) existingBanner.remove();
   try {{
-    const [a,u,act,b,c,chartData] = await Promise.all([
+    const [a,u,act,b,c,chartData,ov] = await Promise.all([
       fetchJson(`/dashboard/analytics?tenant_id=${{encodeURIComponent(tenant)}}`),
       fetchJson(`/dashboard/usage?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`),
       fetchJson(`/dashboard/activity?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`),
       fetchJson(`/dashboard/bookings?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`),
       fetchJson(`/dashboard/conversations?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`),
-      fetchJson(`/dashboard/chart-data?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`)
+      fetchJson(`/dashboard/chart-data?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`),
+      fetchJson(`/tenant/overview?tenant_id=${{encodeURIComponent(tenant)}}`)
     ]);
-
+    renderOverview(ov);
     document.getElementById('m_requests').textContent = a?.total_requests ?? '-';
     document.getElementById('m_bookings').textContent = a?.total_bookings ?? '-';
     document.getElementById('m_conv').textContent = `${{a?.conversion_rate ?? 0}}%`;
@@ -6019,70 +6118,19 @@ async function loadAll() {{
     const topChannelObj = Array.isArray(u?.channels) && u.channels.length ? u.channels[0] : null;
     document.getElementById('m_channel').textContent = topChannelObj?.channel || '-';
     document.getElementById('m_channel_sub').textContent = topChannelObj ? `${{topChannelObj.count || 0}} events in selected window` : '';
-
     renderTrendChart(chartData?.daily || u?.daily || []);
     renderChannelChart(chartData?.channels || u?.channels || []);
     renderServicesChart(chartData?.top_services || u?.top_services || []);
-
-    const bt = document.querySelector('#bookings_tbl tbody');
-    bt.innerHTML='';
-    if (!Array.isArray(b?.items) || !b.items.length) {{
-      setEmpty(bt, 5, 'No bookings yet');
-    }} else {{
-      b.items.forEach(item => {{
-        const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${{esc(item?.client_name || item?.user_id || '')}}</td><td>${{esc(item?.service || 'unknown')}}</td><td>${{esc(item?.datetime_iso || '')}}</td><td>${{esc(item?.status || '')}}</td><td><span class="muted">${{esc(item?.created_at || '')}}</span></td>`;
-        bt.appendChild(tr);
-      }});
-    }}
-
-    const st = document.querySelector('#services_tbl tbody');
-    st.innerHTML='';
-    if (!Array.isArray(u?.top_services) || !u.top_services.length) {{
-      setEmpty(st, 2, 'No booked services in selected window');
-    }} else {{
-      u.top_services.forEach(item => {{
-        const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${{esc(item?.service || 'unknown')}}</td><td>${{esc(item?.count ?? 0)}}</td>`;
-        st.appendChild(tr);
-      }});
-    }}
-
-    const at = document.querySelector('#activity_tbl tbody');
-    at.innerHTML='';
-    if (!Array.isArray(act?.items) || !act.items.length) {{
-      setEmpty(at, 6, 'No activity yet');
-    }} else {{
-      act.items.forEach(item => {{
-        const tr = document.createElement('tr');
-        tr.innerHTML = `<td><span class="muted">${{esc(item?.created_at || '')}}</span></td><td>${{esc(item?.type || '')}}</td><td>${{esc(item?.channel || '')}}</td><td>${{esc(item?.user_id || '')}}</td><td>${{esc(item?.message || '')}}</td><td>${{esc(item?.status || '')}}</td>`;
-        at.appendChild(tr);
-      }});
-    }}
-
-    const dt = document.querySelector('#daily_tbl tbody');
-    dt.innerHTML='';
-    if (!Array.isArray(u?.daily) || !u.daily.length) {{
-      setEmpty(dt, 4, 'No daily usage yet');
-    }} else {{
-      u.daily.forEach(item => {{
-        const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${{esc(item?.date || '')}}</td><td>${{esc(item?.requests ?? 0)}}</td><td>${{esc(item?.bookings ?? 0)}}</td><td>${{esc(item?.cancelled ?? 0)}}</td>`;
-        dt.appendChild(tr);
-      }});
-    }}
-
-    const ct = document.querySelector('#conv_tbl tbody');
-    ct.innerHTML='';
-    if (!Array.isArray(c?.items) || !c.items.length) {{
-      setEmpty(ct, 6, 'No conversations yet');
-    }} else {{
-      c.items.forEach(item => {{
-        const tr = document.createElement('tr');
-        tr.innerHTML = `<td><span class="muted">${{esc(item?.created_at || '')}}</span></td><td>${{esc(item?.user_id || '')}}</td><td>${{esc(item?.channel || '')}}</td><td>${{esc(item?.user_message || '')}}</td><td>${{esc(item?.ai_reply || '')}}</td><td>${{esc(item?.status || '')}}</td>`;
-        ct.appendChild(tr);
-      }});
-    }}
+    const bt = document.querySelector('#bookings_tbl tbody'); bt.innerHTML='';
+    if (!Array.isArray(b?.items) || !b.items.length) setEmpty(bt, 5, 'No bookings yet'); else b.items.forEach(item => {{ const tr = document.createElement('tr'); tr.innerHTML = `<td>${{esc(item?.client_name || item?.user_id || '')}}</td><td>${{esc(item?.service || 'unknown')}}</td><td>${{esc(item?.datetime_iso || '')}}</td><td>${{esc(item?.status || '')}}</td><td><span class="muted">${{esc(item?.created_at || '')}}</span></td>`; bt.appendChild(tr); }});
+    const st = document.querySelector('#services_tbl tbody'); st.innerHTML='';
+    if (!Array.isArray(u?.top_services) || !u.top_services.length) setEmpty(st, 2, 'No booked services in selected window'); else u.top_services.forEach(item => {{ const tr = document.createElement('tr'); tr.innerHTML = `<td>${{esc(item?.service || 'unknown')}}</td><td>${{esc(item?.count ?? 0)}}</td>`; st.appendChild(tr); }});
+    const at = document.querySelector('#activity_tbl tbody'); at.innerHTML='';
+    if (!Array.isArray(act?.items) || !act.items.length) setEmpty(at, 6, 'No activity yet'); else act.items.forEach(item => {{ const tr = document.createElement('tr'); tr.innerHTML = `<td><span class="muted">${{esc(item?.created_at || '')}}</span></td><td>${{esc(item?.type || '')}}</td><td>${{esc(item?.channel || '')}}</td><td>${{esc(item?.user_id || '')}}</td><td>${{esc(item?.message || '')}}</td><td>${{esc(item?.status || '')}}</td>`; at.appendChild(tr); }});
+    const dt = document.querySelector('#daily_tbl tbody'); dt.innerHTML='';
+    if (!Array.isArray(u?.daily) || !u.daily.length) setEmpty(dt, 4, 'No daily usage yet'); else u.daily.forEach(item => {{ const tr = document.createElement('tr'); tr.innerHTML = `<td>${{esc(item?.date || '')}}</td><td>${{esc(item?.requests ?? 0)}}</td><td>${{esc(item?.bookings ?? 0)}}</td><td>${{esc(item?.cancelled ?? 0)}}</td>`; dt.appendChild(tr); }});
+    const ct = document.querySelector('#conv_tbl tbody'); ct.innerHTML='';
+    if (!Array.isArray(c?.items) || !c.items.length) setEmpty(ct, 6, 'No conversations yet'); else c.items.forEach(item => {{ const tr = document.createElement('tr'); tr.innerHTML = `<td><span class="muted">${{esc(item?.created_at || '')}}</span></td><td>${{esc(item?.user_id || '')}}</td><td>${{esc(item?.channel || '')}}</td><td>${{esc(item?.user_message || '')}}</td><td>${{esc(item?.ai_reply || '')}}</td><td>${{esc(item?.status || '')}}</td>`; ct.appendChild(tr); }});
   }} catch (err) {{
     const banner = document.createElement('div');
     banner.id = 'dash_error_banner';
@@ -6360,8 +6408,8 @@ def list_tenants(limit: int = 100):
         ).fetchall()
     items = []
     for r in rows:
-        items.append({
-            "tenant_id": r[0],
+        tenant_item = normalize_tenant_saas_fields({
+            "_id": r[0],
             "business_name": r[1],
             "phone_number": r[2],
             "timezone": r[3],
@@ -6371,9 +6419,111 @@ def list_tenants(limit: int = 100):
             "google_connected": r[7],
             "subscription_status": r[8],
             "plan": r[9],
+        })
+        items.append({
+            "tenant_id": tenant_item["_id"],
+            "business_name": tenant_item.get("business_name"),
+            "phone_number": tenant_item.get("phone_number"),
+            "timezone": tenant_item.get("timezone"),
+            "language": tenant_item.get("language"),
+            "calendar_id": tenant_item.get("calendar_id"),
+            "onboarding_completed": tenant_item.get("onboarding_completed"),
+            "google_connected": tenant_google_connected_effective(tenant_item),
+            "subscription_status": tenant_item.get("subscription_status"),
+            "plan": tenant_item.get("plan"),
+            "ready": tenant_ready_status_payload(tenant_item).get("ready"),
+            "missing": tenant_ready_status_payload(tenant_item).get("missing"),
             "updated_at": r[10].isoformat() if hasattr(r[10], "isoformat") else str(r[10]),
         })
     return {"items": items}
+
+@app.get("/tenants/ui", response_class=HTMLResponse)
+def tenants_ui(limit: int = 200):
+    html = f"""
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Repliq Tenants</title>
+<style>
+body {{ font-family: Arial, sans-serif; background:#f6f7fb; color:#111827; margin:0; padding:24px; }}
+.wrap {{ max-width: 1200px; margin:0 auto; }}
+.card {{ background:#fff; border:1px solid #e5e7eb; border-radius:18px; padding:18px; box-shadow: 0 10px 28px rgba(15,23,42,.06); margin-bottom:16px; }}
+.top {{ display:flex; gap:12px; align-items:end; flex-wrap:wrap; }}
+input, select, button {{ font:inherit; }}
+input, select {{ padding:10px 12px; border:1px solid #d1d5db; border-radius:10px; background:#fff; }}
+button {{ border:none; border-radius:10px; padding:10px 14px; background:#111827; color:white; cursor:pointer; }}
+button.secondary {{ background:#fff; color:#111827; border:1px solid #d1d5db; }}
+.table-wrap {{ overflow:auto; }}
+table {{ width:100%; border-collapse:collapse; font-size:14px; }}
+th,td {{ text-align:left; padding:10px 8px; border-bottom:1px solid #e5e7eb; vertical-align:top; }}
+th {{ background:#fafafa; }}
+.badge {{ display:inline-block; padding:4px 8px; border-radius:999px; font-size:12px; border:1px solid #e5e7eb; background:#f9fafb; }}
+.ok {{ color:#065f46; background:#ecfdf5; border-color:#a7f3d0; }}
+.warn {{ color:#92400e; background:#fffbeb; border-color:#fde68a; }}
+.err {{ color:#991b1b; background:#fef2f2; border-color:#fecaca; }}
+.small {{ color:#6b7280; font-size:12px; }}
+.actions a {{ margin-right:8px; }}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <div class="top">
+      <div>
+        <div class="small">Search</div>
+        <input id="q" placeholder="tenant or business name" />
+      </div>
+      <div>
+        <div class="small">Limit</div>
+        <select id="limit"><option value="50">50</option><option value="100" selected>100</option><option value="200">200</option></select>
+      </div>
+      <div style="display:flex; gap:10px; margin-left:auto;">
+        <button onclick="loadTenants()">Refresh</button>
+        <button class="secondary" onclick="window.location='/onboarding/ui'">Create business</button>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="table-wrap">
+      <table id="tenants_tbl">
+        <thead><tr><th>Business</th><th>Tenant</th><th>Ready</th><th>Google</th><th>Calendar</th><th>Plan</th><th>Updated</th><th>Actions</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+<script>
+function esc(v) {{ return v === null || v === undefined ? '' : String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'", '&#39;'); }}
+function badge(label, cls) {{ return `<span class="badge ${{cls||''}}">${{esc(label)}}</span>`; }}
+async function loadTenants() {{
+  const limit = document.getElementById('limit').value || '100';
+  const q = (document.getElementById('q').value || '').trim().toLowerCase();
+  const r = await fetch(`/tenants?limit=${{encodeURIComponent(limit)}}`);
+  const data = await r.json();
+  const items = Array.isArray(data.items) ? data.items : [];
+  const filtered = q ? items.filter(x => String(x.tenant_id || '').toLowerCase().includes(q) || String(x.business_name || '').toLowerCase().includes(q)) : items;
+  const tb = document.querySelector('#tenants_tbl tbody');
+  tb.innerHTML = '';
+  if (!filtered.length) {{ tb.innerHTML = '<tr><td colspan="8" class="small">No tenants found</td></tr>'; return; }}
+  filtered.forEach(item => {{
+    const tr = document.createElement('tr');
+    const ready = item.ready ? badge('Ready','ok') : badge('Setup incomplete','warn');
+    const google = item.google_connected ? badge('Connected','ok') : badge('Pending','warn');
+    const cal = item.calendar_id ? badge('Selected','ok') : badge('Missing','warn');
+    const missing = Array.isArray(item.missing) && item.missing.length ? `<div class="small">Missing: ${{esc(item.missing.join(', '))}}</div>` : '';
+    tr.innerHTML = `<td><strong>${{esc(item.business_name || item.tenant_id)}}</strong>${{missing}}</td><td><code>${{esc(item.tenant_id)}}</code></td><td>${{ready}}</td><td>${{google}}</td><td>${{cal}}</td><td>${{esc(item.plan || 'starter')}}<div class="small">${{esc(item.subscription_status || 'trial')}}</div></td><td><span class="small">${{esc(item.updated_at || '')}}</span></td><td class="actions"><a href="/dashboard?tenant_id=${{encodeURIComponent(item.tenant_id)}}">dashboard</a><a href="/tenant/config/ui?tenant_id=${{encodeURIComponent(item.tenant_id)}}">config</a><a href="/tenant/overview?tenant_id=${{encodeURIComponent(item.tenant_id)}}">overview</a></td>`;
+    tb.appendChild(tr);
+  }});
+}}
+document.addEventListener('DOMContentLoaded', loadTenants);
+</script>
+</body>
+</html>
+    """
+    return HTMLResponse(content=html)
+
 
 @app.get("/tenant/config")
 def tenant_config(tenant_id: str = TENANT_ID_DEFAULT):
@@ -6400,6 +6550,10 @@ def tenant_config(tenant_id: str = TENANT_ID_DEFAULT):
         "tenant": _jsonable_tenant_view(tenant),
         "resolved_settings": settings,
         "phone_routes": routes,
+        "onboarding": onboarding_status_payload(tenant),
+        "readiness": tenant_ready_status_payload(tenant),
+        "plan_meta": tenant_plan_meta(tenant),
+        "links": onboarding_links_payload(str(tenant.get("_id") or tenant_id)),
     }
 
 @app.post("/tenant/config/update")
@@ -6477,6 +6631,10 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
         "status": "ok",
         "tenant": _jsonable_tenant_view(updated),
         "resolved_settings": tenant_settings(updated, get_lang(updated.get("language") or "lv")),
+        "onboarding": onboarding_status_payload(updated),
+        "readiness": tenant_ready_status_payload(updated),
+        "plan_meta": tenant_plan_meta(updated),
+        "links": onboarding_links_payload(tenant_id),
     }
 
 @app.get("/tenant/routes")
