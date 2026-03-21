@@ -372,45 +372,6 @@ def _slot_labels_from_pending(pending: Dict[str, Any]) -> List[str]:
             labels.append(format_dt_short(dtv))
     return labels
 
-
-def _service_prompt_examples(tenant: Dict[str, Any], lang: str) -> Tuple[str, str]:
-    try:
-        catalog = tenant_service_catalog(tenant or {})
-    except Exception:
-        catalog = []
-    labels = [service_display_name(item, lang) for item in catalog if service_display_name(item, lang)]
-    labels = [x for x in labels if x]
-    if len(labels) >= 2:
-        return labels[0], labels[1]
-    if len(labels) == 1:
-        return labels[0], labels[0]
-    defaults = {
-        "lv": ("matu griezums", "matu griezums ar bārdu"),
-        "ru": ("стрижка", "стрижка и борода"),
-        "en": ("haircut", "haircut and beard"),
-    }
-    return defaults.get(get_lang(lang), defaults["lv"])
-
-
-def _warm_booking_success_text(lang: str, when_text: str) -> str:
-    if lang == "ru":
-        return _pick_variant([
-            f"Отлично! Вы записаны на {when_text}. Ждём вас 👍",
-            f"Готово — запись на {when_text} подтверждена. Будем ждать вас 👍",
-            f"Супер, записал вас на {when_text}. До встречи 👍",
-        ], f"Вы записаны на {when_text}.")
-    if lang == "en":
-        return _pick_variant([
-            f"Great! You are booked for {when_text}. See you then 👍",
-            f"Done — your appointment for {when_text} is confirmed. See you soon 👍",
-            f"Perfect, I booked you for {when_text}. Looking forward to seeing you 👍",
-        ], f"You are booked for {when_text}.")
-    return _pick_variant([
-        f"Perfekti! Jūs esat pierakstīts uz {when_text}. Gaidīsim jūs 👍",
-        f"Lieliski — pieraksts uz {when_text} ir apstiprināts. Gaidīsim jūs 👍",
-        f"Super, pierakstīju jūs uz {when_text}. Uz tikšanos 👍",
-    ], f"Jūs esat pierakstīts uz {when_text}.")
-
 def humanize_result(result: Dict[str, Any], conv: Optional[Dict[str, Any]], tenant: Dict[str, Any]) -> Dict[str, Any]:
     result = dict(result or {})
     conv = conv or {}
@@ -428,12 +389,7 @@ def humanize_result(result: Dict[str, Any], conv: Optional[Dict[str, Any]], tena
         result["reply_voice"] = text_value
 
     if result.get("flow_preserved"):
-        preserved_text = str(result.get("msg_out") or result.get("reply_voice") or "").strip()
-        if preserved_text:
-            result["msg_out"] = preserved_text
-            result["reply_voice"] = preserved_text
-            result["lang"] = lang
-            return result
+        return result
 
     if result.get("status") == "greeting":
         if lang == "ru":
@@ -454,7 +410,23 @@ def humanize_result(result: Dict[str, Any], conv: Optional[Dict[str, Any]], tena
         return result
 
     if result.get("status") == "booked" and when_text:
-        apply(_warm_booking_success_text(lang, when_text))
+        if lang == "ru":
+            apply(_pick_variant([
+                f"Отлично, записал вас на {when_text}.",
+                f"Готово, запись подтверждена на {when_text}.",
+                f"Хорошо, подтверждаю запись на {when_text}.",
+            ], result.get("msg_out") or f"Запись подтверждена на {when_text}."))
+        elif lang == "en":
+            apply(_pick_variant([
+                f"Great, you are booked for {when_text}.",
+                f"Done, your appointment is confirmed for {when_text}.",
+            ], result.get("msg_out") or f"Your appointment is confirmed for {when_text}."))
+        else:
+            apply(_pick_variant([
+                f"Lieliski, pierakstīju jūs uz {when_text}.",
+                f"Gatavs, jūsu pieraksts ir apstiprināts uz {when_text}.",
+                f"Labi, apstiprinu pierakstu uz {when_text}.",
+            ], result.get("msg_out") or f"Pieraksts apstiprināts uz {when_text}."))
         return result
 
     if result.get("status") == "reschedule_wait" and when_text:
@@ -486,45 +458,42 @@ def humanize_result(result: Dict[str, Any], conv: Optional[Dict[str, Any]], tena
         return result
 
     if result.get("status") in {"busy", "need_more"} and state == STATE_AWAITING_SERVICE:
-        opt1, opt2 = _service_prompt_examples(tenant, lang)
         if lang == "ru":
             apply(_pick_variant([
-                f"Отлично! На что записываем — {opt1} или {opt2}?",
-                f"Супер. Какую услугу выбираем — {opt1} или {opt2}?",
-                f"Подскажите, что вам нужно — {opt1} или {opt2}?",
-            ], result.get("msg_out") or f"На какую услугу вас записать — {opt1} или {opt2}?"))
+                "Конечно. На какую услугу вас записать?",
+                "Хорошо. Что именно хотите сделать?",
+                "Подскажите, на какую услугу хотите записаться?",
+            ], result.get("msg_out") or "На какую услугу вас записать?"))
         elif lang == "en":
             apply(_pick_variant([
-                f"Great! What would you like to book — {opt1} or {opt2}?",
-                f"Perfect. Which service would you prefer — {opt1} or {opt2}?",
-                f"Sure — shall we book {opt1} or {opt2}?",
-            ], result.get("msg_out") or f"Which service would you like to book — {opt1} or {opt2}?"))
+                "Of course. Which service would you like to book?",
+                "Sure — what would you like to book?",
+            ], result.get("msg_out") or "Which service would you like to book?"))
         else:
             apply(_pick_variant([
-                f"Super! Uz kuru pakalpojumu pierakstām — {opt1} vai {opt2}?",
-                f"Lieliski. Ko izvēlamies — {opt1} vai {opt2}?",
-                f"Pasakiet, lūdzu, ko vēlaties — {opt1} vai {opt2}?",
-            ], result.get("msg_out") or f"Uz kuru pakalpojumu vēlaties pierakstīties — {opt1} vai {opt2}?"))
+                "Protams. Uz kādu pakalpojumu vēlaties pierakstīties?",
+                "Labi. Pasakiet, lūdzu, kuru pakalpojumu vēlaties.",
+                "Uz kuru pakalpojumu jūs pierakstīt?",
+            ], result.get("msg_out") or "Uz kādu pakalpojumu vēlaties pierakstīties?"))
         return result
 
     if result.get("status") in {"busy", "need_more"} and state == STATE_AWAITING_DATE:
-        service_name = service_text or ""
         if lang == "ru":
             apply(_pick_variant([
-                f"Отлично. На какой день вас записать{' на ' + service_name if service_name else ''}?",
-                f"Хорошо, двигаемся дальше. Какая дата вам удобна{' для ' + service_name if service_name else ''}?",
-                f"Супер. Подскажите, на какой день хотите запись{' на ' + service_name if service_name else ''}?",
+                "Хорошо. На какой день вас записать?",
+                "Отлично. Какая дата вам удобна?",
+                "Подскажите, на какой день хотите запись?",
             ], result.get("msg_out") or "На какой день вас записать?"))
         elif lang == "en":
             apply(_pick_variant([
-                f"Great. Which day would work for you{' for ' + service_name if service_name else ''}?",
-                f"Perfect — what date would you prefer{' for ' + service_name if service_name else ''}?",
+                "Sure. Which day would work for you?",
+                "Okay. What date would you prefer?",
             ], result.get("msg_out") or "Which day would work for you?"))
         else:
             apply(_pick_variant([
-                f"Super. Uz kuru dienu pierakstām{' uz ' + service_name if service_name else ''}?",
-                f"Labi, ejam tālāk. Kurš datums jums būtu ērts{' priekš ' + service_name if service_name else ''}?",
-                f"Skaidrs. Pasakiet, lūdzu, kuru dienu vēlaties{' uz ' + service_name if service_name else ''}?",
+                "Labi. Uz kuru dienu vēlaties pierakstīties?",
+                "Skaidrs. Kurš datums jums būtu ērts?",
+                "Pasakiet, lūdzu, kuru dienu vēlaties.",
             ], result.get("msg_out") or "Uz kuru dienu vēlaties pierakstīties?"))
         return result
 
@@ -535,19 +504,19 @@ def humanize_result(result: Dict[str, Any], conv: Optional[Dict[str, Any]], tena
             joined = ", ".join(slots[:2])
         if lang == "ru":
             apply(_pick_variant([
-                f"Есть несколько удобных вариантов: {joined}. Что вам подходит больше?",
-                f"Могу предложить такие слоты: {joined}. Какое время выбираем?",
-                f"Свободно вот так: {joined}. Что вам удобнее?",
+                f"Могу предложить такие варианты: {joined}. Что вам удобнее?",
+                f"Есть несколько свободных вариантов: {joined}. Какое время подойдёт?",
+                f"Свободно вот так: {joined}. Что выбираем?",
             ], result.get("msg_out") or f"Доступны варианты: {joined}."))
         elif lang == "en":
             apply(_pick_variant([
-                f"I have a few good options: {joined}. Which time works best for you?",
-                f"These slots are available: {joined}. What would you prefer?",
+                f"I can offer these times: {joined}. What works best for you?",
+                f"There are a few available options: {joined}. Which one suits you?",
             ], result.get("msg_out") or f"Available times: {joined}."))
         else:
             apply(_pick_variant([
-                f"Ir vairāki ērti varianti: {joined}. Kurš jums der vislabāk?",
-                f"Varu piedāvāt šādus laikus: {joined}. Ko izvēlamies?",
+                f"Varu piedāvāt šādus laikus: {joined}. Kurš jums der?",
+                f"Ir pieejami vairāki varianti: {joined}. Ko izvēlamies?",
                 f"Brīvie laiki ir šādi: {joined}. Kurš jums būtu ērtāks?",
             ], result.get("msg_out") or f"Pieejamie laiki: {joined}."))
         return result
@@ -558,18 +527,18 @@ def humanize_result(result: Dict[str, Any], conv: Optional[Dict[str, Any]], tena
             when_text = format_dt_short(_dtc) if _dtc else when_text
         if lang == "ru":
             apply(_pick_variant([
-                f"Отлично, подтверждаем запись на {when_text}?",
-                f"Тогда фиксируем время {when_text}?",
+                f"Тогда подтверждаем запись на {when_text}?",
+                f"Подтверждаем время {when_text}?",
             ], result.get("msg_out") or f"Подтвердить запись на {when_text}?"))
         elif lang == "en":
             apply(_pick_variant([
-                f"Great — shall I confirm the booking for {when_text}?",
-                f"Perfect. Would you like me to lock in {when_text}?",
+                f"Shall I confirm the booking for {when_text}?",
+                f"Would you like me to confirm {when_text}?",
             ], result.get("msg_out") or f"Confirm the booking for {when_text}?"))
         else:
             apply(_pick_variant([
-                f"Lieliski — tad apstiprinām pierakstu uz {when_text}?",
-                f"Super. Vai fiksējam laiku {when_text}?",
+                f"Tad apstiprinām pierakstu uz {when_text}?",
+                f"Vai apstiprināt laiku {when_text}?",
             ], result.get("msg_out") or f"Apstiprināt pierakstu uz {when_text}?"))
         return result
 
@@ -1456,6 +1425,83 @@ def barber_service_prompt(lang: str, catalog: List[Dict[str, Any]]) -> str:
     return f"Uz kādu pakalpojumu vēlaties pierakstīties? Piemēram: {options}." if options else "Uz kādu pakalpojumu vēlaties pierakstīties?"
 
 
+def _barbershop_service_key_groups(catalog: List[Dict[str, Any]]) -> Dict[str, List[str]]:
+    haircut_keys: List[str] = []
+    beard_keys: List[str] = []
+    combo_keys: List[str] = []
+    for item in catalog or []:
+        key = str(item.get("key") or "").strip()
+        if not key:
+            continue
+        hay = " ".join([
+            key,
+            str(item.get("name_lv") or ""),
+            str(item.get("name_ru") or ""),
+            str(item.get("name_en") or ""),
+            " ".join(item.get("aliases_lv") or []),
+            " ".join(item.get("aliases_ru") or []),
+            " ".join(item.get("aliases_en") or []),
+        ]).lower()
+        if any(x in hay for x in ["friz", "haircut", "стриж", "matu griez", "griezum"]):
+            haircut_keys.append(key)
+        if any(x in hay for x in ["bārd", "barda", "beard", "бород"]):
+            beard_keys.append(key)
+        if any(x in hay for x in ["combo", "kombo", "комбо", " ar bārdu", "с бород", "and beard"]):
+            combo_keys.append(key)
+    return {"haircut": haircut_keys, "beard": beard_keys, "combo": combo_keys}
+
+
+def is_barbershop_base_haircut_service(service_key: Optional[str], catalog: List[Dict[str, Any]]) -> bool:
+    key = str(service_key or "").strip()
+    if not key:
+        return False
+    groups = _barbershop_service_key_groups(catalog)
+    return key in groups["haircut"] and key not in groups["combo"]
+
+
+def _barbershop_combo_service_item(catalog: List[Dict[str, Any]], lang: str) -> Dict[str, Any]:
+    groups = _barbershop_service_key_groups(catalog)
+    for key in groups["combo"]:
+        item = get_service_item_by_key(catalog, key)
+        if item:
+            return item
+    haircut_item = get_service_item_by_key(catalog, groups["haircut"][0]) if groups["haircut"] else None
+    beard_item = get_service_item_by_key(catalog, groups["beard"][0]) if groups["beard"] else None
+    if haircut_item and beard_item:
+        synthetic = dict(haircut_item)
+        synthetic["key"] = f"{haircut_item.get('key')}__plus__{beard_item.get('key')}"
+        synthetic["name_lv"] = f"{service_display_name(haircut_item, 'lv')} + {service_display_name(beard_item, 'lv')}"
+        synthetic["name_ru"] = f"{service_display_name(haircut_item, 'ru')} + {service_display_name(beard_item, 'ru')}"
+        synthetic["name_en"] = f"{service_display_name(haircut_item, 'en')} + {service_display_name(beard_item, 'en')}"
+        synthetic["duration_min"] = service_duration_min(haircut_item) + service_duration_min(beard_item)
+        synthetic["_synthetic"] = True
+        return synthetic
+    return {}
+
+
+def build_barbershop_upsell_prompt(lang: str, haircut_name: str) -> str:
+    haircut_name = haircut_name or ("vīriešu frizūra" if lang == "lv" else "мужская стрижка" if lang == "ru" else "men's haircut")
+    if lang == "ru":
+        return f"Отлично. Записываем на {haircut_name}. Хотите сразу добавить бороду?"
+    if lang == "en":
+        return f"Great. We’ll book {haircut_name}. Would you like to add a beard trim as well?"
+    return f"Super. Pierakstām uz {haircut_name}. Ja vēlaties, varam uzreiz pievienot arī bārdu."
+
+
+def build_barbershop_after_upsell_prompt(lang: str, service_name: str, added_beard: bool) -> str:
+    if lang == "ru":
+        if added_beard:
+            return f"Отлично. Добавляю бороду. На какой день вас записать на {service_name}?"
+        return f"Хорошо. Тогда оставляем {service_name}. На какой день вас записать?"
+    if lang == "en":
+        if added_beard:
+            return f"Great. I’ll add a beard trim. What day works for your {service_name}?"
+        return f"No problem. We’ll keep {service_name}. What day works for you?"
+    if added_beard:
+        return f"Lieliski. Pievienoju arī bārdu. Uz kuru dienu pierakstām uz {service_name}?"
+    return f"Labi. Tad atstājam {service_name}. Uz kuru dienu vēlaties pierakstīties?"
+
+
 def try_barbershop_faq(
     msg: str,
     lang: str,
@@ -1540,32 +1586,6 @@ def try_barbershop_faq(
 
     return None
 
-
-def faq_with_flow_followup(
-    faq_result: Dict[str, Any],
-    lang: str,
-    c: Dict[str, Any],
-    pending: Dict[str, Any],
-    service_catalog: List[Dict[str, Any]],
-    active_flow: bool,
-) -> Dict[str, Any]:
-    result = dict(faq_result or {})
-    if not active_flow:
-        return result
-
-    followup = prompt_for_state(lang, c, pending or {}, service_catalog)
-    answer_text = str(result.get("msg_out") or result.get("reply_voice") or "").strip()
-    if followup:
-        combined = f"{answer_text}\n\n{followup}".strip() if answer_text else followup
-    else:
-        combined = answer_text
-
-    result["status"] = "need_more"
-    result["msg_out"] = combined
-    result["reply_voice"] = combined
-    result["lang"] = lang
-    result["flow_preserved"] = True
-    return result
 
 
 LANG_HINTS = {
@@ -2452,95 +2472,6 @@ def ensure_default_barbershop_aliases(catalog: List[Dict[str, Any]], alias_map: 
         "combo", "kombo", "комбо", "matu griezums un bārda", "frizūra un bārda", "haircut and beard", "стрижка и борода"
     ])
     return out
-
-
-def _barbershop_service_keys(catalog: List[Dict[str, Any]]) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-    haircut_key = None
-    beard_key = None
-    combo_key = None
-    for item in catalog or []:
-        key = str(item.get("key") or "").strip()
-        hay = " ".join([
-            key,
-            str(item.get("name_lv") or ""),
-            str(item.get("name_ru") or ""),
-            str(item.get("name_en") or ""),
-            " ".join(item.get("aliases_lv") or []),
-            " ".join(item.get("aliases_ru") or []),
-            " ".join(item.get("aliases_en") or []),
-        ]).lower()
-        if not haircut_key and any(x in hay for x in ["friz", "haircut", "стриж", "matu griez", "griezum"]):
-            haircut_key = key
-        if not beard_key and any(x in hay for x in ["bārd", "barda", "beard", "бород"]):
-            beard_key = key
-        if not combo_key and any(x in hay for x in ["combo", "комбо", "kombo"]):
-            combo_key = key
-    return haircut_key, beard_key, combo_key
-
-
-def is_barbershop_base_haircut_service(service_key: Optional[str], catalog: List[Dict[str, Any]]) -> bool:
-    haircut_key, _, combo_key = _barbershop_service_keys(catalog)
-    sk = str(service_key or "").strip()
-    return bool(sk and haircut_key and sk == haircut_key and sk != combo_key)
-
-
-def get_barbershop_combo_service_item(catalog: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    _, _, combo_key = _barbershop_service_keys(catalog)
-    return get_service_item_by_key(catalog, combo_key) if combo_key else None
-
-
-def barbershop_upsell_offer_text(lang: str, base_service_display: str) -> str:
-    base = (base_service_display or "").strip()
-    if lang == "ru":
-        return f"Супер 👍 Записываем на {base or 'стрижку'}. Если хотите, можно сразу добавить и бороду. На какой день вам удобно?"
-    if lang == "en":
-        return f"Great 👍 We’ll book {base or 'a haircut'}. If you want, we can add a beard trim too. What day works for you?"
-    return f"Super 👍 Pierakstām uz {base or 'vīriešu frizūru'}. Ja vēlaties, varam uzreiz pievienot arī bārdu. Kurā dienā jums būtu ērti?"
-
-
-def barbershop_upsell_resolution_text(lang: str, accepted: bool) -> str:
-    if accepted:
-        if lang == "ru":
-            return "Отлично 👍 Добавляю бороду. На какой день вас записать?"
-        if lang == "en":
-            return "Great 👍 I’ll add a beard trim as well. What day works for you?"
-        return "Lieliski 👍 Pievienoju arī bārdu. Kurā dienā jums būtu ērti?"
-    if lang == "ru":
-        return "Хорошо 👍 Тогда записываем только на стрижку. На какой день вам удобно?"
-    if lang == "en":
-        return "No problem 👍 We’ll keep it as a haircut only. What day works for you?"
-    return "Labi 👍 Tad paliekam pie vīriešu frizūras. Kurā dienā jums būtu ērti?"
-
-
-def should_trigger_barbershop_upsell(service_key: Optional[str], pending: Dict[str, Any], service_catalog: List[Dict[str, Any]]) -> bool:
-    service_key = str(service_key or pending.get("service") or "").strip()
-    if not service_key:
-        return False
-    if pending.get("pending_upsell") or pending.get("upsell_shown"):
-        return False
-    return is_barbershop_base_haircut_service(service_key, service_catalog)
-
-
-def build_barbershop_upsell_result(
-    tenant_id: str,
-    user_key: str,
-    lang: str,
-    c: Dict[str, Any],
-    pending: Dict[str, Any],
-) -> Dict[str, Any]:
-    pending["pending_upsell"] = True
-    pending["upsell_shown"] = True
-    c["state"] = STATE_AWAITING_DATE
-    c["pending"] = pending or None
-    db_save_conversation(tenant_id, user_key, c)
-    reply_text = barbershop_upsell_offer_text(lang, str(pending.get("service_display") or "").strip())
-    return {
-        "status": "need_more",
-        "reply_voice": reply_text,
-        "msg_out": reply_text,
-        "lang": lang,
-        "flow_preserved": True,
-    }
 
 
 def calendar_is_configured(calendar_id: str) -> bool:
@@ -4289,55 +4220,6 @@ def handle_user_text(
             "lang": lang,
         }
 
-    if msg:
-        faq_result = try_barbershop_faq(
-            msg=msg,
-            lang=lang,
-            tenant=tenant,
-            settings=settings,
-            service_catalog=service_catalog,
-            service_aliases=service_aliases,
-            business_memory=business_memory,
-        )
-        if faq_result:
-            faq_result = faq_with_flow_followup(faq_result, lang, c, pending, service_catalog, active_flow)
-            if active_flow:
-                db_save_conversation(tenant_id, user_key, c)
-            return faq_result
-
-    if msg and pending.get("pending_upsell"):
-        if is_yes_text(msg, lang):
-            combo_item = get_barbershop_combo_service_item(service_catalog)
-            if combo_item:
-                c, pending = remember_booking_service(c, pending, combo_item, lang)
-            pending["pending_upsell"] = False
-            pending["upsell_shown"] = True
-            c["pending"] = pending or None
-            c["state"] = STATE_AWAITING_DATE
-            db_save_conversation(tenant_id, user_key, c)
-            reply_text = barbershop_upsell_resolution_text(lang, accepted=True)
-            return {
-                "status": "need_more",
-                "reply_voice": reply_text,
-                "msg_out": reply_text,
-                "lang": lang,
-                "flow_preserved": True,
-            }
-        if is_no_text(msg, lang):
-            pending["pending_upsell"] = False
-            pending["upsell_shown"] = True
-            c["pending"] = pending or None
-            c["state"] = STATE_AWAITING_DATE
-            db_save_conversation(tenant_id, user_key, c)
-            reply_text = barbershop_upsell_resolution_text(lang, accepted=False)
-            return {
-                "status": "need_more",
-                "reply_voice": reply_text,
-                "msg_out": reply_text,
-                "lang": lang,
-                "flow_preserved": True,
-            }
-
     if msg and is_greeting_only(msg) and not active_flow and c["state"] not in ACTIVE_BOOKING_STATES:
         c["state"] = STATE_NEW
         c["service"] = None
@@ -4365,6 +4247,19 @@ def handle_user_text(
             "msg_out": t(lang, "hours_info", biz=settings["biz_name"], start=settings["work_start"], end=settings["work_end"]),
             "lang": lang,
         }
+
+    if not active_flow and msg:
+        faq_result = try_barbershop_faq(
+            msg=msg,
+            lang=lang,
+            tenant=tenant,
+            settings=settings,
+            service_catalog=service_catalog,
+            service_aliases=service_aliases,
+            business_memory=business_memory,
+        )
+        if faq_result:
+            return faq_result
 
     llm_hint = get_llm_data() if msg else {}
 
@@ -4423,6 +4318,32 @@ def handle_user_text(
             db_save_conversation(tenant_id, user_key, c)
             return result
 
+    if msg and pending.get("pending_upsell"):
+        current_service_item = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
+        current_service_name = service_display_name(current_service_item, lang) or str(pending.get("service_display") or "").strip()
+        if is_yes_text(msg, lang):
+            combo_item = _barbershop_combo_service_item(service_catalog, lang)
+            if combo_item:
+                c, pending = remember_booking_service(c, pending, combo_item, lang)
+            pending["pending_upsell"] = False
+            pending["upsell_shown"] = True
+            pending["booking_intent"] = True
+            c["pending"] = pending or None
+            c["state"] = STATE_AWAITING_DATE
+            db_save_conversation(tenant_id, user_key, c)
+            combo_name = service_display_name(combo_item, lang) or current_service_name
+            reply = build_barbershop_after_upsell_prompt(lang, combo_name, True)
+            return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "flow_preserved": True}
+        if is_no_text(msg, lang):
+            pending["pending_upsell"] = False
+            pending["upsell_shown"] = True
+            pending["booking_intent"] = True
+            c["pending"] = pending or None
+            c["state"] = STATE_AWAITING_DATE
+            db_save_conversation(tenant_id, user_key, c)
+            reply = build_barbershop_after_upsell_prompt(lang, current_service_name, False)
+            return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "flow_preserved": True}
+
     if active_flow or c["state"] in ACTIVE_BOOKING_STATES or c["state"] == STATE_NEW:
         direct_service_key = canonical_service_key_from_text(msg, service_aliases)
         service_item = get_service_item_by_key(service_catalog, direct_service_key) if direct_service_key else None
@@ -4446,10 +4367,14 @@ def handle_user_text(
         if service_item and not c.get("service"):
             c, pending = remember_booking_service(c, pending, service_item, lang)
             clear_offered_slots(pending)
-            if should_trigger_barbershop_upsell(c.get("service") or pending.get("service"), pending, service_catalog):
-                combo_item = get_barbershop_combo_service_item(service_catalog)
-                if combo_item:
-                    return build_barbershop_upsell_result(tenant_id, user_key, lang, c, pending)
+            if str(tenant.get("business_type") or "barbershop").strip().lower() == "barbershop" and is_barbershop_base_haircut_service(c.get("service") or pending.get("service"), service_catalog) and not pending.get("upsell_shown") and not pending.get("pending_upsell"):
+                pending["pending_upsell"] = True
+                pending["upsell_shown"] = True
+                c["pending"] = pending or None
+                c["state"] = STATE_AWAITING_DATE
+                db_save_conversation(tenant_id, user_key, c)
+                reply = build_barbershop_upsell_prompt(lang, service_display_name(service_item, lang))
+                return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "flow_preserved": True}
             candidate_dt = parse_dt_any_tz(str(pending.get("candidate_datetime_iso") or "").strip())
             if candidate_dt:
                 pending.pop("candidate_datetime_iso", None)
@@ -4528,11 +4453,6 @@ def handle_user_text(
                 }
 
     pending = c.get("pending") or {}
-
-    if c.get("service") and conversation_state(c) in {STATE_AWAITING_SERVICE, STATE_AWAITING_DATE} and should_trigger_barbershop_upsell(c.get("service"), pending, service_catalog):
-        combo_item = get_barbershop_combo_service_item(service_catalog)
-        if combo_item:
-            return build_barbershop_upsell_result(tenant_id, user_key, lang, c, pending)
 
     if c["state"] == STATE_AWAITING_SERVICE and not c.get("service"):
         db_save_conversation(tenant_id, user_key, c)
@@ -4907,6 +4827,18 @@ def handle_user_text(
     fallback_reply = soft_clarify_for_state(lang, c, c.get("pending") or {}) if is_active_booking_flow(c) else t(lang, "unclear_reply")
     if not is_active_booking_flow(c) and llm_intent == "info" and llm_conf >= LLM_INTENT_MIN_CONFIDENCE and is_hours_question(msg):
         fallback_reply = t(lang, "hours_info", biz=settings["biz_name"], start=settings["work_start"], end=settings["work_end"])
+    if not is_active_booking_flow(c) and msg:
+        faq_result = try_barbershop_faq(
+            msg=msg,
+            lang=lang,
+            tenant=tenant,
+            settings=settings,
+            service_catalog=service_catalog,
+            service_aliases=service_aliases,
+            business_memory=business_memory,
+        )
+        if faq_result:
+            return faq_result
     return {
         "status": fallback_status,
         "reply_voice": fallback_reply,
