@@ -388,9 +388,6 @@ def humanize_result(result: Dict[str, Any], conv: Optional[Dict[str, Any]], tena
         result["msg_out"] = text_value
         result["reply_voice"] = text_value
 
-    if result.get("preserve_text") or result.get("flow_preserved"):
-        return result
-
     if result.get("status") == "greeting":
         if lang == "ru":
             apply(_pick_variant([
@@ -3405,7 +3402,6 @@ STATE_AWAITING_SERVICE = "AWAITING_SERVICE"
 STATE_AWAITING_DATE = "AWAITING_DATE"
 STATE_AWAITING_TIME = "AWAITING_TIME"
 STATE_AWAITING_CONFIRM = "AWAITING_CONFIRM"
-STATE_POST_BOOKING_UPSELL = "POST_BOOKING_UPSELL"
 STATE_BOOKED = "BOOKED"
 STATE_CANCELLED = "CANCELLED"
 
@@ -3440,7 +3436,7 @@ NO_WORDS = {
 
 def conversation_state(c: Dict[str, Any]) -> str:
     state = str(c.get("state") or STATE_NEW).strip().upper()
-    if state not in {STATE_NEW, STATE_AWAITING_SERVICE, STATE_AWAITING_DATE, STATE_AWAITING_TIME, STATE_AWAITING_CONFIRM, STATE_POST_BOOKING_UPSELL, STATE_BOOKED, STATE_CANCELLED}:
+    if state not in {STATE_NEW, STATE_AWAITING_SERVICE, STATE_AWAITING_DATE, STATE_AWAITING_TIME, STATE_AWAITING_CONFIRM, STATE_BOOKED, STATE_CANCELLED}:
         return STATE_NEW
     return state
 
@@ -3829,7 +3825,7 @@ def normalize_booking_state(c: Dict[str, Any]) -> Dict[str, Any]:
         state = STATE_AWAITING_CONFIRM
     elif offered_slots or awaiting_time_date_iso:
         state = STATE_AWAITING_TIME
-    elif service_key and state not in (STATE_POST_BOOKING_UPSELL, STATE_BOOKED, STATE_CANCELLED):
+    elif service_key and state not in (STATE_BOOKED, STATE_CANCELLED):
         state = STATE_AWAITING_DATE if not booked_dt else state
     elif has_booking_intent and not service_key:
         state = STATE_AWAITING_SERVICE
@@ -4018,7 +4014,7 @@ def book_appointment_for_datetime(
                 "reply_voice": reply_text,
                 "msg_out": reply_text,
                 "lang": lang,
-                "preserve_text": True,
+                "flow_preserved": True,
             }
 
         return {
@@ -4342,36 +4338,6 @@ def handle_user_text(
         active_flow = True
 
     pending = c.get("pending") or {}
-
-    if fresh_booking_start and msg:
-        direct_service_key_open = canonical_service_key_from_text(msg, service_aliases)
-        service_item_open = get_service_item_by_key(service_catalog, direct_service_key_open) if direct_service_key_open else None
-        if not service_item_open:
-            service_item_open = extract_service_from_text(msg, service_catalog, lang)
-        if service_item_open:
-            c, pending = remember_booking_service(c, pending, service_item_open, lang)
-        else:
-            c["service"] = None
-            pending.pop("service", None)
-            pending.pop("service_display", None)
-            pending.pop("candidate_datetime_iso", None)
-            pending.pop("awaiting_time_date_iso", None)
-            pending.pop("preferred_time_window", None)
-            clear_offered_slots(pending)
-            c["pending"] = pending or None
-            c["datetime_iso"] = None
-            c["time_text"] = None
-            c["state"] = STATE_AWAITING_SERVICE
-            db_save_conversation(tenant_id, user_key, c)
-            service_prompt = barber_service_prompt(lang, service_catalog)
-            return {
-                "status": "need_more",
-                "reply_voice": service_prompt,
-                "msg_out": service_prompt,
-                "lang": lang,
-                "preserve_text": True,
-            }
-
     if msg and (natural_dt_for_msg or date_only_dt_for_msg or time_window_for_msg or explicit_time_present):
         pending["booking_intent"] = True
         if time_window_for_msg:
@@ -4807,6 +4773,16 @@ def handle_user_text(
                 "lang": lang,
             }
 
+    if fresh_booking_start:
+        db_save_conversation(tenant_id, user_key, c)
+        service_prompt = barber_service_prompt(lang, service_catalog) if conversation_state(c) == STATE_AWAITING_SERVICE else prompt_for_state(lang, c, pending, service_catalog)
+        return {
+            "status": "need_more",
+            "reply_voice": service_prompt,
+            "msg_out": service_prompt,
+            "lang": lang,
+        }
+
     if msg and conversation_state(c) == STATE_AWAITING_CONFIRM:
         confirm_iso = str(pending.get("confirm_slot_iso") or c.get("datetime_iso") or "").strip()
         dt_confirm = parse_dt_any_tz(confirm_iso)
@@ -4822,14 +4798,14 @@ def handle_user_text(
                 c["pending"] = pending
                 db_save_conversation(tenant_id, user_key, c)
                 reply_text = build_confirm_upsell_resolution(lang, when_txt, True, haircut_item, beard_item)
-                return {"status": "need_more", "reply_voice": reply_text, "msg_out": reply_text, "lang": lang, "preserve_text": True}
+                return {"status": "need_more", "reply_voice": reply_text, "msg_out": reply_text, "lang": lang, "flow_preserved": True}
             if is_no_text(msg, lang) or llm_confirmation == "no":
                 pending["pending_confirm_upsell"] = False
                 pending.pop("addon_service", None)
                 c["pending"] = pending
                 db_save_conversation(tenant_id, user_key, c)
                 reply_text = build_confirm_upsell_resolution(lang, when_txt, False, haircut_item, beard_item)
-                return {"status": "need_more", "reply_voice": reply_text, "msg_out": reply_text, "lang": lang, "preserve_text": True}
+                return {"status": "need_more", "reply_voice": reply_text, "msg_out": reply_text, "lang": lang, "flow_preserved": True}
             if is_short_ack_text(msg, lang):
                 pending["pending_confirm_upsell"] = False
                 pending.pop("addon_service", None)
@@ -7401,24 +7377,6 @@ def is_holiday_for_rules(dt_value: datetime, business_rules: Optional[Dict[str, 
         return False
     holidays = business_rules.get("holidays") or []
     return dt_value.strftime("%Y-%m-%d") in holidays
-
-
-def is_closed_day_for_rules(dt_value: datetime, business_rules: Optional[Dict[str, Any]] = None) -> bool:
-    if not business_rules:
-        return False
-    if is_holiday_for_rules(dt_value, business_rules):
-        return True
-    weekly_hours = (business_rules.get("weekly_hours") or {})
-    weekday_key = _weekday_key_for_date(dt_value)
-    rule_hours = weekly_hours.get(weekday_key)
-    if not rule_hours:
-        return True
-    if isinstance(rule_hours, (list, tuple)) and len(rule_hours) >= 2:
-        start_hhmm = str(rule_hours[0] or "").strip()
-        end_hhmm = str(rule_hours[1] or "").strip()
-        if not start_hhmm or not end_hhmm:
-            return True
-    return False
 
 
 def min_notice_cutoff(business_rules: Optional[Dict[str, Any]] = None) -> Optional[datetime]:
