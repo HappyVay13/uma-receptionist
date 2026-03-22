@@ -7379,6 +7379,24 @@ def is_holiday_for_rules(dt_value: datetime, business_rules: Optional[Dict[str, 
     return dt_value.strftime("%Y-%m-%d") in holidays
 
 
+def is_closed_day_for_rules(dt_value: datetime, business_rules: Optional[Dict[str, Any]] = None) -> bool:
+    if not business_rules:
+        return False
+    if is_holiday_for_rules(dt_value, business_rules):
+        return True
+    weekly_hours = (business_rules.get("weekly_hours") or {})
+    weekday_key = _weekday_key_for_date(dt_value)
+    rule_hours = weekly_hours.get(weekday_key)
+    if not rule_hours:
+        return True
+    if isinstance(rule_hours, (list, tuple)) and len(rule_hours) >= 2:
+        start_hhmm = str(rule_hours[0] or "").strip()
+        end_hhmm = str(rule_hours[1] or "").strip()
+        if not start_hhmm or not end_hhmm:
+            return True
+    return False
+
+
 def min_notice_cutoff(business_rules: Optional[Dict[str, Any]] = None) -> Optional[datetime]:
     mins = _safe_int((business_rules or {}).get("min_notice_minutes"), 0)
     if mins <= 0:
