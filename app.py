@@ -2373,7 +2373,7 @@ def build_upsell_followup_reply(lang: str, added: bool, haircut_item: Optional[D
 
 def build_confirm_upsell_prompt(lang: str, when_text: str, haircut_item: Optional[Dict[str, Any]], beard_item: Optional[Dict[str, Any]]) -> str:
     haircut_name = service_display_name(haircut_item, lang)
-    beard_name = service_display_name(beard_item, lang) or ("bārdu" if lang == "lv" else "борodu" if lang == "ru" else "a beard trim")
+    beard_name = service_display_name(beard_item, lang) or ("bārdu" if lang == "lv" else "бороду" if lang == "ru" else "a beard trim")
     if lang == "ru":
         return f"Отлично — можем записать вас на {haircut_name} {when_text}. Если хотите, можем добавить и {beard_name}. Добавляем?"
     if lang == "en":
@@ -3872,11 +3872,13 @@ def book_appointment_for_datetime(
         c["pending"] = pending
         c["state"] = STATE_AWAITING_DATE
         c["datetime_iso"] = None
+        closed_reply = build_closed_day_reply(lang, dt_start, settings.get("business_rules"))
         return {
             "status": "need_more" if voice_like_channel else "holiday_closed",
-            "reply_voice": t(lang, "holiday_closed_voice"),
-            "msg_out": t(lang, "holiday_closed_text"),
+            "reply_voice": closed_reply,
+            "msg_out": closed_reply,
             "lang": lang,
+            "preserve_text": True,
         }
 
     if violates_min_notice(dt_start, settings.get("business_rules")):
@@ -4567,10 +4569,11 @@ def handle_user_text(
                 c["pending"] = pending
                 c["state"] = STATE_AWAITING_DATE
                 db_save_conversation(tenant_id, user_key, c)
+                closed_reply = build_closed_day_reply(lang, base_date, settings.get("business_rules"))
                 return {
                     "status": "need_more",
-                    "reply_voice": t(lang, "holiday_closed_voice"),
-                    "msg_out": t(lang, "holiday_closed_text"),
+                    "reply_voice": closed_reply,
+                    "msg_out": closed_reply,
                     "lang": lang,
                     "preserve_text": True,
                 }
@@ -7441,6 +7444,49 @@ def is_closed_day_for_rules(dt_value: datetime, business_rules: Optional[Dict[st
     weekly_hours = (business_rules.get("weekly_hours") or {})
     rule_hours = weekly_hours.get(weekday_key)
     return not rule_hours
+
+
+def localized_weekday_name(dt_value: datetime, lang: str) -> str:
+    lang = get_lang(lang)
+    names = {
+        "lv": ["pirmdien", "otrdien", "trešdien", "ceturtdien", "piektdien", "sestdien", "svētdien"],
+        "ru": ["понедельник", "вторник", "среду", "четверг", "пятницу", "субботу", "воскресенье"],
+        "en": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
+    }
+    return names.get(lang, names["lv"])[dt_value.weekday()]
+
+
+def next_open_days_for_rules(base_dt: datetime, business_rules: Optional[Dict[str, Any]] = None, limit: int = 2) -> List[datetime]:
+    if not business_rules:
+        return []
+    out: List[datetime] = []
+    probe = base_dt.replace(hour=9, minute=0, second=0, microsecond=0)
+    for step in range(1, 15):
+        cand = probe + timedelta(days=step)
+        if not is_closed_day_for_rules(cand, business_rules):
+            out.append(cand)
+            if len(out) >= max(1, limit):
+                break
+    return out
+
+
+def build_closed_day_reply(lang: str, dt_value: datetime, business_rules: Optional[Dict[str, Any]] = None) -> str:
+    lang = get_lang(lang)
+    day_name = localized_weekday_name(dt_value, lang)
+    suggestions = next_open_days_for_rules(dt_value, business_rules, limit=2)
+    if suggestions:
+        s1 = localized_weekday_name(suggestions[0], lang)
+        s2 = localized_weekday_name(suggestions[1], lang) if len(suggestions) > 1 else ""
+        if lang == "ru":
+            return f"К сожалению, в {day_name} мы не работаем. Могу предложить {s1}" + (f" или {s2}." if s2 else ".")
+        if lang == "en":
+            return f"Unfortunately, we are closed on {day_name}. I can offer {s1}" + (f" or {s2}." if s2 else ".")
+        return f"Diemžēl {day_name} mēs nestrādājam. Varu piedāvāt {s1}" + (f" vai {s2}." if s2 else ".")
+    if lang == "ru":
+        return f"К сожалению, в {day_name} мы не работаем. Хотите выбрать другой день?"
+    if lang == "en":
+        return f"Unfortunately, we are closed on {day_name}. Would you like another day?"
+    return f"Diemžēl {day_name} mēs nestrādājam. Vai vēlaties citu dienu?"
 
 
 def exchange_code_for_tokens(*args, **kwargs):
