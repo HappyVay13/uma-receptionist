@@ -2421,6 +2421,25 @@ def build_post_booking_upsell_no(lang: str) -> str:
     return "Labi 👍 Tad viss gatavs. Ja vēlāk gribēsiet pievienot arī bārdu, vienkārši uzrakstiet."
 
 
+def should_offer_post_booking_upsell(final_service_item: Optional[Dict[str, Any]], final_service_text: str, addon_service_item: Optional[Dict[str, Any]], pending: Optional[Dict[str, Any]] = None) -> bool:
+    if addon_service_item:
+        return False
+    if service_group_key(final_service_item) == "haircut":
+        return True
+    hay = " ".join([
+        str((pending or {}).get("service") or ""),
+        str((pending or {}).get("service_display") or ""),
+        str(final_service_text or ""),
+        str((final_service_item or {}).get("key") or ""),
+        str((final_service_item or {}).get("name_lv") or ""),
+        str((final_service_item or {}).get("name_ru") or ""),
+        str((final_service_item or {}).get("name_en") or ""),
+    ]).lower()
+    has_hair = any(x in hay for x in ["friz", "haircut", "стриж", "matu griez", "griezum"])
+    has_beard = any(x in hay for x in ["bārd", "barda", "beard", "бород"])
+    return has_hair and not has_beard
+
+
 def service_catalog_summary(catalog: List[Dict[str, Any]], lang: str) -> str:
     parts = []
     for item in catalog:
@@ -4103,9 +4122,8 @@ def book_appointment_for_datetime(
     beard_item = find_service_item_by_group(service_catalog, "beard")
     if (
         not was_rescheduled
-        and service_group_key(final_service_item) == "haircut"
         and beard_item
-        and not addon_service_item
+        and should_offer_post_booking_upsell(final_service_item, final_service, addon_service_item, pending)
     ):
         pending = c.get("pending") or {}
         pending["post_booking_upsell_pending"] = True
@@ -4274,7 +4292,7 @@ def handle_user_text(
 
     active_flow = is_active_booking_flow(c)
 
-    if msg and conversation_state(c) == STATE_BOOKED and pending.get("post_booking_upsell_pending"):
+    if msg and pending.get("post_booking_upsell_pending"):
         beard_key = str(pending.get("post_booking_beard_service") or "").strip()
         beard_item = get_service_item_by_key(service_catalog, beard_key) if beard_key else find_service_item_by_group(service_catalog, "beard")
         if is_yes_text(msg, lang):
