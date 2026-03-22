@@ -388,9 +388,6 @@ def humanize_result(result: Dict[str, Any], conv: Optional[Dict[str, Any]], tena
         result["msg_out"] = text_value
         result["reply_voice"] = text_value
 
-    if result.get("preserve_text"):
-        return result
-
     if result.get("status") == "greeting":
         if lang == "ru":
             apply(_pick_variant([
@@ -1510,6 +1507,32 @@ def try_barbershop_faq(
     return None
 
 
+def faq_with_flow_followup(
+    faq_result: Dict[str, Any],
+    lang: str,
+    c: Dict[str, Any],
+    pending: Dict[str, Any],
+    service_catalog: List[Dict[str, Any]],
+    active_flow: bool,
+) -> Dict[str, Any]:
+    result = dict(faq_result or {})
+    if not active_flow:
+        return result
+
+    followup = prompt_for_state(lang, c, pending or {}, service_catalog)
+    answer_text = str(result.get("msg_out") or result.get("reply_voice") or "").strip()
+    if followup:
+        combined = f"{answer_text}\n\n{followup}".strip() if answer_text else followup
+    else:
+        combined = answer_text
+
+    result["status"] = "need_more"
+    result["msg_out"] = combined
+    result["reply_voice"] = combined
+    result["lang"] = lang
+    result["flow_preserved"] = True
+    return result
+
 
 LANG_HINTS = {
     "lv": {
@@ -2340,35 +2363,8 @@ def combined_service_display(lang: str, primary_item: Optional[Dict[str, Any]], 
     primary = service_display_name(primary_item, lang)
     addon = service_display_name(addon_item, lang)
     if primary and addon:
-        sep = " + "
-        return f"{primary}{sep}{addon}"
+        return f"{primary} + {addon}"
     return primary or addon or ""
-
-
-def build_barbershop_upsell_prompt(lang: str, haircut_item: Optional[Dict[str, Any]], beard_item: Optional[Dict[str, Any]]) -> str:
-    haircut_name = service_display_name(haircut_item, lang)
-    beard_name = service_display_name(beard_item, lang) or ("bārdu" if lang == "lv" else "бороду" if lang == "ru" else "a beard trim")
-    if lang == "ru":
-        return f"Отлично 👍 Записываем на {haircut_name}. Хотите сразу добавить {beard_name}?"
-    if lang == "en":
-        return f"Great 👍 We’ll book {haircut_name}. Would you like to add {beard_name} as well?"
-    return f"Super 👍 Pierakstām uz {haircut_name}. Ja vēlaties, varam uzreiz pievienot arī {beard_name}."
-
-
-def build_upsell_followup_reply(lang: str, added: bool, haircut_item: Optional[Dict[str, Any]], beard_item: Optional[Dict[str, Any]]) -> str:
-    haircut_name = service_display_name(haircut_item, lang)
-    beard_name = service_display_name(beard_item, lang) or ("bārdu" if lang == "lv" else "бороду" if lang == "ru" else "a beard trim")
-    if added:
-        if lang == "ru":
-            return f"Отлично 👍 Добавляю {beard_name}. На какой день вам удобно?"
-        if lang == "en":
-            return f"Great 👍 I’ll add {beard_name}. What day works for you?"
-        return f"Lieliski 👍 Pievienoju arī {beard_name}. Kurā dienā jums būtu ērti?"
-    if lang == "ru":
-        return f"Хорошо 👍 Тогда записываем на {haircut_name}. На какой день вам удобно?"
-    if lang == "en":
-        return f"No problem 👍 We’ll keep {haircut_name}. What day works for you?"
-    return f"Labi 👍 Tad pierakstām uz {haircut_name}. Kurā dienā jums būtu ērti?"
 
 
 def build_confirm_upsell_prompt(lang: str, when_text: str, haircut_item: Optional[Dict[str, Any]], beard_item: Optional[Dict[str, Any]]) -> str:
@@ -3864,7 +3860,7 @@ def book_appointment_for_datetime(
     if not calendar_ready:
         return blocked_result_for_lang(lang)
 
-    if is_holiday_for_rules(dt_start, settings.get("business_rules")):
+    if is_closed_day_for_rules(dt_start, settings.get("business_rules")):
         pending = c.get("pending") or {}
         pending["booking_intent"] = True
         pending["awaiting_time_date_iso"] = None
@@ -3872,13 +3868,11 @@ def book_appointment_for_datetime(
         c["pending"] = pending
         c["state"] = STATE_AWAITING_DATE
         c["datetime_iso"] = None
-        closed_reply = build_closed_day_reply(lang, dt_start, settings.get("business_rules"))
         return {
             "status": "need_more" if voice_like_channel else "holiday_closed",
-            "reply_voice": closed_reply,
-            "msg_out": closed_reply,
+            "reply_voice": t(lang, "holiday_closed_voice"),
+            "msg_out": t(lang, "holiday_closed_text"),
             "lang": lang,
-            "preserve_text": True,
         }
 
     if violates_min_notice(dt_start, settings.get("business_rules")):
@@ -4020,7 +4014,7 @@ def book_appointment_for_datetime(
                 "reply_voice": reply_text,
                 "msg_out": reply_text,
                 "lang": lang,
-                "preserve_text": True,
+                "flow_preserved": True,
             }
 
         return {
@@ -4082,8 +4076,6 @@ def book_appointment_for_datetime(
     pending.pop("awaiting_time_date_iso", None)
     pending.pop("candidate_datetime_iso", None)
     pending.pop("preferred_time_window", None)
-    pending.pop("pending_upsell", None)
-    pending.pop("upsell_shown", None)
     pending.pop("pending_confirm_upsell", None)
     pending.pop("confirm_upsell_done", None)
     pending.pop("addon_service", None)
@@ -4266,6 +4258,22 @@ def handle_user_text(
             "lang": lang,
         }
 
+    if msg:
+        faq_result = try_barbershop_faq(
+            msg=msg,
+            lang=lang,
+            tenant=tenant,
+            settings=settings,
+            service_catalog=service_catalog,
+            service_aliases=service_aliases,
+            business_memory=business_memory,
+        )
+        if faq_result:
+            faq_result = faq_with_flow_followup(faq_result, lang, c, pending, service_catalog, active_flow)
+            if active_flow:
+                db_save_conversation(tenant_id, user_key, c)
+            return faq_result
+
     if msg and is_greeting_only(msg) and not active_flow and c["state"] not in ACTIVE_BOOKING_STATES:
         c["state"] = STATE_NEW
         c["service"] = None
@@ -4293,19 +4301,6 @@ def handle_user_text(
             "msg_out": t(lang, "hours_info", biz=settings["biz_name"], start=settings["work_start"], end=settings["work_end"]),
             "lang": lang,
         }
-
-    if not active_flow and msg:
-        faq_result = try_barbershop_faq(
-            msg=msg,
-            lang=lang,
-            tenant=tenant,
-            settings=settings,
-            service_catalog=service_catalog,
-            service_aliases=service_aliases,
-            business_memory=business_memory,
-        )
-        if faq_result:
-            return faq_result
 
     llm_hint = get_llm_data() if msg else {}
 
@@ -4343,33 +4338,6 @@ def handle_user_text(
         active_flow = True
 
     pending = c.get("pending") or {}
-
-    # If the user only opens a booking flow ("I want to book") without
-    # explicitly naming a service yet, do NOT auto-select a default or
-    # hallucinated service. Ask for the service first.
-    if fresh_booking_start and msg:
-        direct_service_key_open = canonical_service_key_from_text(msg, service_aliases)
-        service_item_open = get_service_item_by_key(service_catalog, direct_service_key_open) if direct_service_key_open else None
-        if not service_item_open:
-            service_item_open = extract_service_from_text(msg, service_catalog, lang)
-        if not service_item_open:
-            c["service"] = None
-            pending.pop("service", None)
-            pending.pop("service_display", None)
-            pending.pop("pending_upsell", None)
-            pending.pop("upsell_shown", None)
-            pending["booking_intent"] = True
-            c["pending"] = pending
-            c["state"] = STATE_AWAITING_SERVICE
-            db_save_conversation(tenant_id, user_key, c)
-            reply_text = barber_service_prompt(lang, service_catalog)
-            return {
-                "status": "need_more",
-                "reply_voice": reply_text,
-                "msg_out": reply_text,
-                "lang": lang,
-            }
-
     if msg and (natural_dt_for_msg or date_only_dt_for_msg or time_window_for_msg or explicit_time_present):
         pending["booking_intent"] = True
         if time_window_for_msg:
@@ -4569,13 +4537,11 @@ def handle_user_text(
                 c["pending"] = pending
                 c["state"] = STATE_AWAITING_DATE
                 db_save_conversation(tenant_id, user_key, c)
-                closed_reply = build_closed_day_reply(lang, base_date, settings.get("business_rules"))
                 return {
                     "status": "need_more",
-                    "reply_voice": closed_reply,
-                    "msg_out": closed_reply,
+                    "reply_voice": t(lang, "holiday_closed_voice"),
+                    "msg_out": t(lang, "holiday_closed_text"),
                     "lang": lang,
-                    "preserve_text": True,
                 }
             if len(day_slots) >= 3:
                 pending = set_offered_slots(pending, day_slots[:3])
@@ -4832,14 +4798,14 @@ def handle_user_text(
                 c["pending"] = pending
                 db_save_conversation(tenant_id, user_key, c)
                 reply_text = build_confirm_upsell_resolution(lang, when_txt, True, haircut_item, beard_item)
-                return {"status": "need_more", "reply_voice": reply_text, "msg_out": reply_text, "lang": lang, "preserve_text": True}
+                return {"status": "need_more", "reply_voice": reply_text, "msg_out": reply_text, "lang": lang, "flow_preserved": True}
             if is_no_text(msg, lang) or llm_confirmation == "no":
                 pending["pending_confirm_upsell"] = False
                 pending.pop("addon_service", None)
                 c["pending"] = pending
                 db_save_conversation(tenant_id, user_key, c)
                 reply_text = build_confirm_upsell_resolution(lang, when_txt, False, haircut_item, beard_item)
-                return {"status": "need_more", "reply_voice": reply_text, "msg_out": reply_text, "lang": lang, "preserve_text": True}
+                return {"status": "need_more", "reply_voice": reply_text, "msg_out": reply_text, "lang": lang, "flow_preserved": True}
             if is_short_ack_text(msg, lang):
                 pending["pending_confirm_upsell"] = False
                 pending.pop("addon_service", None)
@@ -4874,6 +4840,9 @@ def handle_user_text(
             return result
         if is_no_text(msg, lang) or llm_confirmation == "no":
             pending.pop("confirm_slot_iso", None)
+            pending.pop("pending_confirm_upsell", None)
+            pending.pop("confirm_upsell_done", None)
+            pending.pop("addon_service", None)
             c["pending"] = pending or {"booking_intent": True}
             c["datetime_iso"] = None
             c["state"] = STATE_AWAITING_TIME
@@ -4898,18 +4867,6 @@ def handle_user_text(
     fallback_reply = soft_clarify_for_state(lang, c, c.get("pending") or {}) if is_active_booking_flow(c) else t(lang, "unclear_reply")
     if not is_active_booking_flow(c) and llm_intent == "info" and llm_conf >= LLM_INTENT_MIN_CONFIDENCE and is_hours_question(msg):
         fallback_reply = t(lang, "hours_info", biz=settings["biz_name"], start=settings["work_start"], end=settings["work_end"])
-    if not is_active_booking_flow(c) and msg:
-        faq_result = try_barbershop_faq(
-            msg=msg,
-            lang=lang,
-            tenant=tenant,
-            settings=settings,
-            service_catalog=service_catalog,
-            service_aliases=service_aliases,
-            business_memory=business_memory,
-        )
-        if faq_result:
-            return faq_result
     return {
         "status": fallback_status,
         "reply_voice": fallback_reply,
@@ -7433,60 +7390,6 @@ def violates_min_notice(dt_value: datetime, business_rules: Optional[Dict[str, A
     if cutoff is None:
         return False
     return dt_value < cutoff
-
-
-def is_closed_day_for_rules(dt_value: datetime, business_rules: Optional[Dict[str, Any]] = None) -> bool:
-    if not business_rules:
-        return False
-    if is_holiday_for_rules(dt_value, business_rules):
-        return True
-    weekday_key = _weekday_key_for_date(dt_value)
-    weekly_hours = (business_rules.get("weekly_hours") or {})
-    rule_hours = weekly_hours.get(weekday_key)
-    return not rule_hours
-
-
-def localized_weekday_name(dt_value: datetime, lang: str) -> str:
-    lang = get_lang(lang)
-    names = {
-        "lv": ["pirmdien", "otrdien", "trešdien", "ceturtdien", "piektdien", "sestdien", "svētdien"],
-        "ru": ["понедельник", "вторник", "среду", "четверг", "пятницу", "субботу", "воскресенье"],
-        "en": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
-    }
-    return names.get(lang, names["lv"])[dt_value.weekday()]
-
-
-def next_open_days_for_rules(base_dt: datetime, business_rules: Optional[Dict[str, Any]] = None, limit: int = 2) -> List[datetime]:
-    if not business_rules:
-        return []
-    out: List[datetime] = []
-    probe = base_dt.replace(hour=9, minute=0, second=0, microsecond=0)
-    for step in range(1, 15):
-        cand = probe + timedelta(days=step)
-        if not is_closed_day_for_rules(cand, business_rules):
-            out.append(cand)
-            if len(out) >= max(1, limit):
-                break
-    return out
-
-
-def build_closed_day_reply(lang: str, dt_value: datetime, business_rules: Optional[Dict[str, Any]] = None) -> str:
-    lang = get_lang(lang)
-    day_name = localized_weekday_name(dt_value, lang)
-    suggestions = next_open_days_for_rules(dt_value, business_rules, limit=2)
-    if suggestions:
-        s1 = localized_weekday_name(suggestions[0], lang)
-        s2 = localized_weekday_name(suggestions[1], lang) if len(suggestions) > 1 else ""
-        if lang == "ru":
-            return f"К сожалению, в {day_name} мы не работаем. Могу предложить {s1}" + (f" или {s2}." if s2 else ".")
-        if lang == "en":
-            return f"Unfortunately, we are closed on {day_name}. I can offer {s1}" + (f" or {s2}." if s2 else ".")
-        return f"Diemžēl {day_name} mēs nestrādājam. Varu piedāvāt {s1}" + (f" vai {s2}." if s2 else ".")
-    if lang == "ru":
-        return f"К сожалению, в {day_name} мы не работаем. Хотите выбрать другой день?"
-    if lang == "en":
-        return f"Unfortunately, we are closed on {day_name}. Would you like another day?"
-    return f"Diemžēl {day_name} mēs nestrādājam. Vai vēlaties citu dienu?"
 
 
 def exchange_code_for_tokens(*args, **kwargs):
