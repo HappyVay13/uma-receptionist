@@ -6498,96 +6498,222 @@ function setEmpty(tbody, colSpan, label='No data yet') {{ tbody.innerHTML = `<tr
 async function fetchJson(url) {{ const r = await fetch(url); if (!r.ok) {{ const text = await r.text(); throw new Error(text || `HTTP ${{r.status}}`); }} return r.json(); }}
 function destroyIf(chartObj) {{ if (chartObj) chartObj.destroy(); }}
 function statusBadge(label, cls) {{ return `<span class="badge ${{cls||''}}">${{esc(label)}}</span>`; }}
-function renderTrendChart(daily) {{ const ctx = document.getElementById('trend_chart').getContext('2d'); destroyIf(trendChart); trendChart = new Chart(ctx, {{ type:'line', data:{{ labels:(daily||[]).map(x=>x.date||''), datasets:[{{label:'Requests',data:(daily||[]).map(x=>x.requests||0),borderWidth:2,tension:0.3}},{{label:'Bookings',data:(daily||[]).map(x=>x.bookings||0),borderWidth:2,tension:0.3}},{{label:'Cancelled',data:(daily||[]).map(x=>x.cancelled||0),borderWidth:2,tension:0.3}}]}}, options:{{responsive:true,maintainAspectRatio:false,interaction:{{mode:'index',intersect:false}},plugins:{{legend:{{position:'bottom'}}}},scales:{{y:{{beginAtZero:true,ticks:{{precision:0}}}}}} }}); }}
-function renderChannelChart(channels) {{ const ctx = document.getElementById('channel_chart').getContext('2d'); destroyIf(channelChart); channelChart = new Chart(ctx, {{ type:'doughnut', data:{{labels:(channels||[]).map(x=>x.channel||'unknown'), datasets:[{{data:(channels||[]).map(x=>x.count||0), borderWidth:1}}]}}, options:{{responsive:true,maintainAspectRatio:false,plugins:{{legend:{{position:'bottom'}}}} }}); }}
-function renderServicesChart(items) {{ const ctx = document.getElementById('services_chart').getContext('2d'); destroyIf(servicesChart); servicesChart = new Chart(ctx, {{ type:'bar', data:{{labels:(items||[]).map(x=>x.service||'unknown'), datasets:[{{label:'Bookings',data:(items||[]).map(x=>x.count||0), borderWidth:1}}]}}, options:{{responsive:true,maintainAspectRatio:false,indexAxis:'y',plugins:{{legend:{{display:false}}}},scales:{{x:{{beginAtZero:true,ticks:{{precision:0}}}}}} }}); }}
-function renderOverview(ov) {{
+function el(id) {{ return document.getElementById(id); }}
+function setText(id, value, fallback='-') {{ const node = el(id); if (!node) return; node.textContent = (value === null || value === undefined || value === '') ? fallback : String(value); }}
+function safeArray(value) {{ return Array.isArray(value) ? value : []; }}
+function normalizeDailyPayload(value) {{
+  if (Array.isArray(value)) return value;
+  if (Array.isArray(value?.daily)) return value.daily;
+  if (Array.isArray(value?.items)) return value.items;
+  return [];
+}}
+function normalizeChannelPayload(value) {{
+  if (Array.isArray(value)) return value;
+  if (Array.isArray(value?.channels)) return value.channels;
+  return [];
+}}
+function normalizeServicePayload(value) {{
+  if (Array.isArray(value)) return value;
+  if (Array.isArray(value?.top_services)) return value.top_services;
+  if (Array.isArray(value?.items)) return value.items;
+  return [];
+}}
+function normalizeOverview(value) {{
+  return (value && typeof value === 'object') ? value : {{}};
+}}
+function renderTrendChart(rawDaily) {{
+  const canvas = el('trend_chart');
+  if (!canvas || typeof Chart === 'undefined') return;
+  const daily = normalizeDailyPayload(rawDaily);
+  const ctx = canvas.getContext('2d');
+  destroyIf(trendChart);
+  trendChart = new Chart(ctx, {{
+    type:'line',
+    data:{{
+      labels: daily.map(x=>x?.date||''),
+      datasets:[
+        {{label:'Requests', data: daily.map(x=>x?.requests||0), borderWidth:2, tension:0.3}},
+        {{label:'Bookings', data: daily.map(x=>x?.bookings||0), borderWidth:2, tension:0.3}},
+        {{label:'Cancelled', data: daily.map(x=>x?.cancelled||0), borderWidth:2, tension:0.3}}
+      ]
+    }},
+    options:{{responsive:true, maintainAspectRatio:false, interaction:{{mode:'index', intersect:false}}, plugins:{{legend:{{position:'bottom'}}}}, scales:{{y:{{beginAtZero:true, ticks:{{precision:0}}}}}}}}
+  }});
+}}
+function renderChannelChart(rawChannels) {{
+  const canvas = el('channel_chart');
+  if (!canvas || typeof Chart === 'undefined') return;
+  const channels = normalizeChannelPayload(rawChannels);
+  const ctx = canvas.getContext('2d');
+  destroyIf(channelChart);
+  channelChart = new Chart(ctx, {{
+    type:'doughnut',
+    data:{{labels: channels.map(x=>x?.channel||'unknown'), datasets:[{{data: channels.map(x=>x?.count||0), borderWidth:1}}]}},
+    options:{{responsive:true, maintainAspectRatio:false, plugins:{{legend:{{position:'bottom'}}}}}}
+  }});
+}}
+function renderServicesChart(rawItems) {{
+  const canvas = el('services_chart');
+  if (!canvas || typeof Chart === 'undefined') return;
+  const items = normalizeServicePayload(rawItems);
+  const ctx = canvas.getContext('2d');
+  destroyIf(servicesChart);
+  servicesChart = new Chart(ctx, {{
+    type:'bar',
+    data:{{labels: items.map(x=>x?.service||'unknown'), datasets:[{{label:'Bookings', data: items.map(x=>x?.count||0), borderWidth:1}}]}},
+    options:{{responsive:true, maintainAspectRatio:false, indexAxis:'y', plugins:{{legend:{{display:false}}}}, scales:{{x:{{beginAtZero:true, ticks:{{precision:0}}}}}}}}
+  }});
+}}
+function renderOverview(rawOverview) {{
+  const ov = normalizeOverview(rawOverview);
   const tenant = ov?.tenant || {{}};
   const readiness = ov?.readiness || {{}};
   const onboarding = ov?.onboarding || {{}};
   const planMeta = ov?.plan_meta || {{}};
   const limits = planMeta?.limits || {{}};
-  document.getElementById('biz_title').textContent = tenant.business_name || tenant._id || currentTenant();
-  document.getElementById('biz_sub').textContent = `Tenant ${{tenant._id || currentTenant()}} · timezone ${{tenant.timezone || '—'}} · language ${{tenant.language || '—'}}`;
-  document.getElementById('m_plan').textContent = planMeta.plan || 'starter';
-  document.getElementById('m_plan_sub').textContent = planMeta.subscription_status || 'trial';
-  document.getElementById('m_limit_dialogs').textContent = limits.dialogs_per_month ?? '-';
-  document.getElementById('m_llm_mode').textContent = limits.llm_mode || '-';
-  document.getElementById('m_llm_calls').textContent = `LLM calls/month: ${{limits.llm_calls_per_month ?? 0}}`;
-  document.getElementById('m_routes').textContent = ov?.phone_routes_count ?? 0;
+  setText('biz_title', tenant.business_name || tenant._id || currentTenant());
+  setText('biz_sub', `Tenant ${{tenant._id || currentTenant()}} · timezone ${{tenant.timezone || '—'}} · language ${{tenant.language || '—'}}`, '');
+  setText('m_plan', planMeta.plan || 'starter');
+  setText('m_plan_sub', planMeta.subscription_status || 'trial', 'trial');
+  setText('m_limit_dialogs', limits.dialogs_per_month ?? '-');
+  setText('m_llm_mode', limits.llm_mode || '-');
+  setText('m_llm_calls', `LLM calls/month: ${{limits.llm_calls_per_month ?? 0}}`, 'LLM calls/month: 0');
+  setText('m_routes', ov?.phone_routes_count ?? tenant?.phone_routes_count ?? 0, '0');
   const badges = [];
   badges.push(readiness.ready ? statusBadge('Ready','ok') : statusBadge('Setup incomplete','warn'));
   badges.push(onboarding.google_connected ? statusBadge('Google connected','ok') : statusBadge('Google pending','warn'));
   badges.push(onboarding.calendar_selected ? statusBadge('Calendar selected','ok') : statusBadge('Calendar missing','warn'));
-  document.getElementById('ready_badges').innerHTML = badges.join(' ');
-  const ml = document.getElementById('missing_list');
-  ml.innerHTML = '';
-  const missing = Array.isArray(readiness.missing) ? readiness.missing : [];
-  if (!missing.length) {{ ml.innerHTML = '<li>No blocking setup issues</li>'; }} else {{ missing.forEach(x => {{ const li = document.createElement('li'); li.textContent = x; ml.appendChild(li); }}); }}
+  const readyBadges = el('ready_badges');
+  if (readyBadges) readyBadges.innerHTML = badges.join(' ');
+  const ml = el('missing_list');
+  if (ml) {{
+    ml.innerHTML = '';
+    const missing = Array.isArray(readiness.missing) ? readiness.missing : [];
+    if (!missing.length) {{
+      ml.innerHTML = '<li>No blocking setup issues</li>';
+    }} else {{
+      missing.forEach(x => {{
+        const li = document.createElement('li');
+        li.textContent = x;
+        ml.appendChild(li);
+      }});
+    }}
+  }}
   const checkpoints = [];
   checkpoints.push(`<div>${{statusBadge(onboarding.google_connected ? 'Google connected' : 'Google not connected', onboarding.google_connected ? 'ok' : 'warn')}}</div>`);
   checkpoints.push(`<div>${{statusBadge(onboarding.calendar_selected ? 'Calendar selected' : 'Calendar not selected', onboarding.calendar_selected ? 'ok' : 'warn')}}</div>`);
   checkpoints.push(`<div>${{statusBadge(onboarding.onboarding_completed ? 'Onboarding completed' : 'Onboarding in progress', onboarding.onboarding_completed ? 'ok' : 'warn')}}</div>`);
   checkpoints.push(`<div class="muted" style="margin-top:8px;">Next step: ${{esc(onboarding.next_step || readiness.next_step || 'done')}}</div>`);
-  checkpoints.push(`<div class="muted">Owner: ${{esc(tenant.owner_email || '—')}} · Phone: ${{esc(tenant.phone_number || '—')}}</div>`);
-  document.getElementById('checkpoint_block').innerHTML = checkpoints.join('');
+  checkpoints.push(`<div class="muted">Owner: ${{esc(tenant.owner_email || onboarding.owner_email || '—')}} · Phone: ${{esc(tenant.phone_number || onboarding.phone_number || '—')}}</div>`);
+  const checkpointBlock = el('checkpoint_block');
+  if (checkpointBlock) checkpointBlock.innerHTML = checkpoints.join('');
+}}
+function renderTableRows(selector, rows, colSpan, emptyLabel, rowRenderer) {{
+  const tbody = document.querySelector(selector);
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  const safeRows = safeArray(rows);
+  if (!safeRows.length) {{
+    setEmpty(tbody, colSpan, emptyLabel);
+    return;
+  }}
+  safeRows.forEach(item => {{
+    const tr = document.createElement('tr');
+    tr.innerHTML = rowRenderer(item || {{}});
+    tbody.appendChild(tr);
+  }});
+}}
+function clearDashboardBanner() {{
+  const existingBanner = el('dash_error_banner');
+  if (existingBanner) existingBanner.remove();
+}}
+function showDashboardBanner(message, kind='warn') {{
+  clearDashboardBanner();
+  const banner = document.createElement('div');
+  banner.id = 'dash_error_banner';
+  const styleMap = {{
+    warn: 'background:#fef3c7;color:#92400e;',
+    err: 'background:#fee2e2;color:#991b1b;',
+    ok: 'background:#dcfce7;color:#166534;'
+  }};
+  banner.style = `${{styleMap[kind] || styleMap.warn}}padding:12px 16px;font-size:14px;margin-bottom:12px;border-radius:12px;`;
+  banner.textContent = message;
+  const wrap = document.querySelector('.wrap');
+  if (wrap) wrap.prepend(banner);
 }}
 async function loadAll() {{
   const tenant = currentTenant();
-  const days = document.getElementById('days').value || '14';
-  const limit = document.getElementById('limit').value || '20';
-  document.getElementById('usage_badge').textContent = `${{days}} day window`;
-  document.getElementById('lnk_analytics').href = `/dashboard/analytics?tenant_id=${{encodeURIComponent(tenant)}}`;
-  document.getElementById('lnk_usage').href = `/dashboard/usage?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
-  document.getElementById('lnk_activity').href = `/dashboard/activity?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
-  document.getElementById('lnk_chart_data').href = `/dashboard/chart-data?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
-  document.getElementById('lnk_bookings').href = `/dashboard/bookings?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
-  document.getElementById('lnk_conversations').href = `/dashboard/conversations?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
-  document.getElementById('lnk_tenant').href = `/tenant/config?tenant_id=${{encodeURIComponent(tenant)}}`;
-  document.getElementById('lnk_tenant_ui').href = `/tenant/config/ui?tenant_id=${{encodeURIComponent(tenant)}}`;
-  document.getElementById('lnk_status').href = `/tenant/status?tenant_id=${{encodeURIComponent(tenant)}}`;
-  document.getElementById('lnk_overview').href = `/tenant/overview?tenant_id=${{encodeURIComponent(tenant)}}`;
-  const existingBanner = document.getElementById('dash_error_banner'); if (existingBanner) existingBanner.remove();
-  try {{
-    const [a,u,act,b,c,chartData,ov] = await Promise.all([
-      fetchJson(`/dashboard/analytics?tenant_id=${{encodeURIComponent(tenant)}}`),
-      fetchJson(`/dashboard/usage?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`),
-      fetchJson(`/dashboard/activity?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`),
-      fetchJson(`/dashboard/bookings?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`),
-      fetchJson(`/dashboard/conversations?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`),
-      fetchJson(`/dashboard/chart-data?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`),
-      fetchJson(`/tenant/overview?tenant_id=${{encodeURIComponent(tenant)}}`)
-    ]);
-    renderOverview(ov);
-    document.getElementById('m_requests').textContent = a?.total_requests ?? '-';
-    document.getElementById('m_bookings').textContent = a?.total_bookings ?? '-';
-    document.getElementById('m_conv').textContent = `${{a?.conversion_rate ?? 0}}%`;
-    document.getElementById('m_today').textContent = a?.today_bookings ?? '-';
-    document.getElementById('m_users').textContent = u?.unique_users ?? '-';
-    document.getElementById('m_reschedules').textContent = u?.total_reschedules ?? '-';
-    document.getElementById('m_cancelled').textContent = u?.total_cancelled ?? '-';
-    const topChannelObj = Array.isArray(u?.channels) && u.channels.length ? u.channels[0] : null;
-    document.getElementById('m_channel').textContent = topChannelObj?.channel || '-';
-    document.getElementById('m_channel_sub').textContent = topChannelObj ? `${{topChannelObj.count || 0}} events in selected window` : '';
-    renderTrendChart(chartData?.daily || u?.daily || []);
-    renderChannelChart(chartData?.channels || u?.channels || []);
-    renderServicesChart(chartData?.top_services || u?.top_services || []);
-    const bt = document.querySelector('#bookings_tbl tbody'); bt.innerHTML='';
-    if (!Array.isArray(b?.items) || !b.items.length) setEmpty(bt, 5, 'No bookings yet'); else b.items.forEach(item => {{ const tr = document.createElement('tr'); tr.innerHTML = `<td>${{esc(item?.client_name || item?.user_id || '')}}</td><td>${{esc(item?.service || 'unknown')}}</td><td>${{esc(item?.datetime_iso || '')}}</td><td>${{esc(item?.status || '')}}</td><td><span class="muted">${{esc(item?.created_at || '')}}</span></td>`; bt.appendChild(tr); }});
-    const st = document.querySelector('#services_tbl tbody'); st.innerHTML='';
-    if (!Array.isArray(u?.top_services) || !u.top_services.length) setEmpty(st, 2, 'No booked services in selected window'); else u.top_services.forEach(item => {{ const tr = document.createElement('tr'); tr.innerHTML = `<td>${{esc(item?.service || 'unknown')}}</td><td>${{esc(item?.count ?? 0)}}</td>`; st.appendChild(tr); }});
-    const at = document.querySelector('#activity_tbl tbody'); at.innerHTML='';
-    if (!Array.isArray(act?.items) || !act.items.length) setEmpty(at, 6, 'No activity yet'); else act.items.forEach(item => {{ const tr = document.createElement('tr'); tr.innerHTML = `<td><span class="muted">${{esc(item?.created_at || '')}}</span></td><td>${{esc(item?.type || '')}}</td><td>${{esc(item?.channel || '')}}</td><td>${{esc(item?.user_id || '')}}</td><td>${{esc(item?.message || '')}}</td><td>${{esc(item?.status || '')}}</td>`; at.appendChild(tr); }});
-    const dt = document.querySelector('#daily_tbl tbody'); dt.innerHTML='';
-    if (!Array.isArray(u?.daily) || !u.daily.length) setEmpty(dt, 4, 'No daily usage yet'); else u.daily.forEach(item => {{ const tr = document.createElement('tr'); tr.innerHTML = `<td>${{esc(item?.date || '')}}</td><td>${{esc(item?.requests ?? 0)}}</td><td>${{esc(item?.bookings ?? 0)}}</td><td>${{esc(item?.cancelled ?? 0)}}</td>`; dt.appendChild(tr); }});
-    const ct = document.querySelector('#conv_tbl tbody'); ct.innerHTML='';
-    if (!Array.isArray(c?.items) || !c.items.length) setEmpty(ct, 6, 'No conversations yet'); else c.items.forEach(item => {{ const tr = document.createElement('tr'); tr.innerHTML = `<td><span class="muted">${{esc(item?.created_at || '')}}</span></td><td>${{esc(item?.user_id || '')}}</td><td>${{esc(item?.channel || '')}}</td><td>${{esc(item?.user_message || '')}}</td><td>${{esc(item?.ai_reply || '')}}</td><td>${{esc(item?.status || '')}}</td>`; ct.appendChild(tr); }});
-  }} catch (err) {{
-    const banner = document.createElement('div');
-    banner.id = 'dash_error_banner';
-    banner.style = 'background:#fee2e2;color:#991b1b;padding:12px 16px;font-size:14px;margin-bottom:12px;border-radius:12px;';
-    banner.textContent = `Dashboard load failed: ${{err?.message || err}}`;
-    document.querySelector('.wrap').prepend(banner);
+  const days = el('days')?.value || '14';
+  const limit = el('limit')?.value || '20';
+  setText('usage_badge', `${{days}} day window`, 'Selected window');
+  el('lnk_analytics').href = `/dashboard/analytics?tenant_id=${{encodeURIComponent(tenant)}}`;
+  el('lnk_usage').href = `/dashboard/usage?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
+  el('lnk_activity').href = `/dashboard/activity?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
+  el('lnk_chart_data').href = `/dashboard/chart-data?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
+  el('lnk_bookings').href = `/dashboard/bookings?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
+  el('lnk_conversations').href = `/dashboard/conversations?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
+  el('lnk_tenant').href = `/tenant/config?tenant_id=${{encodeURIComponent(tenant)}}`;
+  el('lnk_tenant_ui').href = `/tenant/config/ui?tenant_id=${{encodeURIComponent(tenant)}}`;
+  el('lnk_status').href = `/tenant/status?tenant_id=${{encodeURIComponent(tenant)}}`;
+  el('lnk_overview').href = `/tenant/overview?tenant_id=${{encodeURIComponent(tenant)}}`;
+  clearDashboardBanner();
+
+  const requests = [
+    ['analytics', `/dashboard/analytics?tenant_id=${{encodeURIComponent(tenant)}}`],
+    ['usage', `/dashboard/usage?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`],
+    ['activity', `/dashboard/activity?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`],
+    ['bookings', `/dashboard/bookings?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`],
+    ['conversations', `/dashboard/conversations?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`],
+    ['chartData', `/dashboard/chart-data?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`],
+    ['overview', `/tenant/overview?tenant_id=${{encodeURIComponent(tenant)}}`]
+  ];
+
+  const settled = await Promise.allSettled(requests.map(([_, url]) => fetchJson(url)));
+  const data = {{}};
+  const errors = [];
+  settled.forEach((result, idx) => {{
+    const key = requests[idx][0];
+    if (result.status === 'fulfilled') {{
+      data[key] = result.value;
+    }} else {{
+      data[key] = null;
+      errors.push(`${{key}}: ${{result.reason?.message || result.reason || 'load failed'}}`);
+      console.error('dashboard_block_failed', key, result.reason);
+    }}
+  }});
+
+  const a = data.analytics || {{}};
+  const u = data.usage || {{}};
+  const act = data.activity || {{}};
+  const b = data.bookings || {{}};
+  const c = data.conversations || {{}};
+  const chartData = data.chartData || {{}};
+  const ov = data.overview || {{}};
+
+  try {{ renderOverview(ov); }} catch (err) {{ errors.push(`overview render: ${{err?.message || err}}`); console.error(err); }}
+  setText('m_requests', a?.total_requests ?? '-');
+  setText('m_bookings', a?.total_bookings ?? '-');
+  setText('m_conv', `${{a?.conversion_rate ?? 0}}%`);
+  setText('m_today', a?.today_bookings ?? '-');
+  setText('m_users', u?.unique_users ?? '-');
+  setText('m_reschedules', u?.total_reschedules ?? '-');
+  setText('m_cancelled', u?.total_cancelled ?? '-');
+  const topChannelObj = Array.isArray(u?.channels) && u.channels.length ? u.channels[0] : null;
+  setText('m_channel', topChannelObj?.channel || '-');
+  setText('m_channel_sub', topChannelObj ? `${{topChannelObj.count || 0}} events in selected window` : '', '');
+
+  try {{ renderTrendChart(chartData?.daily || u?.daily || []); }} catch (err) {{ errors.push(`trend chart: ${{err?.message || err}}`); console.error(err); }}
+  try {{ renderChannelChart(chartData?.channels || u?.channels || []); }} catch (err) {{ errors.push(`channel chart: ${{err?.message || err}}`); console.error(err); }}
+  try {{ renderServicesChart(chartData?.top_services || u?.top_services || []); }} catch (err) {{ errors.push(`services chart: ${{err?.message || err}}`); console.error(err); }}
+
+  renderTableRows('#bookings_tbl tbody', b?.items, 5, 'No bookings yet', item => `<td>${{esc(item?.client_name || item?.user_id || '')}}</td><td>${{esc(item?.service || 'unknown')}}</td><td>${{esc(item?.datetime_iso || '')}}</td><td>${{esc(item?.status || '')}}</td><td><span class="muted">${{esc(item?.created_at || '')}}</span></td>`);
+  renderTableRows('#services_tbl tbody', u?.top_services, 2, 'No booked services in selected window', item => `<td>${{esc(item?.service || 'unknown')}}</td><td>${{esc(item?.count ?? 0)}}</td>`);
+  renderTableRows('#activity_tbl tbody', act?.items, 6, 'No activity yet', item => `<td><span class="muted">${{esc(item?.created_at || '')}}</span></td><td>${{esc(item?.type || '')}}</td><td>${{esc(item?.channel || '')}}</td><td>${{esc(item?.user_id || '')}}</td><td>${{esc(item?.message || '')}}</td><td>${{esc(item?.status || '')}}</td>`);
+  renderTableRows('#daily_tbl tbody', u?.daily, 4, 'No daily usage yet', item => `<td>${{esc(item?.date || '')}}</td><td>${{esc(item?.requests ?? 0)}}</td><td>${{esc(item?.bookings ?? 0)}}</td><td>${{esc(item?.cancelled ?? 0)}}</td>`);
+  renderTableRows('#conv_tbl tbody', c?.items, 6, 'No conversations yet', item => `<td><span class="muted">${{esc(item?.created_at || '')}}</span></td><td>${{esc(item?.user_id || '')}}</td><td>${{esc(item?.channel || '')}}</td><td>${{esc(item?.user_message || '')}}</td><td>${{esc(item?.ai_reply || '')}}</td><td>${{esc(item?.status || '')}}</td>`);
+
+  if (errors.length) {{
+    showDashboardBanner(`Dashboard loaded with partial issues: ${{errors.join(' | ')}}`, 'warn');
   }}
 }}
 document.addEventListener('DOMContentLoaded', loadAll);
