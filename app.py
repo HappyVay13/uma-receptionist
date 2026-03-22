@@ -5529,8 +5529,9 @@ def onboarding_status_payload(tenant: Dict[str, Any]) -> Dict[str, Any]:
     tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip()
     calendar_id = str(tenant.get("calendar_id") or "").strip()
     google_connected = tenant_google_connected_effective(tenant)
-    onboarding_completed = bool(tenant.get("onboarding_completed"))
     calendar_selected = bool(calendar_id)
+    persisted_onboarding_completed = bool(tenant.get("onboarding_completed"))
+    onboarding_completed = bool(persisted_onboarding_completed or (google_connected and calendar_selected))
     phone_number = normalize_incoming_to_number(tenant.get("phone_number") or "")
 
     next_step = "create_tenant"
@@ -5552,6 +5553,7 @@ def onboarding_status_payload(tenant: Dict[str, Any]) -> Dict[str, Any]:
         "calendar_selected": calendar_selected,
         "calendar_id": calendar_id or None,
         "onboarding_completed": onboarding_completed,
+        "persisted_onboarding_completed": persisted_onboarding_completed,
         "subscription_status": tenant.get("subscription_status"),
         "plan": tenant.get("plan"),
         "next_step": next_step,
