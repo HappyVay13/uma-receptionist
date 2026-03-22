@@ -2383,20 +2383,31 @@ def build_confirm_upsell_prompt(lang: str, when_text: str, haircut_item: Optiona
     return f"Lieliski — varam pierakstīt jūs uz {haircut_name} {when_text}. Ja vēlaties, varam pievienot arī {beard_name}. Vai pievienojam?"
 
 
+def upsell_addon_natural_name(lang: str, addon_item: Optional[Dict[str, Any]]) -> str:
+    group = service_group_key(addon_item)
+    if group == "beard":
+        if lang == "ru":
+            return "бороду"
+        if lang == "en":
+            return "a beard trim"
+        return "bārdu"
+    return service_display_name(addon_item, lang) or ("papildu pakalpojumu" if lang == "lv" else "дополнительную услугу" if lang == "ru" else "the extra service")
+
+
 def build_confirm_upsell_resolution(lang: str, when_text: str, added: bool, haircut_item: Optional[Dict[str, Any]], beard_item: Optional[Dict[str, Any]]) -> str:
     haircut_name = service_display_name(haircut_item, lang)
-    beard_name = service_display_name(beard_item, lang) or ("bārdu" if lang == "lv" else "бороду" if lang == "ru" else "a beard trim")
+    addon_name = upsell_addon_natural_name(lang, beard_item)
     if added:
         if lang == "ru":
-            return f"Отлично 👍 Добавляю {beard_name}. Тогда подтверждаем запись на {when_text}?"
+            return f"Отлично 👍 Добавил {addon_name}. Ваша запись подтверждена на {when_text}."
         if lang == "en":
-            return f"Great 👍 I’ll add {beard_name}. Shall I confirm the booking for {when_text}?"
-        return f"Lieliski 👍 Pievienoju arī {beard_name}. Vai apstiprinām pierakstu uz {when_text}?"
+            return f"Great 👍 I added {addon_name}. Your appointment is confirmed for {when_text}."
+        return f"Lieliski 👍 Pievienoju arī {addon_name}. Jūsu pieraksts ir apstiprināts uz {when_text}."
     if lang == "ru":
-        return f"Хорошо 👍 Оставляем {haircut_name}. Подтверждаем запись на {when_text}?"
+        return f"Хорошо 👍 Оставляем {haircut_name}. Ваша запись подтверждена на {when_text}."
     if lang == "en":
-        return f"No problem 👍 We’ll keep {haircut_name}. Shall I confirm the booking for {when_text}?"
-    return f"Labi 👍 Paliekam pie {haircut_name}. Vai apstiprinām pierakstu uz {when_text}?"
+        return f"No problem 👍 We’ll keep {haircut_name}. Your appointment is confirmed for {when_text}."
+    return f"Labi 👍 Paliekam pie {haircut_name}. Jūsu pieraksts ir apstiprināts uz {when_text}."
 
 
 def service_catalog_summary(catalog: List[Dict[str, Any]], lang: str) -> str:
