@@ -4150,7 +4150,6 @@ def book_appointment_for_datetime(
             }
 
     pending.pop("confirm_slot_iso", None)
-    pending.pop("upsell_offer_active", None)
     pending.pop("awaiting_time_date_iso", None)
     pending.pop("candidate_datetime_iso", None)
     pending.pop("preferred_time_window", None)
@@ -4257,8 +4256,12 @@ def handle_user_text(
         return ai_data
 
     llm_hint = get_llm_data() if msg else {}
+    active_flow = is_active_booking_flow(c)
 
-    if any(w in t_low for w in ["atcelt", "отменить", "cancel"]) or ((llm_hint or {}).get("intent") == "cancel" and float((llm_hint or {}).get("confidence") or 0.0) >= LLM_INTENT_MIN_CONFIDENCE):
+    explicit_cancel_request = any(w in t_low for w in ["atcelt", "отменить", "cancel"])
+    explicit_reschedule_request = any(w in t_low for w in ["pārcelt", "перенести", "reschedule", "move my appointment", "change my appointment", "перенеси запись", "перенести запись", "парацelt pierakstu", "pārcelt pierakstu"])
+
+    if explicit_cancel_request or ((not active_flow) and ((llm_hint or {}).get("intent") == "cancel" and float((llm_hint or {}).get("confidence") or 0.0) >= LLM_INTENT_MIN_CONFIDENCE)):
         if not calendar_ready:
             return blocked_result_for_lang(lang)
         ev = find_next_event_by_phone(settings["calendar_id"], raw_phone, tenant_id, settings.get("service_account_json"))
@@ -4288,7 +4291,7 @@ def handle_user_text(
             "lang": lang,
         }
 
-    if any(w in t_low for w in ["pārcelt", "перенести", "reschedule"]) or ((llm_hint or {}).get("intent") == "reschedule" and float((llm_hint or {}).get("confidence") or 0.0) >= LLM_INTENT_MIN_CONFIDENCE):
+    if explicit_reschedule_request or ((not active_flow) and ((llm_hint or {}).get("intent") == "reschedule" and float((llm_hint or {}).get("confidence") or 0.0) >= LLM_INTENT_MIN_CONFIDENCE)):
         if not calendar_ready:
             return blocked_result_for_lang(lang)
         ev = find_next_event_by_phone(settings["calendar_id"], raw_phone, tenant_id, settings.get("service_account_json"))
@@ -4696,6 +4699,61 @@ def handle_user_text(
 
     if c["state"] == STATE_AWAITING_TIME:
         service_item_current = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
+        if msg and is_no_text(msg, lang) and date_only_dt_for_msg:
+            pending.pop("confirm_slot_iso", None)
+            pending.pop("candidate_datetime_iso", None)
+            pending["awaiting_time_date_iso"] = date_only_dt_for_msg.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+            clear_offered_slots(pending)
+            c["pending"] = pending
+            c["datetime_iso"] = None
+            c["state"] = STATE_AWAITING_TIME
+            service_item_for_slots = service_item_current or get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
+            day_slots = find_first_n_slots_for_day(
+                settings["calendar_id"],
+                date_only_dt_for_msg,
+                service_duration_min(service_item_for_slots),
+                settings["work_start"],
+                settings["work_end"],
+                limit=3,
+                business_rules=settings.get("business_rules"),
+                service_account_json=settings.get("service_account_json"),
+            ) if calendar_ready else []
+            if is_closed_day_for_rules(date_only_dt_for_msg, settings.get("business_rules")):
+                c["state"] = STATE_AWAITING_DATE
+                db_save_conversation(tenant_id, user_key, c)
+                return {
+                    "status": "need_more",
+                    "reply_voice": t(lang, "holiday_closed_voice"),
+                    "msg_out": t(lang, "holiday_closed_text"),
+                    "lang": lang,
+                }
+            if len(day_slots) >= 3:
+                pending = set_offered_slots(pending, day_slots[:3])
+                c["pending"] = pending
+                db_save_conversation(tenant_id, user_key, c)
+                return {
+                    "status": "need_more",
+                    "reply_voice": t(lang, "smart_slots_prompt", opt1=format_dt_short(day_slots[0]), opt2=format_dt_short(day_slots[1]), opt3=format_dt_short(day_slots[2])),
+                    "msg_out": t(lang, "smart_slots_prompt", opt1=format_dt_short(day_slots[0]), opt2=format_dt_short(day_slots[1]), opt3=format_dt_short(day_slots[2])),
+                    "lang": lang,
+                }
+            if len(day_slots) >= 2:
+                pending = set_offered_slots(pending, day_slots[:2])
+                c["pending"] = pending
+                db_save_conversation(tenant_id, user_key, c)
+                return {
+                    "status": "need_more",
+                    "reply_voice": t(lang, "voice_options_prompt", opt1=format_dt_short(day_slots[0]), opt2=format_dt_short(day_slots[1])),
+                    "msg_out": t(lang, "voice_options_prompt", opt1=format_dt_short(day_slots[0]), opt2=format_dt_short(day_slots[1])),
+                    "lang": lang,
+                }
+            db_save_conversation(tenant_id, user_key, c)
+            return {
+                "status": "need_more",
+                "reply_voice": t(lang, "ask_booking_time_only"),
+                "msg_out": t(lang, "ask_booking_time_only"),
+                "lang": lang,
+            }
         if is_short_ack_text(msg, lang):
             db_save_conversation(tenant_id, user_key, c)
             return {
@@ -4891,62 +4949,50 @@ def handle_user_text(
             }
 
     if msg and conversation_state(c) == STATE_AWAITING_CONFIRM:
+        if is_no_text(msg, lang) and date_only_dt_for_msg:
+            pending.pop("confirm_slot_iso", None)
+            pending.pop("pending_confirm_upsell", None)
+            pending.pop("confirm_upsell_done", None)
+            pending.pop("addon_service", None)
+            pending["awaiting_time_date_iso"] = date_only_dt_for_msg.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+            clear_offered_slots(pending)
+            c["pending"] = pending or {"booking_intent": True}
+            c["datetime_iso"] = None
+            c["state"] = STATE_AWAITING_TIME
+            db_save_conversation(tenant_id, user_key, c)
+            return {
+                "status": "need_more",
+                "reply_voice": prompt_for_state(lang, c, c.get("pending") or {}, service_catalog),
+                "msg_out": prompt_for_state(lang, c, c.get("pending") or {}, service_catalog),
+                "lang": lang,
+            }
         confirm_iso = str(pending.get("confirm_slot_iso") or c.get("datetime_iso") or "").strip()
         dt_confirm = parse_dt_any_tz(confirm_iso)
         if pending.get("pending_confirm_upsell") and dt_confirm:
             haircut_item = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
             beard_item = find_service_item_by_group(service_catalog, "beard")
+            when_txt = format_dt_short(dt_confirm)
             llm_confirmation = (llm_hint or {}).get("confirmation")
             if is_yes_text(msg, lang) or llm_confirmation == "yes":
                 pending["pending_confirm_upsell"] = False
-                pending.pop("upsell_offer_active", None)
                 if beard_item:
                     pending["addon_service"] = str(beard_item.get("key") or "").strip()
                 c["pending"] = pending
-                result = book_appointment_for_datetime(
-                    tenant_id,
-                    raw_phone,
-                    channel,
-                    lang,
-                    c,
-                    settings,
-                    service_catalog,
-                    dt_confirm,
-                    require_confirmation=False,
-                )
-                if result.get("status") == "booked":
-                    result["reply_voice"] = build_confirm_upsell_resolution(lang, format_dt_short(dt_confirm), True, haircut_item, beard_item)
-                    result["msg_out"] = result["reply_voice"]
-                    result["preserve_text"] = True
                 db_save_conversation(tenant_id, user_key, c)
-                return result
+                reply_text = build_confirm_upsell_resolution(lang, when_txt, True, haircut_item, beard_item)
+                return {"status": "need_more", "reply_voice": reply_text, "msg_out": reply_text, "lang": lang, "preserve_text": True}
             if is_no_text(msg, lang) or llm_confirmation == "no":
                 pending["pending_confirm_upsell"] = False
-                pending.pop("upsell_offer_active", None)
                 pending.pop("addon_service", None)
                 c["pending"] = pending
-                result = book_appointment_for_datetime(
-                    tenant_id,
-                    raw_phone,
-                    channel,
-                    lang,
-                    c,
-                    settings,
-                    service_catalog,
-                    dt_confirm,
-                    require_confirmation=False,
-                )
-                if result.get("status") == "booked":
-                    result["reply_voice"] = build_confirm_upsell_resolution(lang, format_dt_short(dt_confirm), False, haircut_item, beard_item)
-                    result["msg_out"] = result["reply_voice"]
-                    result["preserve_text"] = True
                 db_save_conversation(tenant_id, user_key, c)
-                return result
+                reply_text = build_confirm_upsell_resolution(lang, when_txt, False, haircut_item, beard_item)
+                return {"status": "need_more", "reply_voice": reply_text, "msg_out": reply_text, "lang": lang, "preserve_text": True}
             if is_short_ack_text(msg, lang):
                 pending["pending_confirm_upsell"] = False
-                pending.pop("upsell_offer_active", None)
                 pending.pop("addon_service", None)
                 c["pending"] = pending
+                db_save_conversation(tenant_id, user_key, c)
                 # treat generic ack as plain confirm path without addon
             else:
                 db_save_conversation(tenant_id, user_key, c)
