@@ -238,6 +238,7 @@ I18N: Dict[str, Dict[str, str]] = {
         "soft_clarify_date": "Saprotu. Vēl pasakiet, uz kuru dienu vēlaties pierakstīties.",
         "soft_clarify_time": "Saprotu. Vēl vajag precīzāku laiku vai izvēli no piedāvātajiem variantiem.",
         "soft_clarify_confirm": "Vai pareizi sapratu, ka vēlaties apstiprināt piedāvāto laiku? Lūdzu, atbildiet ar jā vai nē.",
+        "soft_clarify_upsell": "Lūdzu, atbildiet ar jā vai nē — vai pievienojam papildu pakalpojumu?",
     },
     "ru": {
         "service_unavailable_voice": "Извините, сервис недоступен.",
@@ -291,6 +292,7 @@ I18N: Dict[str, Dict[str, str]] = {
         "soft_clarify_date": "Понял. Подскажите, на какой день вам нужна запись.",
         "soft_clarify_time": "Понял. Нужен более точный вариант времени или выбор из предложенных слотов.",
         "soft_clarify_confirm": "Правильно ли я понял, что вы хотите подтвердить предложенное время? Пожалуйста, ответьте да или нет.",
+        "soft_clarify_upsell": "Пожалуйста, ответьте да или нет — добавляем дополнительную услугу?",
     },
     "en": {
         "service_unavailable_voice": "Sorry, the service is unavailable.",
@@ -344,6 +346,7 @@ I18N: Dict[str, Dict[str, str]] = {
         "soft_clarify_date": "Got it. Please tell me which day you would like to book for.",
         "soft_clarify_time": "Understood. I still need a more specific time or one of the offered options.",
         "soft_clarify_confirm": "Just to confirm, would you like to confirm the offered time? Please answer yes or no.",
+        "soft_clarify_upsell": "Please answer yes or no — would you like to add the extra service?",
     },
 }
 
@@ -2190,7 +2193,6 @@ def tenant_settings(tenant: Dict[str, Any], lang: str) -> Dict[str, Any]:
         "work_start": work_start,
         "work_end": work_end,
         "calendar_id": resolve_tenant_calendar_id(tenant) or tenant_calendar_id(tenant),
-        "service_account_json": tenant_service_account_json_value(tenant),
         "business_rules": tenant_business_rules(tenant, work_start, work_end),
         "business_type": str(tenant.get("business_type") or "barbershop").strip().lower(),
     }
@@ -2833,35 +2835,28 @@ def openai_chat_json(system: str, user: str) -> Dict[str, Any]:
 
 
 _GCAL = None
-_GCAL_BY_KEY: Dict[str, Any] = {}
 
 
-def get_gcal(service_account_json: Optional[str] = None):
-    global _GCAL, _GCAL_BY_KEY
-    effective_json = (service_account_json or GOOGLE_SERVICE_ACCOUNT_JSON or "").strip()
-    if not effective_json:
-        return None
-    if effective_json == (GOOGLE_SERVICE_ACCOUNT_JSON or "").strip() and _GCAL is not None:
+def get_gcal():
+    global _GCAL
+    if _GCAL:
         return _GCAL
-    if effective_json in _GCAL_BY_KEY:
-        return _GCAL_BY_KEY[effective_json]
+    if not GOOGLE_SERVICE_ACCOUNT_JSON:
+        return None
     try:
-        info = json.loads(effective_json)
+        info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
         creds = service_account.Credentials.from_service_account_info(
             info, scopes=["https://www.googleapis.com/auth/calendar"]
         )
-        svc = build("calendar", "v3", credentials=creds, cache_discovery=False)
-        _GCAL_BY_KEY[effective_json] = svc
-        if effective_json == (GOOGLE_SERVICE_ACCOUNT_JSON or "").strip():
-            _GCAL = svc
-        return svc
+        _GCAL = build("calendar", "v3", credentials=creds, cache_discovery=False)
+        return _GCAL
     except Exception as e:
         log.error("Google Calendar init failed: %s", e)
         return None
 
 
-def is_slot_busy(calendar_id: str, dt_start: datetime, dt_end: datetime, buffer_minutes: int = 0, service_account_json: Optional[str] = None) -> bool:
-    svc = get_gcal(service_account_json)
+def is_slot_busy(calendar_id: str, dt_start: datetime, dt_end: datetime, buffer_minutes: int = 0) -> bool:
+    svc = get_gcal()
     if not svc or not calendar_id:
         return False
     window_start = dt_start - timedelta(minutes=max(0, int(buffer_minutes or 0)))
@@ -2896,9 +2891,8 @@ def create_calendar_event(
     duration_min: int,
     summary: str,
     description: str,
-    service_account_json: Optional[str] = None,
 ):
-    svc = get_gcal(service_account_json)
+    svc = get_gcal()
     if not svc or not calendar_id:
         return None
     dt_end = dt_start + timedelta(minutes=duration_min)
@@ -2926,9 +2920,8 @@ def update_calendar_event(
     duration_min: int,
     summary: str,
     description: str,
-    service_account_json: Optional[str] = None,
 ):
-    svc = get_gcal(service_account_json)
+    svc = get_gcal()
     if not svc or not calendar_id or not event_id:
         return None
     dt_end = dt_start + timedelta(minutes=duration_min)
@@ -3118,7 +3111,6 @@ def find_next_two_slots(
     work_start: str,
     work_end: str,
     business_rules: Optional[Dict[str, Any]] = None,
-    service_account_json: Optional[str] = None,
 ):
     step, found = 30, []
     candidate = dt_start + timedelta(minutes=step)
@@ -3126,8 +3118,7 @@ def find_next_two_slots(
         if in_business_hours(candidate, duration_min, work_start, work_end, business_rules):
             if not is_slot_busy(
                 calendar_id, candidate, candidate + timedelta(minutes=duration_min),
-                _safe_int((business_rules or {}).get("buffer_minutes"), 0),
-                service_account_json=service_account_json
+                _safe_int((business_rules or {}).get("buffer_minutes"), 0)
             ):
                 found.append(candidate)
                 if len(found) == 2:
@@ -3143,7 +3134,6 @@ def find_first_two_slots_for_day(
     work_start: str,
     work_end: str,
     business_rules: Optional[Dict[str, Any]] = None,
-    service_account_json: Optional[str] = None,
 ):
     try:
         weekday_key = _weekday_key_for_date(day_dt)
@@ -3167,7 +3157,7 @@ def find_first_two_slots_for_day(
     step = timedelta(minutes=30)
 
     while candidate + timedelta(minutes=duration_min) <= day_end:
-        if in_business_hours(candidate, duration_min, work_start, work_end, business_rules) and not is_slot_busy(calendar_id, candidate, candidate + timedelta(minutes=duration_min), _safe_int((business_rules or {}).get("buffer_minutes"), 0), service_account_json=service_account_json):
+        if in_business_hours(candidate, duration_min, work_start, work_end, business_rules) and not is_slot_busy(calendar_id, candidate, candidate + timedelta(minutes=duration_min), _safe_int((business_rules or {}).get("buffer_minutes"), 0)):
             found.append(candidate)
             if len(found) == 2:
                 return found[0], found[1]
@@ -3183,7 +3173,6 @@ def find_first_n_slots_for_day(
     work_end: str,
     limit: int = 3,
     business_rules: Optional[Dict[str, Any]] = None,
-    service_account_json: Optional[str] = None,
 ):
     try:
         weekday_key = _weekday_key_for_date(day_dt)
@@ -3207,7 +3196,7 @@ def find_first_n_slots_for_day(
     step = timedelta(minutes=30)
 
     while candidate + timedelta(minutes=duration_min) <= day_end:
-        if in_business_hours(candidate, duration_min, work_start, work_end, business_rules) and not is_slot_busy(calendar_id, candidate, candidate + timedelta(minutes=duration_min), _safe_int((business_rules or {}).get("buffer_minutes"), 0), service_account_json=service_account_json):
+        if in_business_hours(candidate, duration_min, work_start, work_end, business_rules) and not is_slot_busy(calendar_id, candidate, candidate + timedelta(minutes=duration_min), _safe_int((business_rules or {}).get("buffer_minutes"), 0)):
             found.append(candidate)
             if len(found) >= max(1, limit):
                 return found
@@ -3227,7 +3216,6 @@ def find_first_n_slots_for_day_window(
     window_end_hour: int,
     limit: int = 3,
     business_rules: Optional[Dict[str, Any]] = None,
-    service_account_json: Optional[str] = None,
 ):
     slots = find_first_n_slots_for_day(
         calendar_id=calendar_id,
@@ -3237,7 +3225,6 @@ def find_first_n_slots_for_day_window(
         work_end=work_end,
         limit=max(limit * 6, limit),
         business_rules=business_rules,
-        service_account_json=service_account_json,
     )
     filtered: List[datetime] = []
     for slot in slots:
@@ -3247,8 +3234,8 @@ def find_first_n_slots_for_day_window(
                 return filtered
     return filtered
 
-def find_next_event_by_phone(calendar_id: str, phone: str, tenant_id: Optional[str] = None, service_account_json: Optional[str] = None):
-    svc = get_gcal(service_account_json)
+def find_next_event_by_phone(calendar_id: str, phone: str, tenant_id: Optional[str] = None):
+    svc = get_gcal()
     if not svc or not calendar_id:
         return None
     now = now_ts().isoformat()
@@ -3280,8 +3267,8 @@ def find_next_event_by_phone(calendar_id: str, phone: str, tenant_id: Optional[s
     return None
 
 
-def delete_calendar_event(calendar_id: str, event_id: str, service_account_json: Optional[str] = None):
-    svc = get_gcal(service_account_json)
+def delete_calendar_event(calendar_id: str, event_id: str):
+    svc = get_gcal()
     if svc and calendar_id:
         try:
             svc.events().delete(calendarId=calendar_id, eventId=event_id).execute()
@@ -3430,6 +3417,7 @@ ACTIVE_BOOKING_STATES = {
     STATE_AWAITING_DATE,
     STATE_AWAITING_TIME,
     STATE_AWAITING_CONFIRM,
+    STATE_POST_BOOKING_UPSELL,
 }
 
 WEEKDAY_HINTS = {
@@ -3545,6 +3533,8 @@ def soft_clarify_for_state(lang: str, c: Dict[str, Any], pending: Dict[str, Any]
         return t(lang, "soft_clarify_time")
     if state == STATE_AWAITING_CONFIRM:
         return t(lang, "soft_clarify_confirm")
+    if state == STATE_POST_BOOKING_UPSELL:
+        return t(lang, "soft_clarify_upsell")
     return t(lang, "unclear_reply")
 
 
@@ -3814,6 +3804,14 @@ def prompt_for_state(lang: str, c: Dict[str, Any], pending: Dict[str, Any], serv
         if dt_confirm:
             return t(lang, "ask_booking_confirm", when=format_dt_short(dt_confirm), service=service_name or t(lang, "need_service"))
         return t(lang, "repeat_yes_no")
+    if state == STATE_POST_BOOKING_UPSELL:
+        confirm_iso = str(pending.get("confirm_slot_iso") or c.get("datetime_iso") or "").strip()
+        dt_confirm = parse_dt_any_tz(confirm_iso)
+        primary_item = get_service_item_by_key(service_catalog or [], c.get("service") or pending.get("service"))
+        beard_item = find_service_item_by_group(service_catalog or [], "beard")
+        if dt_confirm and primary_item and beard_item:
+            return build_confirm_upsell_prompt(lang, format_dt_short(dt_confirm), primary_item, beard_item)
+        return t(lang, "repeat_yes_no")
     return t(lang, "how_help")
 
 
@@ -3840,8 +3838,11 @@ def normalize_booking_state(c: Dict[str, Any]) -> Dict[str, Any]:
     offered_slots = get_offered_slots(pending)
     has_booking_intent = bool(pending.get("booking_intent"))
     booked_dt = str(c.get("datetime_iso") or "").strip()
+    upsell_offer_active = bool(pending.get("upsell_offer_active"))
 
-    if confirm_iso:
+    if upsell_offer_active and confirm_iso:
+        state = STATE_POST_BOOKING_UPSELL
+    elif confirm_iso:
         state = STATE_AWAITING_CONFIRM
     elif offered_slots or awaiting_time_date_iso:
         state = STATE_AWAITING_TIME
@@ -3858,6 +3859,57 @@ def normalize_booking_state(c: Dict[str, Any]) -> Dict[str, Any]:
     c["state"] = state
     c["pending"] = pending or None
     return c
+
+
+def should_offer_post_confirm_upsell(service_catalog: List[Dict[str, Any]], primary_service_item: Optional[Dict[str, Any]], pending: Dict[str, Any]) -> bool:
+    if not primary_service_item:
+        return False
+    if service_group_key(primary_service_item) != "haircut":
+        return False
+    if str((pending or {}).get("addon_service") or "").strip():
+        return False
+    return bool(find_service_item_by_group(service_catalog, "beard"))
+
+
+def move_to_post_confirm_upsell(
+    lang: str,
+    c: Dict[str, Any],
+    pending: Dict[str, Any],
+    service_catalog: List[Dict[str, Any]],
+    dt_confirm: datetime,
+) -> Dict[str, Any]:
+    haircut_item = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
+    beard_item = find_service_item_by_group(service_catalog, "beard")
+    pending["upsell_offer_active"] = True
+    c["pending"] = pending
+    c["state"] = STATE_POST_BOOKING_UPSELL
+    reply_text = build_confirm_upsell_prompt(lang, format_dt_short(dt_confirm), haircut_item, beard_item)
+    return {
+        "status": "need_more",
+        "reply_voice": reply_text,
+        "msg_out": reply_text,
+        "lang": lang,
+        "preserve_text": True,
+    }
+
+
+def finalize_post_confirm_upsell_response(
+    lang: str,
+    pending: Dict[str, Any],
+    service_catalog: List[Dict[str, Any]],
+    dt_confirm: datetime,
+    added: bool,
+) -> Dict[str, Any]:
+    haircut_item = get_service_item_by_key(service_catalog, pending.get("service"))
+    beard_item = find_service_item_by_group(service_catalog, "beard")
+    reply_text = build_confirm_upsell_resolution(lang, format_dt_short(dt_confirm), added, haircut_item, beard_item)
+    return {
+        "status": "need_more",
+        "reply_voice": reply_text,
+        "msg_out": reply_text,
+        "lang": lang,
+        "preserve_text": True,
+    }
 
 
 def book_appointment_for_datetime(
@@ -3905,7 +3957,6 @@ def book_appointment_for_datetime(
             settings["work_start"],
             settings["work_end"],
             settings.get("business_rules"),
-            settings.get("service_account_json"),
         )
         if opts:
             pending = set_offered_slots(pending, [opts[0], opts[1]])
@@ -3930,7 +3981,7 @@ def book_appointment_for_datetime(
         }
 
     if not in_business_hours(dt_start, duration_min, settings["work_start"], settings["work_end"], settings.get("business_rules")):
-        opts = find_next_two_slots(settings["calendar_id"], dt_start, duration_min, settings["work_start"], settings["work_end"], settings.get("business_rules"), settings.get("service_account_json"))
+        opts = find_next_two_slots(settings["calendar_id"], dt_start, duration_min, settings["work_start"], settings["work_end"], settings.get("business_rules"))
         if opts:
             pending = set_offered_slots(pending, [opts[0], opts[1]])
             pending["service"] = c.get("service")
@@ -3953,8 +4004,8 @@ def book_appointment_for_datetime(
             "lang": lang,
         }
 
-    if is_slot_busy(settings["calendar_id"], dt_start, dt_start + timedelta(minutes=duration_min), _safe_int((settings.get("business_rules") or {}).get("buffer_minutes"), 0), service_account_json=settings.get("service_account_json")):
-        opts = find_next_two_slots(settings["calendar_id"], dt_start, duration_min, settings["work_start"], settings["work_end"], settings.get("business_rules"), settings.get("service_account_json"))
+    if is_slot_busy(settings["calendar_id"], dt_start, dt_start + timedelta(minutes=duration_min), _safe_int((settings.get("business_rules") or {}).get("buffer_minutes"), 0)):
+        opts = find_next_two_slots(settings["calendar_id"], dt_start, duration_min, settings["work_start"], settings["work_end"], settings.get("business_rules"))
         if opts:
             pending = set_offered_slots(pending, [opts[0], opts[1]])
             pending["service"] = c.get("service")
@@ -4018,26 +4069,6 @@ def book_appointment_for_datetime(
         c["service"] = pending["service"]
         c["datetime_iso"] = dt_start.isoformat()
 
-        beard_item = find_service_item_by_group(service_catalog, "beard")
-        if (
-            service_group_key(final_service_item) == "haircut"
-            and beard_item
-            and not addon_service_item
-            and not pending.get("confirm_upsell_done")
-        ):
-            pending["pending_confirm_upsell"] = True
-            pending["confirm_upsell_done"] = True
-            c["pending"] = pending
-            when_txt = format_dt_short(dt_start)
-            reply_text = build_confirm_upsell_prompt(lang, when_txt, final_service_item, beard_item)
-            return {
-                "status": "need_more",
-                "reply_voice": reply_text,
-                "msg_out": reply_text,
-                "lang": lang,
-                "preserve_text": True,
-            }
-
         return {
             "status": "need_more",
             "reply_voice": t(lang, "ask_booking_confirm", when=format_dt_short(dt_start), service=final_service),
@@ -4056,7 +4087,6 @@ def book_appointment_for_datetime(
             duration_min,
             event_summary,
             event_description,
-            settings.get("service_account_json"),
         )
         if not event_result:
             pending["confirm_slot_iso"] = dt_start.isoformat()
@@ -4078,7 +4108,6 @@ def book_appointment_for_datetime(
             duration_min,
             event_summary,
             event_description,
-            settings.get("service_account_json"),
         )
 
         if not event_result:
@@ -4099,6 +4128,7 @@ def book_appointment_for_datetime(
     pending.pop("awaiting_time_date_iso", None)
     pending.pop("candidate_datetime_iso", None)
     pending.pop("preferred_time_window", None)
+    pending.pop("upsell_offer_active", None)
     pending.pop("pending_confirm_upsell", None)
     pending.pop("confirm_upsell_done", None)
     pending.pop("addon_service", None)
@@ -4143,9 +4173,6 @@ def handle_user_text(
         c["lang"] = resolve_reply_language(msg, c.get("lang") or detected_lang)
 
     lang = get_lang(c.get("lang"))
-    if not tenant_runtime_ready(tenant):
-        log_tenant_runtime_validation(tenant)
-        return blocked_result_for_lang(lang)
     settings = tenant_settings(tenant, lang)
     service_catalog = tenant_service_catalog(tenant)
     service_aliases = ensure_default_barbershop_aliases(
@@ -4206,7 +4233,7 @@ def handle_user_text(
     if any(w in t_low for w in ["atcelt", "отменить", "cancel"]) or ((llm_hint or {}).get("intent") == "cancel" and float((llm_hint or {}).get("confidence") or 0.0) >= LLM_INTENT_MIN_CONFIDENCE):
         if not calendar_ready:
             return blocked_result_for_lang(lang)
-        ev = find_next_event_by_phone(settings["calendar_id"], raw_phone, tenant_id, settings.get("service_account_json"))
+        ev = find_next_event_by_phone(settings["calendar_id"], raw_phone, tenant_id)
         if not ev:
             return {
                 "status": "no_booking",
@@ -4214,7 +4241,7 @@ def handle_user_text(
                 "msg_out": t(lang, "no_active_booking"),
                 "lang": lang,
             }
-        deleted = delete_calendar_event(settings["calendar_id"], ev["id"], settings.get("service_account_json"))
+        deleted = delete_calendar_event(settings["calendar_id"], ev["id"])
         if not deleted:
             return {
                 "status": "cancel_failed",
@@ -4236,7 +4263,7 @@ def handle_user_text(
     if any(w in t_low for w in ["pārcelt", "перенести", "reschedule"]) or ((llm_hint or {}).get("intent") == "reschedule" and float((llm_hint or {}).get("confidence") or 0.0) >= LLM_INTENT_MIN_CONFIDENCE):
         if not calendar_ready:
             return blocked_result_for_lang(lang)
-        ev = find_next_event_by_phone(settings["calendar_id"], raw_phone, tenant_id, settings.get("service_account_json"))
+        ev = find_next_event_by_phone(settings["calendar_id"], raw_phone, tenant_id)
         if not ev:
             return {
                 "status": "no_booking",
@@ -4461,7 +4488,6 @@ def handle_user_text(
                         window_end_hour=stored_window[1],
                         limit=3,
                         business_rules=settings.get("business_rules"),
-                        service_account_json=settings.get("service_account_json"),
                     )
                 elif calendar_ready:
                     slots = find_first_n_slots_for_day(
@@ -4472,7 +4498,6 @@ def handle_user_text(
                         settings["work_end"],
                         limit=3,
                         business_rules=settings.get("business_rules"),
-                        service_account_json=settings.get("service_account_json"),
                     )
                 c["state"] = STATE_AWAITING_TIME
                 c["datetime_iso"] = None
@@ -4577,7 +4602,6 @@ def handle_user_text(
                     window_end_hour=stored_window[1],
                     limit=3,
                     business_rules=settings.get("business_rules"),
-                    service_account_json=settings.get("service_account_json"),
                 )
                 if calendar_ready and stored_window
                 else find_first_n_slots_for_day(
@@ -4588,7 +4612,6 @@ def handle_user_text(
                     settings["work_end"],
                     limit=3,
                     business_rules=settings.get("business_rules"),
-                    service_account_json=settings.get("service_account_json"),
                 )
             ) if calendar_ready else []
             c["state"] = STATE_AWAITING_TIME
@@ -4668,7 +4691,6 @@ def handle_user_text(
                     window_end_hour=time_window[1],
                     limit=3,
                     business_rules=settings.get("business_rules"),
-                    service_account_json=settings.get("service_account_json"),
                 ) if calendar_ready else []
                 if len(slots) >= 3:
                     pending = set_offered_slots(pending, slots[:3])
@@ -4747,7 +4769,6 @@ def handle_user_text(
                     window_end_hour=time_window[1],
                     limit=3,
                     business_rules=settings.get("business_rules"),
-                    service_account_json=settings.get("service_account_json"),
                 ) if calendar_ready else []
                 if len(slots) >= 3:
                     pending = set_offered_slots(pending, slots[:3])
@@ -4835,39 +4856,62 @@ def handle_user_text(
                 "lang": lang,
             }
 
+    if msg and conversation_state(c) == STATE_POST_BOOKING_UPSELL:
+        confirm_iso = str(pending.get("confirm_slot_iso") or c.get("datetime_iso") or "").strip()
+        dt_confirm = parse_dt_any_tz(confirm_iso)
+        llm_confirmation = (llm_hint or {}).get("confirmation")
+        if not dt_confirm:
+            pending.pop("upsell_offer_active", None)
+            c["pending"] = pending or None
+            c["state"] = STATE_AWAITING_TIME
+            db_save_conversation(tenant_id, user_key, c)
+            return {
+                "status": "need_more",
+                "reply_voice": prompt_for_state(lang, c, c.get("pending") or {}, service_catalog),
+                "msg_out": prompt_for_state(lang, c, c.get("pending") or {}, service_catalog),
+                "lang": lang,
+            }
+        if is_yes_text(msg, lang) or llm_confirmation == "yes":
+            beard_item = find_service_item_by_group(service_catalog, "beard")
+            pending.pop("upsell_offer_active", None)
+            if beard_item:
+                pending["addon_service"] = str(beard_item.get("key") or "").strip()
+            c["pending"] = pending
+            result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, dt_confirm, require_confirmation=False)
+            if result.get("status") == "booked":
+                result = finalize_post_confirm_upsell_response(lang, pending, service_catalog, dt_confirm, True) | {
+                    "status": "booked",
+                    "service": result.get("service"),
+                    "when": result.get("when"),
+                    "datetime_text": result.get("datetime_text"),
+                }
+            db_save_conversation(tenant_id, user_key, c)
+            return result
+        if is_no_text(msg, lang) or llm_confirmation == "no":
+            pending.pop("upsell_offer_active", None)
+            pending.pop("addon_service", None)
+            c["pending"] = pending
+            result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, dt_confirm, require_confirmation=False)
+            if result.get("status") == "booked":
+                result = finalize_post_confirm_upsell_response(lang, pending, service_catalog, dt_confirm, False) | {
+                    "status": "booked",
+                    "service": result.get("service"),
+                    "when": result.get("when"),
+                    "datetime_text": result.get("datetime_text"),
+                }
+            db_save_conversation(tenant_id, user_key, c)
+            return result
+        db_save_conversation(tenant_id, user_key, c)
+        return {
+            "status": "need_more",
+            "reply_voice": t(lang, "soft_clarify_upsell"),
+            "msg_out": t(lang, "soft_clarify_upsell"),
+            "lang": lang,
+        }
+
     if msg and conversation_state(c) == STATE_AWAITING_CONFIRM:
         confirm_iso = str(pending.get("confirm_slot_iso") or c.get("datetime_iso") or "").strip()
         dt_confirm = parse_dt_any_tz(confirm_iso)
-        if pending.get("pending_confirm_upsell") and dt_confirm:
-            haircut_item = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
-            beard_item = find_service_item_by_group(service_catalog, "beard")
-            when_txt = format_dt_short(dt_confirm)
-            llm_confirmation = (llm_hint or {}).get("confirmation")
-            if is_yes_text(msg, lang) or llm_confirmation == "yes":
-                pending["pending_confirm_upsell"] = False
-                if beard_item:
-                    pending["addon_service"] = str(beard_item.get("key") or "").strip()
-                c["pending"] = pending
-                db_save_conversation(tenant_id, user_key, c)
-                reply_text = build_confirm_upsell_resolution(lang, when_txt, True, haircut_item, beard_item)
-                return {"status": "need_more", "reply_voice": reply_text, "msg_out": reply_text, "lang": lang, "preserve_text": True}
-            if is_no_text(msg, lang) or llm_confirmation == "no":
-                pending["pending_confirm_upsell"] = False
-                pending.pop("addon_service", None)
-                c["pending"] = pending
-                db_save_conversation(tenant_id, user_key, c)
-                reply_text = build_confirm_upsell_resolution(lang, when_txt, False, haircut_item, beard_item)
-                return {"status": "need_more", "reply_voice": reply_text, "msg_out": reply_text, "lang": lang, "preserve_text": True}
-            if is_short_ack_text(msg, lang):
-                pending["pending_confirm_upsell"] = False
-                pending.pop("addon_service", None)
-                c["pending"] = pending
-                db_save_conversation(tenant_id, user_key, c)
-                # treat generic ack as plain confirm path without addon
-            else:
-                db_save_conversation(tenant_id, user_key, c)
-                return {"status": "need_more", "reply_voice": t(lang, "repeat_yes_no"), "msg_out": t(lang, "repeat_yes_no"), "lang": lang}
-
         if is_short_ack_text(msg, lang) and not is_yes_text(msg, lang):
             db_save_conversation(tenant_id, user_key, c)
             return {
@@ -4887,11 +4931,17 @@ def handle_user_text(
                     "msg_out": prompt_for_state(lang, c, pending, service_catalog),
                     "lang": lang,
                 }
+            primary_service_item = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
+            if should_offer_post_confirm_upsell(service_catalog, primary_service_item, pending):
+                result = move_to_post_confirm_upsell(lang, c, pending, service_catalog, dt_confirm)
+                db_save_conversation(tenant_id, user_key, c)
+                return result
             result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, dt_confirm, require_confirmation=False)
             db_save_conversation(tenant_id, user_key, c)
             return result
         if is_no_text(msg, lang) or llm_confirmation == "no":
             pending.pop("confirm_slot_iso", None)
+            pending.pop("upsell_offer_active", None)
             pending.pop("pending_confirm_upsell", None)
             pending.pop("confirm_upsell_done", None)
             pending.pop("addon_service", None)
@@ -5369,65 +5419,14 @@ def normalize_tenant_saas_fields(tenant: Dict[str, Any]) -> Dict[str, Any]:
     return tenant
 
 
-def tenant_service_account_json_value(tenant: Optional[Dict[str, Any]]) -> str:
-    tenant = tenant or {}
-    for key in ("service_account_json", "google_service_account_json"):
-        val = str(tenant.get(key) or "").strip()
-        if val:
-            return val
-    return GOOGLE_SERVICE_ACCOUNT_JSON or ""
-
-
-def tenant_has_service_account_json(tenant: Optional[Dict[str, Any]]) -> bool:
-    return bool(tenant_service_account_json_value(tenant))
-
-
-def tenant_runtime_missing_items(tenant: Dict[str, Any]) -> List[str]:
-    tenant = normalize_tenant_saas_fields(tenant or {})
-    missing: List[str] = []
-    if not str(tenant.get("business_name") or "").strip():
-        missing.append("business_name")
-    if not str(tenant.get("timezone") or "").strip():
-        missing.append("timezone")
-    if not str(tenant.get("work_start") or "").strip():
-        missing.append("work_start")
-    if not str(tenant.get("work_end") or "").strip():
-        missing.append("work_end")
-    if not str(tenant.get("calendar_id") or "").strip():
-        missing.append("calendar_id")
-    if not tenant_has_service_account_json(tenant):
-        missing.append("service_account_json")
-    catalog = tenant_service_catalog(tenant)
-    if not catalog:
-        missing.append("service_catalog")
-    return missing
-
-
-def tenant_runtime_ready(tenant: Dict[str, Any]) -> bool:
-    return len(tenant_runtime_missing_items(tenant)) == 0
-
-
-def log_tenant_runtime_validation(tenant: Dict[str, Any]) -> None:
-    missing = tenant_runtime_missing_items(tenant)
-    if missing:
-        logger.error(
-            "tenant_runtime_invalid tenant_id=%s missing=%s",
-            tenant.get("_id") or tenant.get("id"),
-            ",".join(missing),
-        )
-
-
 def validate_tenant_config(tenant: dict):
     missing = []
     for f in REQUIRED_TENANT_FIELDS:
         if not tenant.get(f):
             missing.append(f)
-    for f in tenant_runtime_missing_items(tenant):
-        if f not in missing:
-            missing.append(f)
 
     if missing:
-        logger.error(f"tenant_config_invalid tenant_id={tenant.get('id') or tenant.get('_id')} missing={missing}")
+        logger.error(f"tenant_config_invalid tenant_id={tenant.get('id')} missing={missing}")
         raise Exception(f"Tenant configuration invalid: missing {missing}")
 
     return True
@@ -5529,9 +5528,8 @@ def onboarding_status_payload(tenant: Dict[str, Any]) -> Dict[str, Any]:
     tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip()
     calendar_id = str(tenant.get("calendar_id") or "").strip()
     google_connected = tenant_google_connected_effective(tenant)
+    onboarding_completed = bool(tenant.get("onboarding_completed"))
     calendar_selected = bool(calendar_id)
-    persisted_onboarding_completed = bool(tenant.get("onboarding_completed"))
-    onboarding_completed = bool(persisted_onboarding_completed or (google_connected and calendar_selected))
     phone_number = normalize_incoming_to_number(tenant.get("phone_number") or "")
 
     next_step = "create_tenant"
@@ -5553,7 +5551,6 @@ def onboarding_status_payload(tenant: Dict[str, Any]) -> Dict[str, Any]:
         "calendar_selected": calendar_selected,
         "calendar_id": calendar_id or None,
         "onboarding_completed": onboarding_completed,
-        "persisted_onboarding_completed": persisted_onboarding_completed,
         "subscription_status": tenant.get("subscription_status"),
         "plan": tenant.get("plan"),
         "next_step": next_step,
@@ -5613,10 +5610,6 @@ def tenant_missing_setup_items(tenant: Dict[str, Any]) -> List[str]:
         missing.append("google_connected")
     if not str(tenant.get("calendar_id") or "").strip():
         missing.append("calendar_id")
-    if not tenant_has_service_account_json(tenant):
-        missing.append("service_account_json")
-    if not tenant_service_catalog(tenant):
-        missing.append("service_catalog")
     return missing
 
 
@@ -5632,8 +5625,6 @@ def tenant_ready_status_payload(tenant: Dict[str, Any]) -> Dict[str, Any]:
         "google_connected": onboarding.get("google_connected"),
         "calendar_selected": onboarding.get("calendar_selected"),
         "onboarding_completed": onboarding.get("onboarding_completed"),
-        "has_service_account_json": tenant_has_service_account_json(tenant),
-        "has_service_catalog": bool(tenant_service_catalog(tenant)),
     }
 
 
@@ -5950,7 +5941,6 @@ def onboarding_create_tenant(payload: dict = Body(...)):
         "buffer_minutes": buffer_minutes,
         "service_catalog_json": json.dumps(payload.get("service_catalog_json") or service_catalog, ensure_ascii=False),
         "service_catalog": json.dumps(payload.get("service_catalog_json") or service_catalog, ensure_ascii=False),
-        "service_account_json": str(payload.get("service_account_json") or "").strip() or None,
         "business_memory_lv": str(payload.get("business_memory_lv") or business_memory_defaults["lv"]),
         "business_memory_ru": str(payload.get("business_memory_ru") or business_memory_defaults["ru"]),
         "business_memory_en": str(payload.get("business_memory_en") or business_memory_defaults["en"]),
@@ -6500,222 +6490,96 @@ function setEmpty(tbody, colSpan, label='No data yet') {{ tbody.innerHTML = `<tr
 async function fetchJson(url) {{ const r = await fetch(url); if (!r.ok) {{ const text = await r.text(); throw new Error(text || `HTTP ${{r.status}}`); }} return r.json(); }}
 function destroyIf(chartObj) {{ if (chartObj) chartObj.destroy(); }}
 function statusBadge(label, cls) {{ return `<span class="badge ${{cls||''}}">${{esc(label)}}</span>`; }}
-function el(id) {{ return document.getElementById(id); }}
-function setText(id, value, fallback='-') {{ const node = el(id); if (!node) return; node.textContent = (value === null || value === undefined || value === '') ? fallback : String(value); }}
-function safeArray(value) {{ return Array.isArray(value) ? value : []; }}
-function normalizeDailyPayload(value) {{
-  if (Array.isArray(value)) return value;
-  if (Array.isArray(value?.daily)) return value.daily;
-  if (Array.isArray(value?.items)) return value.items;
-  return [];
-}}
-function normalizeChannelPayload(value) {{
-  if (Array.isArray(value)) return value;
-  if (Array.isArray(value?.channels)) return value.channels;
-  return [];
-}}
-function normalizeServicePayload(value) {{
-  if (Array.isArray(value)) return value;
-  if (Array.isArray(value?.top_services)) return value.top_services;
-  if (Array.isArray(value?.items)) return value.items;
-  return [];
-}}
-function normalizeOverview(value) {{
-  return (value && typeof value === 'object') ? value : {{}};
-}}
-function renderTrendChart(rawDaily) {{
-  const canvas = el('trend_chart');
-  if (!canvas || typeof Chart === 'undefined') return;
-  const daily = normalizeDailyPayload(rawDaily);
-  const ctx = canvas.getContext('2d');
-  destroyIf(trendChart);
-  trendChart = new Chart(ctx, {{
-    type:'line',
-    data:{{
-      labels: daily.map(x=>x?.date||''),
-      datasets:[
-        {{label:'Requests', data: daily.map(x=>x?.requests||0), borderWidth:2, tension:0.3}},
-        {{label:'Bookings', data: daily.map(x=>x?.bookings||0), borderWidth:2, tension:0.3}},
-        {{label:'Cancelled', data: daily.map(x=>x?.cancelled||0), borderWidth:2, tension:0.3}}
-      ]
-    }},
-    options:{{responsive:true, maintainAspectRatio:false, interaction:{{mode:'index', intersect:false}}, plugins:{{legend:{{position:'bottom'}}}}, scales:{{y:{{beginAtZero:true, ticks:{{precision:0}}}}}}}}
-  }});
-}}
-function renderChannelChart(rawChannels) {{
-  const canvas = el('channel_chart');
-  if (!canvas || typeof Chart === 'undefined') return;
-  const channels = normalizeChannelPayload(rawChannels);
-  const ctx = canvas.getContext('2d');
-  destroyIf(channelChart);
-  channelChart = new Chart(ctx, {{
-    type:'doughnut',
-    data:{{labels: channels.map(x=>x?.channel||'unknown'), datasets:[{{data: channels.map(x=>x?.count||0), borderWidth:1}}]}},
-    options:{{responsive:true, maintainAspectRatio:false, plugins:{{legend:{{position:'bottom'}}}}}}
-  }});
-}}
-function renderServicesChart(rawItems) {{
-  const canvas = el('services_chart');
-  if (!canvas || typeof Chart === 'undefined') return;
-  const items = normalizeServicePayload(rawItems);
-  const ctx = canvas.getContext('2d');
-  destroyIf(servicesChart);
-  servicesChart = new Chart(ctx, {{
-    type:'bar',
-    data:{{labels: items.map(x=>x?.service||'unknown'), datasets:[{{label:'Bookings', data: items.map(x=>x?.count||0), borderWidth:1}}]}},
-    options:{{responsive:true, maintainAspectRatio:false, indexAxis:'y', plugins:{{legend:{{display:false}}}}, scales:{{x:{{beginAtZero:true, ticks:{{precision:0}}}}}}}}
-  }});
-}}
-function renderOverview(rawOverview) {{
-  const ov = normalizeOverview(rawOverview);
+function renderTrendChart(daily) {{ const ctx = document.getElementById('trend_chart').getContext('2d'); destroyIf(trendChart); trendChart = new Chart(ctx, {{ type:'line', data:{{ labels:(daily||[]).map(x=>x.date||''), datasets:[{{label:'Requests',data:(daily||[]).map(x=>x.requests||0),borderWidth:2,tension:0.3}},{{label:'Bookings',data:(daily||[]).map(x=>x.bookings||0),borderWidth:2,tension:0.3}},{{label:'Cancelled',data:(daily||[]).map(x=>x.cancelled||0),borderWidth:2,tension:0.3}}]}}, options:{{responsive:true,maintainAspectRatio:false,interaction:{{mode:'index',intersect:false}},plugins:{{legend:{{position:'bottom'}}}},scales:{{y:{{beginAtZero:true,ticks:{{precision:0}}}}}} }}); }}
+function renderChannelChart(channels) {{ const ctx = document.getElementById('channel_chart').getContext('2d'); destroyIf(channelChart); channelChart = new Chart(ctx, {{ type:'doughnut', data:{{labels:(channels||[]).map(x=>x.channel||'unknown'), datasets:[{{data:(channels||[]).map(x=>x.count||0), borderWidth:1}}]}}, options:{{responsive:true,maintainAspectRatio:false,plugins:{{legend:{{position:'bottom'}}}} }}); }}
+function renderServicesChart(items) {{ const ctx = document.getElementById('services_chart').getContext('2d'); destroyIf(servicesChart); servicesChart = new Chart(ctx, {{ type:'bar', data:{{labels:(items||[]).map(x=>x.service||'unknown'), datasets:[{{label:'Bookings',data:(items||[]).map(x=>x.count||0), borderWidth:1}}]}}, options:{{responsive:true,maintainAspectRatio:false,indexAxis:'y',plugins:{{legend:{{display:false}}}},scales:{{x:{{beginAtZero:true,ticks:{{precision:0}}}}}} }}); }}
+function renderOverview(ov) {{
   const tenant = ov?.tenant || {{}};
   const readiness = ov?.readiness || {{}};
   const onboarding = ov?.onboarding || {{}};
   const planMeta = ov?.plan_meta || {{}};
   const limits = planMeta?.limits || {{}};
-  setText('biz_title', tenant.business_name || tenant._id || currentTenant());
-  setText('biz_sub', `Tenant ${{tenant._id || currentTenant()}} · timezone ${{tenant.timezone || '—'}} · language ${{tenant.language || '—'}}`, '');
-  setText('m_plan', planMeta.plan || 'starter');
-  setText('m_plan_sub', planMeta.subscription_status || 'trial', 'trial');
-  setText('m_limit_dialogs', limits.dialogs_per_month ?? '-');
-  setText('m_llm_mode', limits.llm_mode || '-');
-  setText('m_llm_calls', `LLM calls/month: ${{limits.llm_calls_per_month ?? 0}}`, 'LLM calls/month: 0');
-  setText('m_routes', ov?.phone_routes_count ?? tenant?.phone_routes_count ?? 0, '0');
+  document.getElementById('biz_title').textContent = tenant.business_name || tenant._id || currentTenant();
+  document.getElementById('biz_sub').textContent = `Tenant ${{tenant._id || currentTenant()}} · timezone ${{tenant.timezone || '—'}} · language ${{tenant.language || '—'}}`;
+  document.getElementById('m_plan').textContent = planMeta.plan || 'starter';
+  document.getElementById('m_plan_sub').textContent = planMeta.subscription_status || 'trial';
+  document.getElementById('m_limit_dialogs').textContent = limits.dialogs_per_month ?? '-';
+  document.getElementById('m_llm_mode').textContent = limits.llm_mode || '-';
+  document.getElementById('m_llm_calls').textContent = `LLM calls/month: ${{limits.llm_calls_per_month ?? 0}}`;
+  document.getElementById('m_routes').textContent = ov?.phone_routes_count ?? 0;
   const badges = [];
   badges.push(readiness.ready ? statusBadge('Ready','ok') : statusBadge('Setup incomplete','warn'));
   badges.push(onboarding.google_connected ? statusBadge('Google connected','ok') : statusBadge('Google pending','warn'));
   badges.push(onboarding.calendar_selected ? statusBadge('Calendar selected','ok') : statusBadge('Calendar missing','warn'));
-  const readyBadges = el('ready_badges');
-  if (readyBadges) readyBadges.innerHTML = badges.join(' ');
-  const ml = el('missing_list');
-  if (ml) {{
-    ml.innerHTML = '';
-    const missing = Array.isArray(readiness.missing) ? readiness.missing : [];
-    if (!missing.length) {{
-      ml.innerHTML = '<li>No blocking setup issues</li>';
-    }} else {{
-      missing.forEach(x => {{
-        const li = document.createElement('li');
-        li.textContent = x;
-        ml.appendChild(li);
-      }});
-    }}
-  }}
+  document.getElementById('ready_badges').innerHTML = badges.join(' ');
+  const ml = document.getElementById('missing_list');
+  ml.innerHTML = '';
+  const missing = Array.isArray(readiness.missing) ? readiness.missing : [];
+  if (!missing.length) {{ ml.innerHTML = '<li>No blocking setup issues</li>'; }} else {{ missing.forEach(x => {{ const li = document.createElement('li'); li.textContent = x; ml.appendChild(li); }}); }}
   const checkpoints = [];
   checkpoints.push(`<div>${{statusBadge(onboarding.google_connected ? 'Google connected' : 'Google not connected', onboarding.google_connected ? 'ok' : 'warn')}}</div>`);
   checkpoints.push(`<div>${{statusBadge(onboarding.calendar_selected ? 'Calendar selected' : 'Calendar not selected', onboarding.calendar_selected ? 'ok' : 'warn')}}</div>`);
   checkpoints.push(`<div>${{statusBadge(onboarding.onboarding_completed ? 'Onboarding completed' : 'Onboarding in progress', onboarding.onboarding_completed ? 'ok' : 'warn')}}</div>`);
   checkpoints.push(`<div class="muted" style="margin-top:8px;">Next step: ${{esc(onboarding.next_step || readiness.next_step || 'done')}}</div>`);
-  checkpoints.push(`<div class="muted">Owner: ${{esc(tenant.owner_email || onboarding.owner_email || '—')}} · Phone: ${{esc(tenant.phone_number || onboarding.phone_number || '—')}}</div>`);
-  const checkpointBlock = el('checkpoint_block');
-  if (checkpointBlock) checkpointBlock.innerHTML = checkpoints.join('');
-}}
-function renderTableRows(selector, rows, colSpan, emptyLabel, rowRenderer) {{
-  const tbody = document.querySelector(selector);
-  if (!tbody) return;
-  tbody.innerHTML = '';
-  const safeRows = safeArray(rows);
-  if (!safeRows.length) {{
-    setEmpty(tbody, colSpan, emptyLabel);
-    return;
-  }}
-  safeRows.forEach(item => {{
-    const tr = document.createElement('tr');
-    tr.innerHTML = rowRenderer(item || {{}});
-    tbody.appendChild(tr);
-  }});
-}}
-function clearDashboardBanner() {{
-  const existingBanner = el('dash_error_banner');
-  if (existingBanner) existingBanner.remove();
-}}
-function showDashboardBanner(message, kind='warn') {{
-  clearDashboardBanner();
-  const banner = document.createElement('div');
-  banner.id = 'dash_error_banner';
-  const styleMap = {{
-    warn: 'background:#fef3c7;color:#92400e;',
-    err: 'background:#fee2e2;color:#991b1b;',
-    ok: 'background:#dcfce7;color:#166534;'
-  }};
-  banner.style = `${{styleMap[kind] || styleMap.warn}}padding:12px 16px;font-size:14px;margin-bottom:12px;border-radius:12px;`;
-  banner.textContent = message;
-  const wrap = document.querySelector('.wrap');
-  if (wrap) wrap.prepend(banner);
+  checkpoints.push(`<div class="muted">Owner: ${{esc(tenant.owner_email || '—')}} · Phone: ${{esc(tenant.phone_number || '—')}}</div>`);
+  document.getElementById('checkpoint_block').innerHTML = checkpoints.join('');
 }}
 async function loadAll() {{
   const tenant = currentTenant();
-  const days = el('days')?.value || '14';
-  const limit = el('limit')?.value || '20';
-  setText('usage_badge', `${{days}} day window`, 'Selected window');
-  el('lnk_analytics').href = `/dashboard/analytics?tenant_id=${{encodeURIComponent(tenant)}}`;
-  el('lnk_usage').href = `/dashboard/usage?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
-  el('lnk_activity').href = `/dashboard/activity?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
-  el('lnk_chart_data').href = `/dashboard/chart-data?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
-  el('lnk_bookings').href = `/dashboard/bookings?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
-  el('lnk_conversations').href = `/dashboard/conversations?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
-  el('lnk_tenant').href = `/tenant/config?tenant_id=${{encodeURIComponent(tenant)}}`;
-  el('lnk_tenant_ui').href = `/tenant/config/ui?tenant_id=${{encodeURIComponent(tenant)}}`;
-  el('lnk_status').href = `/tenant/status?tenant_id=${{encodeURIComponent(tenant)}}`;
-  el('lnk_overview').href = `/tenant/overview?tenant_id=${{encodeURIComponent(tenant)}}`;
-  clearDashboardBanner();
-
-  const requests = [
-    ['analytics', `/dashboard/analytics?tenant_id=${{encodeURIComponent(tenant)}}`],
-    ['usage', `/dashboard/usage?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`],
-    ['activity', `/dashboard/activity?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`],
-    ['bookings', `/dashboard/bookings?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`],
-    ['conversations', `/dashboard/conversations?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`],
-    ['chartData', `/dashboard/chart-data?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`],
-    ['overview', `/tenant/overview?tenant_id=${{encodeURIComponent(tenant)}}`]
-  ];
-
-  const settled = await Promise.allSettled(requests.map(([_, url]) => fetchJson(url)));
-  const data = {{}};
-  const errors = [];
-  settled.forEach((result, idx) => {{
-    const key = requests[idx][0];
-    if (result.status === 'fulfilled') {{
-      data[key] = result.value;
-    }} else {{
-      data[key] = null;
-      errors.push(`${{key}}: ${{result.reason?.message || result.reason || 'load failed'}}`);
-      console.error('dashboard_block_failed', key, result.reason);
-    }}
-  }});
-
-  const a = data.analytics || {{}};
-  const u = data.usage || {{}};
-  const act = data.activity || {{}};
-  const b = data.bookings || {{}};
-  const c = data.conversations || {{}};
-  const chartData = data.chartData || {{}};
-  const ov = data.overview || {{}};
-
-  try {{ renderOverview(ov); }} catch (err) {{ errors.push(`overview render: ${{err?.message || err}}`); console.error(err); }}
-  setText('m_requests', a?.total_requests ?? '-');
-  setText('m_bookings', a?.total_bookings ?? '-');
-  setText('m_conv', `${{a?.conversion_rate ?? 0}}%`);
-  setText('m_today', a?.today_bookings ?? '-');
-  setText('m_users', u?.unique_users ?? '-');
-  setText('m_reschedules', u?.total_reschedules ?? '-');
-  setText('m_cancelled', u?.total_cancelled ?? '-');
-  const topChannelObj = Array.isArray(u?.channels) && u.channels.length ? u.channels[0] : null;
-  setText('m_channel', topChannelObj?.channel || '-');
-  setText('m_channel_sub', topChannelObj ? `${{topChannelObj.count || 0}} events in selected window` : '', '');
-
-  try {{ renderTrendChart(chartData?.daily || u?.daily || []); }} catch (err) {{ errors.push(`trend chart: ${{err?.message || err}}`); console.error(err); }}
-  try {{ renderChannelChart(chartData?.channels || u?.channels || []); }} catch (err) {{ errors.push(`channel chart: ${{err?.message || err}}`); console.error(err); }}
-  try {{ renderServicesChart(chartData?.top_services || u?.top_services || []); }} catch (err) {{ errors.push(`services chart: ${{err?.message || err}}`); console.error(err); }}
-
-  renderTableRows('#bookings_tbl tbody', b?.items, 5, 'No bookings yet', item => `<td>${{esc(item?.client_name || item?.user_id || '')}}</td><td>${{esc(item?.service || 'unknown')}}</td><td>${{esc(item?.datetime_iso || '')}}</td><td>${{esc(item?.status || '')}}</td><td><span class="muted">${{esc(item?.created_at || '')}}</span></td>`);
-  renderTableRows('#services_tbl tbody', u?.top_services, 2, 'No booked services in selected window', item => `<td>${{esc(item?.service || 'unknown')}}</td><td>${{esc(item?.count ?? 0)}}</td>`);
-  renderTableRows('#activity_tbl tbody', act?.items, 6, 'No activity yet', item => `<td><span class="muted">${{esc(item?.created_at || '')}}</span></td><td>${{esc(item?.type || '')}}</td><td>${{esc(item?.channel || '')}}</td><td>${{esc(item?.user_id || '')}}</td><td>${{esc(item?.message || '')}}</td><td>${{esc(item?.status || '')}}</td>`);
-  renderTableRows('#daily_tbl tbody', u?.daily, 4, 'No daily usage yet', item => `<td>${{esc(item?.date || '')}}</td><td>${{esc(item?.requests ?? 0)}}</td><td>${{esc(item?.bookings ?? 0)}}</td><td>${{esc(item?.cancelled ?? 0)}}</td>`);
-  renderTableRows('#conv_tbl tbody', c?.items, 6, 'No conversations yet', item => `<td><span class="muted">${{esc(item?.created_at || '')}}</span></td><td>${{esc(item?.user_id || '')}}</td><td>${{esc(item?.channel || '')}}</td><td>${{esc(item?.user_message || '')}}</td><td>${{esc(item?.ai_reply || '')}}</td><td>${{esc(item?.status || '')}}</td>`);
-
-  if (errors.length) {{
-    showDashboardBanner(`Dashboard loaded with partial issues: ${{errors.join(' | ')}}`, 'warn');
+  const days = document.getElementById('days').value || '14';
+  const limit = document.getElementById('limit').value || '20';
+  document.getElementById('usage_badge').textContent = `${{days}} day window`;
+  document.getElementById('lnk_analytics').href = `/dashboard/analytics?tenant_id=${{encodeURIComponent(tenant)}}`;
+  document.getElementById('lnk_usage').href = `/dashboard/usage?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
+  document.getElementById('lnk_activity').href = `/dashboard/activity?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
+  document.getElementById('lnk_chart_data').href = `/dashboard/chart-data?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
+  document.getElementById('lnk_bookings').href = `/dashboard/bookings?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
+  document.getElementById('lnk_conversations').href = `/dashboard/conversations?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
+  document.getElementById('lnk_tenant').href = `/tenant/config?tenant_id=${{encodeURIComponent(tenant)}}`;
+  document.getElementById('lnk_tenant_ui').href = `/tenant/config/ui?tenant_id=${{encodeURIComponent(tenant)}}`;
+  document.getElementById('lnk_status').href = `/tenant/status?tenant_id=${{encodeURIComponent(tenant)}}`;
+  document.getElementById('lnk_overview').href = `/tenant/overview?tenant_id=${{encodeURIComponent(tenant)}}`;
+  const existingBanner = document.getElementById('dash_error_banner'); if (existingBanner) existingBanner.remove();
+  try {{
+    const [a,u,act,b,c,chartData,ov] = await Promise.all([
+      fetchJson(`/dashboard/analytics?tenant_id=${{encodeURIComponent(tenant)}}`),
+      fetchJson(`/dashboard/usage?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`),
+      fetchJson(`/dashboard/activity?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`),
+      fetchJson(`/dashboard/bookings?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`),
+      fetchJson(`/dashboard/conversations?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`),
+      fetchJson(`/dashboard/chart-data?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`),
+      fetchJson(`/tenant/overview?tenant_id=${{encodeURIComponent(tenant)}}`)
+    ]);
+    renderOverview(ov);
+    document.getElementById('m_requests').textContent = a?.total_requests ?? '-';
+    document.getElementById('m_bookings').textContent = a?.total_bookings ?? '-';
+    document.getElementById('m_conv').textContent = `${{a?.conversion_rate ?? 0}}%`;
+    document.getElementById('m_today').textContent = a?.today_bookings ?? '-';
+    document.getElementById('m_users').textContent = u?.unique_users ?? '-';
+    document.getElementById('m_reschedules').textContent = u?.total_reschedules ?? '-';
+    document.getElementById('m_cancelled').textContent = u?.total_cancelled ?? '-';
+    const topChannelObj = Array.isArray(u?.channels) && u.channels.length ? u.channels[0] : null;
+    document.getElementById('m_channel').textContent = topChannelObj?.channel || '-';
+    document.getElementById('m_channel_sub').textContent = topChannelObj ? `${{topChannelObj.count || 0}} events in selected window` : '';
+    renderTrendChart(chartData?.daily || u?.daily || []);
+    renderChannelChart(chartData?.channels || u?.channels || []);
+    renderServicesChart(chartData?.top_services || u?.top_services || []);
+    const bt = document.querySelector('#bookings_tbl tbody'); bt.innerHTML='';
+    if (!Array.isArray(b?.items) || !b.items.length) setEmpty(bt, 5, 'No bookings yet'); else b.items.forEach(item => {{ const tr = document.createElement('tr'); tr.innerHTML = `<td>${{esc(item?.client_name || item?.user_id || '')}}</td><td>${{esc(item?.service || 'unknown')}}</td><td>${{esc(item?.datetime_iso || '')}}</td><td>${{esc(item?.status || '')}}</td><td><span class="muted">${{esc(item?.created_at || '')}}</span></td>`; bt.appendChild(tr); }});
+    const st = document.querySelector('#services_tbl tbody'); st.innerHTML='';
+    if (!Array.isArray(u?.top_services) || !u.top_services.length) setEmpty(st, 2, 'No booked services in selected window'); else u.top_services.forEach(item => {{ const tr = document.createElement('tr'); tr.innerHTML = `<td>${{esc(item?.service || 'unknown')}}</td><td>${{esc(item?.count ?? 0)}}</td>`; st.appendChild(tr); }});
+    const at = document.querySelector('#activity_tbl tbody'); at.innerHTML='';
+    if (!Array.isArray(act?.items) || !act.items.length) setEmpty(at, 6, 'No activity yet'); else act.items.forEach(item => {{ const tr = document.createElement('tr'); tr.innerHTML = `<td><span class="muted">${{esc(item?.created_at || '')}}</span></td><td>${{esc(item?.type || '')}}</td><td>${{esc(item?.channel || '')}}</td><td>${{esc(item?.user_id || '')}}</td><td>${{esc(item?.message || '')}}</td><td>${{esc(item?.status || '')}}</td>`; at.appendChild(tr); }});
+    const dt = document.querySelector('#daily_tbl tbody'); dt.innerHTML='';
+    if (!Array.isArray(u?.daily) || !u.daily.length) setEmpty(dt, 4, 'No daily usage yet'); else u.daily.forEach(item => {{ const tr = document.createElement('tr'); tr.innerHTML = `<td>${{esc(item?.date || '')}}</td><td>${{esc(item?.requests ?? 0)}}</td><td>${{esc(item?.bookings ?? 0)}}</td><td>${{esc(item?.cancelled ?? 0)}}</td>`; dt.appendChild(tr); }});
+    const ct = document.querySelector('#conv_tbl tbody'); ct.innerHTML='';
+    if (!Array.isArray(c?.items) || !c.items.length) setEmpty(ct, 6, 'No conversations yet'); else c.items.forEach(item => {{ const tr = document.createElement('tr'); tr.innerHTML = `<td><span class="muted">${{esc(item?.created_at || '')}}</span></td><td>${{esc(item?.user_id || '')}}</td><td>${{esc(item?.channel || '')}}</td><td>${{esc(item?.user_message || '')}}</td><td>${{esc(item?.ai_reply || '')}}</td><td>${{esc(item?.status || '')}}</td>`; ct.appendChild(tr); }});
+  }} catch (err) {{
+    const banner = document.createElement('div');
+    banner.id = 'dash_error_banner';
+    banner.style = 'background:#fee2e2;color:#991b1b;padding:12px 16px;font-size:14px;margin-bottom:12px;border-radius:12px;';
+    banner.textContent = `Dashboard load failed: ${{err?.message || err}}`;
+    document.querySelector('.wrap').prepend(banner);
   }}
 }}
 document.addEventListener('DOMContentLoaded', loadAll);
@@ -6793,7 +6657,6 @@ button.secondary {{ background:#fff; color:#111827; border:1px solid #d1d5db; }}
       <div><label>Services RU</label><textarea id="services_ru"></textarea></div>
       <div class="full"><label>Services EN</label><textarea id="services_en"></textarea></div>
       <div class="full"><label>Service catalog JSON</label><textarea id="service_catalog_json" placeholder='[{{"key":"mens_haircut","name_lv":"vīriešu frizūra","name_ru":"мужская стрижка","name_en":"men&#39;s haircut","duration_min":30,"aliases_lv":["matu griezums"],"aliases_ru":["стрижка"],"aliases_en":["haircut"]}}]'></textarea></div>
-      <div class="full"><label>Service account JSON</label><textarea id="service_account_json" placeholder='{{"type":"service_account",...}}'></textarea></div>
       <div><label>Weekly hours JSON</label><textarea id="weekly_hours_json"></textarea></div>
       <div><label>Days off JSON</label><textarea id="days_off_json"></textarea></div>
       <div><label>Breaks JSON</label><textarea id="breaks_json"></textarea></div>
@@ -6855,7 +6718,6 @@ async function loadConfig() {{
   document.getElementById('min_notice_minutes').value = t.min_notice_minutes ?? '';
   document.getElementById('buffer_minutes').value = t.buffer_minutes ?? '';
   document.getElementById('service_catalog_json').value = j(t.service_catalog_json || t.service_catalog);
-  document.getElementById('service_account_json').value = t.service_account_json || t.google_service_account_json || '';
   document.getElementById('business_memory_lv').value = t.business_memory_lv || '';
   document.getElementById('business_memory_ru').value = t.business_memory_ru || '';
   document.getElementById('business_memory_en').value = t.business_memory_en || '';
@@ -6880,7 +6742,6 @@ async function saveConfig() {{
     min_notice_minutes: document.getElementById('min_notice_minutes').value ? Number(document.getElementById('min_notice_minutes').value) : null,
     buffer_minutes: document.getElementById('buffer_minutes').value ? Number(document.getElementById('buffer_minutes').value) : null,
     service_catalog_json: document.getElementById('service_catalog_json').value || null,
-    service_account_json: document.getElementById('service_account_json').value || null,
     business_memory_lv: document.getElementById('business_memory_lv').value || null,
     business_memory_ru: document.getElementById('business_memory_ru').value || null,
     business_memory_en: document.getElementById('business_memory_en').value || null
@@ -6964,7 +6825,6 @@ class TenantConfigUpdateRequest(BaseModel):
     min_notice_minutes: Optional[int] = None
     buffer_minutes: Optional[int] = None
     service_catalog_json: Optional[str] = None
-    service_account_json: Optional[str] = None
     business_memory_lv: Optional[str] = None
     business_memory_ru: Optional[str] = None
     business_memory_en: Optional[str] = None
@@ -7209,12 +7069,6 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
             add_field("service_catalog_json", payload.service_catalog_json)
         elif "service_catalog" in col_names:
             add_field("service_catalog", payload.service_catalog_json)
-    if payload.service_account_json is not None:
-        clean_service_account_json = payload.service_account_json.strip() if isinstance(payload.service_account_json, str) else payload.service_account_json
-        if "service_account_json" in col_names:
-            add_field("service_account_json", clean_service_account_json or None)
-        elif "google_service_account_json" in col_names:
-            add_field("google_service_account_json", clean_service_account_json or None)
 
     if "updated_at" in col_names:
         updates.append("updated_at=NOW()")
