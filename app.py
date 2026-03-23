@@ -3834,14 +3834,21 @@ def reset_booking_context(c: Dict[str, Any], keep_name: bool = True) -> Dict[str
 def normalize_booking_state(c: Dict[str, Any]) -> Dict[str, Any]:
     pending = c.get("pending") or {}
     state = conversation_state(c)
+    original_state = state
     service_key = str(c.get("service") or pending.get("service") or "").strip()
     confirm_iso = str(pending.get("confirm_slot_iso") or "").strip()
     awaiting_time_date_iso = str(pending.get("awaiting_time_date_iso") or "").strip()
     offered_slots = get_offered_slots(pending)
     has_booking_intent = bool(pending.get("booking_intent"))
     booked_dt = str(c.get("datetime_iso") or "").strip()
+    upsell_active = bool(pending.get("upsell_offer_active"))
 
-    if confirm_iso:
+    # Preserve the dedicated post-booking upsell state. The confirm slot stays in
+    # pending during this step, so without this guard the normalizer incorrectly
+    # downgrades POST_BOOKING_UPSELL back to AWAITING_CONFIRM and the upsell loops.
+    if original_state == STATE_POST_BOOKING_UPSELL and (upsell_active or confirm_iso):
+        state = STATE_POST_BOOKING_UPSELL
+    elif confirm_iso:
         state = STATE_AWAITING_CONFIRM
     elif offered_slots or awaiting_time_date_iso:
         state = STATE_AWAITING_TIME
@@ -4135,6 +4142,7 @@ def book_appointment_for_datetime(
     pending.pop("preferred_time_window", None)
     pending.pop("pending_confirm_upsell", None)
     pending.pop("confirm_upsell_done", None)
+    pending.pop("upsell_offer_active", None)
     pending.pop("addon_service", None)
     clear_offered_slots(pending)
     was_rescheduled = bool(pending.get("reschedule_event_id"))
