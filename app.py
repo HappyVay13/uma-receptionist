@@ -238,7 +238,7 @@ I18N: Dict[str, Dict[str, str]] = {
         "soft_clarify_date": "Saprotu. Vēl pasakiet, uz kuru dienu vēlaties pierakstīties.",
         "soft_clarify_time": "Saprotu. Vēl vajag precīzāku laiku vai izvēli no piedāvātajiem variantiem.",
         "soft_clarify_confirm": "Vai pareizi sapratu, ka vēlaties apstiprināt piedāvāto laiku? Lūdzu, atbildiet ar jā vai nē.",
-        "soft_clarify_upsell": "Lūdzu, atbildiet ar jā vai nē — vai pievienojam papildu pakalpojumu?",
+        "soft_clarify_upsell": "Lūdzu, pasakiet jā vai nē — vai pievienojam arī bārdas kopšanu?",
     },
     "ru": {
         "service_unavailable_voice": "Извините, сервис недоступен.",
@@ -292,7 +292,7 @@ I18N: Dict[str, Dict[str, str]] = {
         "soft_clarify_date": "Понял. Подскажите, на какой день вам нужна запись.",
         "soft_clarify_time": "Понял. Нужен более точный вариант времени или выбор из предложенных слотов.",
         "soft_clarify_confirm": "Правильно ли я понял, что вы хотите подтвердить предложенное время? Пожалуйста, ответьте да или нет.",
-        "soft_clarify_upsell": "Пожалуйста, ответьте да или нет — добавляем дополнительную услугу?",
+        "soft_clarify_upsell": "Пожалуйста, ответьте да или нет — добавить также подравнивание бороды?",
     },
     "en": {
         "service_unavailable_voice": "Sorry, the service is unavailable.",
@@ -346,7 +346,7 @@ I18N: Dict[str, Dict[str, str]] = {
         "soft_clarify_date": "Got it. Please tell me which day you would like to book for.",
         "soft_clarify_time": "Understood. I still need a more specific time or one of the offered options.",
         "soft_clarify_confirm": "Just to confirm, would you like to confirm the offered time? Please answer yes or no.",
-        "soft_clarify_upsell": "Please answer yes or no — would you like to add the extra service?",
+        "soft_clarify_upsell": "Please answer yes or no — would you like to add a beard trim as well?",
     },
 }
 
@@ -3417,7 +3417,6 @@ ACTIVE_BOOKING_STATES = {
     STATE_AWAITING_DATE,
     STATE_AWAITING_TIME,
     STATE_AWAITING_CONFIRM,
-    STATE_POST_BOOKING_UPSELL,
 }
 
 WEEKDAY_HINTS = {
@@ -3533,8 +3532,6 @@ def soft_clarify_for_state(lang: str, c: Dict[str, Any], pending: Dict[str, Any]
         return t(lang, "soft_clarify_time")
     if state == STATE_AWAITING_CONFIRM:
         return t(lang, "soft_clarify_confirm")
-    if state == STATE_POST_BOOKING_UPSELL:
-        return t(lang, "soft_clarify_upsell")
     return t(lang, "unclear_reply")
 
 
@@ -3805,13 +3802,7 @@ def prompt_for_state(lang: str, c: Dict[str, Any], pending: Dict[str, Any], serv
             return t(lang, "ask_booking_confirm", when=format_dt_short(dt_confirm), service=service_name or t(lang, "need_service"))
         return t(lang, "repeat_yes_no")
     if state == STATE_POST_BOOKING_UPSELL:
-        confirm_iso = str(pending.get("confirm_slot_iso") or c.get("datetime_iso") or "").strip()
-        dt_confirm = parse_dt_any_tz(confirm_iso)
-        primary_item = get_service_item_by_key(service_catalog or [], c.get("service") or pending.get("service"))
-        beard_item = find_service_item_by_group(service_catalog or [], "beard")
-        if dt_confirm and primary_item and beard_item:
-            return build_confirm_upsell_prompt(lang, format_dt_short(dt_confirm), primary_item, beard_item)
-        return t(lang, "repeat_yes_no")
+        return t(lang, "soft_clarify_upsell")
     return t(lang, "how_help")
 
 
@@ -3838,9 +3829,8 @@ def normalize_booking_state(c: Dict[str, Any]) -> Dict[str, Any]:
     offered_slots = get_offered_slots(pending)
     has_booking_intent = bool(pending.get("booking_intent"))
     booked_dt = str(c.get("datetime_iso") or "").strip()
-    upsell_offer_active = bool(pending.get("upsell_offer_active"))
 
-    if upsell_offer_active and confirm_iso:
+    if state == STATE_POST_BOOKING_UPSELL and confirm_iso:
         state = STATE_POST_BOOKING_UPSELL
     elif confirm_iso:
         state = STATE_AWAITING_CONFIRM
@@ -3853,63 +3843,12 @@ def normalize_booking_state(c: Dict[str, Any]) -> Dict[str, Any]:
     elif state in ACTIVE_BOOKING_STATES and not service_key:
         state = STATE_AWAITING_SERVICE
 
-    if state in (STATE_BOOKED, STATE_CANCELLED) and has_booking_intent:
+    if state in (STATE_BOOKED, STATE_CANCELLED) and has_booking_intent and not pending.get("upsell_offer_active"):
         state = STATE_AWAITING_SERVICE if not service_key else STATE_AWAITING_DATE
 
     c["state"] = state
     c["pending"] = pending or None
     return c
-
-
-def should_offer_post_confirm_upsell(service_catalog: List[Dict[str, Any]], primary_service_item: Optional[Dict[str, Any]], pending: Dict[str, Any]) -> bool:
-    if not primary_service_item:
-        return False
-    if service_group_key(primary_service_item) != "haircut":
-        return False
-    if str((pending or {}).get("addon_service") or "").strip():
-        return False
-    return bool(find_service_item_by_group(service_catalog, "beard"))
-
-
-def move_to_post_confirm_upsell(
-    lang: str,
-    c: Dict[str, Any],
-    pending: Dict[str, Any],
-    service_catalog: List[Dict[str, Any]],
-    dt_confirm: datetime,
-) -> Dict[str, Any]:
-    haircut_item = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
-    beard_item = find_service_item_by_group(service_catalog, "beard")
-    pending["upsell_offer_active"] = True
-    c["pending"] = pending
-    c["state"] = STATE_POST_BOOKING_UPSELL
-    reply_text = build_confirm_upsell_prompt(lang, format_dt_short(dt_confirm), haircut_item, beard_item)
-    return {
-        "status": "need_more",
-        "reply_voice": reply_text,
-        "msg_out": reply_text,
-        "lang": lang,
-        "preserve_text": True,
-    }
-
-
-def finalize_post_confirm_upsell_response(
-    lang: str,
-    pending: Dict[str, Any],
-    service_catalog: List[Dict[str, Any]],
-    dt_confirm: datetime,
-    added: bool,
-) -> Dict[str, Any]:
-    haircut_item = get_service_item_by_key(service_catalog, pending.get("service"))
-    beard_item = find_service_item_by_group(service_catalog, "beard")
-    reply_text = build_confirm_upsell_resolution(lang, format_dt_short(dt_confirm), added, haircut_item, beard_item)
-    return {
-        "status": "need_more",
-        "reply_voice": reply_text,
-        "msg_out": reply_text,
-        "lang": lang,
-        "preserve_text": True,
-    }
 
 
 def book_appointment_for_datetime(
@@ -4069,6 +4008,7 @@ def book_appointment_for_datetime(
         c["service"] = pending["service"]
         c["datetime_iso"] = dt_start.isoformat()
 
+
         return {
             "status": "need_more",
             "reply_voice": t(lang, "ask_booking_confirm", when=format_dt_short(dt_start), service=final_service),
@@ -4129,6 +4069,7 @@ def book_appointment_for_datetime(
     pending.pop("candidate_datetime_iso", None)
     pending.pop("preferred_time_window", None)
     pending.pop("upsell_offer_active", None)
+    pending.pop("upsell_offer_done", None)
     pending.pop("pending_confirm_upsell", None)
     pending.pop("confirm_upsell_done", None)
     pending.pop("addon_service", None)
@@ -4879,12 +4820,7 @@ def handle_user_text(
             c["pending"] = pending
             result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, dt_confirm, require_confirmation=False)
             if result.get("status") == "booked":
-                result = finalize_post_confirm_upsell_response(lang, pending, service_catalog, dt_confirm, True) | {
-                    "status": "booked",
-                    "service": result.get("service"),
-                    "when": result.get("when"),
-                    "datetime_text": result.get("datetime_text"),
-                }
+                result = finalize_post_confirm_upsell_response(lang, pending, service_catalog, dt_confirm, True)
             db_save_conversation(tenant_id, user_key, c)
             return result
         if is_no_text(msg, lang) or llm_confirmation == "no":
@@ -4893,12 +4829,7 @@ def handle_user_text(
             c["pending"] = pending
             result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, dt_confirm, require_confirmation=False)
             if result.get("status") == "booked":
-                result = finalize_post_confirm_upsell_response(lang, pending, service_catalog, dt_confirm, False) | {
-                    "status": "booked",
-                    "service": result.get("service"),
-                    "when": result.get("when"),
-                    "datetime_text": result.get("datetime_text"),
-                }
+                result = finalize_post_confirm_upsell_response(lang, pending, service_catalog, dt_confirm, False)
             db_save_conversation(tenant_id, user_key, c)
             return result
         db_save_conversation(tenant_id, user_key, c)
@@ -4942,6 +4873,7 @@ def handle_user_text(
         if is_no_text(msg, lang) or llm_confirmation == "no":
             pending.pop("confirm_slot_iso", None)
             pending.pop("upsell_offer_active", None)
+            pending.pop("upsell_offer_done", None)
             pending.pop("pending_confirm_upsell", None)
             pending.pop("confirm_upsell_done", None)
             pending.pop("addon_service", None)
