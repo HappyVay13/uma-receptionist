@@ -4150,6 +4150,7 @@ def book_appointment_for_datetime(
             }
 
     pending.pop("confirm_slot_iso", None)
+    pending.pop("upsell_offer_active", None)
     pending.pop("awaiting_time_date_iso", None)
     pending.pop("candidate_datetime_iso", None)
     pending.pop("preferred_time_window", None)
@@ -4895,28 +4896,57 @@ def handle_user_text(
         if pending.get("pending_confirm_upsell") and dt_confirm:
             haircut_item = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
             beard_item = find_service_item_by_group(service_catalog, "beard")
-            when_txt = format_dt_short(dt_confirm)
             llm_confirmation = (llm_hint or {}).get("confirmation")
             if is_yes_text(msg, lang) or llm_confirmation == "yes":
                 pending["pending_confirm_upsell"] = False
+                pending.pop("upsell_offer_active", None)
                 if beard_item:
                     pending["addon_service"] = str(beard_item.get("key") or "").strip()
                 c["pending"] = pending
+                result = book_appointment_for_datetime(
+                    tenant_id,
+                    raw_phone,
+                    channel,
+                    lang,
+                    c,
+                    settings,
+                    service_catalog,
+                    dt_confirm,
+                    require_confirmation=False,
+                )
+                if result.get("status") == "booked":
+                    result["reply_voice"] = build_confirm_upsell_resolution(lang, format_dt_short(dt_confirm), True, haircut_item, beard_item)
+                    result["msg_out"] = result["reply_voice"]
+                    result["preserve_text"] = True
                 db_save_conversation(tenant_id, user_key, c)
-                reply_text = build_confirm_upsell_resolution(lang, when_txt, True, haircut_item, beard_item)
-                return {"status": "need_more", "reply_voice": reply_text, "msg_out": reply_text, "lang": lang, "preserve_text": True}
+                return result
             if is_no_text(msg, lang) or llm_confirmation == "no":
                 pending["pending_confirm_upsell"] = False
+                pending.pop("upsell_offer_active", None)
                 pending.pop("addon_service", None)
                 c["pending"] = pending
+                result = book_appointment_for_datetime(
+                    tenant_id,
+                    raw_phone,
+                    channel,
+                    lang,
+                    c,
+                    settings,
+                    service_catalog,
+                    dt_confirm,
+                    require_confirmation=False,
+                )
+                if result.get("status") == "booked":
+                    result["reply_voice"] = build_confirm_upsell_resolution(lang, format_dt_short(dt_confirm), False, haircut_item, beard_item)
+                    result["msg_out"] = result["reply_voice"]
+                    result["preserve_text"] = True
                 db_save_conversation(tenant_id, user_key, c)
-                reply_text = build_confirm_upsell_resolution(lang, when_txt, False, haircut_item, beard_item)
-                return {"status": "need_more", "reply_voice": reply_text, "msg_out": reply_text, "lang": lang, "preserve_text": True}
+                return result
             if is_short_ack_text(msg, lang):
                 pending["pending_confirm_upsell"] = False
+                pending.pop("upsell_offer_active", None)
                 pending.pop("addon_service", None)
                 c["pending"] = pending
-                db_save_conversation(tenant_id, user_key, c)
                 # treat generic ack as plain confirm path without addon
             else:
                 db_save_conversation(tenant_id, user_key, c)
