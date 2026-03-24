@@ -238,6 +238,7 @@ I18N: Dict[str, Dict[str, str]] = {
         "soft_clarify_date": "Saprotu. Vēl pasakiet, uz kuru dienu vēlaties pierakstīties.",
         "soft_clarify_time": "Saprotu. Vēl vajag precīzāku laiku vai izvēli no piedāvātajiem variantiem.",
         "soft_clarify_confirm": "Vai pareizi sapratu, ka vēlaties apstiprināt piedāvāto laiku? Lūdzu, atbildiet ar jā vai nē.",
+        "time_selection_uncertain": "Saprotu. Varam paskatīties citu dienu vai citu dienas daļu — piemēram, rītu, pēcpusdienu vai vakaru. Kas jums būtu ērtāk?",
     },
     "ru": {
         "service_unavailable_voice": "Извините, сервис недоступен.",
@@ -291,6 +292,7 @@ I18N: Dict[str, Dict[str, str]] = {
         "soft_clarify_date": "Понял. Подскажите, на какой день вам нужна запись.",
         "soft_clarify_time": "Понял. Нужен более точный вариант времени или выбор из предложенных слотов.",
         "soft_clarify_confirm": "Правильно ли я понял, что вы хотите подтвердить предложенное время? Пожалуйста, ответьте да или нет.",
+        "time_selection_uncertain": "Понимаю. Можем посмотреть другой день или другую часть дня — например, утро, день или вечер. Что вам удобнее?",
     },
     "en": {
         "service_unavailable_voice": "Sorry, the service is unavailable.",
@@ -344,6 +346,7 @@ I18N: Dict[str, Dict[str, str]] = {
         "soft_clarify_date": "Got it. Please tell me which day you would like to book for.",
         "soft_clarify_time": "Understood. I still need a more specific time or one of the offered options.",
         "soft_clarify_confirm": "Just to confirm, would you like to confirm the offered time? Please answer yes or no.",
+        "time_selection_uncertain": "Understood. We can look at another day or another part of the day — for example morning, afternoon, or evening. What would suit you better?",
     },
 }
 
@@ -3459,6 +3462,12 @@ NO_WORDS = {
     "en": {"no", "nope"},
 }
 
+HESITATION_WORDS = {
+    "lv": {"nezinu", "grūti pateikt", "gruti pateikt", "varbūt vēlāk", "varbut velak", "neesmu drošs", "neesmu droš a", "neesmu droša", "nav svarīgi", "nav svarigi"},
+    "ru": {"не знаю", "не уверен", "не уверена", "может позже", "пока не знаю", "затрудняюсь"},
+    "en": {"not sure", "i am not sure", "i'm not sure", "maybe later", "dont know", "don't know", "not certain"},
+}
+
 def conversation_state(c: Dict[str, Any]) -> str:
     state = str(c.get("state") or STATE_NEW).strip().upper()
     if state not in {STATE_NEW, STATE_AWAITING_SERVICE, STATE_AWAITING_DATE, STATE_AWAITING_TIME, STATE_AWAITING_CONFIRM, STATE_POST_BOOKING_UPSELL, STATE_BOOKED, STATE_CANCELLED}:
@@ -3537,6 +3546,15 @@ def is_short_ack_text(text_: Optional[str], lang: str) -> bool:
     }
     allowed = set().union(*short_acks.values())
     allowed.update(short_acks.get(get_lang(lang), set()))
+    return low in allowed
+
+
+def is_hesitation_text(text_: Optional[str], lang: str) -> bool:
+    low = (text_ or "").strip().lower()
+    if not low:
+        return False
+    allowed = set().union(*HESITATION_WORDS.values())
+    allowed.update(HESITATION_WORDS.get(get_lang(lang), set()))
     return low in allowed
 
 
@@ -4758,6 +4776,15 @@ def handle_user_text(
                 "reply_voice": prompt_for_state(lang, c, pending, service_catalog),
                 "msg_out": prompt_for_state(lang, c, pending, service_catalog),
                 "lang": lang,
+            }
+        if is_hesitation_text(msg, lang):
+            db_save_conversation(tenant_id, user_key, c)
+            return {
+                "status": "need_more",
+                "reply_voice": t(lang, "time_selection_uncertain"),
+                "msg_out": t(lang, "time_selection_uncertain"),
+                "lang": lang,
+                "preserve_text": True,
             }
         c, pending = remember_booking_service(c, pending, service_item_current, lang)
 
