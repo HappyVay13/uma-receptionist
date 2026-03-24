@@ -350,7 +350,12 @@ I18N: Dict[str, Dict[str, str]] = {
 
 def t(lang: str, key: str, **kwargs: Any) -> str:
     lang = get_lang(lang)
-    template = I18N.get(lang, I18N["lv"]).get(key, I18N["lv"].get(key, key))
+    lang_map = I18N.get(lang) or I18N["lv"]
+    template = lang_map.get(key)
+    if template is None and lang != "en":
+        template = I18N.get("en", {}).get(key)
+    if template is None:
+        template = I18N["lv"].get(key, key)
     try:
         return template.format(**kwargs)
     except Exception:
@@ -4177,14 +4182,18 @@ def handle_user_text(
     tenant = get_tenant(tenant_id)
     allowed, _ = tenant_allowed(tenant)
 
-    detected_lang = get_lang(lang_hint or detect_language(msg))
+    explicit_lang_hint = (lang_hint or "").strip().lower()
+    lang_locked = explicit_lang_hint if explicit_lang_hint in ("lv", "ru", "en") else None
+    detected_lang = get_lang(lang_locked or detect_language(msg))
     user_key = norm_user_key(raw_phone)
     c = db_get_or_create_conversation(tenant_id, user_key, detected_lang)
 
-    if msg:
+    if lang_locked:
+        c["lang"] = lang_locked
+    elif msg:
         c["lang"] = resolve_reply_language(msg, c.get("lang") or detected_lang)
 
-    lang = get_lang(c.get("lang"))
+    lang = get_lang(c.get("lang") or detected_lang)
     if not tenant_runtime_ready(tenant):
         log_tenant_runtime_validation(tenant)
         return blocked_result_for_lang(lang)
