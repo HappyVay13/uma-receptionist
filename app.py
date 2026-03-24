@@ -239,6 +239,7 @@ I18N: Dict[str, Dict[str, str]] = {
         "soft_clarify_time": "Saprotu. Vēl vajag precīzāku laiku vai izvēli no piedāvātajiem variantiem.",
         "soft_clarify_confirm": "Vai pareizi sapratu, ka vēlaties apstiprināt piedāvāto laiku? Lūdzu, atbildiet ar jā vai nē.",
         "time_selection_uncertain": "Saprotu. Varam paskatīties citu dienu vai citu dienas daļu — piemēram, rītu, pēcpusdienu vai vakaru. Kas jums būtu ērtāk?",
+        "other_day_prompt": "Labi, paskatāmies citu dienu. Uz kuru dienu vēlaties pierakstīties?",
     },
     "ru": {
         "service_unavailable_voice": "Извините, сервис недоступен.",
@@ -293,6 +294,7 @@ I18N: Dict[str, Dict[str, str]] = {
         "soft_clarify_time": "Понял. Нужен более точный вариант времени или выбор из предложенных слотов.",
         "soft_clarify_confirm": "Правильно ли я понял, что вы хотите подтвердить предложенное время? Пожалуйста, ответьте да или нет.",
         "time_selection_uncertain": "Понимаю. Можем посмотреть другой день или другую часть дня — например, утро, день или вечер. Что вам удобнее?",
+        "other_day_prompt": "Хорошо, давайте посмотрим другой день. На какую дату вам удобно?",
     },
     "en": {
         "service_unavailable_voice": "Sorry, the service is unavailable.",
@@ -347,6 +349,7 @@ I18N: Dict[str, Dict[str, str]] = {
         "soft_clarify_time": "Understood. I still need a more specific time or one of the offered options.",
         "soft_clarify_confirm": "Just to confirm, would you like to confirm the offered time? Please answer yes or no.",
         "time_selection_uncertain": "Understood. We can look at another day or another part of the day — for example morning, afternoon, or evening. What would suit you better?",
+        "other_day_prompt": "Okay, let's look at another day. Which date would work for you?",
     },
 }
 
@@ -3549,13 +3552,36 @@ def is_short_ack_text(text_: Optional[str], lang: str) -> bool:
     return low in allowed
 
 
-def is_hesitation_text(text_: Optional[str], lang: str) -> bool:
+def _normalize_phrase_text(text_: Optional[str]) -> str:
     low = (text_ or "").strip().lower()
+    low = re.sub(r"[\,\.\!\?\;\:\-_/]+", " ", low)
+    low = re.sub(r"\s+", " ", low).strip()
+    return low
+
+
+def is_hesitation_text(text_: Optional[str], lang: str) -> bool:
+    low = _normalize_phrase_text(text_)
     if not low:
         return False
     allowed = set().union(*HESITATION_WORDS.values())
     allowed.update(HESITATION_WORDS.get(get_lang(lang), set()))
-    return low in allowed
+    if low in allowed:
+        return True
+    return any(phrase in low for phrase in allowed if phrase)
+
+
+def is_other_day_text(text_: Optional[str], lang: str) -> bool:
+    low = _normalize_phrase_text(text_)
+    if not low:
+        return False
+    phrases = {
+        "lv": {"citu dienu", "labak citu dienu", "labāk citu dienu", "cita diena", "ne citu dienu", "vēlos citu dienu"},
+        "ru": {"другой день", "на другой день", "давайте другой день", "лучше другой день", "другая дата"},
+        "en": {"other day", "another day", "different day", "better another day", "lets do another day", "let's do another day"},
+    }
+    allowed = set().union(*phrases.values())
+    allowed.update(phrases.get(get_lang(lang), set()))
+    return any(phrase in low for phrase in allowed if phrase)
 
 
 def soft_clarify_for_state(lang: str, c: Dict[str, Any], pending: Dict[str, Any]) -> str:
@@ -4768,6 +4794,23 @@ def handle_user_text(
                 "reply_voice": t(lang, "ask_booking_time_only"),
                 "msg_out": t(lang, "ask_booking_time_only"),
                 "lang": lang,
+            }
+        if is_other_day_text(msg, lang):
+            pending.pop("confirm_slot_iso", None)
+            pending.pop("candidate_datetime_iso", None)
+            pending.pop("awaiting_time_date_iso", None)
+            pending.pop("preferred_time_window", None)
+            clear_offered_slots(pending)
+            c["pending"] = pending
+            c["datetime_iso"] = None
+            c["state"] = STATE_AWAITING_DATE
+            db_save_conversation(tenant_id, user_key, c)
+            return {
+                "status": "need_more",
+                "reply_voice": t(lang, "other_day_prompt"),
+                "msg_out": t(lang, "other_day_prompt"),
+                "lang": lang,
+                "preserve_text": True,
             }
         if is_short_ack_text(msg, lang):
             db_save_conversation(tenant_id, user_key, c)
