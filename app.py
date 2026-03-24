@@ -5090,6 +5090,50 @@ def handle_user_text(
                 "msg_out": prompt_for_state(lang, c, c.get("pending") or {}, service_catalog),
                 "lang": lang,
             }
+        if is_other_day_text(msg, lang):
+            pending.pop("confirm_slot_iso", None)
+            pending.pop("pending_confirm_upsell", None)
+            pending.pop("confirm_upsell_done", None)
+            pending.pop("upsell_offer_active", None)
+            pending.pop("addon_service", None)
+            pending.pop("candidate_datetime_iso", None)
+            pending.pop("awaiting_time_date_iso", None)
+            pending["booking_intent"] = True
+            clear_offered_slots(pending)
+            c["pending"] = pending or {"booking_intent": True}
+            c["datetime_iso"] = None
+            c["time_text"] = None
+            c["state"] = STATE_AWAITING_DATE
+            db_save_conversation(tenant_id, user_key, c)
+            reply_text = t(lang, "other_day_prompt")
+            return {
+                "status": "need_more",
+                "reply_voice": reply_text,
+                "msg_out": reply_text,
+                "lang": lang,
+            }
+        if is_hesitation_text(msg, lang):
+            pending.pop("confirm_slot_iso", None)
+            pending.pop("pending_confirm_upsell", None)
+            pending.pop("confirm_upsell_done", None)
+            pending.pop("upsell_offer_active", None)
+            pending.pop("addon_service", None)
+            pending.pop("candidate_datetime_iso", None)
+            pending.pop("awaiting_time_date_iso", None)
+            pending["booking_intent"] = True
+            clear_offered_slots(pending)
+            c["pending"] = pending or {"booking_intent": True}
+            c["datetime_iso"] = None
+            c["time_text"] = None
+            c["state"] = STATE_AWAITING_DATE
+            db_save_conversation(tenant_id, user_key, c)
+            reply_text = t(lang, "time_selection_uncertain")
+            return {
+                "status": "need_more",
+                "reply_voice": reply_text,
+                "msg_out": reply_text,
+                "lang": lang,
+            }
         confirm_iso = str(pending.get("confirm_slot_iso") or c.get("datetime_iso") or "").strip()
         dt_confirm = parse_dt_any_tz(confirm_iso)
         if is_short_ack_text(msg, lang) and not is_yes_text(msg, lang):
