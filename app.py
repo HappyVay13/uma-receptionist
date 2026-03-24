@@ -3810,6 +3810,42 @@ def is_other_day_text(text_: Optional[str], lang: str) -> bool:
     return any(phrase in low for phrase in allowed if phrase)
 
 
+def strip_override_lead_in(text_: Optional[str]) -> str:
+    low = _normalize_phrase_text(text_)
+    if not low:
+        return ""
+    patterns = [
+        r"^(nē|ne|nee|нет|неа|no|nope)\s+",
+        r"^(labāk|labak|drīzāk|drizak|лучше|better|rather|instead)\s+",
+        r"^(nē|ne|nee|нет|неа|no|nope)\s+(labāk|labak|drīzāk|drizak|лучше|better|rather|instead)\s+",
+    ]
+    changed = True
+    while changed:
+        changed = False
+        for pat in patterns:
+            new_low = re.sub(pat, "", low, count=1, flags=re.IGNORECASE)
+            if new_low != low:
+                low = new_low.strip()
+                changed = True
+    return low.strip(" ,.-")
+
+
+def detect_service_override_item(text_: Optional[str], catalog: List[Dict[str, Any]], lang: str, service_aliases: Dict[str, str], current_service_key: Optional[str]) -> Optional[Dict[str, Any]]:
+    current_key = str(current_service_key or "").strip()
+    for candidate in [str(text_ or "").strip(), strip_override_lead_in(text_)]:
+        if not candidate:
+            continue
+        detected_key = canonical_service_key_from_text(candidate, service_aliases)
+        if detected_key and detected_key != current_key:
+            item = get_service_item_by_key(catalog, detected_key)
+            if item:
+                return item
+        detected_item = extract_service_from_text(candidate, catalog, lang)
+        if detected_item and str(detected_item.get("key") or "") != current_key:
+            return detected_item
+    return None
+
+
 def soft_clarify_for_state(lang: str, c: Dict[str, Any], pending: Dict[str, Any]) -> str:
     state = conversation_state(c)
     if state == STATE_AWAITING_SERVICE:
@@ -4803,6 +4839,11 @@ def handle_user_text(
     date_only_dt_for_msg = parse_date_only_text(msg)
     natural_dt_for_msg = parse_natural_datetime(msg)
     time_window_for_msg = parse_time_window(msg)
+    override_msg = strip_override_lead_in(msg) or msg
+    override_explicit_time_present = has_explicit_time(override_msg)
+    override_date_only_dt_for_msg = parse_date_only_text(override_msg) or date_only_dt_for_msg
+    override_natural_dt_for_msg = parse_natural_datetime(override_msg) or natural_dt_for_msg
+    override_time_window_for_msg = parse_time_window(override_msg) or time_window_for_msg
 
     # IMPORTANT:
     # Do not restart an already active booking flow just because the LLM
@@ -4875,14 +4916,13 @@ def handle_user_text(
 
     override_service_item = None
     if msg and c.get("service"):
-        detected_override_key = canonical_service_key_from_text(msg, service_aliases)
-        if detected_override_key and detected_override_key != str(c.get("service") or pending.get("service") or "").strip():
-            override_service_item = get_service_item_by_key(service_catalog, detected_override_key)
-        elif not detected_override_key:
-            detected_service_item = extract_service_from_text(msg, service_catalog, lang)
-            current_service_item = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
-            if detected_service_item and current_service_item and str(detected_service_item.get("key") or "") != str(current_service_item.get("key") or ""):
-                override_service_item = detected_service_item
+        override_service_item = detect_service_override_item(
+            text_=msg,
+            catalog=service_catalog,
+            lang=lang,
+            service_aliases=service_aliases,
+            current_service_key=(c.get("service") or pending.get("service")),
+        )
     if override_service_item and conversation_state(c) in ACTIVE_BOOKING_STATES:
         return apply_inflow_service_override(tenant_id, user_key, lang, c, pending, settings, service_catalog, override_service_item)
 
@@ -5053,9 +5093,9 @@ def handle_user_text(
 
     if c["state"] == STATE_AWAITING_TIME:
         service_item_current = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
-        if msg and date_only_dt_for_msg:
-            return offer_slots_for_date(tenant_id, user_key, lang, c, pending, settings, service_catalog, date_only_dt_for_msg)
-        if is_other_day_text(msg, lang):
+        if msg and override_date_only_dt_for_msg:
+            return offer_slots_for_date(tenant_id, user_key, lang, c, pending, settings, service_catalog, override_date_only_dt_for_msg)
+        if is_other_day_text(override_msg, lang):
             pending.pop("confirm_slot_iso", None)
             pending.pop("candidate_datetime_iso", None)
             pending.pop("awaiting_time_date_iso", None)
@@ -5080,7 +5120,7 @@ def handle_user_text(
                 "msg_out": prompt_for_state(lang, c, pending, service_catalog),
                 "lang": lang,
             }
-        if is_hesitation_text(msg, lang):
+        if is_hesitation_text(override_msg, lang):
             db_save_conversation(tenant_id, user_key, c)
             return {
                 "status": "need_more",
@@ -5092,10 +5132,10 @@ def handle_user_text(
         c, pending = remember_booking_service(c, pending, service_item_current, lang)
 
         if pending.get("awaiting_time_date_iso"):
-            if date_only_dt_for_msg:
-                pending["awaiting_time_date_iso"] = date_only_dt_for_msg.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+            if override_date_only_dt_for_msg:
+                pending["awaiting_time_date_iso"] = override_date_only_dt_for_msg.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
             base_day = parse_dt_any_tz(str(pending.get("awaiting_time_date_iso") or "").strip())
-            time_window = parse_time_window(msg) or pending_time_window_tuple(pending)
+            time_window = override_time_window_for_msg or pending_time_window_tuple(pending)
             if time_window and base_day:
                 pending["preferred_time_window"] = [time_window[0], time_window[1]]
                 slots = find_first_n_slots_for_day_window(
@@ -5334,18 +5374,18 @@ def handle_user_text(
 
     if msg and conversation_state(c) == STATE_AWAITING_CONFIRM:
         override_dt = None
-        if date_only_dt_for_msg and not explicit_time_present:
+        if override_date_only_dt_for_msg and not override_explicit_time_present:
             pending.pop("pending_confirm_upsell", None)
             pending.pop("confirm_upsell_done", None)
             pending.pop("upsell_offer_active", None)
             pending.pop("addon_service", None)
-            return offer_slots_for_date(tenant_id, user_key, lang, c, pending, settings, service_catalog, date_only_dt_for_msg)
-        if explicit_time_present:
-            base_for_override = date_only_dt_for_msg or parse_dt_any_tz(str(pending.get("confirm_slot_iso") or c.get("datetime_iso") or pending.get("awaiting_time_date_iso") or "").strip())
+            return offer_slots_for_date(tenant_id, user_key, lang, c, pending, settings, service_catalog, override_date_only_dt_for_msg)
+        if override_explicit_time_present:
+            base_for_override = override_date_only_dt_for_msg or parse_dt_any_tz(str(pending.get("confirm_slot_iso") or c.get("datetime_iso") or pending.get("awaiting_time_date_iso") or "").strip())
             if base_for_override:
-                if date_only_dt_for_msg:
-                    base_for_override = date_only_dt_for_msg
-                override_dt = combine_date_with_explicit_time(base_for_override.isoformat(), msg)
+                if override_date_only_dt_for_msg:
+                    base_for_override = override_date_only_dt_for_msg
+                override_dt = combine_date_with_explicit_time(base_for_override.isoformat(), override_msg)
         if override_dt:
             pending.pop("confirm_slot_iso", None)
             pending.pop("pending_confirm_upsell", None)
