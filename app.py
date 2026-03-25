@@ -890,6 +890,13 @@ def get_tenant_or_404(tenant_id: str) -> Dict[str, Any]:
     return tenant
 
 
+def load_runtime_tenant(tenant_id: str) -> Dict[str, Any]:
+    tenant = get_existing_tenant(tenant_id)
+    if tenant.get("_id"):
+        return normalize_tenant_saas_fields(tenant)
+    return {}
+
+
 
 # -------------------------
 # GOOGLE OAUTH HELPERS (Phase 3 Foundation)
@@ -1962,7 +1969,7 @@ def handle_user_text_with_logging(
     except Exception:
         conv = {}
     try:
-        tenant = get_tenant(tenant_id)
+        tenant = load_runtime_tenant(tenant_id)
         result = humanize_result(result, conv, tenant)
     except Exception as e:
         log.error("humanize_result_failed tenant_id=%s err=%s", tenant_id, e)
@@ -1976,7 +1983,7 @@ def handle_user_text_with_logging(
         conv=conv,
     )
     try:
-        tenant = tenant or get_tenant(tenant_id)
+        tenant = tenant or load_runtime_tenant(tenant_id)
         send_booking_confirmation_if_needed(tenant, raw_phone, channel, result)
     except Exception as e:
         log.error("booking_confirmation_failed tenant_id=%s channel=%s err=%s", tenant_id, channel, e)
@@ -3848,6 +3855,20 @@ def detect_time_shift_direction(text_: Optional[str], lang: str) -> Optional[str
     return None
 
 
+def is_global_reset_text(text_: Optional[str], lang: str) -> bool:
+    low = _normalize_phrase_text(text_)
+    if not low:
+        return False
+    phrases = {
+        "lv": {"sāksim no jauna", "saksim no jauna", "no jauna", "restartēt", "restartet", "sākt no jauna", "sakt no jauna"},
+        "ru": {"заново", "начать заново", "давай заново", "сначала", "начнем заново", "начнём заново", "сброс"},
+        "en": {"start over", "start again", "reset", "from scratch", "restart"},
+    }
+    allowed = set().union(*phrases.values())
+    allowed.update(phrases.get(get_lang(lang), set()))
+    return any(phrase in low for phrase in allowed if phrase)
+
+
 def smart_service_clarify_prompt(lang: str, service_catalog: List[Dict[str, Any]]) -> str:
     options = barber_service_options_text(lang, service_catalog, max_items=2)
     if lang == "ru":
@@ -4777,6 +4798,24 @@ def handle_user_text(
     if not allowed:
         return blocked_result_for_lang(lang)
 
+    if msg and is_global_reset_text(msg, lang):
+        c["lang"] = lang
+        c["state"] = STATE_NEW
+        c["service"] = None
+        c["name"] = None
+        c["datetime_iso"] = None
+        c["time_text"] = None
+        c["pending"] = None
+        db_save_conversation(tenant_id, user_key, c)
+        reply_text = t(lang, "greeting_only_reply")
+        return {
+            "status": "greeting",
+            "reply_voice": reply_text,
+            "msg_out": reply_text,
+            "lang": lang,
+            "preserve_text": True,
+        }
+
     c["state"] = conversation_state(c)
     c = normalize_booking_state(c)
     pending = c.get("pending") or {}
@@ -4961,6 +5000,9 @@ def handle_user_text(
     explicit_time_present = has_explicit_time(msg)
     date_only_dt_for_msg = parse_date_only_text(msg)
     natural_dt_for_msg = parse_natural_datetime(msg)
+    strict_datetime_for_msg = natural_dt_for_msg
+    if not strict_datetime_for_msg and date_only_dt_for_msg and explicit_time_present:
+        strict_datetime_for_msg = combine_date_with_explicit_time(date_only_dt_for_msg.isoformat(), msg)
     time_window_for_msg = parse_time_window(msg)
 
     # IMPORTANT:
@@ -5023,9 +5065,9 @@ def handle_user_text(
         pending["booking_intent"] = True
         if time_window_for_msg:
             pending["preferred_time_window"] = [time_window_for_msg[0], time_window_for_msg[1]]
-        if natural_dt_for_msg and explicit_time_present:
-            pending["candidate_datetime_iso"] = natural_dt_for_msg.isoformat()
-            pending["awaiting_time_date_iso"] = natural_dt_for_msg.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+        if strict_datetime_for_msg and explicit_time_present:
+            pending["candidate_datetime_iso"] = strict_datetime_for_msg.isoformat()
+            pending["awaiting_time_date_iso"] = strict_datetime_for_msg.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
         elif natural_dt_for_msg:
             pending["awaiting_time_date_iso"] = natural_dt_for_msg.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
         elif date_only_dt_for_msg:
@@ -5076,7 +5118,7 @@ def handle_user_text(
         if service_item and not c.get("service"):
             c, pending = remember_booking_service(c, pending, service_item, lang)
             clear_offered_slots(pending)
-            candidate_dt = parse_dt_any_tz(str(pending.get("candidate_datetime_iso") or "").strip())
+            candidate_dt = parse_dt_any_tz(str(pending.get("candidate_datetime_iso") or "").strip()) or strict_datetime_for_msg
             if candidate_dt:
                 pending.pop("candidate_datetime_iso", None)
                 c["pending"] = pending or None
@@ -5159,12 +5201,13 @@ def handle_user_text(
 
     if c["state"] == STATE_AWAITING_SERVICE and not c.get("service"):
         db_save_conversation(tenant_id, user_key, c)
-        reply_text = barber_service_prompt(lang, service_catalog)
+        reply_text = smart_service_clarify_prompt(lang, service_catalog) if (is_hesitation_text(msg, lang) or is_short_ack_text(msg, lang)) else barber_service_prompt(lang, service_catalog)
         return {
             "status": "need_more",
             "reply_voice": reply_text,
             "msg_out": reply_text,
             "lang": lang,
+            "preserve_text": True,
         }
 
     if c.get("service") and c["state"] == STATE_NEW and not c.get("datetime_iso"):
@@ -5174,13 +5217,15 @@ def handle_user_text(
     date_only_dt = date_only_dt_for_msg
 
     if c["state"] == STATE_AWAITING_DATE:
-        if is_short_ack_text(msg, lang):
+        if is_short_ack_text(msg, lang) or is_hesitation_text(msg, lang):
             db_save_conversation(tenant_id, user_key, c)
+            reply_text = smart_date_clarify_prompt(lang)
             return {
                 "status": "need_more",
-                "reply_voice": t(lang, "ask_booking_date"),
-                "msg_out": t(lang, "ask_booking_date"),
+                "reply_voice": reply_text,
+                "msg_out": reply_text,
                 "lang": lang,
+                "preserve_text": True,
             }
         dt_start = None
         natural_dt = parse_natural_datetime(msg)
@@ -5234,11 +5279,11 @@ def handle_user_text(
         shift_direction = detect_time_shift_direction(msg, lang)
         if shift_direction and pending.get("awaiting_time_date_iso"):
             base_day = parse_dt_any_tz(str(pending.get("awaiting_time_date_iso") or "").strip())
-            anchor_dt = None
+            anchor_dt = parse_dt_any_tz(str(pending.get("candidate_datetime_iso") or c.get("datetime_iso") or "").strip())
             offered = get_offered_slots(pending)
-            if shift_direction == "earlier" and offered:
+            if not anchor_dt and shift_direction == "earlier" and offered:
                 anchor_dt = parse_dt_any_tz(offered[0])
-            elif shift_direction == "later" and offered:
+            elif not anchor_dt and shift_direction == "later" and offered:
                 anchor_dt = parse_dt_any_tz(offered[-1])
             if not anchor_dt and base_day:
                 win = pending_time_window_tuple(pending)
@@ -8096,7 +8141,9 @@ async def dev_chat(req: DevChatRequest):
         conv = db_get_or_create_conversation(req.tenant_id, raw_user, req.lang)
         orch_debug = None
         try:
-            tenant = get_tenant(req.tenant_id)
+            tenant = load_runtime_tenant(req.tenant_id)
+            if not tenant.get("_id"):
+                raise HTTPException(status_code=404, detail="Tenant not found")
             lang = get_lang(req.lang)
             settings = tenant_settings(tenant, lang)
             service_catalog = tenant_service_catalog(tenant)
@@ -8167,7 +8214,9 @@ class DevFocusTestRequest(BaseModel):
 
 @app.post("/dev_understand")
 async def dev_understand(req: DevChatRequest):
-    tenant = get_tenant(req.tenant_id)
+    tenant = load_runtime_tenant(req.tenant_id)
+    if not tenant.get("_id"):
+        raise HTTPException(status_code=404, detail="Tenant not found")
     lang = get_lang(req.lang)
     settings = tenant_settings(tenant, lang)
     service_catalog = tenant_service_catalog(tenant)
@@ -8190,7 +8239,9 @@ async def dev_understand(req: DevChatRequest):
 
 @app.post("/dev_focus_test")
 async def dev_focus_test(req: DevFocusTestRequest):
-    tenant = get_tenant(req.tenant_id)
+    tenant = load_runtime_tenant(req.tenant_id)
+    if not tenant.get("_id"):
+        raise HTTPException(status_code=404, detail="Tenant not found")
     lang = get_lang(req.lang)
     cases = req.cases or [
         "Labdien, gribu pierakstīties",
