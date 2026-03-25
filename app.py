@@ -4894,6 +4894,42 @@ def handle_user_text(
             pending["awaiting_time_date_iso"] = date_only_dt_for_msg.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
         c["pending"] = pending
 
+    def strict_datetime_merge(base_iso: Optional[str] = None) -> Optional[datetime]:
+        base_iso = str(base_iso or "").strip() or None
+
+        direct_dt = parse_natural_datetime(msg, base_iso)
+        if direct_dt:
+            return direct_dt
+
+        if explicit_time_present:
+            base_for_time = date_only_dt_for_msg or parse_dt_any_tz(base_iso or "")
+            if base_for_time:
+                merged_dt = combine_date_with_explicit_time(base_for_time.isoformat(), msg)
+                if merged_dt:
+                    return merged_dt
+
+        llm_dt = parse_dt_from_iso_or_fallback(
+            (llm_hint or {}).get("datetime_iso"),
+            (llm_hint or {}).get("time_text"),
+            msg,
+        )
+        if llm_dt:
+            return llm_dt
+
+        data_dt = get_ai_data()
+        return parse_dt_from_iso_or_fallback(data_dt.get("datetime_iso"), data_dt.get("time_text"), msg)
+
+    if fresh_booking_start and c.get("service") and msg:
+        strict_dt = strict_datetime_merge(str(pending.get("awaiting_time_date_iso") or ""))
+        if strict_dt:
+            pending.pop("candidate_datetime_iso", None)
+            pending.pop("confirm_slot_iso", None)
+            clear_offered_slots(pending)
+            c["pending"] = pending or None
+            result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, strict_dt)
+            db_save_conversation(tenant_id, user_key, c)
+            return result
+
     override_service_item = None
     if msg and c.get("service"):
         detected_override_key = canonical_service_key_from_text(msg, service_aliases)
