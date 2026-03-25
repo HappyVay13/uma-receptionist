@@ -890,6 +890,16 @@ def get_tenant_or_404(tenant_id: str) -> Dict[str, Any]:
     return tenant
 
 
+def load_runtime_tenant(tenant_id: str, allow_default: bool = False) -> Dict[str, Any]:
+    resolved_tenant_id = (tenant_id or "").strip()
+    if not resolved_tenant_id and allow_default:
+        resolved_tenant_id = TENANT_ID_DEFAULT
+    tenant = get_existing_tenant(resolved_tenant_id)
+    if tenant.get("_id"):
+        return tenant
+    raise HTTPException(status_code=404, detail=f"Tenant not found: {resolved_tenant_id or tenant_id}")
+
+
 
 # -------------------------
 # GOOGLE OAUTH HELPERS (Phase 3 Foundation)
@@ -1962,7 +1972,7 @@ def handle_user_text_with_logging(
     except Exception:
         conv = {}
     try:
-        tenant = get_tenant(tenant_id)
+        tenant = load_runtime_tenant(tenant_id, allow_default=True)
         result = humanize_result(result, conv, tenant)
     except Exception as e:
         log.error("humanize_result_failed tenant_id=%s err=%s", tenant_id, e)
@@ -1976,7 +1986,7 @@ def handle_user_text_with_logging(
         conv=conv,
     )
     try:
-        tenant = tenant or get_tenant(tenant_id)
+        tenant = tenant or load_runtime_tenant(tenant_id, allow_default=True)
         send_booking_confirmation_if_needed(tenant, raw_phone, channel, result)
     except Exception as e:
         log.error("booking_confirmation_failed tenant_id=%s channel=%s err=%s", tenant_id, channel, e)
@@ -4733,7 +4743,7 @@ def handle_user_text(
     tenant_id: str, raw_phone: str, text_in: str, channel: str, lang_hint: str
 ) -> Dict[str, Any]:
     msg = (text_in or "").strip()
-    tenant = get_tenant(tenant_id)
+    tenant = load_runtime_tenant(tenant_id, allow_default=True)
     allowed, _ = tenant_allowed(tenant)
 
     explicit_lang_hint = (lang_hint or "").strip().lower()
@@ -8083,7 +8093,7 @@ async def dev_chat(req: DevChatRequest):
         conv = db_get_or_create_conversation(req.tenant_id, raw_user, req.lang)
         orch_debug = None
         try:
-            tenant = get_tenant(req.tenant_id)
+            tenant = load_runtime_tenant(req.tenant_id, allow_default=True)
             lang = get_lang(req.lang)
             settings = tenant_settings(tenant, lang)
             service_catalog = tenant_service_catalog(tenant)
@@ -8154,7 +8164,7 @@ class DevFocusTestRequest(BaseModel):
 
 @app.post("/dev_understand")
 async def dev_understand(req: DevChatRequest):
-    tenant = get_tenant(req.tenant_id)
+    tenant = load_runtime_tenant(req.tenant_id, allow_default=True)
     lang = get_lang(req.lang)
     settings = tenant_settings(tenant, lang)
     service_catalog = tenant_service_catalog(tenant)
@@ -8177,7 +8187,7 @@ async def dev_understand(req: DevChatRequest):
 
 @app.post("/dev_focus_test")
 async def dev_focus_test(req: DevFocusTestRequest):
-    tenant = get_tenant(req.tenant_id)
+    tenant = load_runtime_tenant(req.tenant_id, allow_default=True)
     lang = get_lang(req.lang)
     cases = req.cases or [
         "Labdien, gribu pierakstīties",
