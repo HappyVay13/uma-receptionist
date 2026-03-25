@@ -3697,6 +3697,32 @@ HESITATION_WORDS = {
     "en": {"not sure", "i am not sure", "i'm not sure", "maybe later", "dont know", "don't know", "not certain"},
 }
 
+RESET_WORDS = {
+    "lv": {"sāksim no jauna", "sak-sim no jauna", "saksim no jauna", "no jauna", "sākt no jauna", "sakt no jauna", "restartēt", "restartet", "atiestatīt", "atiestatit"},
+    "ru": {"заново", "начать заново", "сначала", "давай заново", "перезапусти", "сброс"},
+    "en": {"start over", "reset", "restart", "from scratch", "let's start over", "lets start over"},
+}
+
+def is_global_reset_text(text_: Optional[str], lang: str = "lv") -> bool:
+    low = _normalize_phrase_text(text_)
+    if not low:
+        return False
+    allowed = set().union(*RESET_WORDS.values())
+    allowed.update(RESET_WORDS.get(get_lang(lang), set()))
+    if low in allowed:
+        return True
+    return any(phrase in low for phrase in allowed if phrase)
+
+def clear_booking_loop_meta(pending: Dict[str, Any]) -> Dict[str, Any]:
+    for key in ("time_loop_count", "time_loop_last_reason"):
+        pending.pop(key, None)
+    return pending
+
+def bump_time_loop_meta(pending: Dict[str, Any], reason: str) -> int:
+    pending["time_loop_count"] = int(pending.get("time_loop_count") or 0) + 1
+    pending["time_loop_last_reason"] = str(reason or "").strip() or None
+    return int(pending.get("time_loop_count") or 0)
+
 def conversation_state(c: Dict[str, Any]) -> str:
     state = str(c.get("state") or STATE_NEW).strip().upper()
     if state not in {STATE_NEW, STATE_AWAITING_SERVICE, STATE_AWAITING_DATE, STATE_AWAITING_TIME, STATE_AWAITING_CONFIRM, STATE_POST_BOOKING_UPSELL, STATE_BOOKED, STATE_CANCELLED}:
@@ -4216,6 +4242,7 @@ def offer_slots_for_date(
         return {"status": "need_more", "reply_voice": prompt, "msg_out": prompt, "lang": lang}
 
     pending["booking_intent"] = True
+    clear_booking_loop_meta(pending)
     pending["awaiting_time_date_iso"] = base_date.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
     pending.pop("confirm_slot_iso", None)
     pending.pop("candidate_datetime_iso", None)
@@ -4623,6 +4650,20 @@ def handle_user_text(
     pending = c.get("pending") or {}
     t_low = msg.lower()
 
+    if msg and is_global_reset_text(msg, lang):
+        c["service"] = None
+        c["datetime_iso"] = None
+        c["time_text"] = None
+        c["pending"] = None
+        c["state"] = STATE_NEW
+        db_save_conversation(tenant_id, user_key, c)
+        return {
+            "status": "greeting",
+            "reply_voice": t(lang, "greeting_only_reply"),
+            "msg_out": t(lang, "greeting_only_reply"),
+            "lang": lang,
+        }
+
     ai_data: Optional[Dict[str, Any]] = None
     llm_data: Optional[Dict[str, Any]] = None
 
@@ -4675,6 +4716,25 @@ def handle_user_text(
     )
     orchestration = orchestrate_turn(c, msg, lang, understanding)
     active_flow = is_active_booking_flow(c)
+
+    entities = understanding.get("entities") or {}
+    understood_service_key = str(entities.get("service_key") or "").strip()
+    understood_name = normalize_name(entities.get("name"))
+    understood_datetime_iso = str(entities.get("datetime_iso") or "").strip()
+    understood_time_text = sanitize_conversation_time_text(entities.get("time_text"))
+
+    if understood_name and not c.get("name"):
+        c["name"] = understood_name
+    if understood_time_text:
+        c["time_text"] = understood_time_text
+
+    if understood_datetime_iso:
+        understood_dt = parse_dt_any_tz(understood_datetime_iso)
+        if understood_dt:
+            pending["booking_intent"] = True
+            pending["candidate_datetime_iso"] = understood_dt.isoformat()
+            pending["awaiting_time_date_iso"] = understood_dt.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+            c["pending"] = pending
 
     explicit_cancel_request = orchestration.get("action") == ORCH_ACTION_CANCEL
     explicit_reschedule_request = orchestration.get("action") == ORCH_ACTION_RESCHEDULE
@@ -4832,12 +4892,13 @@ def handle_user_text(
     pending = c.get("pending") or {}
 
     if fresh_booking_start and msg:
-        direct_service_key_open = canonical_service_key_from_text(msg, service_aliases)
+        direct_service_key_open = understood_service_key or canonical_service_key_from_text(msg, service_aliases)
         service_item_open = get_service_item_by_key(service_catalog, direct_service_key_open) if direct_service_key_open else None
         if not service_item_open:
             service_item_open = extract_service_from_text(msg, service_catalog, lang)
         if service_item_open:
             c, pending = remember_booking_service(c, pending, service_item_open, lang)
+            clear_booking_loop_meta(pending)
         else:
             c["service"] = None
             pending.pop("service", None)
@@ -4845,6 +4906,7 @@ def handle_user_text(
             pending.pop("candidate_datetime_iso", None)
             pending.pop("awaiting_time_date_iso", None)
             pending.pop("preferred_time_window", None)
+            clear_booking_loop_meta(pending)
             clear_offered_slots(pending)
             c["pending"] = pending or None
             c["datetime_iso"] = None
@@ -4860,6 +4922,21 @@ def handle_user_text(
                 "preserve_text": True,
             }
 
+    pending = c.get("pending") or {}
+    if fresh_booking_start and c.get("service"):
+        candidate_dt_open = parse_dt_any_tz(str(pending.get("candidate_datetime_iso") or "").strip())
+        base_day_open = parse_dt_any_tz(str(pending.get("awaiting_time_date_iso") or "").strip())
+        if candidate_dt_open:
+            clear_booking_loop_meta(pending)
+            c["pending"] = pending or None
+            result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, candidate_dt_open)
+            db_save_conversation(tenant_id, user_key, c)
+            return result
+        if base_day_open:
+            clear_booking_loop_meta(pending)
+            return offer_slots_for_date(tenant_id, user_key, lang, c, pending, settings, service_catalog, base_day_open)
+        c["state"] = STATE_AWAITING_DATE
+
     if msg and (natural_dt_for_msg or date_only_dt_for_msg or time_window_for_msg or explicit_time_present):
         pending["booking_intent"] = True
         if time_window_for_msg:
@@ -4874,16 +4951,18 @@ def handle_user_text(
         c["pending"] = pending
 
     override_service_item = None
-    if msg and c.get("service"):
-        detected_override_key = canonical_service_key_from_text(msg, service_aliases)
-        if detected_override_key and detected_override_key != str(c.get("service") or pending.get("service") or "").strip():
+    if msg:
+        current_service_key = str(c.get("service") or pending.get("service") or "").strip()
+        detected_override_key = understood_service_key or canonical_service_key_from_text(msg, service_aliases)
+        if detected_override_key and detected_override_key != current_service_key:
             override_service_item = get_service_item_by_key(service_catalog, detected_override_key)
         elif not detected_override_key:
             detected_service_item = extract_service_from_text(msg, service_catalog, lang)
-            current_service_item = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
-            if detected_service_item and current_service_item and str(detected_service_item.get("key") or "") != str(current_service_item.get("key") or ""):
+            current_service_item = get_service_item_by_key(service_catalog, current_service_key)
+            if detected_service_item and ((not current_service_item) or str(detected_service_item.get("key") or "") != str(current_service_item.get("key") or "")):
                 override_service_item = detected_service_item
     if override_service_item and conversation_state(c) in ACTIVE_BOOKING_STATES:
+        clear_booking_loop_meta(pending)
         return apply_inflow_service_override(tenant_id, user_key, lang, c, pending, settings, service_catalog, override_service_item)
 
     selected_iso = extract_slot_choice(msg, pending)
@@ -4916,6 +4995,7 @@ def handle_user_text(
 
         if service_item and not c.get("service"):
             c, pending = remember_booking_service(c, pending, service_item, lang)
+            clear_booking_loop_meta(pending)
             clear_offered_slots(pending)
             candidate_dt = parse_dt_any_tz(str(pending.get("candidate_datetime_iso") or "").strip())
             if candidate_dt:
@@ -5054,8 +5134,10 @@ def handle_user_text(
     if c["state"] == STATE_AWAITING_TIME:
         service_item_current = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
         if msg and date_only_dt_for_msg:
+            clear_booking_loop_meta(pending)
             return offer_slots_for_date(tenant_id, user_key, lang, c, pending, settings, service_catalog, date_only_dt_for_msg)
         if is_other_day_text(msg, lang):
+            clear_booking_loop_meta(pending)
             pending.pop("confirm_slot_iso", None)
             pending.pop("candidate_datetime_iso", None)
             pending.pop("awaiting_time_date_iso", None)
@@ -5073,7 +5155,17 @@ def handle_user_text(
                 "preserve_text": True,
             }
         if is_short_ack_text(msg, lang):
+            loop_count = bump_time_loop_meta(pending, "short_ack")
+            c["pending"] = pending
             db_save_conversation(tenant_id, user_key, c)
+            if loop_count >= 2:
+                return {
+                    "status": "need_more",
+                    "reply_voice": t(lang, "time_selection_uncertain"),
+                    "msg_out": t(lang, "time_selection_uncertain"),
+                    "lang": lang,
+                    "preserve_text": True,
+                }
             return {
                 "status": "need_more",
                 "reply_voice": prompt_for_state(lang, c, pending, service_catalog),
@@ -5081,7 +5173,26 @@ def handle_user_text(
                 "lang": lang,
             }
         if is_hesitation_text(msg, lang):
+            loop_count = bump_time_loop_meta(pending, "hesitation")
+            c["pending"] = pending
             db_save_conversation(tenant_id, user_key, c)
+            if loop_count >= 2:
+                c["state"] = STATE_AWAITING_DATE
+                pending.pop("confirm_slot_iso", None)
+                pending.pop("candidate_datetime_iso", None)
+                pending.pop("awaiting_time_date_iso", None)
+                pending.pop("preferred_time_window", None)
+                clear_offered_slots(pending)
+                clear_booking_loop_meta(pending)
+                c["pending"] = pending
+                db_save_conversation(tenant_id, user_key, c)
+                return {
+                    "status": "need_more",
+                    "reply_voice": t(lang, "other_day_prompt"),
+                    "msg_out": t(lang, "other_day_prompt"),
+                    "lang": lang,
+                    "preserve_text": True,
+                }
             return {
                 "status": "need_more",
                 "reply_voice": t(lang, "time_selection_uncertain"),
@@ -5153,6 +5264,7 @@ def handle_user_text(
 
         selected_iso = extract_slot_choice(msg, pending)
         if selected_iso:
+            clear_booking_loop_meta(pending)
             dt_sel = parse_dt_any_tz(selected_iso)
             if dt_sel:
                 result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, dt_sel)
@@ -5224,6 +5336,7 @@ def handle_user_text(
                     }
 
         if dt_start:
+            clear_booking_loop_meta(pending)
             clear_offered_slots(pending)
             pending.pop("awaiting_time_date_iso", None)
             c["pending"] = pending or None
@@ -5232,7 +5345,17 @@ def handle_user_text(
             return result
 
         if get_offered_slots(pending):
+            loop_count = bump_time_loop_meta(pending, "invalid_time_choice")
+            c["pending"] = pending
             db_save_conversation(tenant_id, user_key, c)
+            if loop_count >= 2:
+                return {
+                    "status": "need_more",
+                    "reply_voice": t(lang, "time_selection_uncertain"),
+                    "msg_out": t(lang, "time_selection_uncertain"),
+                    "lang": lang,
+                    "preserve_text": True,
+                }
             return {
                 "status": "need_more",
                 "reply_voice": t(lang, "invalid_time_choice") + " " + prompt_for_state(lang, c, pending, service_catalog),
@@ -5360,6 +5483,7 @@ def handle_user_text(
             db_save_conversation(tenant_id, user_key, c)
             return result
         if is_other_day_text(msg, lang):
+            clear_booking_loop_meta(pending)
             pending.pop("confirm_slot_iso", None)
             pending.pop("pending_confirm_upsell", None)
             pending.pop("confirm_upsell_done", None)
