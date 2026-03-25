@@ -2488,12 +2488,12 @@ def ensure_default_barbershop_aliases(catalog: List[Dict[str, Any]], alias_map: 
     combo_key = combo_keys[0] if combo_keys else None
 
     add_many(haircut_key, [
-        "matu griezums", "griezums", "apgriezt matus", "apgriezt", "frizūra", "frizura",
-        "vīriešu frizūra", "viriesu frizura", "vīriešu matu griezums", "viriesu matu griezums",
-        "подстричься", "стрижка", "мужская стрижка", "haircut", "mens haircut", "cut hair", "trim hair"
+        "matu griezums", "griezumu", "griezums", "apgriezt matus", "apgriezt", "frizūra", "frizuru", "frizura", "frizūru",
+        "vīriešu frizūra", "vīriešu frizūru", "viriesu frizura", "viriesu frizuru", "vīriešu matu griezums", "vīriešu matu griezumu", "viriesu matu griezums", "viriesu matu griezumu",
+        "подстричься", "постричься", "стрижка", "стрижку", "мужская стрижка", "мужскую стрижку", "мужскую", "haircut", "men's haircut", "mens haircut", "cut hair", "trim hair"
     ])
     add_many(beard_key, [
-        "bārda", "barda", "bārdas korekcija", "bārdas trim", "beard trim", "beard", "борода", "подровнять бороду"
+        "bārda", "bardu", "barda", "bārdas korekcija", "bārdas korekciju", "bārdas trim", "beard trim", "beard", "борода", "бороду", "подровнять бороду", "оформление бороды"
     ])
     add_many(combo_key, [
         "combo", "kombo", "комбо", "matu griezums un bārda", "frizūra un bārda", "haircut and beard", "стрижка и борода"
@@ -4846,6 +4846,17 @@ def handle_user_text(
         service_item_open = get_service_item_by_key(service_catalog, direct_service_key_open) if direct_service_key_open else None
         if not service_item_open:
             service_item_open = extract_service_from_text(msg, service_catalog, lang)
+        if not service_item_open:
+            llm_service_key_open = str((llm_hint or {}).get("service") or "").strip()
+            if llm_service_key_open:
+                service_item_open = get_service_item_by_key(service_catalog, llm_service_key_open)
+        if not service_item_open and msg:
+            data_open = get_ai_data()
+            extracted_service_key_open = apply_service_aliases(data_open.get("service"), service_aliases) or canonical_service_key_from_text(data_open.get("service"), service_aliases)
+            if extracted_service_key_open:
+                service_item_open = get_service_item_by_key(service_catalog, extracted_service_key_open)
+            if not service_item_open:
+                service_item_open = extract_service_from_text(data_open.get("service"), service_catalog, lang)
         if service_item_open:
             c, pending = remember_booking_service(c, pending, service_item_open, lang)
         else:
