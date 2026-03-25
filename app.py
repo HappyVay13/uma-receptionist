@@ -2816,6 +2816,232 @@ def llm_message_understanding(
     return understood
 
 
+
+ORCH_ACTION_CONTINUE = "continue_legacy"
+ORCH_ACTION_FAQ = "faq"
+ORCH_ACTION_GREET = "greet"
+ORCH_ACTION_IDENTITY = "identity"
+ORCH_ACTION_HOURS = "hours"
+ORCH_ACTION_START_BOOKING = "start_booking"
+ORCH_ACTION_CANCEL = "cancel"
+ORCH_ACTION_RESCHEDULE = "reschedule"
+ORCH_ACTION_ASK_DATE = "ask_date"
+ORCH_ACTION_CLARIFY_TIME = "clarify_time"
+ORCH_ACTION_CLARIFY_CONFIRM = "clarify_confirm"
+ORCH_ACTION_CHOOSE_SLOT = "choose_slot"
+ORCH_ACTION_CONFIRM_YES = "confirm_yes"
+ORCH_ACTION_CONFIRM_NO = "confirm_no"
+
+ORCHESTRATION_TOOLS: Dict[str, Dict[str, Any]] = {
+    "check_availability": {"kind": "calendar", "description": "Find available slots in the tenant calendar."},
+    "create_booking": {"kind": "calendar", "description": "Create a booking event in the tenant calendar."},
+    "cancel_booking": {"kind": "calendar", "description": "Cancel an existing booking."},
+    "reschedule_booking": {"kind": "calendar", "description": "Move an existing booking to a new time."},
+    "get_business_info": {"kind": "faq", "description": "Return structured business information such as address, price, duration, or services."},
+}
+
+
+def orchestration_tool_registry() -> Dict[str, Dict[str, Any]]:
+    return dict(ORCHESTRATION_TOOLS)
+
+
+def build_understanding_result(
+    msg: str,
+    lang: str,
+    c: Dict[str, Any],
+    pending: Dict[str, Any],
+    llm_hint: Optional[Dict[str, Any]],
+    tenant: Dict[str, Any],
+    settings: Dict[str, Any],
+    service_catalog: List[Dict[str, Any]],
+    service_aliases: Dict[str, str],
+    business_memory: str,
+) -> Dict[str, Any]:
+    raw = (msg or "").strip()
+    low = raw.lower()
+    llm_hint = llm_hint or {}
+    llm_intent = _normalize_llm_intent(llm_hint.get("intent"))
+    try:
+        confidence = float(llm_hint.get("confidence") or 0.0)
+    except Exception:
+        confidence = 0.0
+
+    direct_service_key = canonical_service_key_from_text(raw, service_aliases)
+    service_item = get_service_item_by_key(service_catalog, direct_service_key) if direct_service_key else None
+    if not service_item:
+        service_item = extract_service_from_text(raw, service_catalog, lang)
+    if not service_item and llm_hint.get("service"):
+        service_item = get_service_item_by_key(service_catalog, llm_hint.get("service"))
+
+    faq_result = try_barbershop_faq(
+        msg=raw,
+        lang=lang,
+        tenant=tenant,
+        settings=settings,
+        service_catalog=service_catalog,
+        service_aliases=service_aliases,
+        business_memory=business_memory,
+    ) if raw else None
+
+    explicit_cancel = any(w in low for w in ["atcelt", "отменить", "cancel"])
+    explicit_reschedule = any(w in low for w in ["pārcelt", "перенести", "reschedule", "move my appointment", "change my appointment", "перенеси запись", "перенести запись", "pārcelt pierakstu"])
+
+    signals: List[str] = []
+    if is_greeting_only(raw):
+        signals.append("greeting_only")
+    if is_identity_check(raw):
+        signals.append("identity_check")
+    if is_hours_question(raw):
+        signals.append("hours_question")
+    if is_booking_opener(raw):
+        signals.append("booking_opener")
+    if is_yes_text(raw, lang):
+        signals.append("yes")
+    if is_no_text(raw, lang):
+        signals.append("no")
+    if is_hesitation_text(raw, lang):
+        signals.append("hesitation")
+    if is_other_day_text(raw, lang):
+        signals.append("other_day")
+    if has_explicit_time(raw):
+        signals.append("explicit_time")
+    if has_date_reference(raw):
+        signals.append("date_ref")
+    if parse_time_window(raw):
+        signals.append("time_window")
+    if extract_slot_choice(raw, pending):
+        signals.append("slot_choice")
+    if explicit_cancel:
+        signals.append("cancel_request")
+    if explicit_reschedule:
+        signals.append("reschedule_request")
+
+    return {
+        "raw_text": raw,
+        "lang": lang,
+        "state": conversation_state(c),
+        "active_flow": is_active_booking_flow(c),
+        "intent": llm_intent,
+        "confidence": max(0.0, min(1.0, confidence)),
+        "confirmation": _normalize_llm_confirmation(llm_hint.get("confirmation")),
+        "signals": signals,
+        "entities": {
+            "service_key": str((service_item or {}).get("key") or "").strip() or None,
+            "service_name": service_display_name(service_item, lang) if service_item else None,
+            "time_text": sanitize_conversation_time_text(llm_hint.get("time_text")),
+            "datetime_iso": str(llm_hint.get("datetime_iso") or "").strip() or None,
+            "name": normalize_name(llm_hint.get("name")),
+            "selected_slot_iso": extract_slot_choice(raw, pending),
+        },
+        "faq_result": faq_result,
+        "tools": list(orchestration_tool_registry().keys()),
+    }
+
+
+def default_orchestration_decision(understanding: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "action": ORCH_ACTION_CONTINUE,
+        "next_state": understanding.get("state"),
+        "reply_mode": "legacy",
+        "needs_tool": False,
+        "tool_name": None,
+        "tool_args": {},
+        "reason": "fallback_to_legacy_flow",
+    }
+
+
+def orchestrate_turn(
+    c: Dict[str, Any],
+    msg: str,
+    lang: str,
+    understanding: Dict[str, Any],
+) -> Dict[str, Any]:
+    decision = default_orchestration_decision(understanding)
+    state = conversation_state(c)
+    active_flow = bool(understanding.get("active_flow"))
+    signals = set(understanding.get("signals") or [])
+    intent = understanding.get("intent")
+    confidence = float(understanding.get("confidence") or 0.0)
+    selected_slot_iso = ((understanding.get("entities") or {}).get("selected_slot_iso"))
+
+    if understanding.get("faq_result"):
+        decision.update({
+            "action": ORCH_ACTION_FAQ,
+            "needs_tool": True,
+            "tool_name": "get_business_info",
+            "reason": "faq_detected",
+            "reply_mode": "direct",
+        })
+        return decision
+
+    if not active_flow and "greeting_only" in signals:
+        decision.update({"action": ORCH_ACTION_GREET, "reason": "greeting_only_detected", "reply_mode": "direct"})
+        return decision
+    if not active_flow and "identity_check" in signals:
+        decision.update({"action": ORCH_ACTION_IDENTITY, "reason": "identity_check_detected", "reply_mode": "direct"})
+        return decision
+    if not active_flow and "hours_question" in signals:
+        decision.update({"action": ORCH_ACTION_HOURS, "reason": "hours_question_detected", "reply_mode": "direct"})
+        return decision
+
+    if "cancel_request" in signals or (not active_flow and intent == "cancel" and confidence >= LLM_INTENT_MIN_CONFIDENCE):
+        decision.update({
+            "action": ORCH_ACTION_CANCEL,
+            "needs_tool": True,
+            "tool_name": "cancel_booking",
+            "reason": "cancel_intent_detected",
+        })
+        return decision
+
+    if "reschedule_request" in signals or (not active_flow and intent == "reschedule" and confidence >= LLM_INTENT_MIN_CONFIDENCE):
+        decision.update({
+            "action": ORCH_ACTION_RESCHEDULE,
+            "needs_tool": True,
+            "tool_name": "reschedule_booking",
+            "reason": "reschedule_intent_detected",
+        })
+        return decision
+
+    if "booking_opener" in signals or (not active_flow and intent == "booking" and confidence >= LLM_INTENT_MIN_CONFIDENCE):
+        decision.update({
+            "action": ORCH_ACTION_START_BOOKING,
+            "next_state": STATE_AWAITING_SERVICE,
+            "reason": "booking_intent_detected",
+            "reply_mode": "mixed",
+        })
+        if (understanding.get("entities") or {}).get("service_key"):
+            decision["next_state"] = STATE_AWAITING_DATE
+        return decision
+
+    if state == STATE_AWAITING_TIME:
+        if "other_day" in signals:
+            decision.update({"action": ORCH_ACTION_ASK_DATE, "next_state": STATE_AWAITING_DATE, "reason": "other_day_in_time_selection", "reply_mode": "direct"})
+            return decision
+        if "hesitation" in signals:
+            decision.update({"action": ORCH_ACTION_CLARIFY_TIME, "next_state": STATE_AWAITING_TIME, "reason": "hesitation_in_time_selection", "reply_mode": "direct"})
+            return decision
+        if selected_slot_iso:
+            decision.update({"action": ORCH_ACTION_CHOOSE_SLOT, "next_state": STATE_AWAITING_CONFIRM, "needs_tool": True, "tool_name": "check_availability", "tool_args": {"slot_iso": selected_slot_iso}, "reason": "slot_selected"})
+            return decision
+
+    if state == STATE_AWAITING_CONFIRM:
+        if "other_day" in signals:
+            decision.update({"action": ORCH_ACTION_ASK_DATE, "next_state": STATE_AWAITING_DATE, "reason": "other_day_in_confirm", "reply_mode": "direct"})
+            return decision
+        if "hesitation" in signals:
+            decision.update({"action": ORCH_ACTION_CLARIFY_CONFIRM, "next_state": STATE_AWAITING_CONFIRM, "reason": "hesitation_in_confirm", "reply_mode": "direct"})
+            return decision
+        if "yes" in signals or understanding.get("confirmation") == "yes":
+            decision.update({"action": ORCH_ACTION_CONFIRM_YES, "needs_tool": True, "tool_name": "create_booking", "reason": "confirm_yes_detected"})
+            return decision
+        if "no" in signals or understanding.get("confirmation") == "no":
+            decision.update({"action": ORCH_ACTION_CONFIRM_NO, "reason": "confirm_no_detected"})
+            return decision
+
+    return decision
+
+
+
 def openai_chat_json(system: str, user: str) -> Dict[str, Any]:
     if not OPENAI_API_KEY:
         return {"service": None, "time_text": None, "datetime_iso": None, "name": None}
@@ -3970,6 +4196,144 @@ def finalize_post_confirm_upsell_response(
     }
 
 
+def offer_slots_for_date(
+    tenant_id: str,
+    user_key: str,
+    lang: str,
+    c: Dict[str, Any],
+    pending: Dict[str, Any],
+    settings: Dict[str, Any],
+    service_catalog: List[Dict[str, Any]],
+    base_date: datetime,
+) -> Dict[str, Any]:
+    service_item_for_slots = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
+    stored_window = pending_time_window_tuple(pending)
+    if not service_item_for_slots:
+        c["pending"] = pending or None
+        c["state"] = STATE_AWAITING_SERVICE
+        db_save_conversation(tenant_id, user_key, c)
+        prompt = barber_service_prompt(lang, service_catalog)
+        return {"status": "need_more", "reply_voice": prompt, "msg_out": prompt, "lang": lang}
+
+    pending["booking_intent"] = True
+    pending["awaiting_time_date_iso"] = base_date.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+    pending.pop("confirm_slot_iso", None)
+    pending.pop("candidate_datetime_iso", None)
+    clear_offered_slots(pending)
+    c["pending"] = pending
+    c["datetime_iso"] = None
+    c["state"] = STATE_AWAITING_TIME
+
+    if is_closed_day_for_rules(base_date, settings.get("business_rules")):
+        c["state"] = STATE_AWAITING_DATE
+        db_save_conversation(tenant_id, user_key, c)
+        return {
+            "status": "need_more",
+            "reply_voice": t(lang, "holiday_closed_voice"),
+            "msg_out": t(lang, "holiday_closed_text"),
+            "lang": lang,
+        }
+
+    calendar_ready = calendar_is_configured(settings["calendar_id"])
+    day_slots = (
+        find_first_n_slots_for_day_window(
+            calendar_id=settings["calendar_id"],
+            day_dt=base_date,
+            duration_min=service_duration_min(service_item_for_slots),
+            work_start=settings["work_start"],
+            work_end=settings["work_end"],
+            window_start_hour=stored_window[0],
+            window_end_hour=stored_window[1],
+            limit=3,
+            business_rules=settings.get("business_rules"),
+            service_account_json=settings.get("service_account_json"),
+        )
+        if calendar_ready and stored_window
+        else find_first_n_slots_for_day(
+            settings["calendar_id"],
+            base_date,
+            service_duration_min(service_item_for_slots),
+            settings["work_start"],
+            settings["work_end"],
+            limit=3,
+            business_rules=settings.get("business_rules"),
+            service_account_json=settings.get("service_account_json"),
+        )
+    ) if calendar_ready else []
+
+    if len(day_slots) >= 3:
+        pending = set_offered_slots(pending, day_slots[:3])
+        c["pending"] = pending
+        db_save_conversation(tenant_id, user_key, c)
+        return {
+            "status": "need_more",
+            "reply_voice": t(lang, "smart_slots_prompt", opt1=format_dt_short(day_slots[0]), opt2=format_dt_short(day_slots[1]), opt3=format_dt_short(day_slots[2])),
+            "msg_out": t(lang, "smart_slots_prompt", opt1=format_dt_short(day_slots[0]), opt2=format_dt_short(day_slots[1]), opt3=format_dt_short(day_slots[2])),
+            "lang": lang,
+        }
+    if len(day_slots) >= 2:
+        pending = set_offered_slots(pending, day_slots[:2])
+        c["pending"] = pending
+        db_save_conversation(tenant_id, user_key, c)
+        return {
+            "status": "need_more",
+            "reply_voice": t(lang, "voice_options_prompt", opt1=format_dt_short(day_slots[0]), opt2=format_dt_short(day_slots[1])),
+            "msg_out": t(lang, "voice_options_prompt", opt1=format_dt_short(day_slots[0]), opt2=format_dt_short(day_slots[1])),
+            "lang": lang,
+        }
+    if len(day_slots) == 1:
+        pending = set_offered_slots(pending, day_slots[:1])
+        pending["confirm_slot_iso"] = day_slots[0].isoformat()
+        c["pending"] = pending
+        c["state"] = STATE_AWAITING_CONFIRM
+        c["datetime_iso"] = day_slots[0].isoformat()
+        db_save_conversation(tenant_id, user_key, c)
+        return {
+            "status": "need_more",
+            "reply_voice": t(lang, "ask_booking_confirm", when=format_dt_short(day_slots[0]), service=pending.get("service_display") or ""),
+            "msg_out": t(lang, "ask_booking_confirm", when=format_dt_short(day_slots[0]), service=pending.get("service_display") or ""),
+            "lang": lang,
+        }
+
+    db_save_conversation(tenant_id, user_key, c)
+    return {
+        "status": "need_more",
+        "reply_voice": t(lang, "ask_booking_time_only"),
+        "msg_out": t(lang, "ask_booking_time_only"),
+        "lang": lang,
+    }
+
+
+def apply_inflow_service_override(
+    tenant_id: str,
+    user_key: str,
+    lang: str,
+    c: Dict[str, Any],
+    pending: Dict[str, Any],
+    settings: Dict[str, Any],
+    service_catalog: List[Dict[str, Any]],
+    new_service_item: Dict[str, Any],
+) -> Dict[str, Any]:
+    c, pending = remember_booking_service(c, pending, new_service_item, lang)
+    pending["booking_intent"] = True
+    pending.pop("confirm_slot_iso", None)
+    pending.pop("candidate_datetime_iso", None)
+    clear_offered_slots(pending)
+    base_day = parse_dt_any_tz(str(pending.get("awaiting_time_date_iso") or c.get("datetime_iso") or "").strip())
+    if base_day:
+        return offer_slots_for_date(tenant_id, user_key, lang, c, pending, settings, service_catalog, base_day)
+    c["pending"] = pending or None
+    c["datetime_iso"] = None
+    c["state"] = STATE_AWAITING_DATE
+    db_save_conversation(tenant_id, user_key, c)
+    return {
+        "status": "need_more",
+        "reply_voice": t(lang, "ask_booking_date"),
+        "msg_out": t(lang, "ask_booking_date"),
+        "lang": lang,
+    }
+
+
 def book_appointment_for_datetime(
     tenant_id: str,
     raw_phone: str,
@@ -4297,12 +4661,25 @@ def handle_user_text(
         return ai_data
 
     llm_hint = get_llm_data() if msg else {}
+    understanding = build_understanding_result(
+        msg=msg,
+        lang=lang,
+        c=c,
+        pending=pending,
+        llm_hint=llm_hint,
+        tenant=tenant,
+        settings=settings,
+        service_catalog=service_catalog,
+        service_aliases=service_aliases,
+        business_memory=business_memory,
+    )
+    orchestration = orchestrate_turn(c, msg, lang, understanding)
     active_flow = is_active_booking_flow(c)
 
-    explicit_cancel_request = any(w in t_low for w in ["atcelt", "отменить", "cancel"])
-    explicit_reschedule_request = any(w in t_low for w in ["pārcelt", "перенести", "reschedule", "move my appointment", "change my appointment", "перенеси запись", "перенести запись", "парацelt pierakstu", "pārcelt pierakstu"])
+    explicit_cancel_request = orchestration.get("action") == ORCH_ACTION_CANCEL
+    explicit_reschedule_request = orchestration.get("action") == ORCH_ACTION_RESCHEDULE
 
-    if explicit_cancel_request or ((not active_flow) and ((llm_hint or {}).get("intent") == "cancel" and float((llm_hint or {}).get("confidence") or 0.0) >= LLM_INTENT_MIN_CONFIDENCE)):
+    if explicit_cancel_request:
         if not calendar_ready:
             return blocked_result_for_lang(lang)
         ev = find_next_event_by_phone(settings["calendar_id"], raw_phone, tenant_id, settings.get("service_account_json"))
@@ -4383,23 +4760,13 @@ def handle_user_text(
             "lang": lang,
         }
 
-    if msg:
-        faq_result = try_barbershop_faq(
-            msg=msg,
-            lang=lang,
-            tenant=tenant,
-            settings=settings,
-            service_catalog=service_catalog,
-            service_aliases=service_aliases,
-            business_memory=business_memory,
-        )
-        if faq_result:
-            faq_result = faq_with_flow_followup(faq_result, lang, c, pending, service_catalog, active_flow)
-            if active_flow:
-                db_save_conversation(tenant_id, user_key, c)
-            return faq_result
+    if orchestration.get("action") == ORCH_ACTION_FAQ and understanding.get("faq_result"):
+        faq_result = faq_with_flow_followup(understanding.get("faq_result"), lang, c, pending, service_catalog, active_flow)
+        if active_flow:
+            db_save_conversation(tenant_id, user_key, c)
+        return faq_result
 
-    if msg and is_greeting_only(msg) and not active_flow and c["state"] not in ACTIVE_BOOKING_STATES:
+    if orchestration.get("action") == ORCH_ACTION_GREET and not active_flow and c["state"] not in ACTIVE_BOOKING_STATES:
         c["state"] = STATE_NEW
         c["service"] = None
         c["datetime_iso"] = None
@@ -4412,14 +4779,14 @@ def handle_user_text(
             "msg_out": t(lang, "greeting_only_reply"),
             "lang": lang,
         }
-    if not active_flow and msg and is_identity_check(msg):
+    if orchestration.get("action") == ORCH_ACTION_IDENTITY and not active_flow:
         return {
             "status": "identity",
             "reply_voice": t(lang, "identity_yes", biz=settings["biz_name"]),
             "msg_out": t(lang, "identity_yes", biz=settings["biz_name"]),
             "lang": lang,
         }
-    if not active_flow and msg and is_hours_question(msg):
+    if orchestration.get("action") == ORCH_ACTION_HOURS and not active_flow:
         return {
             "status": "info",
             "reply_voice": t(lang, "hours_info", biz=settings["biz_name"], start=settings["work_start"], end=settings["work_end"]),
@@ -4429,7 +4796,7 @@ def handle_user_text(
 
     llm_hint = get_llm_data() if msg else {}
 
-    fresh_booking_start = bool(msg and is_booking_opener(msg))
+    fresh_booking_start = orchestration.get("action") == ORCH_ACTION_START_BOOKING
     llm_intent = _normalize_llm_intent((llm_hint or {}).get("intent"))
     llm_conf = float((llm_hint or {}).get("confidence") or 0.0)
     explicit_time_present = has_explicit_time(msg)
@@ -4505,6 +4872,19 @@ def handle_user_text(
         elif date_only_dt_for_msg:
             pending["awaiting_time_date_iso"] = date_only_dt_for_msg.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
         c["pending"] = pending
+
+    override_service_item = None
+    if msg and c.get("service"):
+        detected_override_key = canonical_service_key_from_text(msg, service_aliases)
+        if detected_override_key and detected_override_key != str(c.get("service") or pending.get("service") or "").strip():
+            override_service_item = get_service_item_by_key(service_catalog, detected_override_key)
+        elif not detected_override_key:
+            detected_service_item = extract_service_from_text(msg, service_catalog, lang)
+            current_service_item = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
+            if detected_service_item and current_service_item and str(detected_service_item.get("key") or "") != str(current_service_item.get("key") or ""):
+                override_service_item = detected_service_item
+    if override_service_item and conversation_state(c) in ACTIVE_BOOKING_STATES:
+        return apply_inflow_service_override(tenant_id, user_key, lang, c, pending, settings, service_catalog, override_service_item)
 
     selected_iso = extract_slot_choice(msg, pending)
     if selected_iso:
@@ -4659,77 +5039,10 @@ def handle_user_text(
             pending["booking_intent"] = True
             service_item_current = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
             c, pending = remember_booking_service(c, pending, service_item_current, lang)
-            pending["awaiting_time_date_iso"] = base_date.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
-            clear_offered_slots(pending)
             stored_window = parse_time_window(msg) or pending_time_window_tuple(pending)
             if stored_window:
                 pending["preferred_time_window"] = [stored_window[0], stored_window[1]]
-            service_item_for_slots = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
-            day_slots = (
-                find_first_n_slots_for_day_window(
-                    calendar_id=settings["calendar_id"],
-                    day_dt=base_date,
-                    duration_min=service_duration_min(service_item_for_slots),
-                    work_start=settings["work_start"],
-                    work_end=settings["work_end"],
-                    window_start_hour=stored_window[0],
-                    window_end_hour=stored_window[1],
-                    limit=3,
-                    business_rules=settings.get("business_rules"),
-                    service_account_json=settings.get("service_account_json"),
-                )
-                if calendar_ready and stored_window
-                else find_first_n_slots_for_day(
-                    settings["calendar_id"],
-                    base_date,
-                    service_duration_min(service_item_for_slots),
-                    settings["work_start"],
-                    settings["work_end"],
-                    limit=3,
-                    business_rules=settings.get("business_rules"),
-                    service_account_json=settings.get("service_account_json"),
-                )
-            ) if calendar_ready else []
-            c["state"] = STATE_AWAITING_TIME
-            c["datetime_iso"] = None
-            if is_closed_day_for_rules(base_date, settings.get("business_rules")):
-                c["pending"] = pending
-                c["state"] = STATE_AWAITING_DATE
-                db_save_conversation(tenant_id, user_key, c)
-                return {
-                    "status": "need_more",
-                    "reply_voice": t(lang, "holiday_closed_voice"),
-                    "msg_out": t(lang, "holiday_closed_text"),
-                    "lang": lang,
-                }
-            if len(day_slots) >= 3:
-                pending = set_offered_slots(pending, day_slots[:3])
-                c["pending"] = pending
-                db_save_conversation(tenant_id, user_key, c)
-                return {
-                    "status": "need_more",
-                    "reply_voice": t(lang, "smart_slots_prompt", opt1=format_dt_short(day_slots[0]), opt2=format_dt_short(day_slots[1]), opt3=format_dt_short(day_slots[2])),
-                    "msg_out": t(lang, "smart_slots_prompt", opt1=format_dt_short(day_slots[0]), opt2=format_dt_short(day_slots[1]), opt3=format_dt_short(day_slots[2])),
-                    "lang": lang,
-                }
-            if len(day_slots) >= 2:
-                pending = set_offered_slots(pending, day_slots[:2])
-                c["pending"] = pending
-                db_save_conversation(tenant_id, user_key, c)
-                return {
-                    "status": "need_more",
-                    "reply_voice": t(lang, "voice_options_prompt", opt1=format_dt_short(day_slots[0]), opt2=format_dt_short(day_slots[1])),
-                    "msg_out": t(lang, "voice_options_prompt", opt1=format_dt_short(day_slots[0]), opt2=format_dt_short(day_slots[1])),
-                    "lang": lang,
-                }
-            c["pending"] = pending
-            db_save_conversation(tenant_id, user_key, c)
-            return {
-                "status": "need_more",
-                "reply_voice": t(lang, "ask_booking_time_only"),
-                "msg_out": t(lang, "ask_booking_time_only"),
-                "lang": lang,
-            }
+            return offer_slots_for_date(tenant_id, user_key, lang, c, pending, settings, service_catalog, base_date)
         db_save_conversation(tenant_id, user_key, c)
         return {
             "status": "need_more",
@@ -4740,61 +5053,8 @@ def handle_user_text(
 
     if c["state"] == STATE_AWAITING_TIME:
         service_item_current = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
-        if msg and is_no_text(msg, lang) and date_only_dt_for_msg:
-            pending.pop("confirm_slot_iso", None)
-            pending.pop("candidate_datetime_iso", None)
-            pending["awaiting_time_date_iso"] = date_only_dt_for_msg.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
-            clear_offered_slots(pending)
-            c["pending"] = pending
-            c["datetime_iso"] = None
-            c["state"] = STATE_AWAITING_TIME
-            service_item_for_slots = service_item_current or get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
-            day_slots = find_first_n_slots_for_day(
-                settings["calendar_id"],
-                date_only_dt_for_msg,
-                service_duration_min(service_item_for_slots),
-                settings["work_start"],
-                settings["work_end"],
-                limit=3,
-                business_rules=settings.get("business_rules"),
-                service_account_json=settings.get("service_account_json"),
-            ) if calendar_ready else []
-            if is_closed_day_for_rules(date_only_dt_for_msg, settings.get("business_rules")):
-                c["state"] = STATE_AWAITING_DATE
-                db_save_conversation(tenant_id, user_key, c)
-                return {
-                    "status": "need_more",
-                    "reply_voice": t(lang, "holiday_closed_voice"),
-                    "msg_out": t(lang, "holiday_closed_text"),
-                    "lang": lang,
-                }
-            if len(day_slots) >= 3:
-                pending = set_offered_slots(pending, day_slots[:3])
-                c["pending"] = pending
-                db_save_conversation(tenant_id, user_key, c)
-                return {
-                    "status": "need_more",
-                    "reply_voice": t(lang, "smart_slots_prompt", opt1=format_dt_short(day_slots[0]), opt2=format_dt_short(day_slots[1]), opt3=format_dt_short(day_slots[2])),
-                    "msg_out": t(lang, "smart_slots_prompt", opt1=format_dt_short(day_slots[0]), opt2=format_dt_short(day_slots[1]), opt3=format_dt_short(day_slots[2])),
-                    "lang": lang,
-                }
-            if len(day_slots) >= 2:
-                pending = set_offered_slots(pending, day_slots[:2])
-                c["pending"] = pending
-                db_save_conversation(tenant_id, user_key, c)
-                return {
-                    "status": "need_more",
-                    "reply_voice": t(lang, "voice_options_prompt", opt1=format_dt_short(day_slots[0]), opt2=format_dt_short(day_slots[1])),
-                    "msg_out": t(lang, "voice_options_prompt", opt1=format_dt_short(day_slots[0]), opt2=format_dt_short(day_slots[1])),
-                    "lang": lang,
-                }
-            db_save_conversation(tenant_id, user_key, c)
-            return {
-                "status": "need_more",
-                "reply_voice": t(lang, "ask_booking_time_only"),
-                "msg_out": t(lang, "ask_booking_time_only"),
-                "lang": lang,
-            }
+        if msg and date_only_dt_for_msg:
+            return offer_slots_for_date(tenant_id, user_key, lang, c, pending, settings, service_catalog, date_only_dt_for_msg)
         if is_other_day_text(msg, lang):
             pending.pop("confirm_slot_iso", None)
             pending.pop("candidate_datetime_iso", None)
@@ -5073,21 +5333,74 @@ def handle_user_text(
         }
 
     if msg and conversation_state(c) == STATE_AWAITING_CONFIRM:
-        if is_no_text(msg, lang) and date_only_dt_for_msg:
+        override_dt = None
+        if date_only_dt_for_msg and not explicit_time_present:
+            pending.pop("pending_confirm_upsell", None)
+            pending.pop("confirm_upsell_done", None)
+            pending.pop("upsell_offer_active", None)
+            pending.pop("addon_service", None)
+            return offer_slots_for_date(tenant_id, user_key, lang, c, pending, settings, service_catalog, date_only_dt_for_msg)
+        if explicit_time_present:
+            base_for_override = date_only_dt_for_msg or parse_dt_any_tz(str(pending.get("confirm_slot_iso") or c.get("datetime_iso") or pending.get("awaiting_time_date_iso") or "").strip())
+            if base_for_override:
+                if date_only_dt_for_msg:
+                    base_for_override = date_only_dt_for_msg
+                override_dt = combine_date_with_explicit_time(base_for_override.isoformat(), msg)
+        if override_dt:
             pending.pop("confirm_slot_iso", None)
             pending.pop("pending_confirm_upsell", None)
             pending.pop("confirm_upsell_done", None)
+            pending.pop("upsell_offer_active", None)
             pending.pop("addon_service", None)
-            pending["awaiting_time_date_iso"] = date_only_dt_for_msg.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
             clear_offered_slots(pending)
             c["pending"] = pending or {"booking_intent": True}
             c["datetime_iso"] = None
             c["state"] = STATE_AWAITING_TIME
+            result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, override_dt)
             db_save_conversation(tenant_id, user_key, c)
+            return result
+        if is_other_day_text(msg, lang):
+            pending.pop("confirm_slot_iso", None)
+            pending.pop("pending_confirm_upsell", None)
+            pending.pop("confirm_upsell_done", None)
+            pending.pop("upsell_offer_active", None)
+            pending.pop("addon_service", None)
+            pending.pop("candidate_datetime_iso", None)
+            pending.pop("awaiting_time_date_iso", None)
+            pending["booking_intent"] = True
+            clear_offered_slots(pending)
+            c["pending"] = pending or {"booking_intent": True}
+            c["datetime_iso"] = None
+            c["time_text"] = None
+            c["state"] = STATE_AWAITING_DATE
+            db_save_conversation(tenant_id, user_key, c)
+            reply_text = t(lang, "other_day_prompt")
             return {
                 "status": "need_more",
-                "reply_voice": prompt_for_state(lang, c, c.get("pending") or {}, service_catalog),
-                "msg_out": prompt_for_state(lang, c, c.get("pending") or {}, service_catalog),
+                "reply_voice": reply_text,
+                "msg_out": reply_text,
+                "lang": lang,
+            }
+        if is_hesitation_text(msg, lang):
+            pending.pop("confirm_slot_iso", None)
+            pending.pop("pending_confirm_upsell", None)
+            pending.pop("confirm_upsell_done", None)
+            pending.pop("upsell_offer_active", None)
+            pending.pop("addon_service", None)
+            pending.pop("candidate_datetime_iso", None)
+            pending.pop("awaiting_time_date_iso", None)
+            pending["booking_intent"] = True
+            clear_offered_slots(pending)
+            c["pending"] = pending or {"booking_intent": True}
+            c["datetime_iso"] = None
+            c["time_text"] = None
+            c["state"] = STATE_AWAITING_DATE
+            db_save_conversation(tenant_id, user_key, c)
+            reply_text = t(lang, "time_selection_uncertain")
+            return {
+                "status": "need_more",
+                "reply_voice": reply_text,
+                "msg_out": reply_text,
                 "lang": lang,
             }
         confirm_iso = str(pending.get("confirm_slot_iso") or c.get("datetime_iso") or "").strip()
@@ -7566,6 +7879,23 @@ async def dev_chat(req: DevChatRequest):
             lang_hint=req.lang,
         )
         conv = db_get_or_create_conversation(req.tenant_id, raw_user, req.lang)
+        orch_debug = None
+        try:
+            tenant = get_tenant(req.tenant_id)
+            lang = get_lang(req.lang)
+            settings = tenant_settings(tenant, lang)
+            service_catalog = tenant_service_catalog(tenant)
+            service_aliases = ensure_default_barbershop_aliases(
+                service_catalog,
+                merged_service_alias_map(service_catalog, tenant, lang),
+                lang,
+            )
+            business_memory = tenant_business_memory(tenant, lang)
+            llm_hint = llm_message_understanding(req.message, lang, settings, service_catalog, service_aliases, business_memory) if (req.message or '').strip() else {}
+            understanding = build_understanding_result(req.message, lang, conv, conv.get("pending") or {}, llm_hint, tenant, settings, service_catalog, service_aliases, business_memory)
+            orch_debug = orchestrate_turn(conv, req.message, lang, understanding)
+        except Exception:
+            orch_debug = None
         return {
             "status": result.get("status"),
             "reply": result.get("msg_out") or result.get("reply_voice") or "",
@@ -7575,6 +7905,7 @@ async def dev_chat(req: DevChatRequest):
             "service": conv.get("service"),
             "datetime_iso": conv.get("datetime_iso"),
             "name": conv.get("name"),
+            "orchestration": orch_debug,
         }
     except Exception as e:
         log.exception("DEV CHAT ERROR")
