@@ -240,9 +240,8 @@ I18N: Dict[str, Dict[str, str]] = {
         "soft_clarify_confirm": "Vai pareizi sapratu, ka vēlaties apstiprināt piedāvāto laiku? Lūdzu, atbildiet ar jā vai nē.",
         "time_selection_uncertain": "Saprotu. Varam paskatīties citu dienu vai citu dienas daļu — piemēram, rītu, pēcpusdienu vai vakaru. Kas jums būtu ērtāk?",
         "other_day_prompt": "Labi, paskatāmies citu dienu. Uz kuru dienu vēlaties pierakstīties?",
-        "smart_service_clarify": "Ko vēlaties pierakstīt — matu griezumu vai bārdu?",
-        "smart_date_clarify": "Kas jums būtu ērtāk — šodien, rīt vai cita diena?",
-        "smart_time_clarify": "Kurš laiks jums būtu ērtāks — no rīta, pēcpusdienā vai vakarā?",
+        "smart_service_clarify": "Varu piedāvāt, piemēram, vīriešu frizūru vai bārdas kopšanu. Ko izvēlamies?",
+        "smart_date_clarify": "Vai jums der šodien, rīt vai cits datums?",
     },
     "ru": {
         "service_unavailable_voice": "Извините, сервис недоступен.",
@@ -298,9 +297,8 @@ I18N: Dict[str, Dict[str, str]] = {
         "soft_clarify_confirm": "Правильно ли я понял, что вы хотите подтвердить предложенное время? Пожалуйста, ответьте да или нет.",
         "time_selection_uncertain": "Понимаю. Можем посмотреть другой день или другую часть дня — например, утро, день или вечер. Что вам удобнее?",
         "other_day_prompt": "Хорошо, давайте посмотрим другой день. На какую дату вам удобно?",
-        "smart_service_clarify": "Что хотите сделать — стрижку или бороду?",
+        "smart_service_clarify": "Могу предложить, например, мужскую стрижку или оформление бороды. Что выберем?",
         "smart_date_clarify": "Вам удобнее сегодня, завтра или другой день?",
-        "smart_time_clarify": "Какое время вам удобнее — утром, днём или вечером?",
     },
     "en": {
         "service_unavailable_voice": "Sorry, the service is unavailable.",
@@ -356,9 +354,8 @@ I18N: Dict[str, Dict[str, str]] = {
         "soft_clarify_confirm": "Just to confirm, would you like to confirm the offered time? Please answer yes or no.",
         "time_selection_uncertain": "Understood. We can look at another day or another part of the day — for example morning, afternoon, or evening. What would suit you better?",
         "other_day_prompt": "Okay, let's look at another day. Which date would work for you?",
-        "smart_service_clarify": "What would you like to book — a haircut or a beard service?",
+        "smart_service_clarify": "I can offer, for example, a men's haircut or a beard trim. Which one would you like?",
         "smart_date_clarify": "Would today, tomorrow, or another day work better for you?",
-        "smart_time_clarify": "What time works better for you — morning, afternoon, or evening?",
     },
 }
 
@@ -481,18 +478,18 @@ def humanize_result(result: Dict[str, Any], conv: Optional[Dict[str, Any]], tena
         if lang == "ru":
             apply(_pick_variant([
                 "Конечно. На какую услугу вас записать?",
-                "Хорошо. Что именно хотите сделать?",
+                "Могу предложить, например, мужскую стрижку или оформление бороды. Что выберем?",
                 "Подскажите, на какую услугу хотите записаться?",
             ], result.get("msg_out") or "На какую услугу вас записать?"))
         elif lang == "en":
             apply(_pick_variant([
                 "Of course. Which service would you like to book?",
-                "Sure — what would you like to book?",
+                "I can offer, for example, a men's haircut or a beard trim. Which one would you like?",
             ], result.get("msg_out") or "Which service would you like to book?"))
         else:
             apply(_pick_variant([
                 "Protams. Uz kādu pakalpojumu vēlaties pierakstīties?",
-                "Labi. Pasakiet, lūdzu, kuru pakalpojumu vēlaties.",
+                "Varu piedāvāt, piemēram, vīriešu frizūru vai bārdas kopšanu. Ko izvēlamies?",
                 "Uz kuru pakalpojumu jūs pierakstīt?",
             ], result.get("msg_out") or "Uz kādu pakalpojumu vēlaties pierakstīties?"))
         return result
@@ -3836,23 +3833,9 @@ def is_other_day_text(text_: Optional[str], lang: str) -> bool:
     if not low:
         return False
     phrases = {
-        "lv": {"citu dienu", "labak citu dienu", "labāk citu dienu", "cita diena", "ne citu dienu", "vēlos citu dienu"},
-        "ru": {"другой день", "на другой день", "давайте другой день", "лучше другой день", "другая дата"},
-        "en": {"other day", "another day", "different day", "better another day", "lets do another day", "let's do another day"},
-    }
-    allowed = set().union(*phrases.values())
-    allowed.update(phrases.get(get_lang(lang), set()))
-    return any(phrase in low for phrase in allowed if phrase)
-
-
-def is_other_time_text(text_: Optional[str], lang: str) -> bool:
-    low = _normalize_phrase_text(text_)
-    if not low:
-        return False
-    phrases = {
-        "lv": {"citu laiku", "cits laiks", "vēlāk", "velak", "agrāk", "agrak", "ne der", "neder", "cits variants", "citu variantu"},
-        "ru": {"другое время", "другой вариант", "позже", "раньше", "не подходит", "другое время нужно", "давайте другое время"},
-        "en": {"another time", "different time", "later", "earlier", "does not work", "doesn't work", "not suitable", "other time"},
+        "lv": {"citu dienu", "labak citu dienu", "labāk citu dienu", "cita diena", "ne citu dienu", "vēlos citu dienu", "cits datums", "citu datumu", "gribu citu datumu", "vēlos citu datumu", "ne šo datumu", "ne sito datumu"},
+        "ru": {"другой день", "на другой день", "давайте другой день", "лучше другой день", "другая дата", "другую дату", "не эта дата", "не этот день"},
+        "en": {"other day", "another day", "different day", "better another day", "lets do another day", "let's do another day", "another date", "different date", "not this date"},
     }
     allowed = set().union(*phrases.values())
     allowed.update(phrases.get(get_lang(lang), set()))
@@ -3862,14 +3845,22 @@ def is_other_time_text(text_: Optional[str], lang: str) -> bool:
 def soft_clarify_for_state(lang: str, c: Dict[str, Any], pending: Dict[str, Any]) -> str:
     state = conversation_state(c)
     if state == STATE_AWAITING_SERVICE:
-        return t(lang, "smart_service_clarify")
+        return t(lang, "soft_clarify_service")
     if state == STATE_AWAITING_DATE:
-        return t(lang, "smart_date_clarify")
+        return t(lang, "soft_clarify_date")
     if state == STATE_AWAITING_TIME:
-        return t(lang, "smart_time_clarify")
+        return t(lang, "soft_clarify_time")
     if state == STATE_AWAITING_CONFIRM:
         return t(lang, "soft_clarify_confirm")
     return t(lang, "unclear_reply")
+
+
+def smart_service_clarify_prompt(lang: str, service_catalog: List[Dict[str, Any]]) -> str:
+    return t(lang, "smart_service_clarify")
+
+
+def smart_date_clarify_prompt(lang: str) -> str:
+    return t(lang, "smart_date_clarify")
 
 
 def next_weekday_date(target_weekday: int, base: Optional[date] = None) -> date:
@@ -4152,31 +4143,6 @@ def reset_booking_context(c: Dict[str, Any], keep_name: bool = True) -> Dict[str
         c["name"] = preserved_name
     else:
         c["name"] = None
-    return c
-
-
-def partial_reset_booking_context(c: Dict[str, Any], mode: str = "date_time") -> Dict[str, Any]:
-    pending = c.get("pending") or {}
-    pending["booking_intent"] = True
-    if mode in {"date_time", "date"}:
-        pending.pop("awaiting_time_date_iso", None)
-        pending.pop("preferred_time_window", None)
-        c["datetime_iso"] = None
-        c["time_text"] = None
-        clear_offered_slots(pending)
-        clear_booking_loop_meta(pending)
-        pending.pop("confirm_slot_iso", None)
-        pending.pop("candidate_datetime_iso", None)
-        c["state"] = STATE_AWAITING_DATE
-    elif mode == "time":
-        c["datetime_iso"] = None
-        c["time_text"] = None
-        pending.pop("confirm_slot_iso", None)
-        pending.pop("candidate_datetime_iso", None)
-        clear_offered_slots(pending)
-        clear_booking_loop_meta(pending)
-        c["state"] = STATE_AWAITING_TIME
-    c["pending"] = pending or None
     return c
 
 
@@ -4712,6 +4678,32 @@ def handle_user_text(
             "lang": lang,
         }
 
+    if msg and c["state"] in {STATE_AWAITING_TIME, STATE_AWAITING_CONFIRM} and is_other_day_text(msg, lang):
+        pending["booking_intent"] = True
+        pending.pop("confirm_slot_iso", None)
+        pending.pop("pending_confirm_upsell", None)
+        pending.pop("confirm_upsell_done", None)
+        pending.pop("upsell_offer_active", None)
+        pending.pop("addon_service", None)
+        pending.pop("candidate_datetime_iso", None)
+        pending.pop("awaiting_time_date_iso", None)
+        pending.pop("preferred_time_window", None)
+        clear_offered_slots(pending)
+        clear_booking_loop_meta(pending)
+        c["pending"] = pending or {"booking_intent": True}
+        c["datetime_iso"] = None
+        c["time_text"] = None
+        c["state"] = STATE_AWAITING_DATE
+        db_save_conversation(tenant_id, user_key, c)
+        reply_text = t(lang, "other_day_prompt")
+        return {
+            "status": "need_more",
+            "reply_voice": reply_text,
+            "msg_out": reply_text,
+            "lang": lang,
+            "preserve_text": True,
+        }
+
     ai_data: Optional[Dict[str, Any]] = None
     llm_data: Optional[Dict[str, Any]] = None
 
@@ -5127,11 +5119,18 @@ def handle_user_text(
     pending = c.get("pending") or {}
 
     if c["state"] == STATE_AWAITING_SERVICE and not c.get("service"):
-        if is_short_ack_text(msg, lang) or is_hesitation_text(msg, lang):
-            reply_text = soft_clarify_for_state(lang, c, pending)
-        else:
-            reply_text = barber_service_prompt(lang, service_catalog)
+        if is_hesitation_text(msg, lang) or is_short_ack_text(msg, lang):
+            db_save_conversation(tenant_id, user_key, c)
+            reply_text = smart_service_clarify_prompt(lang, service_catalog)
+            return {
+                "status": "need_more",
+                "reply_voice": reply_text,
+                "msg_out": reply_text,
+                "lang": lang,
+                "preserve_text": True,
+            }
         db_save_conversation(tenant_id, user_key, c)
+        reply_text = barber_service_prompt(lang, service_catalog)
         return {
             "status": "need_more",
             "reply_voice": reply_text,
@@ -5146,22 +5145,13 @@ def handle_user_text(
     date_only_dt = date_only_dt_for_msg
 
     if c["state"] == STATE_AWAITING_DATE:
-        if is_other_day_text(msg, lang):
-            c = partial_reset_booking_context(c, "date_time")
-            db_save_conversation(tenant_id, user_key, c)
-            return {
-                "status": "need_more",
-                "reply_voice": t(lang, "smart_date_clarify"),
-                "msg_out": t(lang, "smart_date_clarify"),
-                "lang": lang,
-                "preserve_text": True,
-            }
         if is_short_ack_text(msg, lang) or is_hesitation_text(msg, lang):
             db_save_conversation(tenant_id, user_key, c)
+            reply_text = smart_date_clarify_prompt(lang)
             return {
                 "status": "need_more",
-                "reply_voice": soft_clarify_for_state(lang, c, pending),
-                "msg_out": soft_clarify_for_state(lang, c, pending),
+                "reply_voice": reply_text,
+                "msg_out": reply_text,
                 "lang": lang,
                 "preserve_text": True,
             }
@@ -5199,22 +5189,20 @@ def handle_user_text(
             clear_booking_loop_meta(pending)
             return offer_slots_for_date(tenant_id, user_key, lang, c, pending, settings, service_catalog, date_only_dt_for_msg)
         if is_other_day_text(msg, lang):
-            c = partial_reset_booking_context(c, "date_time")
+            clear_booking_loop_meta(pending)
+            pending.pop("confirm_slot_iso", None)
+            pending.pop("candidate_datetime_iso", None)
+            pending.pop("awaiting_time_date_iso", None)
+            pending.pop("preferred_time_window", None)
+            clear_offered_slots(pending)
+            c["pending"] = pending
+            c["datetime_iso"] = None
+            c["state"] = STATE_AWAITING_DATE
             db_save_conversation(tenant_id, user_key, c)
             return {
                 "status": "need_more",
                 "reply_voice": t(lang, "other_day_prompt"),
                 "msg_out": t(lang, "other_day_prompt"),
-                "lang": lang,
-                "preserve_text": True,
-            }
-        if is_other_time_text(msg, lang):
-            c = partial_reset_booking_context(c, "time")
-            db_save_conversation(tenant_id, user_key, c)
-            return {
-                "status": "need_more",
-                "reply_voice": t(lang, "smart_time_clarify"),
-                "msg_out": t(lang, "smart_time_clarify"),
                 "lang": lang,
                 "preserve_text": True,
             }
@@ -5547,29 +5535,22 @@ def handle_user_text(
             db_save_conversation(tenant_id, user_key, c)
             return result
         if is_other_day_text(msg, lang):
+            clear_booking_loop_meta(pending)
+            pending.pop("confirm_slot_iso", None)
             pending.pop("pending_confirm_upsell", None)
             pending.pop("confirm_upsell_done", None)
             pending.pop("upsell_offer_active", None)
             pending.pop("addon_service", None)
-            c["pending"] = pending
-            c = partial_reset_booking_context(c, "date_time")
+            pending.pop("candidate_datetime_iso", None)
+            pending.pop("awaiting_time_date_iso", None)
+            pending["booking_intent"] = True
+            clear_offered_slots(pending)
+            c["pending"] = pending or {"booking_intent": True}
+            c["datetime_iso"] = None
+            c["time_text"] = None
+            c["state"] = STATE_AWAITING_DATE
             db_save_conversation(tenant_id, user_key, c)
             reply_text = t(lang, "other_day_prompt")
-            return {
-                "status": "need_more",
-                "reply_voice": reply_text,
-                "msg_out": reply_text,
-                "lang": lang,
-            }
-        if is_other_time_text(msg, lang):
-            pending.pop("pending_confirm_upsell", None)
-            pending.pop("confirm_upsell_done", None)
-            pending.pop("upsell_offer_active", None)
-            pending.pop("addon_service", None)
-            c["pending"] = pending
-            c = partial_reset_booking_context(c, "time")
-            db_save_conversation(tenant_id, user_key, c)
-            reply_text = t(lang, "smart_time_clarify")
             return {
                 "status": "need_more",
                 "reply_voice": reply_text,
