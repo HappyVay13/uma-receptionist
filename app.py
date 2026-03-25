@@ -890,16 +890,6 @@ def get_tenant_or_404(tenant_id: str) -> Dict[str, Any]:
     return tenant
 
 
-def load_runtime_tenant(tenant_id: str, allow_default: bool = False) -> Dict[str, Any]:
-    resolved_tenant_id = (tenant_id or "").strip()
-    if not resolved_tenant_id and allow_default:
-        resolved_tenant_id = TENANT_ID_DEFAULT
-    tenant = get_existing_tenant(resolved_tenant_id)
-    if tenant.get("_id"):
-        return tenant
-    raise HTTPException(status_code=404, detail=f"Tenant not found: {resolved_tenant_id or tenant_id}")
-
-
 
 # -------------------------
 # GOOGLE OAUTH HELPERS (Phase 3 Foundation)
@@ -1972,7 +1962,7 @@ def handle_user_text_with_logging(
     except Exception:
         conv = {}
     try:
-        tenant = load_runtime_tenant(tenant_id, allow_default=True)
+        tenant = get_tenant(tenant_id)
         result = humanize_result(result, conv, tenant)
     except Exception as e:
         log.error("humanize_result_failed tenant_id=%s err=%s", tenant_id, e)
@@ -1986,7 +1976,7 @@ def handle_user_text_with_logging(
         conv=conv,
     )
     try:
-        tenant = tenant or load_runtime_tenant(tenant_id, allow_default=True)
+        tenant = tenant or get_tenant(tenant_id)
         send_booking_confirmation_if_needed(tenant, raw_phone, channel, result)
     except Exception as e:
         log.error("booking_confirmation_failed tenant_id=%s channel=%s err=%s", tenant_id, channel, e)
@@ -2447,11 +2437,17 @@ def canonical_service_key_from_text(text_: Optional[str], alias_map: Dict[str, s
     low = (text_ or "").strip().lower()
     if not low:
         return None
+    norm_low = re.sub(r"\s+", " ", re.sub(r"[^\wĀ-žА-Яа-яЁё]+", " ", low, flags=re.UNICODE)).strip()
     if low in alias_map:
         return alias_map[low]
+    if norm_low in alias_map:
+        return alias_map[norm_low]
     # Prefer longest alias first so generic words don't beat specific phrases
     for alias in sorted(alias_map.keys(), key=len, reverse=True):
-        if alias and alias in low:
+        if not alias:
+            continue
+        norm_alias = re.sub(r"\s+", " ", re.sub(r"[^\wĀ-žА-Яа-яЁё]+", " ", alias, flags=re.UNICODE)).strip()
+        if alias in low or (norm_alias and norm_alias in norm_low):
             return alias_map[alias]
     return None
 
@@ -2498,15 +2494,22 @@ def ensure_default_barbershop_aliases(catalog: List[Dict[str, Any]], alias_map: 
     combo_key = combo_keys[0] if combo_keys else None
 
     add_many(haircut_key, [
-        "matu griezums", "griezums", "apgriezt matus", "apgriezt", "frizūra", "frizura",
-        "vīriešu frizūra", "viriesu frizura", "vīriešu matu griezums", "viriesu matu griezums",
-        "подстричься", "стрижка", "мужская стрижка", "haircut", "mens haircut", "cut hair", "trim hair"
+        "matu griezums", "matu griezumu", "griezums", "griezumu",
+        "apgriezt matus", "apgriezt", "frizūra", "frizura", "frizūru", "frizuru",
+        "vīriešu frizūra", "viriesu frizura", "vīriešu frizūru", "viriesu frizuru",
+        "vīriešu matu griezums", "viriesu matu griezums", "vīriešu matu griezumu", "viriesu matu griezumu",
+        "подстричься", "стрижка", "стрижку", "мужская стрижка", "мужскую стрижку",
+        "haircut", "mens haircut", "men's haircut", "cut hair", "trim hair"
     ])
     add_many(beard_key, [
-        "bārda", "barda", "bārdas korekcija", "bārdas trim", "beard trim", "beard", "борода", "подровнять бороду"
+        "bārda", "barda", "bārdu", "bardu", "bārdas korekcija", "bārdas korekciju",
+        "bārdas trim", "bārdas trimu", "beard trim", "beard", "борода", "бороду", "подровнять бороду"
     ])
     add_many(combo_key, [
-        "combo", "kombo", "комбо", "matu griezums un bārda", "frizūra un bārda", "haircut and beard", "стрижка и борода"
+        "combo", "kombo", "комбо",
+        "matu griezums un bārda", "matu griezumu un bārdu",
+        "frizūra un bārda", "frizūru un bārdu",
+        "haircut and beard", "стрижка и борода", "стрижку и бороду"
     ])
     return out
 
@@ -4743,7 +4746,7 @@ def handle_user_text(
     tenant_id: str, raw_phone: str, text_in: str, channel: str, lang_hint: str
 ) -> Dict[str, Any]:
     msg = (text_in or "").strip()
-    tenant = load_runtime_tenant(tenant_id, allow_default=True)
+    tenant = get_tenant(tenant_id)
     allowed, _ = tenant_allowed(tenant)
 
     explicit_lang_hint = (lang_hint or "").strip().lower()
@@ -8093,7 +8096,7 @@ async def dev_chat(req: DevChatRequest):
         conv = db_get_or_create_conversation(req.tenant_id, raw_user, req.lang)
         orch_debug = None
         try:
-            tenant = load_runtime_tenant(req.tenant_id, allow_default=True)
+            tenant = get_tenant(req.tenant_id)
             lang = get_lang(req.lang)
             settings = tenant_settings(tenant, lang)
             service_catalog = tenant_service_catalog(tenant)
@@ -8164,7 +8167,7 @@ class DevFocusTestRequest(BaseModel):
 
 @app.post("/dev_understand")
 async def dev_understand(req: DevChatRequest):
-    tenant = load_runtime_tenant(req.tenant_id, allow_default=True)
+    tenant = get_tenant(req.tenant_id)
     lang = get_lang(req.lang)
     settings = tenant_settings(tenant, lang)
     service_catalog = tenant_service_catalog(tenant)
@@ -8187,7 +8190,7 @@ async def dev_understand(req: DevChatRequest):
 
 @app.post("/dev_focus_test")
 async def dev_focus_test(req: DevFocusTestRequest):
-    tenant = load_runtime_tenant(req.tenant_id, allow_default=True)
+    tenant = get_tenant(req.tenant_id)
     lang = get_lang(req.lang)
     cases = req.cases or [
         "Labdien, gribu pierakstīties",
