@@ -888,7 +888,12 @@ def get_existing_tenant(tenant_id: str) -> Dict[str, Any]:
 
 
 def get_tenant_or_404(tenant_id: str) -> Dict[str, Any]:
+    tenant_id = (tenant_id or "").strip()
+    if not tenant_id:
+        raise HTTPException(status_code=404, detail="Tenant not found")
     tenant = get_existing_tenant(tenant_id)
+    if not tenant or not tenant.get("_id"):
+        raise HTTPException(status_code=404, detail="Tenant not found")
     return tenant
 
 
