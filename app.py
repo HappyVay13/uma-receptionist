@@ -657,9 +657,10 @@ def tenant_id_from_client_identity(client_identity: str) -> Optional[str]:
 def resolve_voice_tenant_for_incoming(to_number: str, raw_from: str = "") -> Dict[str, Any]:
     test_tenant_id = (TEST_TENANT_ID or "").strip()
     if test_tenant_id:
-        tenant = get_tenant(test_tenant_id)
-        tenant["_resolved_via"] = "test_tenant_id"
-        return normalize_tenant_saas_fields(tenant)
+        tenant = load_runtime_tenant(test_tenant_id)
+        if tenant.get("_id"):
+            tenant["_resolved_via"] = "test_tenant_id"
+            return normalize_tenant_saas_fields(tenant)
 
     if looks_like_phone_number(to_number):
         tenant = get_tenant_by_phone(to_number)
@@ -669,15 +670,16 @@ def resolve_voice_tenant_for_incoming(to_number: str, raw_from: str = "") -> Dic
 
     client_tenant_id = tenant_id_from_client_identity(raw_from)
     if client_tenant_id:
-        tenant = get_tenant(client_tenant_id)
+        tenant = load_runtime_tenant(client_tenant_id)
         if tenant.get("_id"):
             tenant["_resolved_via"] = "voice_client_identity"
             return normalize_tenant_saas_fields(tenant)
 
     if ALLOW_DEFAULT_TENANT_FALLBACK:
-        tenant = get_tenant(TENANT_ID_DEFAULT)
-        tenant["_resolved_via"] = "default_fallback"
-        return normalize_tenant_saas_fields(tenant)
+        tenant = load_runtime_tenant(TENANT_ID_DEFAULT)
+        if tenant.get("_id"):
+            tenant["_resolved_via"] = "default_fallback"
+            return normalize_tenant_saas_fields(tenant)
 
     return {
         "_id": None,
@@ -757,9 +759,10 @@ def resolve_tenant_for_incoming(to_number: str) -> Dict[str, Any]:
     cleaned_to = normalize_incoming_to_number(to_number)
     test_tenant_id = (TEST_TENANT_ID or "").strip()
     if test_tenant_id:
-        tenant = get_tenant(test_tenant_id)
-        tenant["_resolved_via"] = "test_tenant_id"
-        return normalize_tenant_saas_fields(tenant)
+        tenant = load_runtime_tenant(test_tenant_id)
+        if tenant.get("_id"):
+            tenant["_resolved_via"] = "test_tenant_id"
+            return normalize_tenant_saas_fields(tenant)
 
     tenant = get_tenant_by_phone(cleaned_to)
     if tenant.get("_id"):
@@ -767,9 +770,10 @@ def resolve_tenant_for_incoming(to_number: str) -> Dict[str, Any]:
         return normalize_tenant_saas_fields(tenant)
 
     if ALLOW_DEFAULT_TENANT_FALLBACK:
-        tenant = get_tenant(TENANT_ID_DEFAULT)
-        tenant["_resolved_via"] = "default_fallback"
-        return normalize_tenant_saas_fields(tenant)
+        tenant = load_runtime_tenant(TENANT_ID_DEFAULT)
+        if tenant.get("_id"):
+            tenant["_resolved_via"] = "default_fallback"
+            return normalize_tenant_saas_fields(tenant)
 
     return {
         "_id": None,
@@ -883,36 +887,12 @@ def get_existing_tenant(tenant_id: str) -> Dict[str, Any]:
     return normalize_tenant_saas_fields(out)
 
 
-def tenant_is_placeholder_shell_record(tenant: Dict[str, Any]) -> bool:
-    tenant = normalize_tenant_saas_fields(tenant or {})
-    tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip().lower()
-    if not tenant_id:
-        return True
-    if tenant_id in {str(TENANT_ID_DEFAULT).strip().lower(), str(TEST_TENANT_ID).strip().lower()}:
-        return False
-    if tenant_id == "unknown":
-        return True
-
-    business_name = str(tenant.get("business_name") or "").strip()
-    phone_number = normalize_incoming_to_number(str(tenant.get("phone_number") or ""))
-    owner_email = str(tenant.get("owner_email") or "").strip()
-    calendar_id = str(tenant.get("calendar_id") or "").strip()
-    google_connected = tenant_google_connected_effective(tenant)
-    onboarding_completed = bool(tenant.get("onboarding_completed"))
-    has_service_account = tenant_has_service_account_json(tenant)
-
-    fallback_like = business_name == str(BUSINESS_FALLBACK.get("business_name") or "").strip()
-    no_identity = not phone_number and not owner_email
-    no_setup = not calendar_id and not google_connected and not onboarding_completed and not has_service_account
-    return bool(fallback_like and no_identity and no_setup)
-
-
 def get_tenant_or_404(tenant_id: str) -> Dict[str, Any]:
     tenant_id = (tenant_id or "").strip()
-    if not tenant_id or tenant_id.lower() == "unknown":
+    if not tenant_id:
         raise HTTPException(status_code=404, detail="Tenant not found")
     tenant = get_existing_tenant(tenant_id)
-    if not tenant.get("_id") or tenant_is_placeholder_shell_record(tenant):
+    if not tenant or not tenant.get("_id"):
         raise HTTPException(status_code=404, detail="Tenant not found")
     return tenant
 
@@ -1989,7 +1969,7 @@ def handle_user_text_with_logging(
     except Exception:
         conv = {}
     try:
-        tenant = get_tenant(tenant_id)
+        tenant = get_tenant_or_404(tenant_id)
         result = humanize_result(result, conv, tenant)
     except Exception as e:
         log.error("humanize_result_failed tenant_id=%s err=%s", tenant_id, e)
@@ -2003,7 +1983,7 @@ def handle_user_text_with_logging(
         conv=conv,
     )
     try:
-        tenant = tenant or get_tenant(tenant_id)
+        tenant = tenant or load_runtime_tenant(tenant_id)
         send_booking_confirmation_if_needed(tenant, raw_phone, channel, result)
     except Exception as e:
         log.error("booking_confirmation_failed tenant_id=%s channel=%s err=%s", tenant_id, channel, e)
@@ -4773,8 +4753,7 @@ def handle_user_text(
     tenant_id: str, raw_phone: str, text_in: str, channel: str, lang_hint: str
 ) -> Dict[str, Any]:
     msg = (text_in or "").strip()
-    tenant = get_tenant(tenant_id)
-    allowed, _ = tenant_allowed(tenant)
+    tenant = load_runtime_tenant(tenant_id)
 
     explicit_lang_hint = (lang_hint or "").strip().lower()
     lang_locked = explicit_lang_hint if explicit_lang_hint in ("lv", "ru", "en") else None
@@ -4788,6 +4767,13 @@ def handle_user_text(
         c["lang"] = resolve_reply_language(msg, c.get("lang") or detected_lang)
 
     lang = get_lang(c.get("lang") or detected_lang)
+    if not tenant.get("_id"):
+        return blocked_result_for_lang(lang)
+
+    allowed, _ = tenant_allowed(tenant)
+    if not allowed:
+        return blocked_result_for_lang(lang)
+
     if not tenant_runtime_ready(tenant):
         log_tenant_runtime_validation(tenant)
         return blocked_result_for_lang(lang)
@@ -4800,9 +4786,6 @@ def handle_user_text(
     )
     business_memory = tenant_business_memory(tenant, lang)
     calendar_ready = calendar_is_configured(settings["calendar_id"])
-
-    if not allowed:
-        return blocked_result_for_lang(lang)
 
     c["state"] = conversation_state(c)
     c = normalize_booking_state(c)
@@ -6759,7 +6742,7 @@ def onboarding_create_tenant(payload: dict = Body(...)):
     if phone_number:
         upsert_phone_route(phone_number, tenant_id)
 
-    tenant = get_tenant(tenant_id)
+    tenant = get_tenant_or_404(tenant_id)
     return {
         "status": "ok",
         "tenant_id": tenant_id,
@@ -7023,9 +7006,7 @@ def dashboard_analytics(tenant_id: str) -> Dict[str, Any]:
 @app.get("/dashboard/bookings")
 @app.get("/bookings")
 def dashboard_bookings(tenant_id: str = TENANT_ID_DEFAULT, limit: int = 50):
-    tenant = get_tenant((tenant_id or '').strip() or TENANT_ID_DEFAULT)
-    if not tenant.get('_id'):
-        raise HTTPException(status_code=404, detail='Tenant not found')
+    tenant = get_tenant_or_404((tenant_id or '').strip() or TENANT_ID_DEFAULT)
     return {
         "tenant_id": tenant.get('_id'),
         "items": dashboard_recent_bookings(tenant.get('_id'), limit),
@@ -7034,9 +7015,7 @@ def dashboard_bookings(tenant_id: str = TENANT_ID_DEFAULT, limit: int = 50):
 @app.get("/dashboard/conversations")
 @app.get("/conversations")
 def dashboard_conversations(tenant_id: str = TENANT_ID_DEFAULT, limit: int = 100):
-    tenant = get_tenant((tenant_id or '').strip() or TENANT_ID_DEFAULT)
-    if not tenant.get('_id'):
-        raise HTTPException(status_code=404, detail='Tenant not found')
+    tenant = get_tenant_or_404((tenant_id or '').strip() or TENANT_ID_DEFAULT)
     return {
         "tenant_id": tenant.get('_id'),
         "items": dashboard_recent_conversations(tenant.get('_id'), limit),
@@ -7045,25 +7024,19 @@ def dashboard_conversations(tenant_id: str = TENANT_ID_DEFAULT, limit: int = 100
 @app.get("/dashboard/analytics")
 @app.get("/analytics")
 def dashboard_analytics_endpoint(tenant_id: str = TENANT_ID_DEFAULT):
-    tenant = get_tenant((tenant_id or '').strip() or TENANT_ID_DEFAULT)
-    if not tenant.get('_id'):
-        raise HTTPException(status_code=404, detail='Tenant not found')
+    tenant = get_tenant_or_404((tenant_id or '').strip() or TENANT_ID_DEFAULT)
     return dashboard_analytics(tenant.get('_id'))
 
 @app.get("/dashboard/usage")
 @app.get("/usage")
 def dashboard_usage_endpoint(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
-    tenant = get_tenant((tenant_id or '').strip() or TENANT_ID_DEFAULT)
-    if not tenant.get('_id'):
-        raise HTTPException(status_code=404, detail='Tenant not found')
+    tenant = get_tenant_or_404((tenant_id or '').strip() or TENANT_ID_DEFAULT)
     return dashboard_usage_summary(tenant.get('_id'), days=days)
 
 @app.get("/dashboard/activity")
 @app.get("/activity")
 def dashboard_activity_endpoint(tenant_id: str = TENANT_ID_DEFAULT, limit: int = 25):
-    tenant = get_tenant((tenant_id or '').strip() or TENANT_ID_DEFAULT)
-    if not tenant.get('_id'):
-        raise HTTPException(status_code=404, detail='Tenant not found')
+    tenant = get_tenant_or_404((tenant_id or '').strip() or TENANT_ID_DEFAULT)
     return {
         "tenant_id": tenant.get('_id'),
         "items": dashboard_tenant_activity(tenant.get('_id'), limit=limit),
@@ -7072,9 +7045,7 @@ def dashboard_activity_endpoint(tenant_id: str = TENANT_ID_DEFAULT, limit: int =
 @app.get("/dashboard/chart-data")
 @app.get("/chart-data")
 def dashboard_chart_data_endpoint(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
-    tenant = get_tenant((tenant_id or '').strip() or TENANT_ID_DEFAULT)
-    if not tenant.get('_id'):
-        raise HTTPException(status_code=404, detail='Tenant not found')
+    tenant = get_tenant_or_404((tenant_id or '').strip() or TENANT_ID_DEFAULT)
     usage = dashboard_usage_summary(tenant.get('_id'), days=days)
     return {
         "tenant_id": tenant.get('_id'),
@@ -7086,7 +7057,8 @@ def dashboard_chart_data_endpoint(tenant_id: str = TENANT_ID_DEFAULT, days: int 
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
-    tenant_id = (tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
+    tenant = get_tenant_or_404((tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT)
+    tenant_id = str(tenant.get("_id") or "").strip() or TENANT_ID_DEFAULT
     html = f"""
 <!DOCTYPE html>
 <html lang="en">
@@ -7278,11 +7250,6 @@ let trendChart = null;
 let channelChart = null;
 let servicesChart = null;
 function currentTenant() {{ return document.getElementById('tenant').value.trim() || 'default'; }}
-function syncDashboardUrl() {{
-  const tenant = currentTenant();
-  const url = `/dashboard?tenant_id=${encodeURIComponent(tenant)}`;
-  window.history.replaceState(null, '', url);
-}}
 function openPath(url) {{ if (url) window.location = url; }}
 function esc(v) {{ if (v === null || v === undefined) return ''; return String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'", '&#39;'); }}
 function setEmpty(tbody, colSpan, label='No data yet') {{ tbody.innerHTML = `<tr><td colspan="${{colSpan}}" class="empty">${{esc(label)}}</td></tr>`; }}
@@ -7434,7 +7401,6 @@ function showDashboardBanner(message, kind='warn') {{
 }}
 async function loadAll() {{
   const tenant = currentTenant();
-  syncDashboardUrl();
   const days = el('days')?.value || '14';
   const limit = el('limit')?.value || '20';
   setText('usage_badge', `${{days}} day window`, 'Selected window');
@@ -7518,7 +7484,7 @@ document.addEventListener('DOMContentLoaded', loadAll);
 
 @app.get("/tenant/config/ui")
 def tenant_config_ui(tenant_id: str = TENANT_ID_DEFAULT):
-    tenant = get_tenant_or_404((tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT)
+    tenant = get_tenant_or_404((tenant_id or "").strip() or TENANT_ID_DEFAULT)
     tenant_id = str(tenant.get("_id") or "").strip() or TENANT_ID_DEFAULT
     html = f"""
 <!doctype html>
@@ -7626,8 +7592,6 @@ function setLinks(tid) {{
 }}
 async function loadConfig() {{
   const tid = document.getElementById('tenant_id').value.trim() || 'default';
-  window.location = '/tenant/config/ui?tenant_id=' + encodeURIComponent(tid);
-  return;
   setLinks(tid);
   const r = await fetch('/tenant/config?tenant_id=' + encodeURIComponent(tid));
   const data = await r.json();
@@ -7915,9 +7879,7 @@ document.addEventListener('DOMContentLoaded', loadTenants);
 
 @app.get("/tenant/config")
 def tenant_config(tenant_id: str = TENANT_ID_DEFAULT):
-    tenant = get_tenant((tenant_id or "").strip() or TENANT_ID_DEFAULT)
-    if not tenant.get("_id"):
-        raise HTTPException(status_code=404, detail="Tenant not found")
+    tenant = get_tenant_or_404((tenant_id or "").strip() or TENANT_ID_DEFAULT)
     settings = tenant_settings(tenant, get_lang(tenant.get("language") or "lv"))
     routes = []
     try:
@@ -7949,9 +7911,7 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
     tenant_id = (payload.tenant_id or "").strip()
     if not tenant_id:
         raise HTTPException(status_code=400, detail="tenant_id required")
-    tenant = get_tenant(tenant_id)
-    if not tenant.get("_id"):
-        raise HTTPException(status_code=404, detail="Tenant not found")
+    tenant = get_tenant_or_404(tenant_id)
 
     cols = tenants_columns()
     pk = tenants_pk(cols)
@@ -8023,7 +7983,7 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
     if new_phone:
         upsert_phone_route(new_phone, tenant_id)
 
-    updated = get_tenant(tenant_id)
+    updated = get_tenant_or_404(tenant_id)
     return {
         "status": "ok",
         "tenant": _jsonable_tenant_view(updated),
@@ -8053,7 +8013,7 @@ def tenant_routes(tenant_id: str = TENANT_ID_DEFAULT):
 
 @app.get("/dev_rules")
 def dev_rules(tenant_id: str):
-    tenant = get_tenant((tenant_id or "").strip() or TENANT_ID_DEFAULT)
+    tenant = get_tenant_or_404((tenant_id or "").strip() or TENANT_ID_DEFAULT)
     settings = tenant_settings(tenant, get_lang(tenant.get("language") or "lv"))
     return {
         "tenant_id": tenant.get("_id"),
@@ -8132,7 +8092,7 @@ async def dev_chat(req: DevChatRequest):
         conv = db_get_or_create_conversation(req.tenant_id, raw_user, req.lang)
         orch_debug = None
         try:
-            tenant = get_tenant(req.tenant_id)
+            tenant = get_tenant_or_404(req.tenant_id)
             lang = get_lang(req.lang)
             settings = tenant_settings(tenant, lang)
             service_catalog = tenant_service_catalog(tenant)
@@ -8203,7 +8163,7 @@ class DevFocusTestRequest(BaseModel):
 
 @app.post("/dev_understand")
 async def dev_understand(req: DevChatRequest):
-    tenant = get_tenant(req.tenant_id)
+    tenant = get_tenant_or_404(req.tenant_id)
     lang = get_lang(req.lang)
     settings = tenant_settings(tenant, lang)
     service_catalog = tenant_service_catalog(tenant)
@@ -8226,7 +8186,7 @@ async def dev_understand(req: DevChatRequest):
 
 @app.post("/dev_focus_test")
 async def dev_focus_test(req: DevFocusTestRequest):
-    tenant = get_tenant(req.tenant_id)
+    tenant = get_tenant_or_404(req.tenant_id)
     lang = get_lang(req.lang)
     cases = req.cases or [
         "Labdien, gribu pierakstīties",
