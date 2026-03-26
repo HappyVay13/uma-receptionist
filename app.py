@@ -887,6 +887,16 @@ def get_existing_tenant(tenant_id: str) -> Dict[str, Any]:
     return normalize_tenant_saas_fields(out)
 
 
+def load_runtime_tenant(tenant_id: str) -> Dict[str, Any]:
+    tenant_id = (tenant_id or "").strip()
+    if not tenant_id:
+        return {}
+    tenant = get_existing_tenant(tenant_id)
+    if not tenant.get("_id"):
+        return {}
+    return normalize_tenant_saas_fields(tenant)
+
+
 def get_tenant_or_404(tenant_id: str) -> Dict[str, Any]:
     tenant = get_existing_tenant(tenant_id)
     if not tenant.get("_id"):
