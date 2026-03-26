@@ -193,6 +193,8 @@ I18N: Dict[str, Dict[str, str]] = {
         "trial_expired_text": "Izmēģinājuma periods ir beidzies. Lūdzu, atjaunojiet plānu.",
         "inactive_voice": "Atvainojiet, šis konts pašlaik nav aktīvs.",
         "inactive_text": "Šis konts pašlaik nav aktīvs.",
+        "plan_limit_voice": "Atvainojiet, ir sasniegts tarifa ziņojumu limits. Lūdzu, atjaunojiet plānu.",
+        "plan_limit_text": "Ir sasniegts tarifa ziņojumu limits. Lūdzu, atjaunojiet plānu.",
         "no_active_booking": "Jums nav aktīvu pierakstu.",
         "cancel_failed": "Neizdevās atcelt pierakstu. Mēģiniet vēlreiz.",
         "cancelled": "Pieraksts atcelts.",
@@ -248,6 +250,8 @@ I18N: Dict[str, Dict[str, str]] = {
     "ru": {
         "service_unavailable_voice": "Извините, сервис недоступен.",
         "service_unavailable_text": "Сервис недоступен.",
+        "plan_limit_voice": "Извините, достигнут лимит сообщений по тарифу. Пожалуйста, обновите план.",
+        "plan_limit_text": "Достигнут лимит сообщений по тарифу. Пожалуйста, обновите план.",
         "no_active_booking": "У вас нет активных записей.",
         "cancel_failed": "Не удалось отменить запись. Попробуйте ещё раз.",
         "cancelled": "Запись отменена.",
@@ -303,6 +307,8 @@ I18N: Dict[str, Dict[str, str]] = {
     "en": {
         "service_unavailable_voice": "Sorry, the service is unavailable.",
         "service_unavailable_text": "Service is unavailable.",
+        "plan_limit_voice": "Sorry, you have reached your plan message limit. Please upgrade your plan.",
+        "plan_limit_text": "You have reached your plan message limit. Please upgrade your plan.",
         "no_active_booking": "You do not have any active appointments.",
         "cancel_failed": "Could not cancel the appointment. Please try again.",
         "cancelled": "Your appointment has been cancelled.",
@@ -2035,6 +2041,59 @@ def tenant_allowed(tenant: Dict[str, Any]) -> Tuple[bool, str]:
             return False, "trial_expired"
     return True, "ok"
 
+def month_start_local(dt_value: Optional[datetime] = None) -> datetime:
+    dt_value = dt_value or now_ts()
+    return dt_value.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+def tenant_dialog_usage_current_month(tenant_id: str) -> int:
+    tenant_id = (tenant_id or "").strip()
+    if not tenant_id:
+        return 0
+    ensure_call_logs_table()
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT COUNT(*)
+                FROM call_logs
+                WHERE tenant_id=:tenant_id
+                  AND created_at >= :since_ts
+                """
+            ),
+            {"tenant_id": tenant_id, "since_ts": month_start_local()},
+        ).fetchone()
+    return int((row[0] if row else 0) or 0)
+
+
+def tenant_dialog_limit(tenant: Dict[str, Any]) -> int:
+    tenant = normalize_tenant_saas_fields(tenant or {})
+    plan_meta = tenant_plan_meta(tenant)
+    limits = plan_meta.get("limits") or {}
+    raw_limit = (
+        tenant.get("dialogs_limit")
+        or tenant.get("dialogs_per_month")
+        or limits.get("dialogs_per_month")
+        or 0
+    )
+    try:
+        return max(0, int(raw_limit or 0))
+    except Exception:
+        return 0
+
+
+def tenant_usage_allowed(tenant: Dict[str, Any]) -> Tuple[bool, str, int, int]:
+    tenant_id = str((tenant or {}).get("_id") or (tenant or {}).get("id") or "").strip()
+    if not tenant_id:
+        return False, "unavailable", 0, 0
+    dialog_limit = tenant_dialog_limit(tenant)
+    if dialog_limit <= 0:
+        return True, "ok", 0, 0
+    used = tenant_dialog_usage_current_month(tenant_id)
+    if used >= dialog_limit:
+        return False, "plan_limit", used, dialog_limit
+    return True, "ok", used, dialog_limit
+
 
 def tenant_calendar_id(tenant: Dict[str, Any]) -> str:
     for key in ("calendar_id", "google_calendar_id", "calendarId"):
@@ -2599,6 +2658,15 @@ def blocked_result_for_reason(lang: str, reason: Optional[str]) -> Dict[str, Any
             "status": "blocked",
             "reply_voice": t(lang, "inactive_voice"),
             "msg_out": t(lang, "inactive_text"),
+            "lang": lang,
+            "blocked_reason": low,
+            "preserve_text": True,
+        }
+    if low == "plan_limit":
+        return {
+            "status": "blocked",
+            "reply_voice": t(lang, "plan_limit_voice"),
+            "msg_out": t(lang, "plan_limit_text"),
             "lang": lang,
             "blocked_reason": low,
             "preserve_text": True,
@@ -4799,6 +4867,13 @@ def handle_user_text(
     allowed, deny_reason = tenant_allowed(tenant)
     if not allowed:
         return blocked_result_for_reason(lang, deny_reason)
+
+    usage_allowed, usage_reason, usage_current, usage_limit = tenant_usage_allowed(tenant)
+    if not usage_allowed:
+        blocked = blocked_result_for_reason(lang, usage_reason)
+        blocked["usage_current"] = usage_current
+        blocked["usage_limit"] = usage_limit
+        return blocked
 
     user_key = norm_user_key(raw_phone)
     c = db_get_or_create_conversation(tenant_id, user_key, detected_lang)
