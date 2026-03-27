@@ -1919,6 +1919,94 @@ def ensure_phone_routes_table() -> None:
         )
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_phone_routes_tenant_id ON phone_routes (tenant_id)"))
 
+
+def ensure_usage_events_table() -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS usage_events (
+                    id BIGSERIAL PRIMARY KEY,
+                    tenant_id TEXT NOT NULL,
+                    user_id TEXT,
+                    channel TEXT,
+                    usage_type TEXT NOT NULL,
+                    usage_units INTEGER NOT NULL DEFAULT 1,
+                    billable BOOLEAN NOT NULL DEFAULT TRUE,
+                    source TEXT,
+                    status TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+        )
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_usage_events_tenant_created_at ON usage_events (tenant_id, created_at DESC)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_usage_events_tenant_billable_created_at ON usage_events (tenant_id, billable, created_at DESC)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_usage_events_user_id ON usage_events (user_id)"))
+
+
+def usage_type_from_event(raw_text: str, result: Dict[str, Any], conv: Optional[Dict[str, Any]] = None) -> str:
+    intent = infer_intent_label(raw_text, str((result or {}).get("status") or "").strip(), conv)
+    status = str((result or {}).get("status") or "").strip().lower()
+    if status == "booked":
+        return "booking"
+    if intent == "reschedule":
+        return "reschedule"
+    if intent == "cancel":
+        return "cancel"
+    if intent == "info" or status == "info":
+        return "faq"
+    return "message"
+
+
+def usage_event_is_billable(channel: str, source: str = "runtime") -> bool:
+    ch = str(channel or "").strip().lower()
+    src = str(source or "runtime").strip().lower()
+    if ch in {"dev", "test", "debug"}:
+        return False
+    if src in {"dev", "test", "debug"}:
+        return False
+    return True
+
+
+def record_usage_event(
+    tenant_id: str,
+    user_id: str,
+    channel: str,
+    raw_text: str,
+    result: Dict[str, Any],
+    conv: Optional[Dict[str, Any]] = None,
+    source: str = "runtime",
+) -> None:
+    try:
+        ensure_usage_events_table()
+        usage_type = usage_type_from_event(raw_text, result, conv)
+        billable = usage_event_is_billable(channel, source)
+        status = str((result or {}).get("status") or "").strip() or None
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO usage_events
+                    (tenant_id, user_id, channel, usage_type, usage_units, billable, source, status)
+                    VALUES
+                    (:tenant_id, :user_id, :channel, :usage_type, :usage_units, :billable, :source, :status)
+                    """
+                ),
+                {
+                    "tenant_id": (tenant_id or "").strip() or TENANT_ID_DEFAULT,
+                    "user_id": norm_user_key(user_id),
+                    "channel": (channel or "").strip().lower() or "unknown",
+                    "usage_type": usage_type,
+                    "usage_units": 1,
+                    "billable": billable,
+                    "source": (source or "runtime").strip().lower() or "runtime",
+                    "status": status,
+                },
+            )
+    except Exception as e:
+        log.error("usage_event_write_failed tenant_id=%s user_id=%s err=%s", tenant_id, user_id, e)
+
 def infer_intent_label(raw_text: str, result_status: str, conv: Optional[Dict[str, Any]] = None) -> str:
     low = (raw_text or "").strip().lower()
     if any(w in low for w in ["atcelt", "отменить", "cancel"]):
@@ -2001,6 +2089,15 @@ def handle_user_text_with_logging(
         result=result,
         conv=conv,
     )
+    record_usage_event(
+        tenant_id=tenant_id,
+        user_id=raw_phone,
+        channel=channel,
+        raw_text=text_in,
+        result=result,
+        conv=conv,
+        source="runtime",
+    )
     try:
         tenant = tenant or get_tenant(tenant_id)
         send_booking_confirmation_if_needed(tenant, raw_phone, channel, result)
@@ -2055,14 +2152,15 @@ def tenant_dialog_usage_current_month(tenant_id: str) -> int:
     tenant_id = (tenant_id or "").strip()
     if not tenant_id:
         return 0
-    ensure_call_logs_table()
+    ensure_usage_events_table()
     with engine.connect() as conn:
         row = conn.execute(
             text(
                 """
-                SELECT COUNT(*)
-                FROM call_logs
+                SELECT COALESCE(SUM(usage_units), 0)
+                FROM usage_events
                 WHERE tenant_id=:tenant_id
+                  AND billable=true
                   AND created_at >= :since_ts
                 """
             ),
