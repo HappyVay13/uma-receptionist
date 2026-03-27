@@ -250,6 +250,10 @@ I18N: Dict[str, Dict[str, str]] = {
     "ru": {
         "service_unavailable_voice": "Извините, сервис недоступен.",
         "service_unavailable_text": "Сервис недоступен.",
+        "trial_expired_voice": "Извините, пробный период закончился. Пожалуйста, обновите план.",
+        "trial_expired_text": "Пробный период закончился. Пожалуйста, обновите план.",
+        "inactive_voice": "Извините, этот аккаунт сейчас не активен.",
+        "inactive_text": "Этот аккаунт сейчас не активен.",
         "plan_limit_voice": "Извините, достигнут лимит сообщений по тарифу. Пожалуйста, обновите план.",
         "plan_limit_text": "Достигнут лимит сообщений по тарифу. Пожалуйста, обновите план.",
         "no_active_booking": "У вас нет активных записей.",
@@ -307,6 +311,10 @@ I18N: Dict[str, Dict[str, str]] = {
     "en": {
         "service_unavailable_voice": "Sorry, the service is unavailable.",
         "service_unavailable_text": "Service is unavailable.",
+        "trial_expired_voice": "Sorry, the trial period has expired. Please upgrade your plan.",
+        "trial_expired_text": "The trial period has expired. Please upgrade your plan.",
+        "inactive_voice": "Sorry, this account is currently inactive.",
+        "inactive_text": "This account is currently inactive.",
         "plan_limit_voice": "Sorry, you have reached your plan message limit. Please upgrade your plan.",
         "plan_limit_text": "You have reached your plan message limit. Please upgrade your plan.",
         "no_active_booking": "You do not have any active appointments.",
@@ -891,16 +899,6 @@ def get_existing_tenant(tenant_id: str) -> Dict[str, Any]:
     for i, name in enumerate(col_names):
         out[name] = row[i]
     return normalize_tenant_saas_fields(out)
-
-
-def load_runtime_tenant(tenant_id: str) -> Dict[str, Any]:
-    tenant_id = (tenant_id or "").strip()
-    if not tenant_id:
-        return {}
-    tenant = get_existing_tenant(tenant_id)
-    if not tenant.get("_id"):
-        return {}
-    return normalize_tenant_saas_fields(tenant)
 
 
 def get_tenant_or_404(tenant_id: str) -> Dict[str, Any]:
@@ -2023,27 +2021,26 @@ def get_tenant_calendar_context(tenant: Dict[str, Any]) -> Dict[str, Any]:
 # -------------------------
 # SaaS ACCESS CONTROL
 # -------------------------
-def tenant_allowed(tenant: Dict[str, Any]) -> Tuple[bool, str]:
-    st = (
+def month_start_local(dt_value: Optional[datetime] = None) -> datetime:
+    dt_value = dt_value or now_ts()
+    return dt_value.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+def tenant_status_value(tenant: Dict[str, Any]) -> str:
+    return str(
         tenant.get("status")
         or tenant.get("client_status")
         or CLIENT_STATUS_FALLBACK
         or "trial"
-    ).lower()
-    if st == "inactive":
-        return False, "inactive"
-    if st == "trial":
-        te = tenant.get("trial_end") or tenant.get("trial_end_at")
-        dt = parse_dt_any_tz(te) if isinstance(te, str) else te
-        if not dt:
-            dt = parse_dt_any_tz(TRIAL_END_ISO_FALLBACK)
-        if dt and now_ts() > dt:
-            return False, "trial_expired"
-    return True, "ok"
+    ).strip().lower() or "trial"
 
-def month_start_local(dt_value: Optional[datetime] = None) -> datetime:
-    dt_value = dt_value or now_ts()
-    return dt_value.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+def tenant_trial_end_value(tenant: Dict[str, Any]) -> Optional[datetime]:
+    te = tenant.get("trial_end") or tenant.get("trial_end_at")
+    dt = parse_dt_any_tz(te) if isinstance(te, str) else te
+    if not dt:
+        dt = parse_dt_any_tz(TRIAL_END_ISO_FALLBACK)
+    return dt
 
 
 def tenant_dialog_usage_current_month(tenant_id: str) -> int:
@@ -2093,6 +2090,55 @@ def tenant_usage_allowed(tenant: Dict[str, Any]) -> Tuple[bool, str, int, int]:
     if used >= dialog_limit:
         return False, "plan_limit", used, dialog_limit
     return True, "ok", used, dialog_limit
+
+
+def tenant_access_decision(tenant: Dict[str, Any]) -> Dict[str, Any]:
+    tenant = normalize_tenant_saas_fields(tenant or {})
+    tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip()
+    decision = {
+        "allowed": True,
+        "reason": "ok",
+        "meta": {
+            "tenant_id": tenant_id,
+            "status": tenant_status_value(tenant),
+            "trial_end": tenant_trial_end_value(tenant),
+            "usage_current": 0,
+            "usage_limit": tenant_dialog_limit(tenant),
+            "plan": tenant_plan_meta(tenant).get("plan"),
+        },
+    }
+    if not tenant_id:
+        decision["allowed"] = False
+        decision["reason"] = "unavailable"
+        return decision
+
+    status_value = decision["meta"]["status"]
+    if status_value == "inactive":
+        decision["allowed"] = False
+        decision["reason"] = "inactive"
+        return decision
+
+    if status_value == "trial":
+        trial_end = decision["meta"].get("trial_end")
+        if trial_end and now_ts() > trial_end:
+            decision["allowed"] = False
+            decision["reason"] = "trial_expired"
+            return decision
+
+    usage_allowed, usage_reason, usage_current, usage_limit = tenant_usage_allowed(tenant)
+    decision["meta"]["usage_current"] = usage_current
+    decision["meta"]["usage_limit"] = usage_limit
+    if not usage_allowed:
+        decision["allowed"] = False
+        decision["reason"] = usage_reason
+        return decision
+
+    return decision
+
+
+def tenant_allowed(tenant: Dict[str, Any]) -> Tuple[bool, str]:
+    decision = tenant_access_decision(tenant)
+    return bool(decision.get("allowed")), str(decision.get("reason") or "ok")
 
 
 def tenant_calendar_id(tenant: Dict[str, Any]) -> str:
@@ -4864,15 +4910,13 @@ def handle_user_text(
     if not tenant.get("_id"):
         return blocked_result_for_reason(lang, "unavailable")
 
-    allowed, deny_reason = tenant_allowed(tenant)
-    if not allowed:
-        return blocked_result_for_reason(lang, deny_reason)
-
-    usage_allowed, usage_reason, usage_current, usage_limit = tenant_usage_allowed(tenant)
-    if not usage_allowed:
-        blocked = blocked_result_for_reason(lang, usage_reason)
-        blocked["usage_current"] = usage_current
-        blocked["usage_limit"] = usage_limit
+    access = tenant_access_decision(tenant)
+    if not access.get("allowed"):
+        blocked = blocked_result_for_reason(lang, str(access.get("reason") or "unavailable"))
+        meta = access.get("meta") or {}
+        if meta.get("usage_limit"):
+            blocked["usage_current"] = meta.get("usage_current", 0)
+            blocked["usage_limit"] = meta.get("usage_limit", 0)
         return blocked
 
     user_key = norm_user_key(raw_phone)
@@ -6467,11 +6511,22 @@ PLAN_CATALOG = {
 def tenant_plan_meta(tenant: Dict[str, Any]) -> Dict[str, Any]:
     tenant = normalize_tenant_saas_fields(tenant or {})
     plan = str(tenant.get("plan") or "starter").strip().lower()
-    defaults = PLAN_CATALOG.get(plan, PLAN_CATALOG["starter"])
+    defaults = dict(PLAN_CATALOG.get(plan, PLAN_CATALOG["starter"]))
+    raw_dialog_limit = tenant.get("dialogs_limit") or tenant.get("dialogs_per_month")
+    try:
+        dialog_limit = max(0, int(raw_dialog_limit)) if raw_dialog_limit not in (None, "") else int(defaults.get("dialogs_per_month") or 0)
+    except Exception:
+        dialog_limit = int(defaults.get("dialogs_per_month") or 0)
+    defaults["dialogs_per_month"] = dialog_limit
     return {
         "plan": plan,
-        "subscription_status": str(tenant.get("subscription_status") or "trial").strip().lower() or "trial",
-        "limits": dict(defaults),
+        "subscription_status": str(tenant.get("subscription_status") or tenant_status_value(tenant)).strip().lower() or "trial",
+        "status": tenant_status_value(tenant),
+        "limits": defaults,
+        "usage": {
+            "dialogs_current_month": tenant_dialog_usage_current_month(str(tenant.get("_id") or tenant.get("id") or "").strip()) if str(tenant.get("_id") or tenant.get("id") or "").strip() else 0,
+            "dialogs_limit": dialog_limit,
+        },
     }
 
 
