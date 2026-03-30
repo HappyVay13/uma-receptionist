@@ -894,6 +894,19 @@ def get_tenant_or_404(tenant_id: str) -> Dict[str, Any]:
     return tenant
 
 
+def load_runtime_tenant(tenant_id: str) -> Dict[str, Any]:
+    """Load an existing tenant for runtime use without auto-creating rows.
+
+    Runtime paths must fail closed for unknown tenant_ids instead of silently
+    creating placeholder tenants. This keeps dev_chat/dashboard checks aligned
+    with the strict multi-tenant behavior we want in SaaS mode.
+    """
+    tenant = get_existing_tenant(tenant_id)
+    if not tenant:
+        return {"_id": None}
+    return normalize_tenant_saas_fields(tenant)
+
+
 
 # -------------------------
 # GOOGLE OAUTH HELPERS (Phase 3 Foundation)
