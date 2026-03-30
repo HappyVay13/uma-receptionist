@@ -45,6 +45,11 @@ import random
 from datetime import datetime, timedelta, timezone, date
 from typing import Dict, Any, Optional, Tuple, List
 
+try:
+    from zoneinfo import ZoneInfo
+except Exception:  # pragma: no cover
+    ZoneInfo = None
+
 import requests
 from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel
@@ -93,7 +98,7 @@ app.add_middleware(
 # -------------------------
 # CONFIG
 # -------------------------
-TZ = timezone(timedelta(hours=2))  # Europe/Riga
+TZ = ZoneInfo("Europe/Riga") if ZoneInfo is not None else timezone(timedelta(hours=2))  # Europe/Riga with DST
 
 TENANT_ID_DEFAULT = (os.getenv("DEFAULT_CLIENT_ID", "default") or "default").strip()
 TEST_TENANT_ID = (os.getenv("TEST_TENANT_ID", "") or "").strip()
@@ -1930,6 +1935,15 @@ def ensure_usage_events_table() -> None:
                 """
             )
         )
+        # Older deployments may already have usage_events without the newer
+        # columns below. Backfill the schema in-place so inserts do not fail
+        # silently under record_usage_event().
+        conn.execute(text("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS source TEXT"))
+        conn.execute(text("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS status TEXT"))
+        conn.execute(text("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS usage_units INTEGER NOT NULL DEFAULT 1"))
+        conn.execute(text("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS billable BOOLEAN NOT NULL DEFAULT TRUE"))
+        conn.execute(text("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS channel TEXT"))
+        conn.execute(text("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS user_id TEXT"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_usage_events_tenant_created_at ON usage_events (tenant_id, created_at DESC)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_usage_events_tenant_billable_created_at ON usage_events (tenant_id, billable, created_at DESC)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_usage_events_user_id ON usage_events (user_id)"))
@@ -1997,6 +2011,7 @@ def record_usage_event(
                     "status": status,
                 },
             )
+        log.info("usage_event_written tenant_id=%s user_id=%s channel=%s usage_type=%s billable=%s status=%s", (tenant_id or "").strip() or TENANT_ID_DEFAULT, norm_user_key(user_id), (channel or "").strip().lower() or "unknown", usage_type, billable, status or "")
     except Exception as e:
         log.error("usage_event_write_failed tenant_id=%s user_id=%s err=%s", tenant_id, user_id, e)
 
