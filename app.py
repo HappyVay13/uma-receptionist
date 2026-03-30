@@ -193,8 +193,6 @@ I18N: Dict[str, Dict[str, str]] = {
         "trial_expired_text": "Izmēģinājuma periods ir beidzies. Lūdzu, atjaunojiet plānu.",
         "inactive_voice": "Atvainojiet, šis konts pašlaik nav aktīvs.",
         "inactive_text": "Šis konts pašlaik nav aktīvs.",
-        "plan_limit_voice": "Atvainojiet, ir sasniegts tarifa ziņojumu limits. Lūdzu, atjaunojiet plānu.",
-        "plan_limit_text": "Ir sasniegts tarifa ziņojumu limits. Lūdzu, atjaunojiet plānu.",
         "no_active_booking": "Jums nav aktīvu pierakstu.",
         "cancel_failed": "Neizdevās atcelt pierakstu. Mēģiniet vēlreiz.",
         "cancelled": "Pieraksts atcelts.",
@@ -250,12 +248,6 @@ I18N: Dict[str, Dict[str, str]] = {
     "ru": {
         "service_unavailable_voice": "Извините, сервис недоступен.",
         "service_unavailable_text": "Сервис недоступен.",
-        "trial_expired_voice": "Извините, пробный период закончился. Пожалуйста, обновите план.",
-        "trial_expired_text": "Пробный период закончился. Пожалуйста, обновите план.",
-        "inactive_voice": "Извините, этот аккаунт сейчас не активен.",
-        "inactive_text": "Этот аккаунт сейчас не активен.",
-        "plan_limit_voice": "Извините, достигнут лимит сообщений по тарифу. Пожалуйста, обновите план.",
-        "plan_limit_text": "Достигнут лимит сообщений по тарифу. Пожалуйста, обновите план.",
         "no_active_booking": "У вас нет активных записей.",
         "cancel_failed": "Не удалось отменить запись. Попробуйте ещё раз.",
         "cancelled": "Запись отменена.",
@@ -311,12 +303,6 @@ I18N: Dict[str, Dict[str, str]] = {
     "en": {
         "service_unavailable_voice": "Sorry, the service is unavailable.",
         "service_unavailable_text": "Service is unavailable.",
-        "trial_expired_voice": "Sorry, the trial period has expired. Please upgrade your plan.",
-        "trial_expired_text": "The trial period has expired. Please upgrade your plan.",
-        "inactive_voice": "Sorry, this account is currently inactive.",
-        "inactive_text": "This account is currently inactive.",
-        "plan_limit_voice": "Sorry, you have reached your plan message limit. Please upgrade your plan.",
-        "plan_limit_text": "You have reached your plan message limit. Please upgrade your plan.",
         "no_active_booking": "You do not have any active appointments.",
         "cancel_failed": "Could not cancel the appointment. Please try again.",
         "cancelled": "Your appointment has been cancelled.",
@@ -899,14 +885,6 @@ def get_existing_tenant(tenant_id: str) -> Dict[str, Any]:
     for i, name in enumerate(col_names):
         out[name] = row[i]
     return normalize_tenant_saas_fields(out)
-
-
-def load_runtime_tenant(tenant_id: str) -> Dict[str, Any]:
-    tenant_id = (tenant_id or "").strip()
-    if not tenant_id:
-        return {}
-    tenant = get_existing_tenant(tenant_id)
-    return tenant if tenant.get("_id") else {}
 
 
 def get_tenant_or_404(tenant_id: str) -> Dict[str, Any]:
@@ -1919,7 +1897,6 @@ def ensure_phone_routes_table() -> None:
         )
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_phone_routes_tenant_id ON phone_routes (tenant_id)"))
 
-
 def ensure_usage_events_table() -> None:
     with engine.begin() as conn:
         conn.execute(
@@ -1962,9 +1939,12 @@ def usage_type_from_event(raw_text: str, result: Dict[str, Any], conv: Optional[
 def usage_event_is_billable(channel: str, source: str = "runtime") -> bool:
     ch = str(channel or "").strip().lower()
     src = str(source or "runtime").strip().lower()
-    if ch in {"dev", "test", "debug"}:
+    # dev chat is the main end-to-end SaaS test surface, so it must exercise
+    # the same limit path as real traffic. Keep only explicit test/debug
+    # traffic non-billable.
+    if ch in {"test", "debug"}:
         return False
-    if src in {"dev", "test", "debug"}:
+    if src in {"test", "debug"}:
         return False
     return True
 
@@ -2006,6 +1986,7 @@ def record_usage_event(
             )
     except Exception as e:
         log.error("usage_event_write_failed tenant_id=%s user_id=%s err=%s", tenant_id, user_id, e)
+
 
 def infer_intent_label(raw_text: str, result_status: str, conv: Optional[Dict[str, Any]] = None) -> str:
     low = (raw_text or "").strip().lower()
@@ -2126,11 +2107,6 @@ def get_tenant_calendar_context(tenant: Dict[str, Any]) -> Dict[str, Any]:
 # -------------------------
 # SaaS ACCESS CONTROL
 # -------------------------
-def month_start_local(dt_value: Optional[datetime] = None) -> datetime:
-    dt_value = dt_value or now_ts()
-    return dt_value.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-
-
 def tenant_status_value(tenant: Dict[str, Any]) -> str:
     return str(
         tenant.get("status")
@@ -2146,6 +2122,16 @@ def tenant_trial_end_value(tenant: Dict[str, Any]) -> Optional[datetime]:
     if not dt:
         dt = parse_dt_any_tz(TRIAL_END_ISO_FALLBACK)
     return dt
+
+
+def tenant_allowed(tenant: Dict[str, Any]) -> Tuple[bool, str]:
+    decision = tenant_access_decision(tenant)
+    return bool(decision.get("allowed")), str(decision.get("reason") or "ok")
+
+
+def month_start_local(dt_value: Optional[datetime] = None) -> datetime:
+    dt_value = dt_value or now_ts()
+    return dt_value.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
 
 def tenant_dialog_usage_current_month(tenant_id: str) -> int:
@@ -2240,11 +2226,6 @@ def tenant_access_decision(tenant: Dict[str, Any]) -> Dict[str, Any]:
         return decision
 
     return decision
-
-
-def tenant_allowed(tenant: Dict[str, Any]) -> Tuple[bool, str]:
-    decision = tenant_access_decision(tenant)
-    return bool(decision.get("allowed")), str(decision.get("reason") or "ok")
 
 
 def tenant_calendar_id(tenant: Dict[str, Any]) -> str:
@@ -2810,15 +2791,6 @@ def blocked_result_for_reason(lang: str, reason: Optional[str]) -> Dict[str, Any
             "status": "blocked",
             "reply_voice": t(lang, "inactive_voice"),
             "msg_out": t(lang, "inactive_text"),
-            "lang": lang,
-            "blocked_reason": low,
-            "preserve_text": True,
-        }
-    if low == "plan_limit":
-        return {
-            "status": "blocked",
-            "reply_voice": t(lang, "plan_limit_voice"),
-            "msg_out": t(lang, "plan_limit_text"),
             "lang": lang,
             "blocked_reason": low,
             "preserve_text": True,
