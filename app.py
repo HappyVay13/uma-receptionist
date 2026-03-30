@@ -1963,17 +1963,18 @@ def usage_type_from_event(raw_text: str, result: Dict[str, Any], conv: Optional[
     return "message"
 
 
-def usage_event_is_billable(channel: str, source: str = "runtime") -> bool:
+def usage_context_is_non_billable(channel: str, source: str = "runtime") -> bool:
     ch = str(channel or "").strip().lower()
     src = str(source or "runtime").strip().lower()
-    # dev chat is the main end-to-end SaaS test surface, so it must exercise
-    # the same limit path as real traffic. Keep only explicit test/debug
-    # traffic non-billable.
-    if ch in {"test", "debug"}:
-        return False
-    if src in {"test", "debug"}:
-        return False
-    return True
+    if ch in {"dev", "test", "debug"}:
+        return True
+    if src in {"dev", "dev_ui", "test", "debug"}:
+        return True
+    return False
+
+
+def usage_event_is_billable(channel: str, source: str = "runtime") -> bool:
+    return not usage_context_is_non_billable(channel, source)
 
 
 def record_usage_event(
@@ -2077,9 +2078,9 @@ def log_call_event(
         log.error("call_log_write_failed tenant_id=%s user_id=%s err=%s", tenant_id, user_id, e)
 
 def handle_user_text_with_logging(
-    tenant_id: str, raw_phone: str, text_in: str, channel: str, lang_hint: str
+    tenant_id: str, raw_phone: str, text_in: str, channel: str, lang_hint: str, source: str = "runtime"
 ) -> Dict[str, Any]:
-    result = handle_user_text(tenant_id, raw_phone, text_in, channel, lang_hint)
+    result = handle_user_text(tenant_id, raw_phone, text_in, channel, lang_hint, source=source)
     try:
         conv = db_get_or_create_conversation(tenant_id, raw_phone, lang_hint or "lv")
     except Exception:
@@ -2087,6 +2088,7 @@ def handle_user_text_with_logging(
     try:
         tenant = get_tenant(tenant_id)
         result = humanize_result(result, conv, tenant)
+        result = apply_usage_soft_limit_warning(result, result.get("lang") or lang, tenant, channel, source=source)
     except Exception as e:
         log.error("humanize_result_failed tenant_id=%s err=%s", tenant_id, e)
         tenant = {}
@@ -2105,7 +2107,7 @@ def handle_user_text_with_logging(
         raw_text=text_in,
         result=result,
         conv=conv,
-        source="runtime",
+        source=source,
     )
     try:
         tenant = tenant or get_tenant(tenant_id)
@@ -2187,34 +2189,85 @@ def tenant_dialog_limit(tenant: Dict[str, Any]) -> int:
     tenant = normalize_tenant_saas_fields(tenant or {})
     plan_meta = tenant_plan_meta(tenant)
     limits = plan_meta.get("limits") or {}
-    raw_limit = (
-        tenant.get("dialogs_limit")
-        or tenant.get("dialogs_per_month")
-        or limits.get("dialogs_per_month")
-        or 0
-    )
+    raw_limit = tenant.get("dialogs_per_month")
     try:
+        if raw_limit in (None, ""):
+            return max(0, int(limits.get("dialogs_per_month") or 0))
         return max(0, int(raw_limit or 0))
     except Exception:
-        return 0
+        return max(0, int(limits.get("dialogs_per_month") or 0))
 
 
-def tenant_usage_allowed(tenant: Dict[str, Any]) -> Tuple[bool, str, int, int]:
+def tenant_usage_snapshot(
+    tenant: Dict[str, Any],
+    channel: str = "",
+    source: str = "runtime",
+    projected_units: int = 0,
+) -> Dict[str, Any]:
     tenant_id = str((tenant or {}).get("_id") or (tenant or {}).get("id") or "").strip()
-    if not tenant_id:
-        return False, "unavailable", 0, 0
     dialog_limit = tenant_dialog_limit(tenant)
-    if dialog_limit <= 0:
-        return True, "ok", 0, 0
-    used = tenant_dialog_usage_current_month(tenant_id)
-    if used >= dialog_limit:
-        return False, "plan_limit", used, dialog_limit
-    return True, "ok", used, dialog_limit
+    exempt = usage_context_is_non_billable(channel, source)
+    if not tenant_id:
+        return {
+            "allowed": False,
+            "reason": "unavailable",
+            "usage_current": 0,
+            "usage_projected": 0,
+            "usage_limit": dialog_limit,
+            "limit_reached": False,
+            "soft_limit_exceeded": False,
+            "near_limit": False,
+            "billable": False,
+            "percent_used": 0.0,
+            "remaining": 0,
+        }
+    if exempt or dialog_limit <= 0:
+        return {
+            "allowed": True,
+            "reason": "ok",
+            "usage_current": 0 if dialog_limit <= 0 else tenant_dialog_usage_current_month(tenant_id),
+            "usage_projected": 0 if dialog_limit <= 0 else tenant_dialog_usage_current_month(tenant_id),
+            "usage_limit": dialog_limit,
+            "limit_reached": False,
+            "soft_limit_exceeded": False,
+            "near_limit": False,
+            "billable": False,
+            "percent_used": 0.0 if dialog_limit <= 0 else min(1.0, tenant_dialog_usage_current_month(tenant_id) / dialog_limit),
+            "remaining": 0 if dialog_limit <= 0 else max(0, dialog_limit - tenant_dialog_usage_current_month(tenant_id)),
+        }
+
+    usage_current = tenant_dialog_usage_current_month(tenant_id)
+    projected = usage_current + max(0, int(projected_units or 0))
+    percent_used = (projected / dialog_limit) if dialog_limit > 0 else 0.0
+    limit_reached = projected >= dialog_limit
+    soft_limit_exceeded = projected > dialog_limit or usage_current >= dialog_limit
+    near_limit = not limit_reached and percent_used >= 0.8
+    remaining = max(0, dialog_limit - usage_current)
+    reason = "soft_limit" if soft_limit_exceeded else "near_limit" if near_limit else "ok"
+    return {
+        "allowed": True,
+        "reason": reason,
+        "usage_current": usage_current,
+        "usage_projected": projected,
+        "usage_limit": dialog_limit,
+        "limit_reached": limit_reached,
+        "soft_limit_exceeded": soft_limit_exceeded,
+        "near_limit": near_limit,
+        "billable": True,
+        "percent_used": percent_used,
+        "remaining": remaining,
+    }
 
 
-def tenant_access_decision(tenant: Dict[str, Any]) -> Dict[str, Any]:
+def tenant_usage_allowed(tenant: Dict[str, Any], channel: str = "", source: str = "runtime") -> Tuple[bool, str, int, int]:
+    snapshot = tenant_usage_snapshot(tenant, channel=channel, source=source, projected_units=0)
+    return bool(snapshot.get("allowed")), str(snapshot.get("reason") or "ok"), int(snapshot.get("usage_current") or 0), int(snapshot.get("usage_limit") or 0)
+
+
+def tenant_access_decision(tenant: Dict[str, Any], channel: str = "", source: str = "runtime") -> Dict[str, Any]:
     tenant = normalize_tenant_saas_fields(tenant or {})
     tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip()
+    usage_snapshot = tenant_usage_snapshot(tenant, channel=channel, source=source, projected_units=0)
     decision = {
         "allowed": True,
         "reason": "ok",
@@ -2222,8 +2275,13 @@ def tenant_access_decision(tenant: Dict[str, Any]) -> Dict[str, Any]:
             "tenant_id": tenant_id,
             "status": tenant_status_value(tenant),
             "trial_end": tenant_trial_end_value(tenant),
-            "usage_current": 0,
-            "usage_limit": tenant_dialog_limit(tenant),
+            "usage_current": int(usage_snapshot.get("usage_current") or 0),
+            "usage_limit": int(usage_snapshot.get("usage_limit") or 0),
+            "usage_projected": int(usage_snapshot.get("usage_projected") or 0),
+            "usage_near_limit": bool(usage_snapshot.get("near_limit")),
+            "usage_limit_reached": bool(usage_snapshot.get("limit_reached")),
+            "usage_soft_limit_exceeded": bool(usage_snapshot.get("soft_limit_exceeded")),
+            "usage_billable": bool(usage_snapshot.get("billable")),
             "plan": tenant_plan_meta(tenant).get("plan"),
         },
     }
@@ -2245,13 +2303,8 @@ def tenant_access_decision(tenant: Dict[str, Any]) -> Dict[str, Any]:
             decision["reason"] = "trial_expired"
             return decision
 
-    usage_allowed, usage_reason, usage_current, usage_limit = tenant_usage_allowed(tenant)
-    decision["meta"]["usage_current"] = usage_current
-    decision["meta"]["usage_limit"] = usage_limit
-    if not usage_allowed:
-        decision["allowed"] = False
-        decision["reason"] = usage_reason
-        return decision
+    if usage_snapshot.get("reason") in {"near_limit", "soft_limit"}:
+        decision["reason"] = str(usage_snapshot.get("reason") or "ok")
 
     return decision
 
@@ -2792,6 +2845,51 @@ def abort_reschedule_text(text_: Optional[str], lang: str) -> bool:
     allowed = set().union(*abort_words.values())
     allowed.update(abort_words.get(get_lang(lang), set()))
     return low in allowed
+
+
+def usage_soft_limit_warning_text(lang: str, usage_snapshot: Dict[str, Any]) -> str:
+    lang = get_lang(lang)
+    current = int(usage_snapshot.get("usage_projected") or usage_snapshot.get("usage_current") or 0)
+    limit_value = int(usage_snapshot.get("usage_limit") or 0)
+    if limit_value <= 0:
+        return ""
+    if usage_snapshot.get("soft_limit_exceeded") or usage_snapshot.get("limit_reached"):
+        if lang == "ru":
+            return f"Внимание: месячный лимит диалогов достигнут ({current}/{limit_value}). Диалог продолжается, но аккаунту нужен апдейт тарифа."
+        if lang == "en":
+            return f"Notice: the monthly dialog limit has been reached ({current}/{limit_value}). The conversation continues, but this account needs a plan update."
+        return f"Uzmanību: mēneša dialogu limits ir sasniegts ({current}/{limit_value}). Saruna turpinās, bet kontam nepieciešams plāna atjauninājums."
+    if usage_snapshot.get("near_limit"):
+        if lang == "ru":
+            return f"Внимание: использовано уже {current} из {limit_value} диалогов за месяц."
+        if lang == "en":
+            return f"Notice: {current} of {limit_value} dialogs have already been used this month."
+        return f"Uzmanību: šomēnes jau izmantoti {current} no {limit_value} dialogiem."
+    return ""
+
+
+def apply_usage_soft_limit_warning(result: Dict[str, Any], lang: str, tenant: Dict[str, Any], channel: str, source: str = "runtime") -> Dict[str, Any]:
+    result = dict(result or {})
+    if str(result.get("status") or "").strip().lower() == "blocked":
+        return result
+    usage_snapshot = tenant_usage_snapshot(tenant, channel=channel, source=source, projected_units=1)
+    warning_text = usage_soft_limit_warning_text(lang, usage_snapshot)
+    if not warning_text:
+        return result
+    for key in ("msg_out", "reply_voice"):
+        base = str(result.get(key) or "").strip()
+        if not base:
+            result[key] = warning_text
+            continue
+        if warning_text in base:
+            continue
+        result[key] = f"{base}\n\n{warning_text}"
+    result["usage_current"] = int(usage_snapshot.get("usage_current") or 0)
+    result["usage_projected"] = int(usage_snapshot.get("usage_projected") or 0)
+    result["usage_limit"] = int(usage_snapshot.get("usage_limit") or 0)
+    result["usage_near_limit"] = bool(usage_snapshot.get("near_limit"))
+    result["usage_soft_limit_exceeded"] = bool(usage_snapshot.get("soft_limit_exceeded") or usage_snapshot.get("limit_reached"))
+    return result
 
 
 def blocked_result_for_lang(lang: str) -> Dict[str, Any]:
@@ -5003,7 +5101,7 @@ def book_appointment_for_datetime(
 # CORE LOGIC: handle_user_text
 # -------------------------
 def handle_user_text(
-    tenant_id: str, raw_phone: str, text_in: str, channel: str, lang_hint: str
+    tenant_id: str, raw_phone: str, text_in: str, channel: str, lang_hint: str, source: str = "runtime"
 ) -> Dict[str, Any]:
     msg = (text_in or "").strip()
     tenant = load_runtime_tenant(tenant_id)
@@ -5016,7 +5114,7 @@ def handle_user_text(
     if not tenant.get("_id"):
         return blocked_result_for_reason(lang, "unavailable")
 
-    access = tenant_access_decision(tenant)
+    access = tenant_access_decision(tenant, channel=channel, source=source)
     if not access.get("allowed"):
         blocked = blocked_result_for_reason(lang, str(access.get("reason") or "unavailable"))
         meta = access.get("meta") or {}
@@ -6618,20 +6716,23 @@ def tenant_plan_meta(tenant: Dict[str, Any]) -> Dict[str, Any]:
     tenant = normalize_tenant_saas_fields(tenant or {})
     plan = str(tenant.get("plan") or "starter").strip().lower()
     defaults = dict(PLAN_CATALOG.get(plan, PLAN_CATALOG["starter"]))
-    raw_dialog_limit = tenant.get("dialogs_limit") or tenant.get("dialogs_per_month")
+    raw_dialog_limit = tenant.get("dialogs_per_month")
     try:
         dialog_limit = max(0, int(raw_dialog_limit)) if raw_dialog_limit not in (None, "") else int(defaults.get("dialogs_per_month") or 0)
     except Exception:
         dialog_limit = int(defaults.get("dialogs_per_month") or 0)
     defaults["dialogs_per_month"] = dialog_limit
+    tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip()
+    current_month_usage = tenant_dialog_usage_current_month(tenant_id) if tenant_id else 0
     return {
         "plan": plan,
         "subscription_status": str(tenant.get("subscription_status") or tenant_status_value(tenant)).strip().lower() or "trial",
         "status": tenant_status_value(tenant),
         "limits": defaults,
         "usage": {
-            "dialogs_current_month": tenant_dialog_usage_current_month(str(tenant.get("_id") or tenant.get("id") or "").strip()) if str(tenant.get("_id") or tenant.get("id") or "").strip() else 0,
-            "dialogs_limit": dialog_limit,
+            "dialogs_current_month": current_month_usage,
+            "dialogs_per_month": dialog_limit,
+            "dialogs_remaining": max(0, dialog_limit - current_month_usage) if dialog_limit > 0 else 0,
         },
     }
 
@@ -8373,6 +8474,7 @@ async def dev_chat(req: DevChatRequest):
             text_in=req.message,
             channel=req.channel,
             lang_hint=req.lang,
+            source="dev_ui",
         )
         conv = db_get_or_create_conversation(req.tenant_id, raw_user, req.lang)
         orch_debug = None
@@ -8506,6 +8608,7 @@ async def dev_focus_test(req: DevFocusTestRequest):
             text_in=case,
             channel="dev",
             lang_hint=lang,
+            source="dev_ui",
         )
         conv = db_get_or_create_conversation(req.tenant_id, raw_user, lang)
         items.append({
