@@ -568,7 +568,20 @@ def humanize_result(result: Dict[str, Any], conv: Optional[Dict[str, Any]], tena
 # -------------------------
 # NEW: MULTI-TENANT DB HELPERS
 # -------------------------
+def ensure_tenants_billing_columns() -> None:
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT"))
+            conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS stripe_subscription_id TEXT"))
+            conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS current_period_start TIMESTAMPTZ"))
+            conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS current_period_end TIMESTAMPTZ"))
+            conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS cancel_at_period_end BOOLEAN NOT NULL DEFAULT FALSE"))
+    except Exception as e:
+        log.error("ensure_tenants_billing_columns_failed err=%s", e)
+
+
 def tenants_columns() -> List[Dict[str, Any]]:
+    ensure_tenants_billing_columns()
     with engine.connect() as conn:
         rows = conn.execute(
             text(
@@ -2164,25 +2177,150 @@ def month_start_local(dt_value: Optional[datetime] = None) -> datetime:
     return dt_value.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
 
-def tenant_dialog_usage_current_month(tenant_id: str) -> int:
+def month_end_local(dt_value: Optional[datetime] = None) -> datetime:
+    start = month_start_local(dt_value)
+    if start.month == 12:
+        return start.replace(year=start.year + 1, month=1)
+    return start.replace(month=start.month + 1)
+
+
+def parse_tenant_period_value(value: Any) -> Optional[datetime]:
+    if isinstance(value, datetime):
+        return value.astimezone(TZ) if value.tzinfo else value.replace(tzinfo=TZ)
+    if value is None:
+        return None
+    return parse_dt_any_tz(str(value).strip())
+
+
+def billing_period_bounds(dt_value: Optional[datetime] = None) -> Tuple[datetime, datetime]:
+    start = month_start_local(dt_value)
+    end = month_end_local(dt_value)
+    return start, end
+
+
+def tenant_billing_period(tenant: Dict[str, Any]) -> Dict[str, Any]:
+    tenant = normalize_tenant_saas_fields(tenant or {})
+    stored_start = parse_tenant_period_value(tenant.get("current_period_start"))
+    stored_end = parse_tenant_period_value(tenant.get("current_period_end"))
+    if stored_start and stored_end and stored_end > stored_start:
+        source = "tenant"
+        start, end = stored_start, stored_end
+    else:
+        start, end = billing_period_bounds(now_ts())
+        source = "calendar_month"
+    return {
+        "start": start,
+        "end": end,
+        "start_iso": start.isoformat(),
+        "end_iso": end.isoformat(),
+        "source": source,
+    }
+
+
+def usage_units_for_period(
+    tenant_id: str,
+    start_ts: datetime,
+    end_ts: Optional[datetime] = None,
+    billable_only: bool = True,
+) -> int:
     tenant_id = (tenant_id or "").strip()
     if not tenant_id:
         return 0
     ensure_usage_events_table()
+    sql = """
+        SELECT COALESCE(SUM(usage_units), 0)
+        FROM usage_events
+        WHERE tenant_id=:tenant_id
+          AND created_at >= :start_ts
+    """
+    params: Dict[str, Any] = {"tenant_id": tenant_id, "start_ts": start_ts}
+    if end_ts is not None:
+        sql += """
+          AND created_at < :end_ts"""
+        params["end_ts"] = end_ts
+    if billable_only:
+        sql += """
+          AND billable=true"""
     with engine.connect() as conn:
-        row = conn.execute(
-            text(
-                """
-                SELECT COALESCE(SUM(usage_units), 0)
-                FROM usage_events
-                WHERE tenant_id=:tenant_id
-                  AND billable=true
-                  AND created_at >= :since_ts
-                """
-            ),
-            {"tenant_id": tenant_id, "since_ts": month_start_local()},
-        ).fetchone()
+        row = conn.execute(text(sql), params).fetchone()
     return int((row[0] if row else 0) or 0)
+
+
+def tenant_usage_summary(tenant: Dict[str, Any], channel: str = "", source: str = "runtime") -> Dict[str, Any]:
+    tenant = normalize_tenant_saas_fields(tenant or {})
+    tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip()
+    period = tenant_billing_period(tenant)
+    dialog_limit = tenant_dialog_limit(tenant)
+    exempt = usage_context_is_non_billable(channel, source)
+    billable_units = usage_units_for_period(tenant_id, period["start"], period["end"], billable_only=True) if tenant_id else 0
+    all_units = usage_units_for_period(tenant_id, period["start"], period["end"], billable_only=False) if tenant_id else 0
+    remaining = max(0, dialog_limit - billable_units) if dialog_limit > 0 else 0
+    percent_used = (billable_units / dialog_limit) if dialog_limit > 0 else 0.0
+    return {
+        "tenant_id": tenant_id or None,
+        "billable": not exempt,
+        "dialogs_used": billable_units,
+        "dialogs_used_current_period": billable_units,
+        "dialogs_used_total": all_units,
+        "dialogs_per_month": dialog_limit,
+        "dialogs_limit": dialog_limit,
+        "dialogs_remaining": remaining,
+        "percent_used": round(percent_used, 4),
+        "current_period_start": period["start_iso"],
+        "current_period_end": period["end_iso"],
+        "billing_period_source": period["source"],
+    }
+
+
+def tenant_billing_status(
+    tenant: Dict[str, Any],
+    channel: str = "",
+    source: str = "runtime",
+    projected_units: int = 0,
+) -> Dict[str, Any]:
+    tenant = normalize_tenant_saas_fields(tenant or {})
+    tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip()
+    summary = tenant_usage_summary(tenant, channel=channel, source=source)
+    limit_value = int(summary.get("dialogs_per_month") or 0)
+    current_used = int(summary.get("dialogs_used") or 0)
+    projected = current_used + max(0, int(projected_units or 0)) if summary.get("billable") else current_used
+    percent_projected = (projected / limit_value) if limit_value > 0 else 0.0
+    near_limit = bool(limit_value > 0 and projected < limit_value and percent_projected >= 0.8)
+    limit_reached = bool(limit_value > 0 and projected >= limit_value)
+    soft_limit_exceeded = bool(limit_value > 0 and (projected > limit_value or current_used >= limit_value))
+    return {
+        "tenant_id": tenant_id or None,
+        "plan": str(tenant.get("plan") or "starter").strip().lower() or "starter",
+        "subscription_status": str(tenant.get("subscription_status") or tenant_status_value(tenant)).strip().lower() or "trial",
+        "status": tenant_status_value(tenant),
+        "stripe_customer_id": str(tenant.get("stripe_customer_id") or "").strip() or None,
+        "stripe_subscription_id": str(tenant.get("stripe_subscription_id") or "").strip() or None,
+        "cancel_at_period_end": bool(tenant.get("cancel_at_period_end")),
+        "dialogs_used": current_used,
+        "dialogs_limit": limit_value,
+        "dialogs_remaining": max(0, limit_value - current_used) if limit_value > 0 else 0,
+        "usage_current": current_used,
+        "usage_projected": projected,
+        "usage_limit": limit_value,
+        "near_limit": near_limit,
+        "limit_reached": limit_reached,
+        "soft_limit_exceeded": soft_limit_exceeded,
+        "percent_used": summary.get("percent_used") or 0.0,
+        "percent_projected": round(percent_projected, 4),
+        "current_period_start": summary.get("current_period_start"),
+        "current_period_end": summary.get("current_period_end"),
+        "billing_period_source": summary.get("billing_period_source"),
+        "billable": bool(summary.get("billable")),
+        "usage_summary": summary,
+    }
+
+
+def tenant_dialog_usage_current_month(tenant_id: str) -> int:
+    tenant_id = (tenant_id or "").strip()
+    if not tenant_id:
+        return 0
+    start_ts, end_ts = billing_period_bounds(now_ts())
+    return usage_units_for_period(tenant_id, start_ts, end_ts, billable_only=True)
 
 
 def tenant_dialog_limit(tenant: Dict[str, Any]) -> int:
@@ -6481,7 +6619,12 @@ SAAS_TENANT_FIELDS = {
     "google_connected": False,
     "subscription_status": "trial",
     "plan": "starter",
-    "owner_email": ""
+    "owner_email": "",
+    "stripe_customer_id": "",
+    "stripe_subscription_id": "",
+    "current_period_start": None,
+    "current_period_end": None,
+    "cancel_at_period_end": False,
 }
 
 def normalize_tenant_saas_fields(tenant: Dict[str, Any]) -> Dict[str, Any]:
@@ -6722,17 +6865,29 @@ def tenant_plan_meta(tenant: Dict[str, Any]) -> Dict[str, Any]:
     except Exception:
         dialog_limit = int(defaults.get("dialogs_per_month") or 0)
     defaults["dialogs_per_month"] = dialog_limit
-    tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip()
-    current_month_usage = tenant_dialog_usage_current_month(tenant_id) if tenant_id else 0
+    billing = tenant_billing_status(tenant)
+    usage = billing.get("usage_summary") or {}
     return {
         "plan": plan,
-        "subscription_status": str(tenant.get("subscription_status") or tenant_status_value(tenant)).strip().lower() or "trial",
-        "status": tenant_status_value(tenant),
+        "subscription_status": billing.get("subscription_status"),
+        "status": billing.get("status"),
         "limits": defaults,
         "usage": {
-            "dialogs_current_month": current_month_usage,
+            "dialogs_current_month": int(usage.get("dialogs_used") or 0),
             "dialogs_per_month": dialog_limit,
-            "dialogs_remaining": max(0, dialog_limit - current_month_usage) if dialog_limit > 0 else 0,
+            "dialogs_remaining": int(usage.get("dialogs_remaining") or 0),
+            "percent_used": usage.get("percent_used") or 0.0,
+        },
+        "billing": {
+            "current_period_start": billing.get("current_period_start"),
+            "current_period_end": billing.get("current_period_end"),
+            "billing_period_source": billing.get("billing_period_source"),
+            "stripe_customer_id": billing.get("stripe_customer_id"),
+            "stripe_subscription_id": billing.get("stripe_subscription_id"),
+            "cancel_at_period_end": billing.get("cancel_at_period_end"),
+            "near_limit": billing.get("near_limit"),
+            "limit_reached": billing.get("limit_reached"),
+            "soft_limit_exceeded": billing.get("soft_limit_exceeded"),
         },
     }
 
@@ -6796,6 +6951,7 @@ def tenant_overview_payload(tenant: Dict[str, Any]) -> Dict[str, Any]:
         "onboarding": onboarding_status_payload(tenant),
         "readiness": tenant_ready_status_payload(tenant),
         "plan_meta": tenant_plan_meta(tenant),
+        "billing": tenant_billing_status(tenant),
         "links": onboarding_links_payload(tenant_id),
         "phone_routes_count": tenant_phone_routes_count(tenant_id) if tenant_id else 0,
     }
@@ -7076,6 +7232,11 @@ def onboarding_create_tenant(payload: dict = Body(...)):
         "timezone": timezone_value,
         "phone_number": phone_number or None,
         "plan": "starter",
+        "stripe_customer_id": None,
+        "stripe_subscription_id": None,
+        "current_period_start": month_start_local(),
+        "current_period_end": month_end_local(),
+        "cancel_at_period_end": False,
         "work_start": work_start_value,
         "work_end": work_end_value,
         "services_lv": str(payload.get("services_lv") or services_defaults["lv"]),
@@ -7320,6 +7481,8 @@ def dashboard_usage_summary(tenant_id: str, days: int = 14) -> Dict[str, Any]:
     total_reschedules = int((row[3] if row else 0) or 0)
     unique_users = int((row[4] if row else 0) or 0)
     booking_rate = round((float(total_bookings) / float(total_requests) * 100.0), 1) if total_requests else 0.0
+    tenant = get_tenant_or_404(tenant_id)
+    billing = tenant_billing_status(tenant)
     return {
         "tenant_id": tenant_id,
         "window_days": days,
@@ -7332,6 +7495,9 @@ def dashboard_usage_summary(tenant_id: str, days: int = 14) -> Dict[str, Any]:
         "channels": dashboard_channel_breakdown(tenant_id, days=days),
         "top_services": dashboard_top_services(tenant_id, limit=5, days=days),
         "daily": dashboard_daily_usage(tenant_id, days=days),
+        "billing": billing,
+        "current_period_start": billing.get("current_period_start"),
+        "current_period_end": billing.get("current_period_end"),
     }
 
 
@@ -8165,6 +8331,7 @@ def list_tenants(limit: int = 100):
             "google_connected": tenant_google_connected_effective(tenant_item),
             "subscription_status": tenant_item.get("subscription_status"),
             "plan": tenant_item.get("plan"),
+            "billing": tenant_billing_status(tenant_item),
             "ready": tenant_ready_status_payload(tenant_item).get("ready"),
             "missing": tenant_ready_status_payload(tenant_item).get("missing"),
             "updated_at": r[10].isoformat() if hasattr(r[10], "isoformat") else str(r[10]),
