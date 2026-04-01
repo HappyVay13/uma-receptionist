@@ -198,6 +198,8 @@ I18N: Dict[str, Dict[str, str]] = {
         "trial_expired_text": "Izmēģinājuma periods ir beidzies. Lūdzu, atjaunojiet plānu.",
         "inactive_voice": "Atvainojiet, šis konts pašlaik nav aktīvs.",
         "inactive_text": "Šis konts pašlaik nav aktīvs.",
+        "past_due_voice": "Atvainojiet, šis konts īslaicīgi nav pieejams maksājuma problēmas dēļ.",
+        "past_due_text": "Šis konts īslaicīgi nav pieejams maksājuma problēmas dēļ.",
         "no_active_booking": "Jums nav aktīvu pierakstu.",
         "cancel_failed": "Neizdevās atcelt pierakstu. Mēģiniet vēlreiz.",
         "cancelled": "Pieraksts atcelts.",
@@ -253,6 +255,12 @@ I18N: Dict[str, Dict[str, str]] = {
     "ru": {
         "service_unavailable_voice": "Извините, сервис недоступен.",
         "service_unavailable_text": "Сервис недоступен.",
+        "trial_expired_voice": "Извините, пробный период закончился. Пожалуйста, обновите тариф.",
+        "trial_expired_text": "Пробный период закончился. Пожалуйста, обновите тариф.",
+        "inactive_voice": "Извините, этот аккаунт сейчас неактивен.",
+        "inactive_text": "Этот аккаунт сейчас неактивен.",
+        "past_due_voice": "Извините, этот аккаунт временно недоступен из-за проблемы с оплатой.",
+        "past_due_text": "Этот аккаунт временно недоступен из-за проблемы с оплатой.",
         "no_active_booking": "У вас нет активных записей.",
         "cancel_failed": "Не удалось отменить запись. Попробуйте ещё раз.",
         "cancelled": "Запись отменена.",
@@ -308,6 +316,12 @@ I18N: Dict[str, Dict[str, str]] = {
     "en": {
         "service_unavailable_voice": "Sorry, the service is unavailable.",
         "service_unavailable_text": "Service is unavailable.",
+        "trial_expired_voice": "Sorry, the trial period has ended. Please renew the plan.",
+        "trial_expired_text": "The trial period has ended. Please renew the plan.",
+        "inactive_voice": "Sorry, this account is currently inactive.",
+        "inactive_text": "This account is currently inactive.",
+        "past_due_voice": "Sorry, this account is temporarily unavailable due to a billing issue.",
+        "past_due_text": "This account is temporarily unavailable due to a billing issue.",
         "no_active_booking": "You do not have any active appointments.",
         "cancel_failed": "Could not cancel the appointment. Please try again.",
         "cancelled": "Your appointment has been cancelled.",
@@ -568,7 +582,19 @@ def humanize_result(result: Dict[str, Any], conv: Optional[Dict[str, Any]], tena
 # -------------------------
 # NEW: MULTI-TENANT DB HELPERS
 # -------------------------
+
+
+def ensure_tenants_lifecycle_columns() -> None:
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS subscription_status TEXT"))
+            conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS plan TEXT"))
+            conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS dialogs_per_month INTEGER"))
+            conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS trial_end TIMESTAMPTZ"))
+    except Exception as e:
+        log.error("ensure_tenants_lifecycle_columns_failed err=%s", e)
 def tenants_columns() -> List[Dict[str, Any]]:
+    ensure_tenants_lifecycle_columns()
     with engine.connect() as conn:
         rows = conn.execute(
             text(
@@ -2138,12 +2164,25 @@ def get_tenant_calendar_context(tenant: Dict[str, Any]) -> Dict[str, Any]:
 # SaaS ACCESS CONTROL
 # -------------------------
 def tenant_status_value(tenant: Dict[str, Any]) -> str:
-    return str(
+    tenant = normalize_tenant_saas_fields(tenant or {})
+    explicit = str(
         tenant.get("status")
         or tenant.get("client_status")
         or CLIENT_STATUS_FALLBACK
         or "trial"
     ).strip().lower() or "trial"
+    if explicit in {"inactive", "suspended"}:
+        return "inactive"
+    lifecycle = effective_subscription_status(tenant)
+    if lifecycle == "active":
+        return "active"
+    if lifecycle == "past_due":
+        return "past_due"
+    if lifecycle == "inactive":
+        return "inactive"
+    if lifecycle == "expired":
+        return "expired"
+    return "trial"
 
 
 def tenant_trial_end_value(tenant: Dict[str, Any]) -> Optional[datetime]:
@@ -2268,12 +2307,15 @@ def tenant_access_decision(tenant: Dict[str, Any], channel: str = "", source: st
     tenant = normalize_tenant_saas_fields(tenant or {})
     tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip()
     usage_snapshot = tenant_usage_snapshot(tenant, channel=channel, source=source, projected_units=0)
+    lifecycle = tenant_lifecycle_payload(tenant)
     decision = {
         "allowed": True,
         "reason": "ok",
         "meta": {
             "tenant_id": tenant_id,
             "status": tenant_status_value(tenant),
+            "subscription_status": lifecycle.get("subscription_status"),
+            "effective_status": lifecycle.get("effective_status"),
             "trial_end": tenant_trial_end_value(tenant),
             "usage_current": int(usage_snapshot.get("usage_current") or 0),
             "usage_limit": int(usage_snapshot.get("usage_limit") or 0),
@@ -2290,21 +2332,17 @@ def tenant_access_decision(tenant: Dict[str, Any], channel: str = "", source: st
         decision["reason"] = "unavailable"
         return decision
 
-    status_value = decision["meta"]["status"]
-    if status_value == "inactive":
+    effective_status = str(lifecycle.get("effective_status") or "trial")
+    if lifecycle.get("blocked"):
         decision["allowed"] = False
-        decision["reason"] = "inactive"
+        decision["reason"] = str(lifecycle.get("block_reason") or effective_status or "inactive")
         return decision
 
-    if status_value == "trial":
-        trial_end = decision["meta"].get("trial_end")
-        if trial_end and now_ts() > trial_end:
-            decision["allowed"] = False
-            decision["reason"] = "trial_expired"
-            return decision
+    if effective_status == "past_due":
+        decision["reason"] = "past_due"
 
     if usage_snapshot.get("reason") in {"near_limit", "soft_limit"}:
-        decision["reason"] = str(usage_snapshot.get("reason") or "ok")
+        decision["reason"] = str(usage_snapshot.get("reason") or decision.get("reason") or "ok")
 
     return decision
 
@@ -2917,6 +2955,15 @@ def blocked_result_for_reason(lang: str, reason: Optional[str]) -> Dict[str, Any
             "status": "blocked",
             "reply_voice": t(lang, "inactive_voice"),
             "msg_out": t(lang, "inactive_text"),
+            "lang": lang,
+            "blocked_reason": low,
+            "preserve_text": True,
+        }
+    if low == "past_due":
+        return {
+            "status": "blocked",
+            "reply_voice": t(lang, "past_due_voice"),
+            "msg_out": t(lang, "past_due_text"),
             "lang": lang,
             "blocked_reason": low,
             "preserve_text": True,
@@ -6484,6 +6531,28 @@ SAAS_TENANT_FIELDS = {
     "owner_email": ""
 }
 
+LIFECYCLE_STATUS_ALIASES = {
+    "enabled": "active",
+    "paid": "active",
+    "live": "active",
+    "due": "past_due",
+    "payment_failed": "past_due",
+    "paused": "inactive",
+    "disabled": "inactive",
+    "cancelled": "inactive",
+    "canceled": "inactive",
+    "expired": "expired",
+}
+
+ALLOWED_SUBSCRIPTION_STATUSES = {"trial", "active", "past_due", "inactive", "expired"}
+
+def normalize_subscription_status(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    raw = LIFECYCLE_STATUS_ALIASES.get(raw, raw)
+    if raw in ALLOWED_SUBSCRIPTION_STATUSES:
+        return raw
+    return "trial"
+
 def normalize_tenant_saas_fields(tenant: Dict[str, Any]) -> Dict[str, Any]:
     """Ensure SaaS lifecycle fields exist so older tenants don't break."""
     if not tenant:
@@ -6491,7 +6560,34 @@ def normalize_tenant_saas_fields(tenant: Dict[str, Any]) -> Dict[str, Any]:
     for k, v in SAAS_TENANT_FIELDS.items():
         if k not in tenant or tenant.get(k) is None:
             tenant[k] = v
+    tenant["subscription_status"] = normalize_subscription_status(tenant.get("subscription_status"))
+    tenant["plan"] = normalized_plan_name(tenant.get("plan")) if "plan" in tenant else "starter"
     return tenant
+
+def effective_subscription_status(tenant: Dict[str, Any]) -> str:
+    tenant = normalize_tenant_saas_fields(tenant or {})
+    status = normalize_subscription_status(tenant.get("subscription_status"))
+    if status == "trial":
+        trial_end = tenant_trial_end_value(tenant)
+        if trial_end and now_ts() > trial_end:
+            return "expired"
+    return status
+
+def tenant_lifecycle_payload(tenant: Dict[str, Any]) -> Dict[str, Any]:
+    tenant = normalize_tenant_saas_fields(tenant or {})
+    trial_end = tenant_trial_end_value(tenant)
+    subscription_status = normalize_subscription_status(tenant.get("subscription_status"))
+    effective_status = effective_subscription_status(tenant)
+    blocked = effective_status in {"inactive", "expired"}
+    if effective_status == "past_due":
+        blocked = False
+    return {
+        "subscription_status": subscription_status,
+        "effective_status": effective_status,
+        "trial_end": trial_end.isoformat() if hasattr(trial_end, "isoformat") else None,
+        "blocked": blocked,
+        "block_reason": "trial_expired" if effective_status == "expired" and subscription_status == "trial" else effective_status if blocked else None,
+    }
 
 
 def tenant_service_account_json_value(tenant: Optional[Dict[str, Any]]) -> str:
@@ -6776,7 +6872,8 @@ def tenant_plan_meta(tenant: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "plan": plan,
         "display_name": defaults.get("display_name") or plan.title(),
-        "subscription_status": str(tenant.get("subscription_status") or tenant_status_value(tenant)).strip().lower() or "trial",
+        "subscription_status": normalize_subscription_status(tenant.get("subscription_status")),
+        "effective_status": effective_subscription_status(tenant),
         "status": tenant_status_value(tenant),
         "monthly_price": defaults.get("monthly_price", 0),
         "features": list(defaults.get("features") or []),
@@ -6850,6 +6947,8 @@ def tenant_overview_payload(tenant: Dict[str, Any]) -> Dict[str, Any]:
         "onboarding": onboarding_status_payload(tenant),
         "readiness": tenant_ready_status_payload(tenant),
         "plan_meta": tenant_plan_meta(tenant),
+        "lifecycle": tenant_lifecycle_payload(tenant),
+        "access": tenant_access_decision(tenant),
         "available_plans": list(available_plan_catalog().values()),
         "links": onboarding_links_payload(tenant_id),
         "phone_routes_count": tenant_phone_routes_count(tenant_id) if tenant_id else 0,
@@ -8237,6 +8336,7 @@ def list_tenants(limit: int = 100):
             "onboarding_completed": tenant_item.get("onboarding_completed"),
             "google_connected": tenant_google_connected_effective(tenant_item),
             "subscription_status": tenant_item.get("subscription_status"),
+            "effective_status": effective_subscription_status(tenant_item),
             "plan": tenant_item.get("plan"),
             "ready": tenant_ready_status_payload(tenant_item).get("ready"),
             "missing": tenant_ready_status_payload(tenant_item).get("missing"),
@@ -8320,7 +8420,7 @@ async function loadTenants() {{
     const google = item.google_connected ? badge('Connected','ok') : badge('Pending','warn');
     const cal = item.calendar_id ? badge('Selected','ok') : badge('Missing','warn');
     const missing = Array.isArray(item.missing) && item.missing.length ? `<div class="small">Missing: ${{esc(item.missing.join(', '))}}</div>` : '';
-    tr.innerHTML = `<td><strong>${{esc(item.business_name || item.tenant_id)}}</strong>${{missing}}</td><td><code>${{esc(item.tenant_id)}}</code></td><td>${{ready}}</td><td>${{google}}</td><td>${{cal}}</td><td>${{esc(item.plan || 'starter')}}<div class="small">${{esc(item.subscription_status || 'trial')}}</div></td><td><span class="small">${{esc(item.updated_at || '')}}</span></td><td class="actions"><a href="/dashboard?tenant_id=${{encodeURIComponent(item.tenant_id)}}">dashboard</a><a href="/tenant/config/ui?tenant_id=${{encodeURIComponent(item.tenant_id)}}">config</a><a href="/tenant/overview?tenant_id=${{encodeURIComponent(item.tenant_id)}}">overview</a></td>`;
+    tr.innerHTML = `<td><strong>${{esc(item.business_name || item.tenant_id)}}</strong>${{missing}}</td><td><code>${{esc(item.tenant_id)}}</code></td><td>${{ready}}</td><td>${{google}}</td><td>${{cal}}</td><td>${{esc(item.plan || 'starter')}}<div class="small">${{esc(item.effective_status || item.subscription_status || 'trial')}}</div></td><td><span class="small">${{esc(item.updated_at || '')}}</span></td><td class="actions"><a href="/dashboard?tenant_id=${{encodeURIComponent(item.tenant_id)}}">dashboard</a><a href="/tenant/config/ui?tenant_id=${{encodeURIComponent(item.tenant_id)}}">config</a><a href="/tenant/overview?tenant_id=${{encodeURIComponent(item.tenant_id)}}">overview</a></td>`;
     tb.appendChild(tr);
   }});
 }}
@@ -8353,7 +8453,7 @@ def tenant_change_plan(payload: TenantPlanChangeRequest):
         updates.append("plan=:plan")
         params["plan"] = plan
     if payload.subscription_status is not None and "subscription_status" in col_names:
-        sub_status = str(payload.subscription_status or "").strip().lower() or None
+        sub_status = normalize_subscription_status(payload.subscription_status)
         if sub_status:
             updates.append("subscription_status=:subscription_status")
             params["subscription_status"] = sub_status
@@ -8464,7 +8564,7 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
     if payload.plan is not None and "plan" in col_names:
         add_field("plan", normalized_plan_name(payload.plan))
     if payload.subscription_status is not None and "subscription_status" in col_names:
-        sub_status = str(payload.subscription_status or "").strip().lower() or None
+        sub_status = normalize_subscription_status(payload.subscription_status)
         add_field("subscription_status", sub_status)
     if payload.reset_override and "dialogs_per_month" in col_names:
         updates.append("dialogs_per_month=NULL")
