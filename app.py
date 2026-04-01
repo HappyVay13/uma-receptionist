@@ -2325,15 +2325,9 @@ def tenant_dialog_usage_current_month(tenant_id: str) -> int:
 
 def tenant_dialog_limit(tenant: Dict[str, Any]) -> int:
     tenant = normalize_tenant_saas_fields(tenant or {})
-    plan = str(tenant.get("plan") or "starter").strip().lower() or "starter"
-    defaults = dict(PLAN_CATALOG.get(plan, PLAN_CATALOG["starter"]))
-    raw_limit = tenant.get("dialogs_per_month")
-    try:
-        if raw_limit in (None, ""):
-            return max(0, int(defaults.get("dialogs_per_month") or 0))
-        return max(0, int(raw_limit or 0))
-    except Exception:
-        return max(0, int(defaults.get("dialogs_per_month") or 0))
+    defaults = tenant_plan_defaults(tenant)
+    dialog_limit, _ = tenant_effective_dialog_limit(tenant, defaults)
+    return dialog_limit
 
 
 def tenant_usage_snapshot(
@@ -6830,48 +6824,108 @@ def onboarding_status_payload(tenant: Dict[str, Any]) -> Dict[str, Any]:
 
 PLAN_CATALOG = {
     "starter": {
+        "display_name": "Starter",
+        "monthly_price": 0,
         "dialogs_per_month": 300,
         "llm_calls_per_month": 0,
         "llm_mode": "off",
         "includes_advanced_ai": False,
+        "features": ["booking", "cancel", "reschedule", "faq"],
+        "sort_order": 10,
     },
     "pro": {
+        "display_name": "Pro",
+        "monthly_price": 39,
         "dialogs_per_month": 1000,
         "llm_calls_per_month": 800,
         "llm_mode": "smart",
         "includes_advanced_ai": True,
+        "features": ["booking", "cancel", "reschedule", "faq", "smart_llm"],
+        "sort_order": 20,
     },
     "ai": {
+        "display_name": "AI",
+        "monthly_price": 79,
         "dialogs_per_month": 2000,
         "llm_calls_per_month": 2500,
         "llm_mode": "full",
         "includes_advanced_ai": True,
+        "features": ["booking", "cancel", "reschedule", "faq", "smart_llm", "advanced_ai"],
+        "sort_order": 30,
     },
     "business": {
+        "display_name": "Business",
+        "monthly_price": 149,
         "dialogs_per_month": 3000,
         "llm_calls_per_month": 5000,
         "llm_mode": "full",
         "includes_advanced_ai": True,
+        "features": ["booking", "cancel", "reschedule", "faq", "smart_llm", "advanced_ai", "priority_support"],
+        "sort_order": 40,
     },
 }
 
+PLAN_ALIASES = {
+    "growth": "pro",
+    "professional": "pro",
+    "advanced": "ai",
+    "enterprise": "business",
+}
+
+
+def normalized_plan_name(value: Any) -> str:
+    plan = str(value or "starter").strip().lower() or "starter"
+    plan = PLAN_ALIASES.get(plan, plan)
+    if plan not in PLAN_CATALOG:
+        return "starter"
+    return plan
+
+
+def available_plan_catalog() -> Dict[str, Dict[str, Any]]:
+    out: Dict[str, Dict[str, Any]] = {}
+    for plan_key, meta in PLAN_CATALOG.items():
+        item = dict(meta)
+        item["plan"] = plan_key
+        out[plan_key] = item
+    return out
+
+
+def tenant_plan_defaults(tenant: Dict[str, Any]) -> Dict[str, Any]:
+    plan = normalized_plan_name((tenant or {}).get("plan"))
+    defaults = dict(PLAN_CATALOG.get(plan, PLAN_CATALOG["starter"]))
+    defaults["plan"] = plan
+    return defaults
+
+
+def tenant_effective_dialog_limit(tenant: Dict[str, Any], defaults: Optional[Dict[str, Any]] = None) -> Tuple[int, bool]:
+    defaults = dict(defaults or tenant_plan_defaults(tenant))
+    raw_dialog_limit = (tenant or {}).get("dialogs_per_month")
+    try:
+        if raw_dialog_limit in (None, ""):
+            return max(0, int(defaults.get("dialogs_per_month") or 0)), False
+        return max(0, int(raw_dialog_limit or 0)), True
+    except Exception:
+        return max(0, int(defaults.get("dialogs_per_month") or 0)), False
+
+
 def tenant_plan_meta(tenant: Dict[str, Any]) -> Dict[str, Any]:
     tenant = normalize_tenant_saas_fields(tenant or {})
-    plan = str(tenant.get("plan") or "starter").strip().lower()
-    defaults = dict(PLAN_CATALOG.get(plan, PLAN_CATALOG["starter"]))
-    raw_dialog_limit = tenant.get("dialogs_per_month")
-    try:
-        dialog_limit = max(0, int(raw_dialog_limit)) if raw_dialog_limit not in (None, "") else int(defaults.get("dialogs_per_month") or 0)
-    except Exception:
-        dialog_limit = int(defaults.get("dialogs_per_month") or 0)
+    plan = normalized_plan_name(tenant.get("plan"))
+    defaults = tenant_plan_defaults(tenant)
+    dialog_limit, has_override = tenant_effective_dialog_limit(tenant, defaults)
     defaults["dialogs_per_month"] = dialog_limit
     billing = tenant_billing_status(tenant)
     usage = billing.get("usage_summary") or {}
     return {
         "plan": plan,
+        "display_name": defaults.get("display_name") or plan.title(),
         "subscription_status": billing.get("subscription_status"),
         "status": billing.get("status"),
+        "monthly_price": defaults.get("monthly_price", 0),
+        "features": list(defaults.get("features") or []),
         "limits": defaults,
+        "limits_source": "tenant_override" if has_override else "plan_default",
+        "override_dialogs_per_month": dialog_limit if has_override else None,
         "usage": {
             "dialogs_current_month": int(usage.get("dialogs_used") or 0),
             "dialogs_per_month": dialog_limit,
@@ -6952,6 +7006,7 @@ def tenant_overview_payload(tenant: Dict[str, Any]) -> Dict[str, Any]:
         "readiness": tenant_ready_status_payload(tenant),
         "plan_meta": tenant_plan_meta(tenant),
         "billing": tenant_billing_status(tenant),
+        "available_plans": list(available_plan_catalog().values()),
         "links": onboarding_links_payload(tenant_id),
         "phone_routes_count": tenant_phone_routes_count(tenant_id) if tenant_id else 0,
     }
@@ -7496,6 +7551,7 @@ def dashboard_usage_summary(tenant_id: str, days: int = 14) -> Dict[str, Any]:
         "top_services": dashboard_top_services(tenant_id, limit=5, days=days),
         "daily": dashboard_daily_usage(tenant_id, days=days),
         "billing": billing,
+        "plan_meta": tenant_plan_meta(tenant),
         "current_period_start": billing.get("current_period_start"),
         "current_period_end": billing.get("current_period_end"),
     }
@@ -8257,6 +8313,9 @@ class TenantConfigUpdateRequest(BaseModel):
     phone_number: Optional[str] = None
     timezone: Optional[str] = None
     language: Optional[str] = None
+    plan: Optional[str] = None
+    subscription_status: Optional[str] = None
+    dialogs_per_month: Optional[int] = None
     work_start: Optional[str] = None
     work_end: Optional[str] = None
     services_lv: Optional[str] = None
@@ -8273,6 +8332,13 @@ class TenantConfigUpdateRequest(BaseModel):
     business_memory_lv: Optional[str] = None
     business_memory_ru: Optional[str] = None
     business_memory_en: Optional[str] = None
+
+
+class TenantPlanChangeRequest(BaseModel):
+    tenant_id: str
+    plan: str
+    dialogs_per_month: Optional[int] = None
+    subscription_status: Optional[str] = None
 
 def _jsonable_tenant_view(tenant: Dict[str, Any]) -> Dict[str, Any]:
     tenant = dict(tenant or {})
@@ -8330,8 +8396,10 @@ def list_tenants(limit: int = 100):
             "onboarding_completed": tenant_item.get("onboarding_completed"),
             "google_connected": tenant_google_connected_effective(tenant_item),
             "subscription_status": tenant_item.get("subscription_status"),
-            "plan": tenant_item.get("plan"),
+            "plan": normalized_plan_name(tenant_item.get("plan")),
+            "plan_meta": tenant_plan_meta(tenant_item),
             "billing": tenant_billing_status(tenant_item),
+            "effective_dialogs_limit": tenant_dialog_limit(tenant_item),
             "ready": tenant_ready_status_payload(tenant_item).get("ready"),
             "missing": tenant_ready_status_payload(tenant_item).get("missing"),
             "updated_at": r[10].isoformat() if hasattr(r[10], "isoformat") else str(r[10]),
@@ -8426,6 +8494,50 @@ document.addEventListener('DOMContentLoaded', loadTenants);
     return HTMLResponse(content=html)
 
 
+@app.get("/plans")
+def list_plans():
+    return {"items": list(available_plan_catalog().values())}
+
+
+@app.post("/tenant/change_plan")
+def tenant_change_plan(payload: TenantPlanChangeRequest):
+    tenant_id = (payload.tenant_id or "").strip()
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="tenant_id required")
+    tenant = get_tenant_or_404(tenant_id)
+    plan = normalized_plan_name(payload.plan)
+    cols = tenants_columns()
+    pk = tenants_pk(cols)
+    col_names = {c["name"] for c in cols}
+    updates = []
+    params: Dict[str, Any] = {"tid": tenant_id}
+    if "plan" in col_names:
+        updates.append("plan=:plan")
+        params["plan"] = plan
+    if payload.subscription_status is not None and "subscription_status" in col_names:
+        sub_status = str(payload.subscription_status or "").strip().lower() or None
+        if sub_status:
+            updates.append("subscription_status=:subscription_status")
+            params["subscription_status"] = sub_status
+    if payload.dialogs_per_month is not None and "dialogs_per_month" in col_names:
+        updates.append("dialogs_per_month=:dialogs_per_month")
+        params["dialogs_per_month"] = max(0, int(payload.dialogs_per_month))
+    if "updated_at" in col_names:
+        updates.append("updated_at=NOW()")
+    if not updates:
+        raise HTTPException(status_code=500, detail="No writable tenant fields available")
+    with engine.begin() as conn:
+        conn.execute(text(f"UPDATE tenants SET {', '.join(updates)} WHERE {pk}=:tid"), params)
+    updated = get_tenant_or_404(tenant_id)
+    return {
+        "status": "ok",
+        "tenant_id": tenant_id,
+        "plan": updated.get("plan"),
+        "plan_meta": tenant_plan_meta(updated),
+        "billing": tenant_billing_status(updated),
+    }
+
+
 @app.get("/tenant/config")
 def tenant_config(tenant_id: str = TENANT_ID_DEFAULT):
     tenant = get_tenant((tenant_id or "").strip() or TENANT_ID_DEFAULT)
@@ -8487,6 +8599,14 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
 
     add_field("work_start", clean_work_start)
     add_field("work_end", clean_work_end)
+    if payload.plan is not None:
+        add_field("plan", normalized_plan_name(payload.plan))
+    if payload.subscription_status is not None:
+        clean_subscription_status = str(payload.subscription_status or "").strip().lower() or None
+        if clean_subscription_status:
+            add_field("subscription_status", clean_subscription_status)
+    if payload.dialogs_per_month is not None:
+        add_field("dialogs_per_month", max(0, int(payload.dialogs_per_month)))
     add_field("services_lv", payload.services_lv)
     add_field("services_ru", payload.services_ru)
     add_field("services_en", payload.services_en)
