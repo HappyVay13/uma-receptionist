@@ -571,11 +571,17 @@ def humanize_result(result: Dict[str, Any], conv: Optional[Dict[str, Any]], tena
 def ensure_tenants_billing_columns() -> None:
     try:
         with engine.begin() as conn:
+            # Phase 11.5 plan/pricing fields must exist even on older deployments,
+            # otherwise /tenant/change_plan finds no writable columns.
+            conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS plan TEXT"))
+            conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS subscription_status TEXT"))
+            conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS dialogs_per_month INTEGER"))
             conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT"))
             conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS stripe_subscription_id TEXT"))
             conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS current_period_start TIMESTAMPTZ"))
             conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS current_period_end TIMESTAMPTZ"))
             conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS cancel_at_period_end BOOLEAN NOT NULL DEFAULT FALSE"))
+        log.info("tenant_schema_hardened fields=plan,subscription_status,dialogs_per_month,stripe_customer_id,stripe_subscription_id,current_period_start,current_period_end,cancel_at_period_end")
     except Exception as e:
         log.error("ensure_tenants_billing_columns_failed err=%s", e)
 
