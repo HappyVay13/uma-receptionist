@@ -2325,15 +2325,15 @@ def tenant_dialog_usage_current_month(tenant_id: str) -> int:
 
 def tenant_dialog_limit(tenant: Dict[str, Any]) -> int:
     tenant = normalize_tenant_saas_fields(tenant or {})
-    plan_meta = tenant_plan_meta(tenant)
-    limits = plan_meta.get("limits") or {}
+    plan = str(tenant.get("plan") or "starter").strip().lower() or "starter"
+    defaults = dict(PLAN_CATALOG.get(plan, PLAN_CATALOG["starter"]))
     raw_limit = tenant.get("dialogs_per_month")
     try:
         if raw_limit in (None, ""):
-            return max(0, int(limits.get("dialogs_per_month") or 0))
+            return max(0, int(defaults.get("dialogs_per_month") or 0))
         return max(0, int(raw_limit or 0))
     except Exception:
-        return max(0, int(limits.get("dialogs_per_month") or 0))
+        return max(0, int(defaults.get("dialogs_per_month") or 0))
 
 
 def tenant_usage_snapshot(
