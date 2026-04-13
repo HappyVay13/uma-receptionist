@@ -1011,14 +1011,12 @@ def mark_tenant_google_connected(tenant_id: str, is_connected: bool, owner_email
     pk = tenants_pk(cols)
     col_names = {c["name"] for c in cols}
     sets = []
-    params: Dict[str, Any] = {"tid": tenant_id, "gc": is_connected}
+    params: Dict[str, Any] = {"tid": tenant_id, "gc": bool(is_connected)}
     if "google_connected" in col_names:
         sets.append("google_connected=:gc")
     if owner_email and "owner_email" in col_names:
         sets.append("owner_email=:owner_email")
         params["owner_email"] = owner_email
-    if tenant_has_google_account(tenant_id) and "google_connected" in col_names:
-        sets.append("google_connected=true")
     if "updated_at" in col_names:
         sets.append("updated_at=NOW()")
     if not sets:
