@@ -1,39 +1,3 @@
-
-# =========================
-# Structured Logging + Sentry (Phase 2.6)
-# =========================
-import logging
-import os
-
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-
-logging.basicConfig(
-    level=LOG_LEVEL,
-    format="%(asctime)s %(levelname)s %(name)s %(message)s"
-)
-
-logger = logging.getLogger("repliq")
-
-SENTRY_DSN = os.getenv("SENTRY_DSN")
-_SENTRY_MIDDLEWARE_CLASS = None
-
-if SENTRY_DSN:
-    try:
-        import sentry_sdk
-        from sentry_sdk.integrations.asgi import SentryAsgiMiddleware
-
-        sentry_sdk.init(
-            dsn=SENTRY_DSN,
-            traces_sample_rate=0.1,
-            environment=os.getenv("ENVIRONMENT", "production")
-        )
-        _SENTRY_MIDDLEWARE_CLASS = SentryAsgiMiddleware
-        logger.info("Sentry initialized")
-
-    except Exception as e:
-        logger.error(f"Sentry init failed: {e}")
-
-
 import os
 import json
 import re
@@ -42,13 +6,8 @@ import base64
 import uuid
 import logging
 import random
-from datetime import datetime, timedelta, timezone, date
+from datetime import datetime, timedelta, date
 from typing import Dict, Any, Optional, Tuple, List
-
-try:
-    from zoneinfo import ZoneInfo
-except Exception:  # pragma: no cover
-    ZoneInfo = None
 
 import requests
 from fastapi import FastAPI, Request, HTTPException
@@ -65,23 +24,113 @@ from sqlalchemy import text
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
+from config.settings import (
+    ALLOW_DEFAULT_TENANT_FALLBACK,
+    APPT_MINUTES,
+    AUTO_SEND_CONFIRMATION_FOR_TEXT_CHANNELS,
+    BOOKING_CONFIRMATION_ENABLED,
+    BUSINESS_BREAKS_JSON,
+    BUSINESS_BUFFER_MINUTES,
+    BUSINESS_DAYS_OFF,
+    BUSINESS_FALLBACK,
+    BUSINESS_MIN_NOTICE_MINUTES,
+    BUSINESS_WEEKLY_HOURS_JSON,
+    CLIENT_STATUS_FALLBACK,
+    ELEVENLABS_API_KEY,
+    ELEVENLABS_MODEL_ID,
+    ELEVENLABS_VOICE_ID,
+    GOOGLE_CALENDAR_ID_FALLBACK,
+    GOOGLE_OAUTH_CLIENT_ID,
+    GOOGLE_OAUTH_CLIENT_SECRET,
+    GOOGLE_OAUTH_REDIRECT_URI,
+    GOOGLE_OAUTH_SCOPE,
+    GOOGLE_SERVICE_ACCOUNT_JSON,
+    GOOGLE_TTS_LANGUAGE_CODE,
+    GOOGLE_TTS_VOICE_NAME,
+    LLM_INTELLIGENCE_ENABLED,
+    LLM_INTENT_MIN_CONFIDENCE,
+    OPENAI_API_KEY,
+    OPENAI_MODEL,
+    RECOVERY_BOOKING_LINK,
+    SERVER_BASE_URL,
+    TENANT_ID_DEFAULT,
+    TEST_TENANT_ID,
+    TRIAL_END_ISO_FALLBACK,
+    TWILIO_ACCOUNT_SID,
+    TWILIO_API_KEY_SECRET,
+    TWILIO_API_KEY_SID,
+    TWILIO_AUTH_TOKEN,
+    TWILIO_FROM_NUMBER,
+    TWILIO_TWIML_APP_SID,
+    TWILIO_VALIDATE_SIGNATURE,
+    TWILIO_WHATSAPP_FROM,
+    TZ,
+    VOICE_CLIENT_TENANT_MAP,
+    VOICE_DEMO_TENANT_ID,
+    VOICE_SDK_ORIGINS,
+    WORK_END_HHMM_DEFAULT,
+    WORK_START_HHMM_DEFAULT,
+    get_sentry_middleware_class,
+)
+from core.i18n import I18N, t
+from core.language import (
+    BOOKING_OPENERS,
+    GREETING_PATTERNS,
+    HOURS_PATTERNS,
+    IDENTITY_CHECK_PATTERNS,
+    LANG_HINTS,
+    detect_language,
+    detect_language_choice,
+    detect_language_scores,
+    get_lang,
+    is_booking_opener,
+    is_greeting_only,
+    is_hours_question,
+    is_identity_check,
+    resolve_reply_language,
+    stt_locale_for_lang,
+    tokenize_lang_text,
+    tts_language_code_for_lang,
+)
+from core.parsing_time import (
+    NATURAL_TIME_DEFAULTS,
+    WEEKDAY_HINTS,
+    _contains_any_phrase,
+    _parse_hhmm,
+    _phrase_in_text,
+    combine_date_with_explicit_time,
+    detect_time_bucket,
+    format_dt_short,
+    has_date_reference,
+    has_explicit_time,
+    has_natural_time_hint,
+    next_weekday_date,
+    now_ts,
+    parse_date_only_text,
+    parse_dt_any_tz,
+    parse_dt_from_iso_or_fallback,
+    parse_explicit_time_parts,
+    parse_natural_datetime,
+    parse_time_text_to_dt,
+    parse_time_window,
+    pending_time_window_tuple,
+    sanitize_conversation_time_text,
+    today_local,
+)
 from db.database import engine  # expects engine in db/database.py
 
-
-# -------------------------
-# LOGGING
-# -------------------------
-logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("repliq")
 
-app = FastAPI()
-if _SENTRY_MIDDLEWARE_CLASS is not None:
-    app.add_middleware(_SENTRY_MIDDLEWARE_CLASS)
+# Runtime feature flags for the chat-first transition.
+# Voice is frozen by default; SMS/WhatsApp and dev chat remain active.
+VOICE_ENABLED = os.getenv("VOICE_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+DEV_TOOLS_ENABLED = os.getenv("DEV_TOOLS_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 
-# -------------------------
-# CORS (for Voice SDK / web demo)
-# -------------------------
-VOICE_SDK_ORIGINS = os.getenv("VOICE_SDK_ORIGINS", "*").strip()
+app = FastAPI()
+_sentry_middleware_class = get_sentry_middleware_class()
+if _sentry_middleware_class is not None:
+    app.add_middleware(_sentry_middleware_class)
+
 origins = (
     [o.strip() for o in VOICE_SDK_ORIGINS.split(",") if o.strip()]
     if VOICE_SDK_ORIGINS != "*"
@@ -94,302 +143,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# -------------------------
-# CONFIG
-# -------------------------
-TZ = ZoneInfo("Europe/Riga") if ZoneInfo is not None else timezone(timedelta(hours=2))  # Europe/Riga with DST
-
-TENANT_ID_DEFAULT = (os.getenv("DEFAULT_CLIENT_ID", "default") or "default").strip()
-TEST_TENANT_ID = (os.getenv("TEST_TENANT_ID", "") or "").strip()
-ALLOW_DEFAULT_TENANT_FALLBACK = (
-    (os.getenv("ALLOW_DEFAULT_TENANT_FALLBACK", "false") or "false").strip().lower()
-    in ("1", "true", "yes", "on")
-)
-RECOVERY_BOOKING_LINK = os.getenv(
-    "RECOVERY_BOOKING_LINK", "https://repliq.app/book"
-).strip()
-
-APPT_MINUTES = int(os.getenv("APPT_MINUTES", "30"))
-WORK_START_HHMM_DEFAULT = os.getenv("WORK_START_HHMM", "09:00").strip()
-WORK_END_HHMM_DEFAULT = os.getenv("WORK_END_HHMM", "18:00").strip()
-
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
-LLM_INTELLIGENCE_ENABLED = ((os.getenv("LLM_INTELLIGENCE_ENABLED", "true") or "true").strip().lower() in ("1", "true", "yes", "on"))
-LLM_INTENT_MIN_CONFIDENCE = float((os.getenv("LLM_INTENT_MIN_CONFIDENCE", "0.60") or "0.60").strip())
-
-TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "").strip()
-TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "").strip()
-TWILIO_VALIDATE_SIGNATURE = (
-    (os.getenv("TWILIO_VALIDATE_SIGNATURE", "true") or "true").strip().lower()
-    in ("1", "true", "yes", "on")
-)
-TWILIO_FROM_NUMBER = os.getenv("TWILIO_FROM_NUMBER", "").strip()
-TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM", "").strip()
-BOOKING_CONFIRMATION_ENABLED = ((os.getenv("BOOKING_CONFIRMATION_ENABLED", "true") or "true").strip().lower() in ("1", "true", "yes", "on"))
-AUTO_SEND_CONFIRMATION_FOR_TEXT_CHANNELS = ((os.getenv("AUTO_SEND_CONFIRMATION_FOR_TEXT_CHANNELS", "false") or "false").strip().lower() in ("1", "true", "yes", "on"))
-
-# Twilio Voice SDK (WebRTC) token minting
-TWILIO_API_KEY_SID = os.getenv("TWILIO_API_KEY_SID", "").strip()
-TWILIO_API_KEY_SECRET = os.getenv("TWILIO_API_KEY_SECRET", "").strip()
-TWILIO_TWIML_APP_SID = os.getenv("TWILIO_TWIML_APP_SID", "").strip()
-
-VOICE_DEMO_TENANT_ID = (os.getenv("VOICE_DEMO_TENANT_ID", "") or "").strip()
-VOICE_CLIENT_TENANT_MAP = (os.getenv("VOICE_CLIENT_TENANT_MAP", "") or "").strip()
-
-
-SERVER_BASE_URL = os.getenv("SERVER_BASE_URL", "").strip().rstrip("/")
-GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
-GOOGLE_OAUTH_CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID", "").strip()
-GOOGLE_OAUTH_CLIENT_SECRET = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", "").strip()
-GOOGLE_OAUTH_REDIRECT_URI = (
-    os.getenv("GOOGLE_OAUTH_REDIRECT_URI", "").strip()
-    or (f"{SERVER_BASE_URL}/google/callback" if SERVER_BASE_URL else "")
-)
-GOOGLE_OAUTH_SCOPE = "https://www.googleapis.com/auth/calendar"
-
-GOOGLE_TTS_VOICE_NAME = (
-    os.getenv("GOOGLE_TTS_VOICE_NAME", "").strip()
-    or os.getenv("GOOGLE_TTS_VOICE", "").strip()
-    or "lv-LV-Standard-A"
-)
-GOOGLE_TTS_LANGUAGE_CODE = os.getenv("GOOGLE_TTS_LANGUAGE_CODE", "lv-LV").strip()
-
-ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "").strip()
-ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "").strip()
-ELEVENLABS_MODEL_ID = os.getenv("ELEVENLABS_MODEL_ID", "eleven_multilingual_v2").strip()
-
-GOOGLE_CALENDAR_ID_FALLBACK = os.getenv("GOOGLE_CALENDAR_ID", "").strip()
-CLIENT_STATUS_FALLBACK = (
-    (os.getenv("CLIENT_STATUS", "trial") or "trial").strip().lower()
-)
-TRIAL_END_ISO_FALLBACK = (os.getenv("TRIAL_END_ISO", "") or "").strip()
-
-BUSINESS_FALLBACK = {
-    "business_name": os.getenv("BIZ_NAME", "Repliq").strip(),
-    "address": os.getenv("BIZ_ADDRESS", "Rēzekne").strip(),
-    "services_lv": os.getenv("BIZ_SERVICES_LV", "").strip()
-    or os.getenv("BIZ_SERVICES", "vīriešu frizūra").strip(),
-    "services_ru": os.getenv("BIZ_SERVICES_RU", "").strip()
-    or os.getenv("BIZ_SERVICES", "мужская стрижка").strip(),
-    "services_en": os.getenv("BIZ_SERVICES_EN", "").strip()
-    or os.getenv("BIZ_SERVICES", "men's haircut").strip(),
-    "work_start": WORK_START_HHMM_DEFAULT,
-    "work_end": WORK_END_HHMM_DEFAULT,
-}
-
-BUSINESS_WEEKLY_HOURS_JSON = os.getenv("BIZ_WEEKLY_HOURS_JSON", "").strip()
-BUSINESS_BREAKS_JSON = os.getenv("BIZ_BREAKS_JSON", "").strip()
-BUSINESS_DAYS_OFF = os.getenv("BIZ_DAYS_OFF", "").strip()
-BUSINESS_MIN_NOTICE_MINUTES = int((os.getenv("BIZ_MIN_NOTICE_MINUTES", "0") or "0").strip())
-BUSINESS_BUFFER_MINUTES = int((os.getenv("BIZ_BUFFER_MINUTES", "0") or "0").strip())
-
-
-
-# -------------------------
-# I18N
-# -------------------------
-I18N: Dict[str, Dict[str, str]] = {
-    "lv": {
-        "service_unavailable_voice": "Atvainojiet, serviss nav pieejams.",
-        "service_unavailable_text": "Serviss nav pieejams.",
-        "trial_expired_voice": "Atvainojiet, izmēģinājuma periods ir beidzies. Lūdzu, atjaunojiet plānu.",
-        "trial_expired_text": "Izmēģinājuma periods ir beidzies. Lūdzu, atjaunojiet plānu.",
-        "inactive_voice": "Atvainojiet, šis konts pašlaik nav aktīvs.",
-        "inactive_text": "Šis konts pašlaik nav aktīvs.",
-        "past_due_voice": "Atvainojiet, šis konts īslaicīgi nav pieejams maksājuma problēmas dēļ.",
-        "past_due_text": "Šis konts īslaicīgi nav pieejams maksājuma problēmas dēļ.",
-        "no_active_booking": "Jums nav aktīvu pierakstu.",
-        "cancel_failed": "Neizdevās atcelt pierakstu. Mēģiniet vēlreiz.",
-        "cancelled": "Pieraksts atcelts.",
-        "reschedule_ask": "Pieraksts {when}. Uz kuru laiku pārcelt?",
-        "booking_confirmed": "Paldies! Pieraksts apstiprināts.",
-        "booking_confirmed_text": "Apstiprināts: {service} {when}",
-        "booking_confirmation_sms": "Pieraksts apstiprināts: {service} {when}. {biz}",
-        "booking_failed": "Neizdevās apstiprināt pierakstu. Mēģiniet vēlreiz.",
-        "need_service": "Kādu pakalpojumu vēlaties?",
-        "need_time": "Kad un cikos jums būtu ērti?",
-        "need_name": "Kā jūs sauc?",
-        "closed_voice": "Šajā laikā nestrādājam. Nosūtu brīvos laikus ziņā.",
-        "closed_text": "Šajā laikā mēs nestrādājam. Varu piedāvāt: 1) {opt1}, 2) {opt2}. Varat arī uzrakstīt citu sev ērtu laiku darba laikā.",
-        "busy_voice": "Šis laiks ir aizņemts. Nosūtu variantus ziņā.",
-        "busy_text": "Šis laiks diemžēl nav pieejams. Varu piedāvāt: 1) {opt1}, 2) {opt2}. Varat arī uzrakstīt citu sev ērtu laiku.",
-        "all_busy_voice": "Atvainojiet, visi laiki ir aizņemti.",
-        "all_busy_text": "Visi laiki ir aizņemti. Mēģiniet vēlāk.",
-        "greeting": "Labdien! Jūs sazvanījāt {biz}. Izvēlieties valodu: latviešu spiediet vai sakiet viens, русский — divi, English — three.",
-        "how_help": "Kā varu palīdzēt?",
-        "lang_not_understood": "Nesapratu valodu. Lūdzu, sakiet vai nospiediet viens latviešu, divi krievu, trīs angļu.",
-        "voice_fallback": "Atvainojiet, nesadzirdēju. Lūdzu, mēģiniet vēlreiz.",
-        "identity_yes": "Jā, jūs sazvanījāt {biz}. Kā varu palīdzēt?",
-        "hours_info": "{biz} darba laiks ir no {start} līdz {end}. Kā varu palīdzēt?",
-        "greeting_only_reply": "Labdien! Kā varu palīdzēt?",
-        "unclear_reply": "Labdien! Precizējiet, lūdzu, kā varu palīdzēt — pieraksts, pārcelšana vai atcelšana?",
-        "ask_booking_service": "Protams. Uz kādu pakalpojumu vēlaties pierakstīties?",
-        "ask_booking_time": "Labi. Kurš datums un laiks jums būtu ērts?",
-        "ask_booking_date": "Uz kuru dienu vēlaties pierakstīties?",
-        "ask_booking_time_only": "Labi. Cikos jums būtu ērti?",
-        "repeat_yes_no": "Lūdzu, pasakiet jā vai nē.",
-        "invalid_time_choice": "Šis laiks nav pieejams. Lūdzu, izvēlieties no piedāvātajiem variantiem.",
-        "voice_options_prompt": "Pieejami varianti: 1) {opt1}, 2) {opt2}. Varat izvēlēties vienu no tiem vai uzrakstīt citu sev ērtu laiku.",
-        "ask_booking_confirm": "Apstiprināt pierakstu uz {when}? Atbildiet ar jā vai nē.",
-        "voice_options_repeat": "Varu piedāvāt šādus laikus: 1) {opt1}, 2) {opt2}. Varat izvēlēties vienu no tiem vai uzrakstīt citu sev ērtu laiku.",
-        "smart_slots_prompt": "Pieejamie laiki: 1) {opt1}, 2) {opt2}, 3) {opt3}. Varat izvēlēties numuru vai uzrakstīt citu sev ērtu laiku.",
-        "smart_slots_repeat": "Varu piedāvāt šādus laikus: 1) {opt1}, 2) {opt2}, 3) {opt3}. Varat izvēlēties numuru vai uzrakstīt citu sev ērtu laiku.",
-        "holiday_closed_text": "Diemžēl šajā dienā mēs nestrādājam. Vai vēlaties citu dienu?",
-        "holiday_closed_voice": "Diemžēl šajā dienā mēs nestrādājam. Vai vēlaties citu dienu?",
-        "min_notice_text": "Diemžēl tik drīz pierakstu vairs nevaram pieņemt. Varu piedāvāt tuvākos pieejamos laikus.",
-        "min_notice_voice": "Diemžēl tik drīz pierakstu vairs nevaram pieņemt. Varu piedāvāt tuvākos pieejamos laikus.",
-        "rescheduled_text": "Pieraksts pārcelts: {service} {when}",
-        "rescheduled_voice": "Labi, pārcēlu jūsu pierakstu uz {when}.",
-        "reschedule_same_time": "Tas ir jūsu pašreizējais pieraksta laiks. Lūdzu, izvēlieties citu laiku.",
-        "reschedule_keep_current": "Labi, atstājam pašreizējo pierakstu bez izmaiņām.",
-        "reschedule_failed_keep": "Neizdevās pārcelt pierakstu. Esošais pieraksts palika spēkā.",
-        "soft_clarify_service": "Lai pierakstītu, man vēl vajag saprast, kuru pakalpojumu vēlaties.",
-        "soft_clarify_date": "Saprotu. Vēl pasakiet, uz kuru dienu vēlaties pierakstīties.",
-        "soft_clarify_time": "Saprotu. Vēl vajag precīzāku laiku vai izvēli no piedāvātajiem variantiem.",
-        "soft_clarify_confirm": "Vai pareizi sapratu, ka vēlaties apstiprināt piedāvāto laiku? Lūdzu, atbildiet ar jā vai nē.",
-        "time_selection_uncertain": "Saprotu. Varam paskatīties citu dienu vai citu dienas daļu — piemēram, rītu, pēcpusdienu vai vakaru. Kas jums būtu ērtāk?",
-        "other_day_prompt": "Labi, paskatāmies citu dienu. Uz kuru dienu vēlaties pierakstīties?",
-    },
-    "ru": {
-        "service_unavailable_voice": "Извините, сервис недоступен.",
-        "service_unavailable_text": "Сервис недоступен.",
-        "trial_expired_voice": "Извините, пробный период закончился. Пожалуйста, обновите тариф.",
-        "trial_expired_text": "Пробный период закончился. Пожалуйста, обновите тариф.",
-        "inactive_voice": "Извините, этот аккаунт сейчас неактивен.",
-        "inactive_text": "Этот аккаунт сейчас неактивен.",
-        "past_due_voice": "Извините, этот аккаунт временно недоступен из-за проблемы с оплатой.",
-        "past_due_text": "Этот аккаунт временно недоступен из-за проблемы с оплатой.",
-        "no_active_booking": "У вас нет активных записей.",
-        "cancel_failed": "Не удалось отменить запись. Попробуйте ещё раз.",
-        "cancelled": "Запись отменена.",
-        "reschedule_ask": "Запись на {when}. На какое время перенести?",
-        "booking_confirmed": "Спасибо! Запись подтверждена.",
-        "booking_confirmed_text": "Подтверждено: {service} {when}",
-        "booking_confirmation_sms": "Запись подтверждена: {service} {when}. {biz}",
-        "booking_failed": "Не удалось подтвердить запись. Попробуйте ещё раз.",
-        "need_service": "Какую услугу вы хотите?",
-        "need_time": "На какую дату и время вам удобно?",
-        "need_name": "Как вас зовут?",
-        "closed_voice": "В это время мы не работаем. Отправляю свободные варианты сообщением.",
-        "closed_text": "В это время мы не работаем. Могу предложить: 1) {opt1}, 2) {opt2}. Вы также можете написать другое удобное вам время в рабочие часы.",
-        "busy_voice": "Это время занято. Отправляю варианты сообщением.",
-        "busy_text": "Это время занято. Могу предложить: 1) {opt1}, 2) {opt2}. Вы также можете написать другое удобное вам время.",
-        "all_busy_voice": "Извините, все слоты заняты.",
-        "all_busy_text": "Свободных слотов нет. Попробуйте позже.",
-        "greeting": "Здравствуйте! Вы позвонили в {biz}. Выберите язык: латышский — один, русский — два, английский — три.",
-        "how_help": "Чем могу помочь?",
-        "lang_not_understood": "Не удалось определить язык. Пожалуйста, скажите или нажмите: один — латышский, два — русский, три — английский.",
-        "voice_fallback": "Извините, я не расслышал. Пожалуйста, повторите.",
-        "identity_yes": "Да, вы позвонили в {biz}. Чем могу помочь?",
-        "hours_info": "Часы работы {biz}: с {start} до {end}. Чем могу помочь?",
-        "greeting_only_reply": "Здравствуйте! Чем могу помочь?",
-        "unclear_reply": "Здравствуйте! Уточните, пожалуйста, чем помочь — запись, перенос или отмена?",
-        "ask_booking_service": "Конечно. На какую услугу вас записать?",
-        "ask_booking_time": "Хорошо. Какая дата и время вам подходят?",
-        "ask_booking_date": "На какой день вы хотите записаться?",
-        "ask_booking_time_only": "Хорошо. На какое время вам удобно?",
-        "repeat_yes_no": "Пожалуйста, скажите да или нет.",
-        "invalid_time_choice": "Это время недоступно. Пожалуйста, выберите один из предложенных вариантов.",
-        "voice_options_prompt": "Доступны варианты: один — {opt1}, два — {opt2}. Вы можете выбрать один из них или назвать другое удобное время.",
-        "ask_booking_confirm": "Подтвердить запись на {when}? Ответьте да или нет.",
-        "voice_options_repeat": "Могу предложить такие варианты: 1) {opt1}, 2) {opt2}. Вы можете выбрать один из них или написать другое удобное время.",
-        "smart_slots_prompt": "Доступные варианты: 1) {opt1}, 2) {opt2}, 3) {opt3}. Вы можете выбрать номер или написать другое удобное время.",
-        "smart_slots_repeat": "Могу предложить такие варианты: 1) {opt1}, 2) {opt2}, 3) {opt3}. Вы можете выбрать номер или написать другое удобное время.",
-        "holiday_closed_text": "К сожалению, в этот день мы не работаем. Хотите выбрать другую дату?",
-        "holiday_closed_voice": "К сожалению, в этот день мы не работаем. Хотите выбрать другую дату?",
-        "min_notice_text": "К сожалению, так скоро записать уже нельзя. Могу предложить ближайшие доступные варианты.",
-        "min_notice_voice": "К сожалению, так скоро записать уже нельзя. Могу предложить ближайшие доступные варианты.",
-        "rescheduled_text": "Запись перенесена: {service} {when}",
-        "rescheduled_voice": "Хорошо, я перенёс вашу запись на {when}.",
-        "reschedule_same_time": "Это уже текущее время вашей записи. Пожалуйста, выберите другое время.",
-        "reschedule_keep_current": "Хорошо, оставляем текущую запись без изменений.",
-        "reschedule_failed_keep": "Не удалось перенести запись. Текущая запись сохранена.",
-        "soft_clarify_service": "Чтобы записать вас, мне нужно понять, на какую услугу вы хотите записаться.",
-        "soft_clarify_date": "Понял. Подскажите, на какой день вам нужна запись.",
-        "soft_clarify_time": "Понял. Нужен более точный вариант времени или выбор из предложенных слотов.",
-        "soft_clarify_confirm": "Правильно ли я понял, что вы хотите подтвердить предложенное время? Пожалуйста, ответьте да или нет.",
-        "time_selection_uncertain": "Понимаю. Можем посмотреть другой день или другую часть дня — например, утро, день или вечер. Что вам удобнее?",
-        "other_day_prompt": "Хорошо, давайте посмотрим другой день. На какую дату вам удобно?",
-    },
-    "en": {
-        "service_unavailable_voice": "Sorry, the service is unavailable.",
-        "service_unavailable_text": "Service is unavailable.",
-        "trial_expired_voice": "Sorry, the trial period has ended. Please renew the plan.",
-        "trial_expired_text": "The trial period has ended. Please renew the plan.",
-        "inactive_voice": "Sorry, this account is currently inactive.",
-        "inactive_text": "This account is currently inactive.",
-        "past_due_voice": "Sorry, this account is temporarily unavailable due to a billing issue.",
-        "past_due_text": "This account is temporarily unavailable due to a billing issue.",
-        "no_active_booking": "You do not have any active appointments.",
-        "cancel_failed": "Could not cancel the appointment. Please try again.",
-        "cancelled": "Your appointment has been cancelled.",
-        "reschedule_ask": "Your appointment is on {when}. What time would you like to move it to?",
-        "booking_confirmed": "Thank you! Your appointment is confirmed.",
-        "booking_confirmed_text": "Confirmed: {service} {when}",
-        "booking_confirmation_sms": "Appointment confirmed: {service} {when}. {biz}",
-        "booking_failed": "I could not confirm the booking. Please try again.",
-        "need_service": "Which service would you like?",
-        "need_time": "What date and time would work for you?",
-        "need_name": "What is your name?",
-        "closed_voice": "We are closed at that time. I am sending available options by message.",
-        "closed_text": "We are closed at that time. I can offer: 1) {opt1}, 2) {opt2}. You can also type another time within working hours.",
-        "busy_voice": "That time is already booked. I am sending available options by message.",
-        "busy_text": "That time is already taken. I can offer: 1) {opt1}, 2) {opt2}. You can also type another convenient time.",
-        "all_busy_voice": "Sorry, all slots are busy.",
-        "all_busy_text": "No available slots right now. Please try later.",
-        "greeting": "Hello! You have reached {biz}. Choose a language: Latvian press or say one, Russian two, English three.",
-        "how_help": "How can I help you?",
-        "lang_not_understood": "I could not determine the language. Please say or press one for Latvian, two for Russian, three for English.",
-        "voice_fallback": "Sorry, I did not catch that. Please try again.",
-        "identity_yes": "Yes, you have reached {biz}. How can I help?",
-        "hours_info": "{biz} is open from {start} to {end}. How can I help?",
-        "greeting_only_reply": "Hello! How can I help?",
-        "unclear_reply": "Hello! Please clarify how I can help — booking, rescheduling, or cancellation?",
-        "ask_booking_service": "Of course. Which service would you like to book?",
-        "ask_booking_time": "Sure. What date and time would work for you?",
-        "ask_booking_date": "Which day would you like to book for?",
-        "ask_booking_time_only": "Sure. What time works for you?",
-        "repeat_yes_no": "Please say yes or no.",
-        "invalid_time_choice": "That time is not available. Please choose one of the offered options.",
-        "voice_options_prompt": "Available options: one — {opt1}, two — {opt2}. You can choose one of them or say another convenient time.",
-        "ask_booking_confirm": "Confirm the booking for {when}? Please answer yes or no.",
-        "voice_options_repeat": "I can offer these times: 1) {opt1}, 2) {opt2}. You can choose one of them or type another convenient time.",
-        "smart_slots_prompt": "Available times: 1) {opt1}, 2) {opt2}, 3) {opt3}. You can choose a number or type another convenient time.",
-        "smart_slots_repeat": "I can offer these times: 1) {opt1}, 2) {opt2}, 3) {opt3}. You can choose a number or type another convenient time.",
-        "holiday_closed_text": "Unfortunately, we are closed on that day. Would you like another date?",
-        "holiday_closed_voice": "Unfortunately, we are closed on that day. Would you like another date?",
-        "min_notice_text": "Unfortunately, it is too soon to book that time now. I can offer the nearest available options.",
-        "min_notice_voice": "Unfortunately, it is too soon to book that time now. I can offer the nearest available options.",
-        "rescheduled_text": "Appointment moved: {service} {when}",
-        "rescheduled_voice": "Okay, I moved your appointment to {when}.",
-        "reschedule_same_time": "That is already your current appointment time. Please choose another time.",
-        "reschedule_keep_current": "Okay, we will keep your current appointment unchanged.",
-        "reschedule_failed_keep": "I could not move the appointment. Your current appointment was kept unchanged.",
-        "soft_clarify_service": "To book this for you, I still need to know which service you want.",
-        "soft_clarify_date": "Got it. Please tell me which day you would like to book for.",
-        "soft_clarify_time": "Understood. I still need a more specific time or one of the offered options.",
-        "soft_clarify_confirm": "Just to confirm, would you like to confirm the offered time? Please answer yes or no.",
-        "time_selection_uncertain": "Understood. We can look at another day or another part of the day — for example morning, afternoon, or evening. What would suit you better?",
-        "other_day_prompt": "Okay, let's look at another day. Which date would work for you?",
-    },
-}
-
-
-def t(lang: str, key: str, **kwargs: Any) -> str:
-    lang = get_lang(lang)
-    lang_map = I18N.get(lang) or I18N["lv"]
-    template = lang_map.get(key)
-    if template is None and lang != "en":
-        template = I18N.get("en", {}).get(key)
-    if template is None:
-        template = I18N["lv"].get(key, key)
-    try:
-        return template.format(**kwargs)
-    except Exception:
-        return template
-
 
 # -------------------------
 # HUMAN RESPONSE LAYER (2.6)
@@ -1011,12 +764,14 @@ def mark_tenant_google_connected(tenant_id: str, is_connected: bool, owner_email
     pk = tenants_pk(cols)
     col_names = {c["name"] for c in cols}
     sets = []
-    params: Dict[str, Any] = {"tid": tenant_id, "gc": bool(is_connected)}
+    params: Dict[str, Any] = {"tid": tenant_id, "gc": is_connected}
     if "google_connected" in col_names:
         sets.append("google_connected=:gc")
     if owner_email and "owner_email" in col_names:
         sets.append("owner_email=:owner_email")
         params["owner_email"] = owner_email
+    if tenant_has_google_account(tenant_id) and "google_connected" in col_names:
+        sets.append("google_connected=true")
     if "updated_at" in col_names:
         sets.append("updated_at=NOW()")
     if not sets:
@@ -1176,52 +931,6 @@ def sync_tenant_onboarding_state(tenant_id: str) -> Dict[str, Any]:
     return get_tenant_or_404(tenant_id)
 
 
-# -------------------------
-# TIME HELPERS
-# -------------------------
-def now_ts() -> datetime:
-    return datetime.now(TZ)
-
-
-def today_local() -> date:
-    return now_ts().date()
-
-
-def parse_dt_any_tz(iso: str) -> Optional[datetime]:
-    if not iso:
-        return None
-    try:
-        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=TZ)
-        return dt.astimezone(TZ)
-    except Exception:
-        return None
-
-
-# -------------------------
-# TEXT / LANG HELPERS
-# -------------------------
-def get_lang(value: Optional[str]) -> str:
-    return value if value in ("en", "ru", "lv") else "lv"
-
-
-def stt_locale_for_lang(lang: str) -> str:
-    lang = get_lang(lang)
-    if lang == "ru":
-        return "ru-RU"
-    if lang == "lv":
-        return "lv-LV"
-    return "en-US"
-
-
-def tts_language_code_for_lang(lang: str) -> str:
-    lang = get_lang(lang)
-    if lang == "ru":
-        return "ru-RU"
-    if lang == "en":
-        return "en-US"
-    return "lv-LV"
 
 
 def norm_user_key(phone: str) -> str:
@@ -1594,206 +1303,8 @@ def faq_with_flow_followup(
     return result
 
 
-LANG_HINTS = {
-    "lv": {
-        "strong": [
-            "labdien", "sveiki", "lūdzu", "ludzu", "paldies", "pieraksts", "pierakstīties",
-            "pierakstities", "frizētava", "frizetava", "barberšops", "bārda", "barda",
-            "rīt", "rit", "parīt", "šodien", "sodien", "cikos", "pārcelt", "atcelt",
-            "vai", "tas", "ir", "strādājat", "darba", "laiks"
-        ],
-        "weak": ["uz", "kad", "laiks", "diena", "meistars", "pakalpojums", "šodien", "rīt"],
-    },
-    "ru": {
-        "strong": [
-            "здравствуйте", "привет", "добрый", "запись", "записаться", "парикмахерская",
-            "барбершоп", "стрижка", "борода", "завтра", "послезавтра", "сегодня",
-            "перенести", "отменить", "время", "работаете", "это", "у вас", "можно"
-        ],
-        "weak": ["дата", "когда", "время", "мастер", "услуга", "запись", "сегодня", "завтра"],
-    },
-    "en": {
-        "strong": [
-            "hello", "hi", "appointment", "book", "booking", "cancel", "reschedule",
-            "tomorrow", "today", "barbershop", "salon", "clinic", "open", "working",
-            "hours", "service", "time", "name", "is this", "can i"
-        ],
-        "weak": ["when", "time", "date", "service", "today", "tomorrow"],
-    },
-}
-
-GREETING_PATTERNS = {
-    "lv": ["labdien", "sveiki", "čau", "cau", "halo", "alo"],
-    "ru": ["здравствуйте", "добрый день", "добрый вечер", "привет", "алло", "але"],
-    "en": ["hello", "hi", "good morning", "good afternoon", "hey"],
-}
-
-IDENTITY_CHECK_PATTERNS = [
-    "vai tas ir", "vai jūs esat", "это ", "is this", "did i reach",
-    "я туда попал", "это барбершоп", "это парикмахерская", "это клиника",
-]
-
-HOURS_PATTERNS = [
-    "работаете", "во сколько", "часы работы", "открыты", "открыто",
-    "strādājat", "darba laiks", "atvērts", "cikos strādājat",
-    "open", "working hours", "what time are you open", "are you open",
-]
-
-BOOKING_OPENERS = [
-    "можно записаться", "хочу записаться", "хотел записаться", "нужна запись",
-    "gribu pierakstīties", "vēlos pierakstīties", "vai var pierakstīties",
-    "i want to book", "i'd like to book", "can i book", "need an appointment",
-]
-
-def tokenize_lang_text(text_: str) -> List[str]:
-    return re.findall(r"[A-Za-zĀ-žа-яА-ЯёЁ]+", (text_ or "").lower(), flags=re.UNICODE)
-
-def detect_language_scores(text_: str) -> Dict[str, float]:
-    raw = (text_ or "").strip()
-    low = raw.lower()
-    scores: Dict[str, float] = {"lv": 0.0, "ru": 0.0, "en": 0.0}
-    if not low:
-        scores["lv"] = 1.0
-        return scores
-
-    if re.search(r"[а-яё]", low, flags=re.IGNORECASE):
-        scores["ru"] += 2.5
-    if re.search(r"[āēīūčšžģķļņ]", low):
-        scores["lv"] += 2.5
-    latin_words = len(re.findall(r"[A-Za-z]+", low))
-    if latin_words:
-        scores["en"] += 0.2 * latin_words
-
-    tokens = tokenize_lang_text(low)
-    joined = " ".join(tokens)
-
-    for lang_code, groups in LANG_HINTS.items():
-        for tok in groups["strong"]:
-            if tok in joined:
-                scores[lang_code] += 2.0
-        for tok in groups["weak"]:
-            if tok in joined:
-                scores[lang_code] += 0.7
-
-    if any(ch in low for ch in ["ā", "ē", "ī", "ū", "č", "š", "ž", "ģ", "ķ", "ļ", "ņ"]):
-        scores["lv"] += 1.2
-    if re.search(r"[ёыэъ]", low):
-        scores["ru"] += 1.0
-
-    if any(x in low for x in ["hello", "appointment", "reschedule", "cancel", "book"]):
-        scores["en"] += 2.5
-
-    return scores
-
-def detect_language(text_: str) -> str:
-    scores = detect_language_scores(text_)
-    lang, score = max(scores.items(), key=lambda x: x[1])
-    return lang if score > 0 else "lv"
-
-def resolve_reply_language(text_: str, current_lang: Optional[str]) -> str:
-    current = get_lang(current_lang)
-    scores = detect_language_scores(text_)
-    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-    top_lang, top_score = ranked[0]
-    second_score = ranked[1][1] if len(ranked) > 1 else 0.0
-
-    if top_score <= 0:
-        return current
-    if top_lang == current:
-        return current
-
-    margin = top_score - second_score
-    if len(tokenize_lang_text(text_)) <= 2 and margin < 2.0:
-        return current
-    if margin >= 1.6:
-        return top_lang
-    if scores.get(current, 0.0) + 0.9 >= top_score:
-        return current
-    return top_lang
-
-def is_greeting_only(text_: str) -> bool:
-    low = (text_ or "").strip().lower()
-    if not low:
-        return False
-    if len(tokenize_lang_text(low)) > 6:
-        return False
-    if any(p in low for p in IDENTITY_CHECK_PATTERNS + HOURS_PATTERNS + BOOKING_OPENERS):
-        return False
-    return any(any(g in low for g in patterns) for patterns in GREETING_PATTERNS.values())
-
-def is_identity_check(text_: str) -> bool:
-    low = (text_ or "").strip().lower()
-    return any(p in low for p in IDENTITY_CHECK_PATTERNS)
-
-def is_hours_question(text_: str) -> bool:
-    low = (text_ or "").strip().lower()
-    return any(p in low for p in HOURS_PATTERNS)
-
-def is_booking_opener(text_: str) -> bool:
-    low = (text_ or "").strip().lower()
-    if not low:
-        return False
-
-    strong_phrases = [
-        "gribu pierakstīties",
-        "gribu pierakstities",
-        "vēlos pierakstīties",
-        "vēlos pierakstities",
-        "velos pierakstities",
-        "pierakstīties",
-        "pierakstities",
-        "pieraksts",
-        "gribu rezervēt",
-        "gribu rezervet",
-        "vēlos rezervēt",
-        "velos rezervet",
-        "можно записаться",
-        "хочу записаться",
-        "нужна запись",
-        "i want to book",
-        "i'd like to book",
-        "need an appointment",
-    ]
-    if any(p in low for p in strong_phrases):
-        return True
-
-    return any(p in low for p in BOOKING_OPENERS)
-
-def detect_language_choice(text_: str, digits: str = "") -> Optional[str]:
-    d = (digits or "").strip()
-    if d == "1":
-        return "lv"
-    if d == "2":
-        return "ru"
-    if d == "3":
-        return "en"
-    t = (text_ or "").strip().lower()
-    if not t:
-        return None
-    if any(x in t for x in ["latv", "latvie", "latvian", "vien", "one"]):
-        return "lv"
-    if any(x in t for x in ["рус", "kriev", "russian", "два", "two"]):
-        return "ru"
-    if any(x in t for x in ["english", "англ", "trīs", "tris", "three", "три"]):
-        return "en"
-    return detect_language(t)
 
 
-def _short(s: Optional[str], n: int) -> str:
-    return (s or "").strip()[:n]
-
-
-def _parse_hhmm(hhmm: str) -> Tuple[int, int]:
-    hh, mm = hhmm.split(":")
-    return int(hh), int(mm)
-
-
-def twiml(vr: VoiceResponse) -> Response:
-    return Response(content=str(vr), media_type="application/xml")
-
-
-def format_dt_short(dt: Optional[datetime]) -> str:
-    return dt.strftime("%d.%m %H:%M") if dt else ""
 
 
 def ensure_lang_update(tenant_id: str, user_key: str, c: Dict[str, Any], lang: str) -> Dict[str, Any]:
@@ -2112,7 +1623,8 @@ def handle_user_text_with_logging(
     try:
         tenant = get_tenant(tenant_id)
         result = humanize_result(result, conv, tenant)
-        result = apply_usage_soft_limit_warning(result, result.get("lang") or lang, tenant, channel, source=source)
+        safe_lang = get_lang(result.get("lang") or lang_hint or (conv or {}).get("lang") or "lv")
+        result = apply_usage_soft_limit_warning(result, safe_lang, tenant, channel, source=source)
     except Exception as e:
         log.error("humanize_result_failed tenant_id=%s err=%s", tenant_id, e)
         tenant = {}
@@ -2990,18 +2502,18 @@ def twilio_request_validator() -> Optional[RequestValidator]:
 def should_validate_twilio_request(path: str) -> bool:
     p = (path or "").lower()
 
-    # browser / SDK endpoints must not require Twilio signature
-    if p.startswith("/voice/token"):
-        return False
+    # Frozen Voice endpoints are handled by our app and should not require
+    # a valid Twilio webhook signature while VOICE_ENABLED is false.
+    if p.startswith("/voice") or p.startswith("/tts"):
+        return bool(VOICE_ENABLED and (
+            p.startswith("/voice/incoming")
+            or p.startswith("/voice/language")
+            or p.startswith("/voice/intent")
+        ))
 
-    # real Twilio webhook endpoints
-    if (
-        p.startswith("/voice/incoming")
-        or p.startswith("/voice/language")
-        or p.startswith("/voice/intent")
-        or p.startswith("/sms")
-        or p.startswith("/whatsapp")
-    ):
+    # Real Twilio text webhook endpoints. Keep SMS/WhatsApp active for the
+    # chat-first MVP.
+    if p.startswith("/sms") or p.startswith("/whatsapp"):
         return True
 
     return False
@@ -3705,6 +3217,8 @@ def say_or_play(vr: VoiceResponse, text_: str, lang: str) -> None:
 
 @app.get("/tts")
 def tts_endpoint(text: str, lang: str = "lv"):
+    if not VOICE_ENABLED:
+        raise HTTPException(status_code=410, detail="Voice/TTS is frozen in chat-first mode")
     audio = tts_bytes_for_lang(text, lang)
     if not audio:
         raise HTTPException(status_code=500, detail="TTS unavailable")
@@ -3953,117 +3467,6 @@ def delete_calendar_event(calendar_id: str, event_id: str, service_account_json:
             )
             return False
     return False
-
-
-# -------------------------
-# DATE PARSING Fallbacks
-# -------------------------
-def _phrase_in_text(src: str, phrase: str) -> bool:
-    src = (src or "").lower().strip()
-    phrase = (phrase or "").lower().strip()
-    if not src or not phrase:
-        return False
-    pattern = r"(?<![\wĀ-žА-Яа-яЁё])" + re.escape(phrase) + r"(?![\wĀ-žА-Яа-яЁё])"
-    return re.search(pattern, src, flags=re.IGNORECASE | re.UNICODE) is not None
-
-
-def _contains_any_phrase(src: str, phrases: List[str]) -> bool:
-    return any(_phrase_in_text(src, p) for p in (phrases or []))
-
-
-def parse_time_text_to_dt(text_: str) -> Optional[datetime]:
-    src = (text_ or "")
-    m = re.search(r"\b([01]?\d|2[0-3])[:. ]([0-5]\d)\b", src.lower())
-    if not m:
-        return None
-    hh, mm = int(m.group(1)), int(m.group(2))
-    base = today_local()
-    t_low = src.lower()
-
-    if _contains_any_phrase(t_low, ["parīt", "послезавтра", "day after tomorrow"]):
-        base += timedelta(days=2)
-    elif _contains_any_phrase(t_low, ["rīt", "rit", "завтра", "tomorrow"]):
-        base += timedelta(days=1)
-
-    dm = re.search(r"\b(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?\b", src)
-    if dm:
-        dd, mo = int(dm.group(1)), int(dm.group(2))
-        yy = dm.group(3)
-        year = int(yy) + 2000 if yy and len(yy) == 2 else int(yy) if yy else base.year
-        try:
-            return datetime(year, mo, dd, hh, mm, tzinfo=TZ)
-        except Exception:
-            pass
-
-    return datetime(base.year, base.month, base.day, hh, mm, tzinfo=TZ)
-
-
-def parse_dt_from_iso_or_fallback(
-    datetime_iso: Optional[str], time_text: Optional[str], raw_text: Optional[str]
-) -> Optional[datetime]:
-    dt = parse_dt_any_tz((datetime_iso or "").strip())
-    return dt if dt else parse_time_text_to_dt(f"{time_text or ''} {raw_text or ''}")
-
-
-def parse_explicit_time_parts(text_: Optional[str]) -> Optional[Tuple[int, int]]:
-    src = (text_ or "").lower().strip()
-    if not src:
-        return None
-
-    # 14:30 / 14.30 / 14 30
-    m = re.search(r"\b([01]?\d|2[0-3])[:. ]([0-5]\d)\b", src)
-    if m:
-        return int(m.group(1)), int(m.group(2))
-
-    # 2pm / 2 pm / 2:30pm / 2.30 pm
-    m = re.search(r"\b(1[0-2]|0?[1-9])(?:[:. ]([0-5]\d))?\s*(am|pm)\b", src)
-    if m:
-        hh = int(m.group(1))
-        mm = int(m.group(2) or 0)
-        ampm = m.group(3)
-        if ampm == "pm" and hh != 12:
-            hh += 12
-        if ampm == "am" and hh == 12:
-            hh = 0
-        return hh, mm
-
-    # plain hour like 14
-    if re.fullmatch(r"([01]?\d|2[0-3])", src):
-        return int(src), 0
-    return None
-
-
-def has_explicit_time(text_: Optional[str]) -> bool:
-    return parse_explicit_time_parts(text_) is not None
-
-
-def has_date_reference(text_: Optional[str]) -> bool:
-    src = (text_ or "").lower().strip()
-    if not src:
-        return False
-    if re.search(r"\b(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?\b", src):
-        return True
-    keywords = [
-        "rīt", "rit", "parīt", "šodien", "sodien", "šorīt", "sorit", "šovakar", "sovakar",
-        "завтра", "послезавтра", "сегодня", "сегодня утром", "сегодня днем", "сегодня днём", "сегодня вечером",
-        "tomorrow", "day after tomorrow", "today", "this morning", "this afternoon", "this evening", "tonight",
-        "next monday", "next tuesday", "next wednesday", "next thursday", "next friday", "next saturday", "next sunday",
-    ]
-    if _contains_any_phrase(src, keywords):
-        return True
-    for hints in WEEKDAY_HINTS.values():
-        if _contains_any_phrase(src, hints):
-            return True
-    return False
-
-
-def combine_date_with_explicit_time(base_iso: Optional[str], time_source: Optional[str]) -> Optional[datetime]:
-    base_dt = parse_dt_any_tz((base_iso or "").strip())
-    parts = parse_explicit_time_parts(time_source)
-    if not base_dt or not parts:
-        return None
-    hh, mm = parts
-    return base_dt.replace(hour=hh, minute=mm, second=0, microsecond=0)
 
 
 # -------------------------
@@ -6102,6 +5505,11 @@ def handle_user_text(
 # -------------------------
 @app.post("/voice/incoming")
 async def voice_incoming(request: Request):
+    if not VOICE_ENABLED:
+        vr = VoiceResponse()
+        vr.say("Repliq voice channel is currently disabled.")
+        vr.hangup()
+        return twiml(vr)
     form = await request.form()
     to_num = str(form.get("To", ""))
     caller = normalize_voice_caller(str(form.get("From", "")))
@@ -6135,6 +5543,11 @@ async def voice_incoming(request: Request):
 
 @app.post("/voice/language")
 async def voice_language(request: Request):
+    if not VOICE_ENABLED:
+        vr = VoiceResponse()
+        vr.say("Repliq voice channel is currently disabled.")
+        vr.hangup()
+        return twiml(vr)
     form = await request.form()
     to_num = str(form.get("To", ""))
     caller = normalize_voice_caller(str(form.get("From", "")))
@@ -6170,6 +5583,11 @@ async def voice_language(request: Request):
 
 @app.post("/voice/intent")
 async def voice_intent(request: Request):
+    if not VOICE_ENABLED:
+        vr = VoiceResponse()
+        vr.say("Repliq voice channel is currently disabled.")
+        vr.hangup()
+        return twiml(vr)
     form = await request.form()
     to_num = str(form.get("To", ""))
     caller = normalize_voice_caller(str(form.get("From", "")))
@@ -6460,6 +5878,8 @@ async def google_select_calendar(request: Request):
 # -------------------------
 @app.get("/voice/token")
 def get_voice_token(client_id: str = "default", tenant_id: str = ""):
+    if not VOICE_ENABLED:
+        raise HTTPException(status_code=410, detail="Voice SDK is frozen in chat-first mode")
     if not (
         TWILIO_ACCOUNT_SID
         and TWILIO_API_KEY_SID
@@ -8692,14 +8112,18 @@ def _dev_raw_user(user_id: str) -> str:
 
 @app.post("/dev_chat")
 async def dev_chat(req: DevChatRequest):
+    if not DEV_TOOLS_ENABLED:
+        raise HTTPException(status_code=404, detail="Dev tools are disabled")
     try:
         raw_user = _dev_raw_user(req.user_id)
         result = handle_user_text_with_logging(
             tenant_id=req.tenant_id,
             raw_phone=raw_user,
             text_in=req.message,
-            channel=req.channel,
+            channel=req.channel or "dev",
             lang_hint=req.lang,
+            # Keep dev chat free: usage_context_is_non_billable() treats
+            # source=dev_ui as non-billable even if a tester selects sms/whatsapp.
             source="dev_ui",
         )
         conv = db_get_or_create_conversation(req.tenant_id, raw_user, req.lang)
@@ -8857,6 +8281,8 @@ async def dev_focus_test(req: DevFocusTestRequest):
 
 @app.get("/dev_chat_ui", response_class=HTMLResponse)
 def dev_chat_ui():
+    if not DEV_TOOLS_ENABLED:
+        raise HTTPException(status_code=404, detail="Dev tools are disabled")
     html = """
 <!DOCTYPE html>
 <html lang="en">
