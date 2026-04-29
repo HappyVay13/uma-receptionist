@@ -133,29 +133,6 @@ from integrations.google_calendar import (
     tenant_event_marker,
     update_calendar_event,
 )
-from integrations.google_oauth import (
-    oauth_ready,
-    build_google_oauth_state,
-    parse_google_oauth_state,
-    build_google_oauth_url,
-    exchange_google_code_for_tokens,
-    fetch_google_userinfo,
-    fetch_google_calendar_list,
-    token_expiry_from_google,
-    google_calendar_choice,
-)
-from services.usage_service import record_usage_event as service_record_usage_event
-from services.call_log_service import log_call_event as service_log_call_event
-from services.onboarding_service import (
-    upsert_tenant_google_account,
-    get_tenant_google_account,
-    mark_tenant_google_connected,
-    tenant_has_google_account,
-    tenant_google_connected_effective,
-    select_tenant_calendar_id,
-    sync_tenant_onboarding_state,
-)
-
 from services.tenant_service import (
     normalize_incoming_to_number,
     looks_like_phone_number,
@@ -181,33 +158,6 @@ from saas.lifecycle import (
 from saas.access_control import (
     usage_context_is_non_billable,
     usage_event_is_billable,
-)
-from services.business_rules import (
-    _safe_json_obj,
-    _safe_int,
-    _normalize_weekday_key,
-    _weekday_key_for_date,
-    default_weekly_hours,
-    tenant_business_rules,
-)
-from services.service_catalog import (
-    _slugify_service_key,
-    _ensure_list,
-    parse_service_catalog,
-    fallback_service_catalog,
-    tenant_service_catalog,
-    get_service_item_by_key,
-    service_display_name,
-    service_duration_min,
-    service_group_key,
-    find_service_item_by_group,
-    combined_service_display,
-    build_confirm_upsell_prompt,
-    build_confirm_upsell_resolution,
-    service_catalog_summary,
-    service_alias_map_from_catalog,
-    canonical_service_key_from_text,
-    ensure_default_barbershop_aliases,
 )
 
 log = logging.getLogger("repliq")
@@ -714,8 +664,245 @@ def load_runtime_tenant(tenant_id: str) -> Dict[str, Any]:
 
 
 # -------------------------
-# Google OAuth and onboarding helpers moved to integrations/google_oauth.py and services/onboarding_service.py
+# GOOGLE OAUTH HELPERS (Phase 3 Foundation)
 # -------------------------
+def oauth_ready() -> bool:
+    return bool(GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET and GOOGLE_OAUTH_REDIRECT_URI)
+
+def upsert_tenant_google_account(
+    tenant_id: str,
+    google_email: Optional[str],
+    access_token: str,
+    refresh_token: Optional[str],
+    token_expiry: Optional[datetime],
+    scope: Optional[str],
+) -> None:
+    tenant_id = (tenant_id or "").strip()
+    if not tenant_id:
+        return
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM tenant_google_accounts WHERE tenant_id=:tid"), {"tid": tenant_id})
+        conn.execute(
+            text(
+                """
+                INSERT INTO tenant_google_accounts
+                (tenant_id, google_email, access_token, refresh_token, token_expiry, scope, created_at, updated_at)
+                VALUES
+                (:tid, :google_email, :access_token, :refresh_token, :token_expiry, :scope, NOW(), NOW())
+                """
+            ),
+            {
+                "tid": tenant_id,
+                "google_email": google_email,
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "token_expiry": token_expiry,
+                "scope": scope,
+            },
+        )
+
+def get_tenant_google_account(tenant_id: str) -> Dict[str, Any]:
+    tenant_id = (tenant_id or "").strip()
+    if not tenant_id:
+        return {}
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT tenant_id, google_email, access_token, refresh_token, token_expiry, scope, created_at, updated_at
+                    FROM tenant_google_accounts
+                    WHERE tenant_id=:tid
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """
+                ),
+                {"tid": tenant_id},
+            ).fetchone()
+        if not row:
+            return {}
+        keys = ["tenant_id", "google_email", "access_token", "refresh_token", "token_expiry", "scope", "created_at", "updated_at"]
+        return {k: row[i] for i, k in enumerate(keys)}
+    except Exception as e:
+        log.error("get_tenant_google_account failed tenant_id=%s err=%s", tenant_id, e)
+        return {}
+
+def mark_tenant_google_connected(tenant_id: str, is_connected: bool, owner_email: Optional[str] = None) -> None:
+    tenant_id = (tenant_id or "").strip()
+    if not tenant_id:
+        return
+    cols = tenants_columns()
+    pk = tenants_pk(cols)
+    col_names = {c["name"] for c in cols}
+    sets = []
+    params: Dict[str, Any] = {"tid": tenant_id, "gc": is_connected}
+    if "google_connected" in col_names:
+        sets.append("google_connected=:gc")
+    if owner_email and "owner_email" in col_names:
+        sets.append("owner_email=:owner_email")
+        params["owner_email"] = owner_email
+    if tenant_has_google_account(tenant_id) and "google_connected" in col_names:
+        sets.append("google_connected=true")
+    if "updated_at" in col_names:
+        sets.append("updated_at=NOW()")
+    if not sets:
+        return
+    with engine.begin() as conn:
+        conn.execute(text(f"UPDATE tenants SET {', '.join(sets)} WHERE {pk}=:tid"), params)
+
+
+
+def tenant_has_google_account(tenant_id: str) -> bool:
+    acct = get_tenant_google_account(tenant_id)
+    return bool(str(acct.get("access_token") or "").strip())
+
+def tenant_google_connected_effective(tenant: Dict[str, Any]) -> bool:
+    tenant = normalize_tenant_saas_fields(tenant or {})
+    if bool(tenant.get("google_connected")):
+        return True
+    tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip()
+    if not tenant_id:
+        return False
+    return tenant_has_google_account(tenant_id)
+
+def build_google_oauth_state(tenant_id: str) -> str:
+    payload = {"tenant_id": tenant_id, "ts": now_ts().isoformat()}
+    return base64.urlsafe_b64encode(json.dumps(payload).encode("utf-8")).decode("utf-8")
+
+def parse_google_oauth_state(state: str) -> Dict[str, Any]:
+    try:
+        raw = base64.urlsafe_b64decode((state or "").encode("utf-8")).decode("utf-8")
+        obj = json.loads(raw)
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
+        return {}
+
+def build_google_oauth_url(tenant_id: str) -> str:
+    params = {
+        "client_id": GOOGLE_OAUTH_CLIENT_ID,
+        "redirect_uri": GOOGLE_OAUTH_REDIRECT_URI,
+        "response_type": "code",
+        "scope": GOOGLE_OAUTH_SCOPE,
+        "access_type": "offline",
+        "prompt": "consent",
+        "include_granted_scopes": "true",
+        "state": build_google_oauth_state(tenant_id),
+    }
+    return "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
+
+def exchange_google_code_for_tokens(code_value: str) -> Dict[str, Any]:
+    data = {
+        "code": code_value,
+        "client_id": GOOGLE_OAUTH_CLIENT_ID,
+        "client_secret": GOOGLE_OAUTH_CLIENT_SECRET,
+        "redirect_uri": GOOGLE_OAUTH_REDIRECT_URI,
+        "grant_type": "authorization_code",
+    }
+    try:
+        r = requests.post("https://oauth2.googleapis.com/token", data=data, timeout=30)
+        if r.status_code == 200:
+            return r.json()
+        log.error("google_token_exchange_failed status=%s body=%s", r.status_code, r.text[:500])
+    except Exception as e:
+        log.error("google_token_exchange_exception err=%s", e)
+    return {}
+
+def fetch_google_userinfo(access_token: str) -> Dict[str, Any]:
+    if not access_token:
+        return {}
+    try:
+        r = requests.get(
+            "https://www.googleapis.com/oauth2/v2/userinfo",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=20,
+        )
+        if r.status_code == 200:
+            return r.json()
+        log.error("google_userinfo_failed status=%s body=%s", r.status_code, r.text[:300])
+    except Exception as e:
+        log.error("google_userinfo_exception err=%s", e)
+    return {}
+
+def fetch_google_calendar_list(access_token: str) -> List[Dict[str, Any]]:
+    if not access_token:
+        return []
+    try:
+        r = requests.get(
+            "https://www.googleapis.com/calendar/v3/users/me/calendarList",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=20,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            return data.get("items", []) if isinstance(data, dict) else []
+        log.error("google_calendar_list_failed status=%s body=%s", r.status_code, r.text[:300])
+    except Exception as e:
+        log.error("google_calendar_list_exception err=%s", e)
+    return []
+
+def select_tenant_calendar_id(tenant_id: str, calendar_id: str) -> None:
+    tenant_id = (tenant_id or "").strip()
+    calendar_id = (calendar_id or "").strip()
+    if not tenant_id or not calendar_id:
+        return
+    cols = tenants_columns()
+    pk = tenants_pk(cols)
+    col_names = {c["name"] for c in cols}
+    if "calendar_id" not in col_names:
+        return
+    with engine.begin() as conn:
+        conn.execute(text(f"UPDATE tenants SET calendar_id=:cid WHERE {pk}=:tid"), {"cid": calendar_id, "tid": tenant_id})
+
+
+def token_expiry_from_google(expires_in: Any) -> Optional[datetime]:
+    try:
+        seconds = int(expires_in)
+    except Exception:
+        return None
+    if seconds <= 0:
+        return None
+    return now_ts() + timedelta(seconds=seconds)
+
+
+def google_calendar_choice(calendars: List[Dict[str, Any]]) -> Optional[str]:
+    if not calendars:
+        return None
+    for cal in calendars:
+        if cal.get("primary") and str(cal.get("id") or "").strip():
+            return str(cal.get("id")).strip()
+    if len(calendars) == 1 and str(calendars[0].get("id") or "").strip():
+        return str(calendars[0].get("id")).strip()
+    return None
+
+
+def sync_tenant_onboarding_state(tenant_id: str) -> Dict[str, Any]:
+    tenant = get_tenant_or_404(tenant_id)
+    cols = tenants_columns()
+    pk = tenants_pk(cols)
+    col_names = {c["name"] for c in cols}
+    google_connected = tenant_google_connected_effective(tenant)
+    calendar_selected = bool(str(tenant.get("calendar_id") or "").strip())
+    onboarding_completed = bool(google_connected and calendar_selected)
+
+    sets = []
+    params: Dict[str, Any] = {"tid": tenant_id}
+    if "google_connected" in col_names:
+        sets.append("google_connected=:google_connected")
+        params["google_connected"] = google_connected
+    if "onboarding_completed" in col_names:
+        sets.append("onboarding_completed=:onboarding_completed")
+        params["onboarding_completed"] = onboarding_completed
+    if "updated_at" in col_names:
+        sets.append("updated_at=NOW()")
+
+    if sets:
+        with engine.begin() as conn:
+            conn.execute(text(f"UPDATE tenants SET {', '.join(sets)} WHERE {pk}=:tid"), params)
+
+    return get_tenant_or_404(tenant_id)
+
+
+
 
 def norm_user_key(phone: str) -> str:
     raw = (phone or "").strip().replace("whatsapp:", "")
@@ -1134,21 +1321,35 @@ def record_usage_event(
     conv: Optional[Dict[str, Any]] = None,
     source: str = "runtime",
 ) -> None:
-    service_record_usage_event(
-        engine=engine,
-        ensure_usage_events_table_fn=ensure_usage_events_table,
-        usage_event_is_billable_fn=usage_event_is_billable,
-        norm_user_key_fn=norm_user_key,
-        infer_intent_fn=infer_intent_label,
-        default_tenant_id=TENANT_ID_DEFAULT,
-        tenant_id=tenant_id,
-        user_id=user_id,
-        channel=channel,
-        raw_text=raw_text,
-        result=result,
-        conv=conv,
-        source=source,
-    )
+    try:
+        ensure_usage_events_table()
+        usage_type = usage_type_from_event(raw_text, result, conv)
+        billable = usage_event_is_billable(channel, source)
+        status = str((result or {}).get("status") or "").strip() or None
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO usage_events
+                    (tenant_id, user_id, channel, usage_type, usage_units, billable, source, status)
+                    VALUES
+                    (:tenant_id, :user_id, :channel, :usage_type, :usage_units, :billable, :source, :status)
+                    """
+                ),
+                {
+                    "tenant_id": (tenant_id or "").strip() or TENANT_ID_DEFAULT,
+                    "user_id": norm_user_key(user_id),
+                    "channel": (channel or "").strip().lower() or "unknown",
+                    "usage_type": usage_type,
+                    "usage_units": 1,
+                    "billable": billable,
+                    "source": (source or "runtime").strip().lower() or "runtime",
+                    "status": status,
+                },
+            )
+        log.info("usage_event_written tenant_id=%s user_id=%s channel=%s usage_type=%s billable=%s status=%s", (tenant_id or "").strip() or TENANT_ID_DEFAULT, norm_user_key(user_id), (channel or "").strip().lower() or "unknown", usage_type, billable, status or "")
+    except Exception as e:
+        log.error("usage_event_write_failed tenant_id=%s user_id=%s err=%s", tenant_id, user_id, e)
 
 
 def infer_intent_label(raw_text: str, result_status: str, conv: Optional[Dict[str, Any]] = None) -> str:
@@ -1179,18 +1380,37 @@ def log_call_event(
     result: Dict[str, Any],
     conv: Optional[Dict[str, Any]] = None,
 ) -> None:
-    service_log_call_event(
-        engine=engine,
-        norm_user_key_fn=norm_user_key,
-        infer_intent_fn=infer_intent_label,
-        default_tenant_id=TENANT_ID_DEFAULT,
-        tenant_id=tenant_id,
-        user_id=user_id,
-        channel=channel,
-        raw_text=raw_text,
-        result=result,
-        conv=conv,
-    )
+    try:
+        conv = conv or {}
+        intent = infer_intent_label(raw_text, str(result.get("status") or "").strip(), conv)
+        service = str(conv.get("service") or "").strip() or None
+        datetime_iso = str(conv.get("datetime_iso") or "").strip() or None
+        status = str(result.get("status") or "").strip() or "unknown"
+        ai_reply = str(result.get("msg_out") or result.get("reply_voice") or "").strip() or None
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO call_logs
+                    (tenant_id, user_id, channel, intent, service, datetime_iso, status, raw_text, ai_reply)
+                    VALUES
+                    (:tenant_id, :user_id, :channel, :intent, :service, :datetime_iso, :status, :raw_text, :ai_reply)
+                    """
+                ),
+                {
+                    "tenant_id": (tenant_id or "").strip() or TENANT_ID_DEFAULT,
+                    "user_id": norm_user_key(user_id),
+                    "channel": (channel or "").strip().lower() or "unknown",
+                    "intent": intent,
+                    "service": service,
+                    "datetime_iso": datetime_iso,
+                    "status": status,
+                    "raw_text": (raw_text or "").strip(),
+                    "ai_reply": ai_reply,
+                },
+            )
+    except Exception as e:
+        log.error("call_log_write_failed tenant_id=%s user_id=%s err=%s", tenant_id, user_id, e)
 
 def handle_user_text_with_logging(
     tenant_id: str, raw_phone: str, text_in: str, channel: str, lang_hint: str, source: str = "runtime"
@@ -1501,6 +1721,149 @@ def tenant_services_for_lang(tenant: Dict[str, Any], lang: str) -> str:
     return BUSINESS_FALLBACK[f"services_{lang}"]
 
 
+def _safe_json_obj(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (dict, list)):
+        return value
+    txt = str(value).strip()
+    if not txt:
+        return None
+    try:
+        return json.loads(txt)
+    except Exception:
+        return None
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        if value is None or str(value).strip() == "":
+            return default
+        return int(value)
+    except Exception:
+        return default
+
+
+def _normalize_weekday_key(value: str) -> Optional[str]:
+    low = (value or "").strip().lower()
+    mapping = {
+        "mon": "mon", "monday": "mon", "1": "mon",
+        "tue": "tue", "tues": "tue", "tuesday": "tue", "2": "tue",
+        "wed": "wed", "wednesday": "wed", "3": "wed",
+        "thu": "thu", "thur": "thu", "thurs": "thu", "thursday": "thu", "4": "thu",
+        "fri": "fri", "friday": "fri", "5": "fri",
+        "sat": "sat", "saturday": "sat", "6": "sat",
+        "sun": "sun", "sunday": "sun", "0": "sun", "7": "sun",
+    }
+    return mapping.get(low)
+
+
+def _weekday_key_for_date(dt_value: datetime) -> str:
+    keys = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+    return keys[dt_value.weekday()]
+
+
+def default_weekly_hours(work_start: str, work_end: str) -> Dict[str, Optional[List[str]]]:
+    return {k: [work_start, work_end] for k in ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]}
+
+
+def tenant_business_rules(tenant: Dict[str, Any], work_start: str, work_end: str) -> Dict[str, Any]:
+    weekly_hours = default_weekly_hours(work_start, work_end)
+    src_weekly = (
+        tenant.get("weekly_hours_json")
+        or tenant.get("business_hours_json")
+        or tenant.get("working_hours_json")
+        or BUSINESS_WEEKLY_HOURS_JSON
+    )
+    parsed_weekly = _safe_json_obj(src_weekly)
+    if isinstance(parsed_weekly, dict):
+        for raw_key, value in parsed_weekly.items():
+            wk = _normalize_weekday_key(str(raw_key))
+            if not wk:
+                continue
+            if value in (None, False, "closed", "off"):
+                weekly_hours[wk] = None
+            elif isinstance(value, (list, tuple)) and len(value) >= 2:
+                weekly_hours[wk] = [str(value[0]).strip(), str(value[1]).strip()]
+            elif isinstance(value, dict):
+                start = str(value.get("start") or value.get("from") or "").strip()
+                end = str(value.get("end") or value.get("to") or "").strip()
+                if start and end:
+                    weekly_hours[wk] = [start, end]
+
+    days_off: set[str] = set()
+    src_days_off = tenant.get("days_off") or tenant.get("days_off_json") or BUSINESS_DAYS_OFF
+    parsed_days_off = _safe_json_obj(src_days_off)
+    if isinstance(parsed_days_off, list):
+        for item in parsed_days_off:
+            wk = _normalize_weekday_key(str(item))
+            if wk:
+                days_off.add(wk)
+    else:
+        for part in str(src_days_off or "").split(","):
+            wk = _normalize_weekday_key(part)
+            if wk:
+                days_off.add(wk)
+    for wk in list(days_off):
+        weekly_hours[wk] = None
+
+    breaks_by_day = {k: [] for k in ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]}
+    src_breaks = tenant.get("breaks_json") or tenant.get("breaks") or BUSINESS_BREAKS_JSON
+    parsed_breaks = _safe_json_obj(src_breaks)
+    if isinstance(parsed_breaks, dict):
+        for raw_key, value in parsed_breaks.items():
+            wk = _normalize_weekday_key(str(raw_key))
+            if not wk:
+                continue
+            vals = value if isinstance(value, list) else [value]
+            for interval in vals:
+                if isinstance(interval, (list, tuple)) and len(interval) >= 2:
+                    breaks_by_day[wk].append([str(interval[0]).strip(), str(interval[1]).strip()])
+                elif isinstance(interval, dict):
+                    start = str(interval.get("start") or interval.get("from") or "").strip()
+                    end = str(interval.get("end") or interval.get("to") or "").strip()
+                    if start and end:
+                        breaks_by_day[wk].append([start, end])
+    elif isinstance(parsed_breaks, list):
+        # global breaks applied to every day
+        for wk in breaks_by_day:
+            for interval in parsed_breaks:
+                if isinstance(interval, (list, tuple)) and len(interval) >= 2:
+                    breaks_by_day[wk].append([str(interval[0]).strip(), str(interval[1]).strip()])
+
+    holidays: List[str] = []
+    src_holidays = tenant.get("holidays_json") or tenant.get("holidays")
+    parsed_holidays = _safe_json_obj(src_holidays)
+    if isinstance(parsed_holidays, list):
+        holidays = [str(x).strip() for x in parsed_holidays if str(x).strip()]
+    elif isinstance(parsed_holidays, str) and parsed_holidays.strip():
+        holidays = [parsed_holidays.strip()]
+
+    min_notice_minutes = _safe_int(
+        tenant.get("min_notice_minutes")
+        or tenant.get("lead_time_min")
+        or tenant.get("minimum_notice_minutes")
+        or BUSINESS_MIN_NOTICE_MINUTES,
+        0,
+    )
+    buffer_minutes = _safe_int(
+        tenant.get("buffer_minutes")
+        or tenant.get("booking_buffer_min")
+        or tenant.get("service_buffer_minutes")
+        or BUSINESS_BUFFER_MINUTES,
+        0,
+    )
+
+    return {
+        "weekly_hours": weekly_hours,
+        "days_off": sorted(days_off),
+        "breaks": breaks_by_day,
+        "holidays": holidays,
+        "min_notice_minutes": max(0, min_notice_minutes),
+        "buffer_minutes": max(0, buffer_minutes),
+    }
+
+
 def tenant_settings(tenant: Dict[str, Any], lang: str) -> Dict[str, Any]:
     biz_name = str(
         tenant.get("business_name")
@@ -1523,10 +1886,311 @@ def tenant_settings(tenant: Dict[str, Any], lang: str) -> Dict[str, Any]:
     }
 
 
+def _slugify_service_key(value: str) -> str:
+    low = (value or "").strip().lower()
+    low = re.sub(r"[^a-z0-9а-яёāēīūčšžģķļņ]+", "_", low, flags=re.IGNORECASE)
+    return low.strip("_") or f"service_{uuid.uuid4().hex[:6]}"
+
+
+def _ensure_list(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [str(x).strip() for x in value if str(x).strip()]
+    txt = str(value).strip()
+    if not txt:
+        return []
+    try:
+        parsed = json.loads(txt)
+        if isinstance(parsed, list):
+            return [str(x).strip() for x in parsed if str(x).strip()]
+    except Exception:
+        pass
+    return [x.strip() for x in txt.split(",") if x.strip()]
+
+
+def parse_service_catalog(value: Any) -> List[Dict[str, Any]]:
+    if value is None:
+        return []
+    parsed = value
+    if isinstance(value, str):
+        txt = value.strip()
+        if not txt:
+            return []
+        try:
+            parsed = json.loads(txt)
+        except Exception:
+            return []
+    if not isinstance(parsed, list):
+        return []
+
+    out: List[Dict[str, Any]] = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        base_name = str(item.get("name") or item.get("name_lv") or item.get("display_name") or item.get("key") or "").strip()
+        if not base_name:
+            continue
+        key = str(item.get("key") or _slugify_service_key(base_name)).strip()
+        try:
+            duration_min = int(item.get("duration_min") or APPT_MINUTES)
+        except Exception:
+            duration_min = APPT_MINUTES
+        aliases = _ensure_list(item.get("aliases"))
+        aliases_lv = _ensure_list(item.get("aliases_lv"))
+        aliases_ru = _ensure_list(item.get("aliases_ru"))
+        aliases_en = _ensure_list(item.get("aliases_en"))
+        if not aliases_lv and aliases:
+            aliases_lv = aliases[:]
+        if not aliases_ru and aliases:
+            aliases_ru = aliases[:]
+        if not aliases_en and aliases:
+            aliases_en = aliases[:]
+        out.append({
+            "key": key,
+            "name_lv": str(item.get("name_lv") or base_name).strip(),
+            "name_ru": str(item.get("name_ru") or item.get("name") or base_name).strip(),
+            "name_en": str(item.get("name_en") or item.get("name") or base_name).strip(),
+            "duration_min": max(5, duration_min),
+            "aliases_lv": aliases_lv,
+            "aliases_ru": aliases_ru,
+            "aliases_en": aliases_en,
+        })
+    return out
+
+
+def fallback_service_catalog(tenant: Dict[str, Any]) -> List[Dict[str, Any]]:
+    names: Dict[str, List[str]] = {
+        "lv": [x.strip() for x in str(tenant.get("services_lv") or BUSINESS_FALLBACK["services_lv"]).split(",") if x.strip()],
+        "ru": [x.strip() for x in str(tenant.get("services_ru") or BUSINESS_FALLBACK["services_ru"]).split(",") if x.strip()],
+        "en": [x.strip() for x in str(tenant.get("services_en") or BUSINESS_FALLBACK["services_en"]).split(",") if x.strip()],
+    }
+    max_len = max(len(names["lv"]), len(names["ru"]), len(names["en"]), 1)
+    catalog: List[Dict[str, Any]] = []
+    for i in range(max_len):
+        lv_name = names["lv"][i] if i < len(names["lv"]) else names["lv"][0]
+        ru_name = names["ru"][i] if i < len(names["ru"]) else (names["ru"][0] if names["ru"] else lv_name)
+        en_name = names["en"][i] if i < len(names["en"]) else (names["en"][0] if names["en"] else lv_name)
+        catalog.append({
+            "key": _slugify_service_key(lv_name),
+            "name_lv": lv_name,
+            "name_ru": ru_name,
+            "name_en": en_name,
+            "duration_min": APPT_MINUTES,
+            "aliases_lv": [lv_name],
+            "aliases_ru": [ru_name],
+            "aliases_en": [en_name],
+        })
+    return catalog
+
+
+def tenant_service_catalog(tenant: Dict[str, Any]) -> List[Dict[str, Any]]:
+    for key in ("service_catalog", "services_catalog", "service_catalog_json", "services_json"):
+        catalog = parse_service_catalog(tenant.get(key))
+        if catalog:
+            return catalog
+    env_catalog = parse_service_catalog(os.getenv("BIZ_SERVICE_CATALOG", "").strip())
+    if env_catalog:
+        return env_catalog
+    return fallback_service_catalog(tenant)
+
+
+def get_service_item_by_key(catalog: List[Dict[str, Any]], service_key: Optional[str]) -> Optional[Dict[str, Any]]:
+    sk = str(service_key or "").strip()
+    if not sk:
+        return None
+    for item in catalog:
+        if str(item.get("key") or "").strip() == sk:
+            return item
+    return None
+
+
+def service_display_name(service_item: Optional[Dict[str, Any]], lang: str) -> str:
+    if not service_item:
+        return ""
+    lang = get_lang(lang)
+    return str(service_item.get(f"name_{lang}") or service_item.get("name_lv") or service_item.get("key") or "").strip()
+
+
+def service_duration_min(service_item: Optional[Dict[str, Any]]) -> int:
+    if not service_item:
+        return APPT_MINUTES
+    try:
+        return max(5, int(service_item.get("duration_min") or APPT_MINUTES))
+    except Exception:
+        return APPT_MINUTES
+
+
+def service_group_key(service_item: Optional[Dict[str, Any]]) -> str:
+    if not service_item:
+        return ""
+    hay = " ".join([
+        str(service_item.get("key") or ""),
+        str(service_item.get("name_lv") or ""),
+        str(service_item.get("name_ru") or ""),
+        str(service_item.get("name_en") or ""),
+        " ".join(service_item.get("aliases_lv") or []),
+        " ".join(service_item.get("aliases_ru") or []),
+        " ".join(service_item.get("aliases_en") or []),
+    ]).lower()
+    if any(x in hay for x in ["combo", "комбо", "kombo", "haircut and beard", "стрижка и борода", "frizūra un bārda", "matu griezums un bārda"]):
+        return "combo"
+    has_hair = any(x in hay for x in ["friz", "haircut", "стриж", "matu griez", "griezum"])
+    has_beard = any(x in hay for x in ["bārd", "barda", "beard", "бород"])
+    if has_hair and has_beard:
+        return "combo"
+    if has_beard:
+        return "beard"
+    if has_hair:
+        return "haircut"
+    return ""
+
+
+def find_service_item_by_group(catalog: List[Dict[str, Any]], group: str) -> Optional[Dict[str, Any]]:
+    for item in catalog:
+        if service_group_key(item) == group:
+            return item
+    return None
+
+
+def combined_service_display(lang: str, primary_item: Optional[Dict[str, Any]], addon_item: Optional[Dict[str, Any]]) -> str:
+    primary = service_display_name(primary_item, lang)
+    addon = service_display_name(addon_item, lang)
+    if primary and addon:
+        return f"{primary} + {addon}"
+    return primary or addon or ""
+
+
+def build_confirm_upsell_prompt(lang: str, when_text: str, haircut_item: Optional[Dict[str, Any]], beard_item: Optional[Dict[str, Any]]) -> str:
+    haircut_name = service_display_name(haircut_item, lang)
+    beard_name = service_display_name(beard_item, lang) or ("bārdu" if lang == "lv" else "бороду" if lang == "ru" else "a beard trim")
+    if lang == "ru":
+        return f"Отлично — можем записать вас на {haircut_name} {when_text}. Если хотите, можем добавить и {beard_name}. Добавляем?"
+    if lang == "en":
+        return f"Great — we can book your {haircut_name} for {when_text}. If you want, we can add {beard_name} too. Shall I add it?"
+    return f"Lieliski — varam pierakstīt jūs uz {haircut_name} {when_text}. Ja vēlaties, varam pievienot arī {beard_name}. Vai pievienojam?"
+
+
+def build_confirm_upsell_resolution(lang: str, when_text: str, added: bool, haircut_item: Optional[Dict[str, Any]], beard_item: Optional[Dict[str, Any]]) -> str:
+    haircut_name = service_display_name(haircut_item, lang)
+    beard_name = service_display_name(beard_item, lang) or ("bārdas kopšanu" if lang == "lv" else "подравнивание бороды" if lang == "ru" else "a beard trim")
+    if added:
+        if lang == "ru":
+            return f"Отлично 👍 Добавил {beard_name}. Ваша запись подтверждена на {when_text}."
+        if lang == "en":
+            return f"Great 👍 I added {beard_name}. Your booking is confirmed for {when_text}."
+        return f"Lieliski 👍 Pievienoju arī {beard_name}. Jūsu pieraksts ir apstiprināts uz {when_text}."
+    if lang == "ru":
+        return f"Хорошо 👍 Оставляем {haircut_name}. Ваша запись подтверждена на {when_text}."
+    if lang == "en":
+        return f"No problem 👍 We’ll keep {haircut_name}. Your booking is confirmed for {when_text}."
+    return f"Labi 👍 Paliekam pie {haircut_name}. Jūsu pieraksts ir apstiprināts uz {when_text}."
+
+
+def service_catalog_summary(catalog: List[Dict[str, Any]], lang: str) -> str:
+    parts = []
+    for item in catalog:
+        display = service_display_name(item, lang)
+        dur = service_duration_min(item)
+        if display:
+            parts.append(f"{display} ({dur} min)")
+    return ", ".join(parts)
+
+
+def service_alias_map_from_catalog(catalog: List[Dict[str, Any]], lang: str) -> Dict[str, str]:
+    lang = get_lang(lang)
+    out: Dict[str, str] = {}
+    for item in catalog:
+        key = str(item.get("key") or "").strip()
+        if not key:
+            continue
+        display = service_display_name(item, lang)
+        for alias in [display] + list(item.get(f"aliases_{lang}") or []):
+            a = str(alias or "").strip().lower()
+            if a:
+                out[a] = key
+    return out
+
+
+def canonical_service_key_from_text(text_: Optional[str], alias_map: Dict[str, str]) -> Optional[str]:
+    low = (text_ or "").strip().lower()
+    if not low:
+        return None
+    norm_low = re.sub(r"\s+", " ", re.sub(r"[^\wĀ-žА-Яа-яЁё]+", " ", low, flags=re.UNICODE)).strip()
+    if low in alias_map:
+        return alias_map[low]
+    if norm_low in alias_map:
+        return alias_map[norm_low]
+    # Prefer longest alias first so generic words don't beat specific phrases
+    for alias in sorted(alias_map.keys(), key=len, reverse=True):
+        if not alias:
+            continue
+        norm_alias = re.sub(r"\s+", " ", re.sub(r"[^\wĀ-žА-Яа-яЁё]+", " ", alias, flags=re.UNICODE)).strip()
+        if alias in low or (norm_alias and norm_alias in norm_low):
+            return alias_map[alias]
+    return None
+
+
 def merged_service_alias_map(catalog: List[Dict[str, Any]], tenant: Dict[str, Any], lang: str) -> Dict[str, str]:
     merged = service_alias_map_from_catalog(catalog, lang)
     merged.update(tenant_service_aliases(tenant, lang))
     return merged
+
+
+def ensure_default_barbershop_aliases(catalog: List[Dict[str, Any]], alias_map: Dict[str, str], lang: str) -> Dict[str, str]:
+    out = dict(alias_map)
+    haircut_keys = []
+    beard_keys = []
+    combo_keys = []
+    for item in catalog:
+        key = str(item.get("key") or "").strip()
+        hay = " ".join([
+            key,
+            str(item.get("name_lv") or ""),
+            str(item.get("name_ru") or ""),
+            str(item.get("name_en") or ""),
+            " ".join(item.get("aliases_lv") or []),
+            " ".join(item.get("aliases_ru") or []),
+            " ".join(item.get("aliases_en") or []),
+        ]).lower()
+        if any(x in hay for x in ["friz", "haircut", "стриж", "matu griez", "griezum"]):
+            haircut_keys.append(key)
+        if any(x in hay for x in ["bārd", "barda", "beard", "бород"]):
+            beard_keys.append(key)
+        if any(x in hay for x in ["combo", "комбо", "kombo"]):
+            combo_keys.append(key)
+
+    def add_many(key: Optional[str], aliases: List[str]):
+        if not key:
+            return
+        for a in aliases:
+            aa = a.strip().lower()
+            if aa and aa not in out:
+                out[aa] = key
+
+    haircut_key = haircut_keys[0] if haircut_keys else None
+    beard_key = beard_keys[0] if beard_keys else None
+    combo_key = combo_keys[0] if combo_keys else None
+
+    add_many(haircut_key, [
+        "matu griezums", "matu griezumu", "griezums", "griezumu",
+        "apgriezt matus", "apgriezt", "frizūra", "frizura", "frizūru", "frizuru",
+        "vīriešu frizūra", "viriesu frizura", "vīriešu frizūru", "viriesu frizuru",
+        "vīriešu matu griezums", "viriesu matu griezums", "vīriešu matu griezumu", "viriesu matu griezumu",
+        "подстричься", "стрижка", "стрижку", "мужская стрижка", "мужскую стрижку",
+        "haircut", "mens haircut", "men's haircut", "cut hair", "trim hair"
+    ])
+    add_many(beard_key, [
+        "bārda", "barda", "bārdu", "bardu", "bārdas korekcija", "bārdas korekciju",
+        "bārdas trim", "bārdas trimu", "beard trim", "beard", "борода", "бороду", "подровнять бороду"
+    ])
+    add_many(combo_key, [
+        "combo", "kombo", "комбо",
+        "matu griezums un bārda", "matu griezumu un bārdu",
+        "frizūra un bārda", "frizūru un bārdu",
+        "haircut and beard", "стрижка и борода", "стрижку и бороду"
+    ])
+    return out
 
 
 def abort_reschedule_text(text_: Optional[str], lang: str) -> bool:
