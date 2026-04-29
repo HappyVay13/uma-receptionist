@@ -120,6 +120,32 @@ from db.conversations import db_get_or_create_conversation, db_save_conversation
 from db.runtime_tables import ensure_call_logs_table, ensure_phone_routes_table, ensure_usage_events_table
 from integrations.twilio_client import send_message
 from integrations.twilio_validation import install_twilio_signature_middleware
+from services.tenant_service import (
+    normalize_incoming_to_number,
+    looks_like_phone_number,
+    parse_voice_client_tenant_map,
+    tenant_id_from_client_identity,
+)
+from saas.lifecycle import (
+    ALLOWED_SUBSCRIPTION_STATUSES,
+    LIFECYCLE_STATUS_ALIASES,
+    PLAN_ALIASES,
+    PLAN_CATALOG,
+    SAAS_TENANT_FIELDS,
+    available_plan_catalog,
+    effective_subscription_status,
+    normalize_subscription_status,
+    normalize_tenant_saas_fields,
+    normalized_plan_name,
+    tenant_effective_dialog_limit,
+    tenant_lifecycle_payload,
+    tenant_plan_defaults,
+    tenant_trial_end_value,
+)
+from saas.access_control import (
+    usage_context_is_non_billable,
+    usage_event_is_billable,
+)
 
 log = logging.getLogger("repliq")
 
@@ -372,72 +398,7 @@ def tenants_pk(cols: List[Dict[str, Any]]) -> str:
 
 
 
-def normalize_incoming_to_number(raw_value: str) -> str:
-    v = (raw_value or "").strip()
-    if v.startswith("whatsapp:"):
-        v = v[len("whatsapp:"):]
-    if v.startswith("sip:"):
-        v = v[len("sip:"):]
-    if v.startswith("client:"):
-        v = v[len("client:"):]
-    v = re.sub(r"[^\d+]", "", v)
-    if v and not v.startswith("+") and v.isdigit():
-        v = "+" + v
-    return v
-
-def looks_like_phone_number(raw_value: str) -> bool:
-    v = normalize_incoming_to_number(raw_value)
-    digits = re.sub(r"\D", "", v)
-    return len(digits) >= 7
-
-def parse_voice_client_tenant_map() -> Dict[str, str]:
-    txt = (VOICE_CLIENT_TENANT_MAP or "").strip()
-    out: Dict[str, str] = {}
-    if not txt:
-        return out
-    try:
-        parsed = json.loads(txt)
-        if isinstance(parsed, dict):
-            for k, v in parsed.items():
-                ks = str(k).strip()
-                vs = str(v).strip()
-                if ks and vs:
-                    out[ks] = vs
-            return out
-    except Exception:
-        pass
-    for part in txt.split(","):
-        part = part.strip()
-        if not part or ":" not in part:
-            continue
-        left, right = part.split(":", 1)
-        left = left.strip()
-        right = right.strip()
-        if left and right:
-            out[left] = right
-    return out
-
-def tenant_id_from_client_identity(client_identity: str) -> Optional[str]:
-    ident = (client_identity or "").strip()
-    if ident.startswith("client:"):
-        ident = ident[len("client:"):]
-
-    m = re.match(r"^tenant__([^_]+(?:_[^_]+)*)__.+$", ident)
-    if m:
-        return m.group(1)
-
-    m2 = re.match(r"^tenant:([^:]+):.+$", ident)
-    if m2:
-        return m2.group(1)
-
-    mapped = parse_voice_client_tenant_map().get(ident)
-    if mapped:
-        return mapped
-
-    if VOICE_DEMO_TENANT_ID:
-        return VOICE_DEMO_TENANT_ID
-
-    return None
+# Tenant phone/client identity helpers moved to services/tenant_service.py
 
 def resolve_voice_tenant_for_incoming(to_number: str, raw_from: str = "") -> Dict[str, Any]:
     test_tenant_id = (TEST_TENANT_ID or "").strip()
@@ -1336,19 +1297,7 @@ def usage_type_from_event(raw_text: str, result: Dict[str, Any], conv: Optional[
     return "message"
 
 
-def usage_context_is_non_billable(channel: str, source: str = "runtime") -> bool:
-    ch = str(channel or "").strip().lower()
-    src = str(source or "runtime").strip().lower()
-    if ch in {"dev", "test", "debug"}:
-        return True
-    if src in {"dev", "dev_ui", "test", "debug"}:
-        return True
-    return False
-
-
-def usage_event_is_billable(channel: str, source: str = "runtime") -> bool:
-    return not usage_context_is_non_billable(channel, source)
-
+# Usage billable helpers moved to saas/access_control.py
 
 def record_usage_event(
     tenant_id: str,
@@ -1532,13 +1481,7 @@ def tenant_status_value(tenant: Dict[str, Any]) -> str:
     return "trial"
 
 
-def tenant_trial_end_value(tenant: Dict[str, Any]) -> Optional[datetime]:
-    te = tenant.get("trial_end") or tenant.get("trial_end_at")
-    dt = parse_dt_any_tz(te) if isinstance(te, str) else te
-    if not dt:
-        dt = parse_dt_any_tz(TRIAL_END_ISO_FALLBACK)
-    return dt
-
+# tenant_trial_end_value moved to saas/lifecycle.py
 
 def tenant_allowed(tenant: Dict[str, Any]) -> Tuple[bool, str]:
     decision = tenant_access_decision(tenant)
@@ -5669,154 +5612,12 @@ REQUIRED_TENANT_FIELDS = [
 
 
 # =========================
-# Phase 3 – SaaS Tenant Lifecycle Fields
+# SaaS tenant lifecycle helpers moved to saas/lifecycle.py
 # =========================
-
-SAAS_TENANT_FIELDS = {
-    "onboarding_completed": False,
-    "google_connected": False,
-    "subscription_status": "trial",
-    "plan": "starter",
-    "owner_email": ""
-}
-
-LIFECYCLE_STATUS_ALIASES = {
-    "enabled": "active",
-    "paid": "active",
-    "live": "active",
-    "due": "past_due",
-    "payment_failed": "past_due",
-    "paused": "inactive",
-    "disabled": "inactive",
-    "cancelled": "inactive",
-    "canceled": "inactive",
-    "expired": "expired",
-}
-
-ALLOWED_SUBSCRIPTION_STATUSES = {"trial", "active", "past_due", "inactive", "expired"}
-
-def normalize_subscription_status(value: Any) -> str:
-    raw = str(value or "").strip().lower()
-    raw = LIFECYCLE_STATUS_ALIASES.get(raw, raw)
-    if raw in ALLOWED_SUBSCRIPTION_STATUSES:
-        return raw
-    return "trial"
-
-def normalize_tenant_saas_fields(tenant: Dict[str, Any]) -> Dict[str, Any]:
-    """Ensure SaaS lifecycle fields exist so older tenants don't break."""
-    if not tenant:
-        return tenant
-    for k, v in SAAS_TENANT_FIELDS.items():
-        if k not in tenant or tenant.get(k) is None:
-            tenant[k] = v
-    tenant["subscription_status"] = normalize_subscription_status(tenant.get("subscription_status"))
-    tenant["plan"] = normalized_plan_name(tenant.get("plan")) if "plan" in tenant else "starter"
-    return tenant
-
-def effective_subscription_status(tenant: Dict[str, Any]) -> str:
-    tenant = normalize_tenant_saas_fields(tenant or {})
-    status = normalize_subscription_status(tenant.get("subscription_status"))
-    if status == "trial":
-        trial_end = tenant_trial_end_value(tenant)
-        if trial_end and now_ts() > trial_end:
-            return "expired"
-    return status
-
-def tenant_lifecycle_payload(tenant: Dict[str, Any]) -> Dict[str, Any]:
-    tenant = normalize_tenant_saas_fields(tenant or {})
-    trial_end = tenant_trial_end_value(tenant)
-    subscription_status = normalize_subscription_status(tenant.get("subscription_status"))
-    effective_status = effective_subscription_status(tenant)
-    blocked = effective_status in {"inactive", "expired"}
-    if effective_status == "past_due":
-        blocked = False
-    return {
-        "subscription_status": subscription_status,
-        "effective_status": effective_status,
-        "trial_end": trial_end.isoformat() if hasattr(trial_end, "isoformat") else None,
-        "blocked": blocked,
-        "block_reason": "trial_expired" if effective_status == "expired" and subscription_status == "trial" else effective_status if blocked else None,
-    }
-
-
-def tenant_service_account_json_value(tenant: Optional[Dict[str, Any]]) -> str:
-    tenant = tenant or {}
-    for key in ("service_account_json", "google_service_account_json"):
-        val = str(tenant.get(key) or "").strip()
-        if val:
-            return val
-    return GOOGLE_SERVICE_ACCOUNT_JSON or ""
-
-
-def tenant_has_service_account_json(tenant: Optional[Dict[str, Any]]) -> bool:
-    return bool(tenant_service_account_json_value(tenant))
-
-
-def tenant_runtime_missing_items(tenant: Dict[str, Any]) -> List[str]:
-    tenant = normalize_tenant_saas_fields(tenant or {})
-    missing: List[str] = []
-    if not str(tenant.get("business_name") or "").strip():
-        missing.append("business_name")
-    if not str(tenant.get("timezone") or "").strip():
-        missing.append("timezone")
-    if not str(tenant.get("work_start") or "").strip():
-        missing.append("work_start")
-    if not str(tenant.get("work_end") or "").strip():
-        missing.append("work_end")
-    if not str(tenant.get("calendar_id") or "").strip():
-        missing.append("calendar_id")
-    if not tenant_has_service_account_json(tenant):
-        missing.append("service_account_json")
-    catalog = tenant_service_catalog(tenant)
-    if not catalog:
-        missing.append("service_catalog")
-    return missing
-
-
-def tenant_runtime_ready(tenant: Dict[str, Any]) -> bool:
-    return len(tenant_runtime_missing_items(tenant)) == 0
-
-
-def log_tenant_runtime_validation(tenant: Dict[str, Any]) -> None:
-    missing = tenant_runtime_missing_items(tenant)
-    if missing:
-        log.error(
-            "tenant_runtime_invalid tenant_id=%s missing=%s",
-            tenant.get("_id") or tenant.get("id"),
-            ",".join(missing),
-        )
-
-
-def validate_tenant_config(tenant: dict):
-    missing = []
-    for f in REQUIRED_TENANT_FIELDS:
-        if not tenant.get(f):
-            missing.append(f)
-    for f in tenant_runtime_missing_items(tenant):
-        if f not in missing:
-            missing.append(f)
-
-    if missing:
-        log.error(f"tenant_config_invalid tenant_id={tenant.get('id') or tenant.get('_id')} missing={missing}")
-        raise Exception(f"Tenant configuration invalid: missing {missing}")
-
-    return True
-
-
-def safe_calendar_check(tenant: dict):
-    try:
-        if not tenant.get("calendar_id"):
-            raise Exception("calendar_id missing")
-
-        return True
-
-    except Exception as e:
-        log.error(f"calendar_config_error tenant_id={tenant.get('id')} error={e}")
-        raise
-
 
 
 # =========================
+# SAAS ONBOARDING# =========================
 # SAAS ONBOARDING (Phase 3 Step 1)
 # =========================
 
@@ -5930,85 +5731,7 @@ def onboarding_status_payload(tenant: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-PLAN_ALIASES = {
-    "growth": "pro",
-    "enterprise": "business",
-}
-
-PLAN_CATALOG = {
-    "starter": {
-        "display_name": "Starter",
-        "dialogs_per_month": 300,
-        "llm_calls_per_month": 0,
-        "llm_mode": "off",
-        "includes_advanced_ai": False,
-        "monthly_price": 0,
-        "features": ["Basic booking flow", "Calendar integration", "SMS / WhatsApp support"],
-    },
-    "pro": {
-        "display_name": "Pro",
-        "dialogs_per_month": 1000,
-        "llm_calls_per_month": 800,
-        "llm_mode": "smart",
-        "includes_advanced_ai": True,
-        "monthly_price": 0,
-        "features": ["Smarter routing", "FAQ support", "Priority SaaS limits"],
-    },
-    "ai": {
-        "display_name": "AI",
-        "dialogs_per_month": 2000,
-        "llm_calls_per_month": 2500,
-        "llm_mode": "full",
-        "includes_advanced_ai": True,
-        "monthly_price": 0,
-        "features": ["Advanced LLM flows", "Higher monthly capacity", "Deeper AI coverage"],
-    },
-    "business": {
-        "display_name": "Business",
-        "dialogs_per_month": 3000,
-        "llm_calls_per_month": 5000,
-        "llm_mode": "full",
-        "includes_advanced_ai": True,
-        "monthly_price": 0,
-        "features": ["High volume usage", "Multi-channel scale", "Business-grade limits"],
-    },
-}
-
-
-def normalized_plan_name(value: Any) -> str:
-    plan = str(value or "starter").strip().lower() or "starter"
-    plan = PLAN_ALIASES.get(plan, plan)
-    if plan not in PLAN_CATALOG:
-        return "starter"
-    return plan
-
-
-def available_plan_catalog() -> Dict[str, Dict[str, Any]]:
-    out: Dict[str, Dict[str, Any]] = {}
-    for plan_key, meta in PLAN_CATALOG.items():
-        item = dict(meta)
-        item["plan"] = plan_key
-        out[plan_key] = item
-    return out
-
-
-def tenant_plan_defaults(tenant: Dict[str, Any]) -> Dict[str, Any]:
-    plan = normalized_plan_name((tenant or {}).get("plan"))
-    defaults = dict(PLAN_CATALOG.get(plan, PLAN_CATALOG["starter"]))
-    defaults["plan"] = plan
-    return defaults
-
-
-def tenant_effective_dialog_limit(tenant: Dict[str, Any], defaults: Optional[Dict[str, Any]] = None) -> Tuple[int, bool]:
-    defaults = dict(defaults or tenant_plan_defaults(tenant))
-    raw_dialog_limit = (tenant or {}).get("dialogs_per_month")
-    try:
-        if raw_dialog_limit in (None, ""):
-            return max(0, int(defaults.get("dialogs_per_month") or 0)), False
-        return max(0, int(raw_dialog_limit or 0)), True
-    except Exception:
-        return max(0, int(defaults.get("dialogs_per_month") or 0)), False
-
+# Plan catalog/default helpers moved to saas/lifecycle.py
 
 def tenant_plan_meta(tenant: Dict[str, Any]) -> Dict[str, Any]:
     tenant = normalize_tenant_saas_fields(tenant or {})
