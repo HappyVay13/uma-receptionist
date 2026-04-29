@@ -120,6 +120,14 @@ from db.conversations import db_get_or_create_conversation, db_save_conversation
 from db.runtime_tables import ensure_call_logs_table, ensure_phone_routes_table, ensure_usage_events_table
 from integrations.twilio_client import send_message
 from integrations.twilio_validation import install_twilio_signature_middleware
+from channels.voice import (
+    handle_voice_incoming,
+    handle_voice_language,
+    handle_voice_intent,
+    build_voice_token_payload,
+)
+from channels.sms import handle_sms_incoming
+from channels.whatsapp import handle_whatsapp_incoming
 from integrations.google_calendar import (
     build_event_description,
     calendar_is_configured,
@@ -5051,157 +5059,31 @@ def handle_user_text(
 
 
 # -------------------------
-# TWILIO ENDPOINTS
+# CHANNEL ENDPOINTS (Stage 9)
 # -------------------------
 @app.post("/voice/incoming")
 async def voice_incoming(request: Request):
-    form = await request.form()
-    to_num = str(form.get("To", ""))
-    caller = normalize_voice_caller(str(form.get("From", "")))
-    tenant = resolve_voice_tenant_for_incoming(to_num, caller)
-    log_tenant_resolution("voice", to_num, tenant)
-    if not tenant_is_resolved(tenant):
-        vr = VoiceResponse()
-        say_or_play(vr, t("lv", "service_unavailable_voice"), "lv")
-        vr.hangup()
-        return twiml(vr)
-    biz = tenant_settings(tenant, "lv")["biz_name"]
-
-    c = db_get_or_create_conversation(tenant["_id"], caller, "lv")
-    lang = get_lang(c.get("lang")) if caller != "unknown" else "lv"
-
-    vr = VoiceResponse()
-    g = Gather(
-        input="speech dtmf",
-        action="/voice/language",
-        method="POST",
-        timeout=7,
-        speech_timeout="auto",
-        num_digits=1,
-        language=stt_locale_for_lang(lang),
-    )
-    say_or_play(g, t(lang, "greeting", biz=biz), lang)
-    vr.append(g)
-    say_or_play(vr, t(lang, "voice_fallback"), lang)
-    return twiml(vr)
+    return await handle_voice_incoming(request, runtime=globals())
 
 
 @app.post("/voice/language")
 async def voice_language(request: Request):
-    form = await request.form()
-    to_num = str(form.get("To", ""))
-    caller = normalize_voice_caller(str(form.get("From", "")))
-    speech = str(form.get("SpeechResult", "")).strip()
-    digits = str(form.get("Digits", "")).strip()
-
-    tenant = resolve_voice_tenant_for_incoming(to_num, caller)
-    log_tenant_resolution("voice_language", to_num, tenant)
-    if not tenant_is_resolved(tenant):
-        vr = VoiceResponse()
-        say_or_play(vr, t("lv", "service_unavailable_voice"), "lv")
-        vr.hangup()
-        return twiml(vr)
-    c = db_get_or_create_conversation(tenant["_id"], caller, "lv")
-    selected_lang = detect_language_choice(speech, digits) or get_lang(c.get("lang"))
-    c["lang"] = selected_lang
-    db_save_conversation(tenant["_id"], caller, c)
-
-    vr = VoiceResponse()
-    g = Gather(
-        input="speech",
-        action="/voice/intent",
-        method="POST",
-        timeout=7,
-        speech_timeout="auto",
-        language=stt_locale_for_lang(selected_lang),
-    )
-    say_or_play(g, t(selected_lang, "how_help"), selected_lang)
-    vr.append(g)
-    say_or_play(vr, t(selected_lang, "voice_fallback"), selected_lang)
-    return twiml(vr)
+    return await handle_voice_language(request, runtime=globals())
 
 
 @app.post("/voice/intent")
 async def voice_intent(request: Request):
-    form = await request.form()
-    to_num = str(form.get("To", ""))
-    caller = normalize_voice_caller(str(form.get("From", "")))
-    speech = str(form.get("SpeechResult", "")).strip()
-
-    tenant = resolve_voice_tenant_for_incoming(to_num, caller)
-    log_tenant_resolution("voice_intent", to_num, tenant)
-    if not tenant_is_resolved(tenant):
-        vr = VoiceResponse()
-        say_or_play(vr, t("lv", "service_unavailable_voice"), "lv")
-        vr.hangup()
-        return twiml(vr)
-    c = db_get_or_create_conversation(tenant["_id"], caller, detect_language(speech))
-    lang = resolve_reply_language(speech, c.get("lang") or detect_language(speech))
-    result = handle_user_text_with_logging(tenant["_id"], caller, speech, "voice", lang)
-
-    vr = VoiceResponse()
-    say_or_play(vr, result["reply_voice"], result["lang"])
-    if result["status"] in ("need_more", "reschedule_wait", "greeting", "identity", "info"):
-        g = Gather(
-            input="speech",
-            action="/voice/intent",
-            method="POST",
-            timeout=7,
-            speech_timeout="auto",
-            language=stt_locale_for_lang(result["lang"]),
-        )
-        say_or_play(g, gather_followup_prompt(result), result["lang"])
-        vr.append(g)
-        say_or_play(vr, t(result["lang"], "voice_fallback"), result["lang"])
-    else:
-        vr.hangup()
-
-    if result["status"] in ("booked", "busy", "cancelled") and caller != "unknown" and channel_supports_messaging("voice", caller):
-        biz_name = tenant_settings(tenant, result["lang"])["biz_name"]
-        send_message(caller, f"{biz_name}: {result['msg_out']}")
-
-    return twiml(vr)
+    return await handle_voice_intent(request, runtime=globals())
 
 
 @app.post("/sms/incoming")
 async def sms_incoming(request: Request):
-    form = await request.form()
-    to_num = str(form.get("To", ""))
-    from_num = str(form.get("From", ""))
-    body = str(form.get("Body", "")).strip()
-
-    tenant = resolve_tenant_for_incoming(to_num)
-    log_tenant_resolution("sms", to_num, tenant)
-    if not tenant_is_resolved(tenant):
-        send_message(from_num, t(detect_language(body), "service_unavailable_text"))
-        return Response(status_code=204)
-    result = handle_user_text_with_logging(
-        tenant["_id"], from_num, body, "sms", detect_language(body)
-    )
-    biz = tenant_settings(tenant, result["lang"])["biz_name"]
-    send_message(from_num, f"{biz}: {result['msg_out']}")
-    return Response(status_code=204)
+    return await handle_sms_incoming(request, runtime=globals())
 
 
 @app.post("/whatsapp/incoming")
 async def whatsapp_incoming(request: Request):
-    form = await request.form()
-    to_num = str(form.get("To", "")).replace("whatsapp:", "")
-    from_num = str(form.get("From", ""))
-    body = str(form.get("Body", "")).strip()
-
-    tenant = resolve_tenant_for_incoming(to_num)
-    log_tenant_resolution("whatsapp", to_num, tenant)
-    if not tenant_is_resolved(tenant):
-        send_message(from_num, t(detect_language(body), "service_unavailable_text"))
-        return Response(status_code=204)
-    result = handle_user_text_with_logging(
-        tenant["_id"], from_num, body, "whatsapp", detect_language(body)
-    )
-    biz = tenant_settings(tenant, result["lang"])["biz_name"]
-    send_message(from_num, f"{biz}: {result['msg_out']}")
-    return Response(status_code=204)
-
+    return await handle_whatsapp_incoming(request, runtime=globals())
 
 
 # -------------------------
@@ -5413,29 +5295,7 @@ async def google_select_calendar(request: Request):
 # -------------------------
 @app.get("/voice/token")
 def get_voice_token(client_id: str = "default", tenant_id: str = ""):
-    if not (
-        TWILIO_ACCOUNT_SID
-        and TWILIO_API_KEY_SID
-        and TWILIO_API_KEY_SECRET
-        and TWILIO_TWIML_APP_SID
-    ):
-        raise HTTPException(status_code=500, detail="Twilio Voice SDK config missing")
-
-    clean_client_id = re.sub(r"[^a-zA-Z0-9_\-]", "_", (client_id or "default")).strip("_") or "default"
-    clean_tenant_id = re.sub(r"[^a-zA-Z0-9_\-]", "_", (tenant_id or "")).strip("_")
-    identity = f"tenant__{clean_tenant_id}__{clean_client_id}" if clean_tenant_id else clean_client_id
-
-    token = AccessToken(
-        TWILIO_ACCOUNT_SID,
-        TWILIO_API_KEY_SID,
-        TWILIO_API_KEY_SECRET,
-        identity=identity,
-    )
-    grant = VoiceGrant(
-        outgoing_application_sid=TWILIO_TWIML_APP_SID, incoming_allow=True
-    )
-    token.add_grant(grant)
-    return {"token": token.to_jwt(), "identity": identity, "tenant_id": clean_tenant_id or None}
+    return build_voice_token_payload(client_id=client_id, tenant_id=tenant_id, runtime=globals())
 
 
 @app.on_event("startup")
