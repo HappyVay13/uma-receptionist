@@ -116,6 +116,8 @@ from core.parsing_time import (
     today_local,
 )
 from db.database import engine  # expects engine in db/database.py
+from db.conversations import db_get_or_create_conversation, db_save_conversation
+from db.runtime_tables import ensure_call_logs_table, ensure_phone_routes_table, ensure_usage_events_table
 from integrations.twilio_client import send_message
 from integrations.twilio_validation import install_twilio_signature_middleware
 
@@ -1311,172 +1313,13 @@ def ensure_lang_update(tenant_id: str, user_key: str, c: Dict[str, Any], lang: s
 
 
 # -------------------------
-# DB: CONVERSATIONS
+# DB helpers moved to db/conversations.py
 # -------------------------
-def db_get_or_create_conversation(
-    tenant_id: str, user_key: str, default_lang: str
-) -> Dict[str, Any]:
-    tenant_id = (tenant_id or "").strip() or TENANT_ID_DEFAULT
-    user_key = norm_user_key(user_key)
-    default_lang = get_lang(default_lang)
-    with engine.begin() as conn:
-        row = conn.execute(
-            text(
-                """
-            SELECT lang_lock, state, service, name, datetime_iso, time_text, pending_json
-            FROM conversations
-            WHERE tenant_id=:tid AND user_key=:uk
-            LIMIT 1
-        """
-            ),
-            {"tid": tenant_id, "uk": user_key},
-        ).fetchone()
-        if row:
-            pending = None
-            if row[6]:
-                try:
-                    pending = json.loads(row[6])
-                except Exception:
-                    pending = None
-            return {
-                "lang": get_lang(row[0]),
-                "state": row[1] or "NEW",
-                "service": row[2],
-                "name": row[3],
-                "datetime_iso": row[4],
-                "time_text": row[5],
-                "pending": pending,
-            }
-        conn.execute(
-            text(
-                """
-            INSERT INTO conversations
-              (tenant_id, user_key, lang_lock, state, updated_at)
-            VALUES
-              (:tid, :uk, :lang, 'NEW', NOW())
-        """
-            ),
-            {"tid": tenant_id, "uk": user_key, "lang": default_lang},
-        )
-    return {
-        "lang": default_lang,
-        "state": "NEW",
-        "service": None,
-        "name": None,
-        "datetime_iso": None,
-        "time_text": None,
-        "pending": None,
-    }
-
-
-def db_save_conversation(tenant_id: str, user_key: str, c: Dict[str, Any]) -> None:
-    tenant_id = (tenant_id or "").strip() or TENANT_ID_DEFAULT
-    user_key = norm_user_key(user_key)
-    pending_json = (
-        json.dumps(c["pending"], ensure_ascii=False) if c.get("pending") else None
-    )
-    with engine.begin() as conn:
-        conn.execute(
-            text(
-                """
-            UPDATE conversations
-            SET lang_lock=:lang, state=:state, service=:service, name=:name,
-                datetime_iso=:dtiso, time_text=:tt, pending_json=:pj, updated_at=NOW()
-            WHERE tenant_id=:tid AND user_key=:uk
-        """
-            ),
-            {
-                "tid": tenant_id,
-                "uk": user_key,
-                "lang": get_lang(c.get("lang")),
-                "state": c.get("state") or "NEW",
-                "service": c.get("service"),
-                "name": c.get("name"),
-                "dtiso": c.get("datetime_iso"),
-                "tt": sanitize_conversation_time_text(c.get("time_text")),
-                "pj": pending_json,
-            },
-        )
 
 
 # -------------------------
-# DB: CALL LOGGING
+# Runtime table ensure helpers moved to db/runtime_tables.py
 # -------------------------
-def ensure_call_logs_table() -> None:
-    with engine.begin() as conn:
-        conn.execute(
-            text(
-                """
-                CREATE TABLE IF NOT EXISTS call_logs (
-                    id BIGSERIAL PRIMARY KEY,
-                    tenant_id TEXT NOT NULL,
-                    user_id TEXT,
-                    channel TEXT,
-                    intent TEXT,
-                    service TEXT,
-                    datetime_iso TEXT,
-                    status TEXT,
-                    raw_text TEXT,
-                    ai_reply TEXT,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-                """
-            )
-        )
-        conn.execute(text("ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS ai_reply TEXT"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_call_logs_tenant_created_at ON call_logs (tenant_id, created_at DESC)"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_call_logs_user_id ON call_logs (user_id)"))
-
-
-def ensure_phone_routes_table() -> None:
-    with engine.begin() as conn:
-        conn.execute(
-            text(
-                """
-                CREATE TABLE IF NOT EXISTS phone_routes (
-                    id BIGSERIAL PRIMARY KEY,
-                    phone_number TEXT NOT NULL UNIQUE,
-                    tenant_id TEXT NOT NULL,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-                """
-            )
-        )
-        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_phone_routes_tenant_id ON phone_routes (tenant_id)"))
-
-def ensure_usage_events_table() -> None:
-    with engine.begin() as conn:
-        conn.execute(
-            text(
-                """
-                CREATE TABLE IF NOT EXISTS usage_events (
-                    id BIGSERIAL PRIMARY KEY,
-                    tenant_id TEXT NOT NULL,
-                    user_id TEXT,
-                    channel TEXT,
-                    usage_type TEXT NOT NULL,
-                    usage_units INTEGER NOT NULL DEFAULT 1,
-                    billable BOOLEAN NOT NULL DEFAULT TRUE,
-                    source TEXT,
-                    status TEXT,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-                """
-            )
-        )
-        # Older deployments may already have usage_events without the newer
-        # columns below. Backfill the schema in-place so inserts do not fail
-        # silently under record_usage_event().
-        conn.execute(text("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS source TEXT"))
-        conn.execute(text("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS status TEXT"))
-        conn.execute(text("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS usage_units INTEGER NOT NULL DEFAULT 1"))
-        conn.execute(text("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS billable BOOLEAN NOT NULL DEFAULT TRUE"))
-        conn.execute(text("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS channel TEXT"))
-        conn.execute(text("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS user_id TEXT"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_usage_events_tenant_created_at ON usage_events (tenant_id, created_at DESC)"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_usage_events_tenant_billable_created_at ON usage_events (tenant_id, billable, created_at DESC)"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_usage_events_user_id ON usage_events (user_id)"))
 
 
 def usage_type_from_event(raw_text: str, result: Dict[str, Any], conv: Optional[Dict[str, Any]] = None) -> str:
