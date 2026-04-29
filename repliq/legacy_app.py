@@ -14,9 +14,7 @@ from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel
 from fastapi.responses import Response, StreamingResponse, HTMLResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
-from twilio.request_validator import RequestValidator
 from twilio.twiml.voice_response import VoiceResponse, Gather
-from twilio.rest import Client as TwilioClient
 from twilio.jwt.access_token import AccessToken
 from twilio.jwt.access_token.grants import VoiceGrant
 from sqlalchemy import text
@@ -118,6 +116,8 @@ from core.parsing_time import (
     today_local,
 )
 from db.database import engine  # expects engine in db/database.py
+from integrations.twilio_client import send_message
+from integrations.twilio_validation import install_twilio_signature_middleware
 
 log = logging.getLogger("repliq")
 
@@ -2481,100 +2481,13 @@ def blocked_result_for_reason(lang: str, reason: Optional[str]) -> Dict[str, Any
 # -------------------------
 # TWILIO REQUEST VALIDATION
 # -------------------------
-from urllib.parse import parse_qs, urlencode
+from urllib.parse import urlencode
 
-def twilio_request_validator() -> Optional[RequestValidator]:
-    if not (TWILIO_VALIDATE_SIGNATURE and TWILIO_AUTH_TOKEN):
-        return None
-    try:
-        return RequestValidator(TWILIO_AUTH_TOKEN)
-    except Exception as e:
-        log.error("Twilio validator init failed: %s", e)
-        return None
-
-
-def should_validate_twilio_request(path: str) -> bool:
-    p = (path or "").lower()
-
-    # browser / SDK endpoints must not require Twilio signature
-    if p.startswith("/voice/token"):
-        return False
-
-    # real Twilio webhook endpoints
-    if (
-        p.startswith("/voice/incoming")
-        or p.startswith("/voice/language")
-        or p.startswith("/voice/intent")
-        or p.startswith("/sms")
-        or p.startswith("/whatsapp")
-    ):
-        return True
-
-    return False
-
-
-@app.middleware("http")
-async def validate_twilio_signature_middleware(request: Request, call_next):
-    if not should_validate_twilio_request(request.url.path):
-        return await call_next(request)
-
-    validator = twilio_request_validator()
-    if validator is None:
-        return await call_next(request)
-
-    signature = request.headers.get("X-Twilio-Signature", "").strip()
-    if not signature:
-        log.warning("twilio_signature_missing path=%s", request.url.path)
-        return Response(content="Invalid Twilio signature", status_code=403)
-
-    body_bytes = await request.body()
-    body_text = body_bytes.decode("utf-8", errors="ignore")
-    parsed = parse_qs(body_text, keep_blank_values=True)
-    form_data = {k: v[-1] if isinstance(v, list) and v else "" for k, v in parsed.items()}
-    url = str(request.url)
-
-    try:
-        is_valid = validator.validate(url, form_data, signature)
-    except Exception as e:
-        log.error("twilio_signature_validation_error path=%s err=%s", request.url.path, e)
-        return Response(content="Invalid Twilio signature", status_code=403)
-
-    if not is_valid:
-        log.warning("twilio_signature_invalid path=%s", request.url.path)
-        return Response(content="Invalid Twilio signature", status_code=403)
-
-    async def receive():
-        return {"type": "http.request", "body": body_bytes, "more_body": False}
-
-    request._receive = receive
-    return await call_next(request)
+install_twilio_signature_middleware(app)
 
 # -------------------------
 # TWILIO / OPENAI / GOOGLE
 # -------------------------
-def twilio_client():
-    if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN):
-        return None
-    return TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-
-
-def send_message(to_number: str, body: str):
-    client = twilio_client()
-    if not client:
-        log.warning("Twilio client not configured; message skipped")
-        return
-    to_number = (to_number or "").strip()
-    is_wa = to_number.startswith("whatsapp:")
-    from_number = TWILIO_WHATSAPP_FROM if is_wa else TWILIO_FROM_NUMBER
-    if not from_number:
-        log.warning("Twilio from number missing; message skipped")
-        return
-    try:
-        client.messages.create(from_=from_number, to=to_number, body=body)
-    except Exception as e:
-        log.error(f"Twilio send error: {e}")
-
-
 def send_booking_confirmation_if_needed(tenant: Dict[str, Any], raw_user: str, channel: str, result: Dict[str, Any]) -> bool:
     if not BOOKING_CONFIRMATION_ENABLED:
         return False
