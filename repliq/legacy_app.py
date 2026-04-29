@@ -1456,6 +1456,57 @@ def get_tenant_calendar_context(tenant: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def tenant_service_account_json_value(tenant: Optional[Dict[str, Any]]) -> str:
+    tenant = tenant or {}
+    for key in ("service_account_json", "google_service_account_json"):
+        val = str(tenant.get(key) or "").strip()
+        if val:
+            return val
+    return GOOGLE_SERVICE_ACCOUNT_JSON or ""
+
+
+def tenant_has_service_account_json(tenant: Optional[Dict[str, Any]]) -> bool:
+    return bool(tenant_service_account_json_value(tenant))
+
+
+def tenant_runtime_missing_items(tenant: Dict[str, Any]) -> List[str]:
+    tenant = normalize_tenant_saas_fields(tenant or {})
+    missing: List[str] = []
+    if not str(tenant.get("business_name") or "").strip():
+        missing.append("business_name")
+    if not str(tenant.get("timezone") or "").strip():
+        missing.append("timezone")
+    if not str(tenant.get("work_start") or "").strip():
+        missing.append("work_start")
+    if not str(tenant.get("work_end") or "").strip():
+        missing.append("work_end")
+    if not str(tenant.get("calendar_id") or "").strip():
+        missing.append("calendar_id")
+    if not tenant_has_service_account_json(tenant):
+        missing.append("service_account_json")
+    try:
+        catalog = tenant_service_catalog(tenant)
+    except Exception:
+        catalog = []
+    if not catalog:
+        missing.append("service_catalog")
+    return missing
+
+
+def tenant_runtime_ready(tenant: Dict[str, Any]) -> bool:
+    return len(tenant_runtime_missing_items(tenant)) == 0
+
+
+def log_tenant_runtime_validation(tenant: Dict[str, Any]) -> None:
+    missing = tenant_runtime_missing_items(tenant)
+    if missing:
+        log.error(
+            "tenant_runtime_invalid tenant_id=%s missing=%s",
+            tenant.get("_id") or tenant.get("id"),
+            ",".join(missing),
+        )
+
+
 # -------------------------
 # SaaS ACCESS CONTROL
 # -------------------------
