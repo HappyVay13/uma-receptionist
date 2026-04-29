@@ -144,6 +144,8 @@ from integrations.google_oauth import (
     token_expiry_from_google,
     google_calendar_choice,
 )
+from services.usage_service import record_usage_event as service_record_usage_event
+from services.call_log_service import log_call_event as service_log_call_event
 from services.onboarding_service import (
     upsert_tenant_google_account,
     get_tenant_google_account,
@@ -1105,35 +1107,21 @@ def record_usage_event(
     conv: Optional[Dict[str, Any]] = None,
     source: str = "runtime",
 ) -> None:
-    try:
-        ensure_usage_events_table()
-        usage_type = usage_type_from_event(raw_text, result, conv)
-        billable = usage_event_is_billable(channel, source)
-        status = str((result or {}).get("status") or "").strip() or None
-        with engine.begin() as conn:
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO usage_events
-                    (tenant_id, user_id, channel, usage_type, usage_units, billable, source, status)
-                    VALUES
-                    (:tenant_id, :user_id, :channel, :usage_type, :usage_units, :billable, :source, :status)
-                    """
-                ),
-                {
-                    "tenant_id": (tenant_id or "").strip() or TENANT_ID_DEFAULT,
-                    "user_id": norm_user_key(user_id),
-                    "channel": (channel or "").strip().lower() or "unknown",
-                    "usage_type": usage_type,
-                    "usage_units": 1,
-                    "billable": billable,
-                    "source": (source or "runtime").strip().lower() or "runtime",
-                    "status": status,
-                },
-            )
-        log.info("usage_event_written tenant_id=%s user_id=%s channel=%s usage_type=%s billable=%s status=%s", (tenant_id or "").strip() or TENANT_ID_DEFAULT, norm_user_key(user_id), (channel or "").strip().lower() or "unknown", usage_type, billable, status or "")
-    except Exception as e:
-        log.error("usage_event_write_failed tenant_id=%s user_id=%s err=%s", tenant_id, user_id, e)
+    service_record_usage_event(
+        engine=engine,
+        ensure_usage_events_table_fn=ensure_usage_events_table,
+        usage_event_is_billable_fn=usage_event_is_billable,
+        norm_user_key_fn=norm_user_key,
+        infer_intent_fn=infer_intent_label,
+        default_tenant_id=TENANT_ID_DEFAULT,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        channel=channel,
+        raw_text=raw_text,
+        result=result,
+        conv=conv,
+        source=source,
+    )
 
 
 def infer_intent_label(raw_text: str, result_status: str, conv: Optional[Dict[str, Any]] = None) -> str:
@@ -1164,37 +1152,18 @@ def log_call_event(
     result: Dict[str, Any],
     conv: Optional[Dict[str, Any]] = None,
 ) -> None:
-    try:
-        conv = conv or {}
-        intent = infer_intent_label(raw_text, str(result.get("status") or "").strip(), conv)
-        service = str(conv.get("service") or "").strip() or None
-        datetime_iso = str(conv.get("datetime_iso") or "").strip() or None
-        status = str(result.get("status") or "").strip() or "unknown"
-        ai_reply = str(result.get("msg_out") or result.get("reply_voice") or "").strip() or None
-        with engine.begin() as conn:
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO call_logs
-                    (tenant_id, user_id, channel, intent, service, datetime_iso, status, raw_text, ai_reply)
-                    VALUES
-                    (:tenant_id, :user_id, :channel, :intent, :service, :datetime_iso, :status, :raw_text, :ai_reply)
-                    """
-                ),
-                {
-                    "tenant_id": (tenant_id or "").strip() or TENANT_ID_DEFAULT,
-                    "user_id": norm_user_key(user_id),
-                    "channel": (channel or "").strip().lower() or "unknown",
-                    "intent": intent,
-                    "service": service,
-                    "datetime_iso": datetime_iso,
-                    "status": status,
-                    "raw_text": (raw_text or "").strip(),
-                    "ai_reply": ai_reply,
-                },
-            )
-    except Exception as e:
-        log.error("call_log_write_failed tenant_id=%s user_id=%s err=%s", tenant_id, user_id, e)
+    service_log_call_event(
+        engine=engine,
+        norm_user_key_fn=norm_user_key,
+        infer_intent_fn=infer_intent_label,
+        default_tenant_id=TENANT_ID_DEFAULT,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        channel=channel,
+        raw_text=raw_text,
+        result=result,
+        conv=conv,
+    )
 
 def handle_user_text_with_logging(
     tenant_id: str, raw_phone: str, text_in: str, channel: str, lang_hint: str, source: str = "runtime"
