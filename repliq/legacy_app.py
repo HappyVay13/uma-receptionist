@@ -133,6 +133,27 @@ from integrations.google_calendar import (
     tenant_event_marker,
     update_calendar_event,
 )
+from integrations.google_oauth import (
+    oauth_ready,
+    build_google_oauth_state,
+    parse_google_oauth_state,
+    build_google_oauth_url,
+    exchange_google_code_for_tokens,
+    fetch_google_userinfo,
+    fetch_google_calendar_list,
+    token_expiry_from_google,
+    google_calendar_choice,
+)
+from services.onboarding_service import (
+    upsert_tenant_google_account,
+    get_tenant_google_account,
+    mark_tenant_google_connected,
+    tenant_has_google_account,
+    tenant_google_connected_effective,
+    select_tenant_calendar_id,
+    sync_tenant_onboarding_state,
+)
+
 from services.tenant_service import (
     normalize_incoming_to_number,
     looks_like_phone_number,
@@ -664,245 +685,8 @@ def load_runtime_tenant(tenant_id: str) -> Dict[str, Any]:
 
 
 # -------------------------
-# GOOGLE OAUTH HELPERS (Phase 3 Foundation)
+# Google OAuth and onboarding helpers moved to integrations/google_oauth.py and services/onboarding_service.py
 # -------------------------
-def oauth_ready() -> bool:
-    return bool(GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET and GOOGLE_OAUTH_REDIRECT_URI)
-
-def upsert_tenant_google_account(
-    tenant_id: str,
-    google_email: Optional[str],
-    access_token: str,
-    refresh_token: Optional[str],
-    token_expiry: Optional[datetime],
-    scope: Optional[str],
-) -> None:
-    tenant_id = (tenant_id or "").strip()
-    if not tenant_id:
-        return
-    with engine.begin() as conn:
-        conn.execute(text("DELETE FROM tenant_google_accounts WHERE tenant_id=:tid"), {"tid": tenant_id})
-        conn.execute(
-            text(
-                """
-                INSERT INTO tenant_google_accounts
-                (tenant_id, google_email, access_token, refresh_token, token_expiry, scope, created_at, updated_at)
-                VALUES
-                (:tid, :google_email, :access_token, :refresh_token, :token_expiry, :scope, NOW(), NOW())
-                """
-            ),
-            {
-                "tid": tenant_id,
-                "google_email": google_email,
-                "access_token": access_token,
-                "refresh_token": refresh_token,
-                "token_expiry": token_expiry,
-                "scope": scope,
-            },
-        )
-
-def get_tenant_google_account(tenant_id: str) -> Dict[str, Any]:
-    tenant_id = (tenant_id or "").strip()
-    if not tenant_id:
-        return {}
-    try:
-        with engine.connect() as conn:
-            row = conn.execute(
-                text(
-                    """
-                    SELECT tenant_id, google_email, access_token, refresh_token, token_expiry, scope, created_at, updated_at
-                    FROM tenant_google_accounts
-                    WHERE tenant_id=:tid
-                    ORDER BY id DESC
-                    LIMIT 1
-                    """
-                ),
-                {"tid": tenant_id},
-            ).fetchone()
-        if not row:
-            return {}
-        keys = ["tenant_id", "google_email", "access_token", "refresh_token", "token_expiry", "scope", "created_at", "updated_at"]
-        return {k: row[i] for i, k in enumerate(keys)}
-    except Exception as e:
-        log.error("get_tenant_google_account failed tenant_id=%s err=%s", tenant_id, e)
-        return {}
-
-def mark_tenant_google_connected(tenant_id: str, is_connected: bool, owner_email: Optional[str] = None) -> None:
-    tenant_id = (tenant_id or "").strip()
-    if not tenant_id:
-        return
-    cols = tenants_columns()
-    pk = tenants_pk(cols)
-    col_names = {c["name"] for c in cols}
-    sets = []
-    params: Dict[str, Any] = {"tid": tenant_id, "gc": is_connected}
-    if "google_connected" in col_names:
-        sets.append("google_connected=:gc")
-    if owner_email and "owner_email" in col_names:
-        sets.append("owner_email=:owner_email")
-        params["owner_email"] = owner_email
-    if tenant_has_google_account(tenant_id) and "google_connected" in col_names:
-        sets.append("google_connected=true")
-    if "updated_at" in col_names:
-        sets.append("updated_at=NOW()")
-    if not sets:
-        return
-    with engine.begin() as conn:
-        conn.execute(text(f"UPDATE tenants SET {', '.join(sets)} WHERE {pk}=:tid"), params)
-
-
-
-def tenant_has_google_account(tenant_id: str) -> bool:
-    acct = get_tenant_google_account(tenant_id)
-    return bool(str(acct.get("access_token") or "").strip())
-
-def tenant_google_connected_effective(tenant: Dict[str, Any]) -> bool:
-    tenant = normalize_tenant_saas_fields(tenant or {})
-    if bool(tenant.get("google_connected")):
-        return True
-    tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip()
-    if not tenant_id:
-        return False
-    return tenant_has_google_account(tenant_id)
-
-def build_google_oauth_state(tenant_id: str) -> str:
-    payload = {"tenant_id": tenant_id, "ts": now_ts().isoformat()}
-    return base64.urlsafe_b64encode(json.dumps(payload).encode("utf-8")).decode("utf-8")
-
-def parse_google_oauth_state(state: str) -> Dict[str, Any]:
-    try:
-        raw = base64.urlsafe_b64decode((state or "").encode("utf-8")).decode("utf-8")
-        obj = json.loads(raw)
-        return obj if isinstance(obj, dict) else {}
-    except Exception:
-        return {}
-
-def build_google_oauth_url(tenant_id: str) -> str:
-    params = {
-        "client_id": GOOGLE_OAUTH_CLIENT_ID,
-        "redirect_uri": GOOGLE_OAUTH_REDIRECT_URI,
-        "response_type": "code",
-        "scope": GOOGLE_OAUTH_SCOPE,
-        "access_type": "offline",
-        "prompt": "consent",
-        "include_granted_scopes": "true",
-        "state": build_google_oauth_state(tenant_id),
-    }
-    return "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
-
-def exchange_google_code_for_tokens(code_value: str) -> Dict[str, Any]:
-    data = {
-        "code": code_value,
-        "client_id": GOOGLE_OAUTH_CLIENT_ID,
-        "client_secret": GOOGLE_OAUTH_CLIENT_SECRET,
-        "redirect_uri": GOOGLE_OAUTH_REDIRECT_URI,
-        "grant_type": "authorization_code",
-    }
-    try:
-        r = requests.post("https://oauth2.googleapis.com/token", data=data, timeout=30)
-        if r.status_code == 200:
-            return r.json()
-        log.error("google_token_exchange_failed status=%s body=%s", r.status_code, r.text[:500])
-    except Exception as e:
-        log.error("google_token_exchange_exception err=%s", e)
-    return {}
-
-def fetch_google_userinfo(access_token: str) -> Dict[str, Any]:
-    if not access_token:
-        return {}
-    try:
-        r = requests.get(
-            "https://www.googleapis.com/oauth2/v2/userinfo",
-            headers={"Authorization": f"Bearer {access_token}"},
-            timeout=20,
-        )
-        if r.status_code == 200:
-            return r.json()
-        log.error("google_userinfo_failed status=%s body=%s", r.status_code, r.text[:300])
-    except Exception as e:
-        log.error("google_userinfo_exception err=%s", e)
-    return {}
-
-def fetch_google_calendar_list(access_token: str) -> List[Dict[str, Any]]:
-    if not access_token:
-        return []
-    try:
-        r = requests.get(
-            "https://www.googleapis.com/calendar/v3/users/me/calendarList",
-            headers={"Authorization": f"Bearer {access_token}"},
-            timeout=20,
-        )
-        if r.status_code == 200:
-            data = r.json()
-            return data.get("items", []) if isinstance(data, dict) else []
-        log.error("google_calendar_list_failed status=%s body=%s", r.status_code, r.text[:300])
-    except Exception as e:
-        log.error("google_calendar_list_exception err=%s", e)
-    return []
-
-def select_tenant_calendar_id(tenant_id: str, calendar_id: str) -> None:
-    tenant_id = (tenant_id or "").strip()
-    calendar_id = (calendar_id or "").strip()
-    if not tenant_id or not calendar_id:
-        return
-    cols = tenants_columns()
-    pk = tenants_pk(cols)
-    col_names = {c["name"] for c in cols}
-    if "calendar_id" not in col_names:
-        return
-    with engine.begin() as conn:
-        conn.execute(text(f"UPDATE tenants SET calendar_id=:cid WHERE {pk}=:tid"), {"cid": calendar_id, "tid": tenant_id})
-
-
-def token_expiry_from_google(expires_in: Any) -> Optional[datetime]:
-    try:
-        seconds = int(expires_in)
-    except Exception:
-        return None
-    if seconds <= 0:
-        return None
-    return now_ts() + timedelta(seconds=seconds)
-
-
-def google_calendar_choice(calendars: List[Dict[str, Any]]) -> Optional[str]:
-    if not calendars:
-        return None
-    for cal in calendars:
-        if cal.get("primary") and str(cal.get("id") or "").strip():
-            return str(cal.get("id")).strip()
-    if len(calendars) == 1 and str(calendars[0].get("id") or "").strip():
-        return str(calendars[0].get("id")).strip()
-    return None
-
-
-def sync_tenant_onboarding_state(tenant_id: str) -> Dict[str, Any]:
-    tenant = get_tenant_or_404(tenant_id)
-    cols = tenants_columns()
-    pk = tenants_pk(cols)
-    col_names = {c["name"] for c in cols}
-    google_connected = tenant_google_connected_effective(tenant)
-    calendar_selected = bool(str(tenant.get("calendar_id") or "").strip())
-    onboarding_completed = bool(google_connected and calendar_selected)
-
-    sets = []
-    params: Dict[str, Any] = {"tid": tenant_id}
-    if "google_connected" in col_names:
-        sets.append("google_connected=:google_connected")
-        params["google_connected"] = google_connected
-    if "onboarding_completed" in col_names:
-        sets.append("onboarding_completed=:onboarding_completed")
-        params["onboarding_completed"] = onboarding_completed
-    if "updated_at" in col_names:
-        sets.append("updated_at=NOW()")
-
-    if sets:
-        with engine.begin() as conn:
-            conn.execute(text(f"UPDATE tenants SET {', '.join(sets)} WHERE {pk}=:tid"), params)
-
-    return get_tenant_or_404(tenant_id)
-
-
-
 
 def norm_user_key(phone: str) -> str:
     raw = (phone or "").strip().replace("whatsapp:", "")
