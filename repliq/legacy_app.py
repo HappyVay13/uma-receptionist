@@ -7996,6 +7996,17 @@ class TenantConfigUpdateRequest(BaseModel):
     reset_override: bool = False
 
 
+
+
+class DashboardConfigUpdateRequest(BaseModel):
+    tenant_id: str
+    business: Optional[Dict[str, Any]] = None
+    booking: Optional[Dict[str, Any]] = None
+    services: Optional[Any] = None
+    memory: Optional[Dict[str, Any]] = None
+    language: Optional[Dict[str, Any]] = None
+    saas: Optional[Dict[str, Any]] = None
+
 class TenantPlanChangeRequest(BaseModel):
     tenant_id: str
     plan: str
@@ -8198,6 +8209,223 @@ def tenant_change_plan(payload: TenantPlanChangeRequest):
         "plan": updated.get("plan"),
         "plan_meta": tenant_plan_meta(updated),
         "billing": tenant_billing_status(updated),
+    }
+
+
+
+
+# -------------------------
+# STAGE 16 — DASHBOARD SELF-SERVICE CONFIG API
+# -------------------------
+def dashboard_config_schema_payload() -> Dict[str, Any]:
+    """Return a UI-friendly schema for the future client dashboard.
+
+    This endpoint is intentionally Latvian-first because Repliq's first market
+    is Latvia, while still keeping stable technical keys for frontend code.
+    """
+    return {
+        "language": "lv",
+        "sections": [
+            {
+                "key": "business",
+                "title": "Uzņēmuma informācija",
+                "fields": [
+                    {"key": "name", "label": "Uzņēmuma nosaukums", "type": "text", "required": True},
+                    {"key": "phone_number", "label": "Tālrunis / kanāla numurs", "type": "text"},
+                    {"key": "timezone", "label": "Laika zona", "type": "text", "default": "Europe/Riga"},
+                    {"key": "primary_language", "label": "Galvenā valoda", "type": "select", "options": ["lv", "ru", "en"]},
+                ],
+            },
+            {
+                "key": "booking",
+                "title": "Pierakstu noteikumi",
+                "fields": [
+                    {"key": "work_start", "label": "Darba sākums", "type": "time"},
+                    {"key": "work_end", "label": "Darba beigas", "type": "time"},
+                    {"key": "weekly_hours", "label": "Nedēļas grafiks", "type": "json"},
+                    {"key": "days_off", "label": "Brīvdienas", "type": "json"},
+                    {"key": "breaks", "label": "Pārtraukumi", "type": "json"},
+                    {"key": "holidays", "label": "Svētku / slēgtās dienas", "type": "json"},
+                    {"key": "min_notice_minutes", "label": "Minimālais pieraksta brīdinājums", "type": "number"},
+                    {"key": "buffer_minutes", "label": "Pauze starp pierakstiem", "type": "number"},
+                ],
+            },
+            {
+                "key": "services",
+                "title": "Pakalpojumi",
+                "fields": [
+                    {"key": "catalog", "label": "Pakalpojumu katalogs", "type": "service_catalog"},
+                    {"key": "services_lv", "label": "Pakalpojumi LV", "type": "textarea"},
+                    {"key": "services_ru", "label": "Pakalpojumi RU", "type": "textarea"},
+                    {"key": "services_en", "label": "Pakalpojumi EN", "type": "textarea"},
+                ],
+            },
+            {
+                "key": "memory",
+                "title": "FAQ / biznesa atmiņa",
+                "fields": [
+                    {"key": "lv", "label": "Atmiņa LV", "type": "textarea"},
+                    {"key": "ru", "label": "Atmiņa RU", "type": "textarea"},
+                    {"key": "en", "label": "Atmiņa EN", "type": "textarea"},
+                ],
+            },
+            {
+                "key": "saas",
+                "title": "Plāns un limits",
+                "fields": [
+                    {"key": "plan", "label": "Plāns", "type": "select", "options": ["starter", "pro", "business"]},
+                    {"key": "subscription_status", "label": "Statuss", "type": "select", "options": ["trial", "active", "past_due", "inactive", "expired"]},
+                    {"key": "dialogs_per_month", "label": "Dialogi mēnesī", "type": "number"},
+                ],
+            },
+        ],
+    }
+
+
+def _json_text_or_none(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False, indent=2)
+    except Exception:
+        return None
+
+
+def dashboard_config_payload(tenant: Dict[str, Any]) -> Dict[str, Any]:
+    tenant = normalize_tenant_saas_fields(tenant or {})
+    tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip()
+    lang = get_lang(tenant.get("language") or tenant.get("primary_language") or "lv")
+    runtime = tenant_runtime_config_public_view(tenant_runtime_config(tenant, lang, use_cache=False))
+    settings = tenant_settings(tenant, lang)
+    business_rules = settings.get("business_rules") or {}
+    return {
+        "tenant_id": tenant_id,
+        "schema": dashboard_config_schema_payload(),
+        "business": {
+            "name": tenant.get("business_name") or tenant.get("name") or settings.get("biz_name"),
+            "phone_number": tenant.get("phone_number") or "",
+            "timezone": tenant.get("timezone") or "Europe/Riga",
+            "primary_language": lang,
+            "address": tenant.get("address") or settings.get("addr") or "",
+            "business_type": tenant.get("business_type") or settings.get("business_type") or "barbershop",
+        },
+        "booking": {
+            "work_start": settings.get("work_start"),
+            "work_end": settings.get("work_end"),
+            "weekly_hours": business_rules.get("weekly_hours") or {},
+            "days_off": business_rules.get("days_off") or [],
+            "breaks": business_rules.get("breaks") or {},
+            "holidays": business_rules.get("holidays") or [],
+            "min_notice_minutes": business_rules.get("min_notice_minutes") or 0,
+            "buffer_minutes": business_rules.get("buffer_minutes") or 0,
+            "calendar_configured": bool((runtime.get("booking") or {}).get("calendar_configured")),
+            "service_account_configured": bool((runtime.get("booking") or {}).get("service_account_configured")),
+        },
+        "services": {
+            "catalog": (runtime.get("services") or {}).get("catalog") or tenant_service_catalog(tenant),
+            "summary": (runtime.get("services") or {}).get("summary") or "",
+            "services_lv": tenant.get("services_lv") or "",
+            "services_ru": tenant.get("services_ru") or "",
+            "services_en": tenant.get("services_en") or "",
+        },
+        "memory": {
+            "lv": str(tenant.get("business_memory_lv") or tenant.get("faq_lv") or "").strip(),
+            "ru": str(tenant.get("business_memory_ru") or tenant.get("faq_ru") or "").strip(),
+            "en": str(tenant.get("business_memory_en") or tenant.get("faq_en") or "").strip(),
+            "has_memory": bool((runtime.get("memory") or {}).get("has_memory")),
+        },
+        "saas": {
+            "plan": tenant_plan_meta(tenant).get("plan"),
+            "subscription_status": effective_subscription_status(tenant),
+            "dialogs_per_month": tenant_dialog_limit(tenant),
+            "usage": tenant_usage_snapshot(tenant),
+        },
+        "readiness": tenant_ready_status_payload(tenant),
+        "onboarding": onboarding_status_payload(tenant),
+        "links": onboarding_links_payload(tenant_id),
+        "runtime_config": runtime,
+    }
+
+
+def dashboard_update_to_tenant_request(payload: DashboardConfigUpdateRequest) -> TenantConfigUpdateRequest:
+    business = payload.business or {}
+    booking = payload.booking or {}
+    memory = payload.memory or {}
+    language_cfg = payload.language or {}
+    saas = payload.saas or {}
+    services_payload = payload.services
+    services_obj: Dict[str, Any] = {}
+    if isinstance(services_payload, dict):
+        services_obj = services_payload
+    elif services_payload is not None:
+        services_obj = {"catalog": services_payload}
+
+    weekly_hours = booking.get("weekly_hours") if isinstance(booking, dict) else None
+    days_off = booking.get("days_off") if isinstance(booking, dict) else None
+    breaks = booking.get("breaks") if isinstance(booking, dict) else None
+    holidays = booking.get("holidays") if isinstance(booking, dict) else None
+    catalog = services_obj.get("catalog") if isinstance(services_obj, dict) else None
+
+    return TenantConfigUpdateRequest(
+        tenant_id=(payload.tenant_id or "").strip(),
+        business_name=business.get("name") or business.get("business_name"),
+        phone_number=business.get("phone_number"),
+        timezone=business.get("timezone"),
+        language=language_cfg.get("primary") or business.get("primary_language"),
+        work_start=booking.get("work_start"),
+        work_end=booking.get("work_end"),
+        services_lv=services_obj.get("services_lv"),
+        services_ru=services_obj.get("services_ru"),
+        services_en=services_obj.get("services_en"),
+        weekly_hours_json=_json_text_or_none(weekly_hours),
+        days_off_json=_json_text_or_none(days_off),
+        breaks_json=_json_text_or_none(breaks),
+        holidays_json=_json_text_or_none(holidays),
+        min_notice_minutes=booking.get("min_notice_minutes"),
+        buffer_minutes=booking.get("buffer_minutes"),
+        service_catalog_json=_json_text_or_none(catalog),
+        business_memory_lv=memory.get("lv"),
+        business_memory_ru=memory.get("ru"),
+        business_memory_en=memory.get("en"),
+        plan=saas.get("plan"),
+        subscription_status=saas.get("subscription_status"),
+        dialogs_per_month=saas.get("dialogs_per_month"),
+        reset_override=bool(saas.get("reset_override")),
+    )
+
+
+@app.get("/dashboard/config/schema")
+def dashboard_config_schema_endpoint():
+    return dashboard_config_schema_payload()
+
+
+@app.get("/dashboard/config")
+def dashboard_config_endpoint(tenant_id: str = TENANT_ID_DEFAULT):
+    tenant = get_tenant_or_404((tenant_id or "").strip() or TENANT_ID_DEFAULT)
+    return dashboard_config_payload(tenant)
+
+
+@app.post("/dashboard/config/update")
+def dashboard_config_update_endpoint(payload: DashboardConfigUpdateRequest):
+    request_payload = dashboard_update_to_tenant_request(payload)
+    result = tenant_config_update(request_payload)
+    tenant = get_tenant_or_404(request_payload.tenant_id)
+    result["dashboard_config"] = dashboard_config_payload(tenant)
+    result["runtime_refreshed"] = True
+    return result
+
+
+@app.post("/dashboard/config/refresh")
+def dashboard_config_refresh_endpoint(tenant_id: str = TENANT_ID_DEFAULT):
+    tenant_id = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    clear_tenant_runtime_config_cache(tenant_id)
+    tenant = get_tenant_or_404(tenant_id)
+    return {
+        "status": "ok",
+        "tenant_id": tenant_id,
+        "dashboard_config": dashboard_config_payload(tenant),
     }
 
 
