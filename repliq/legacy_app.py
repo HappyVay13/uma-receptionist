@@ -5685,7 +5685,9 @@ def telegram_set_webhook(url: str = "", tenant_id: str = ""):
     return result
 
 
-def telegram_reset_conversation(tenant_id: str, user_key: str) -> None:
+
+
+def reset_telegram_conversation_state(tenant_id: str, user_key: str) -> None:
     tenant_id = (tenant_id or "").strip()
     user_key = norm_user_key(user_key)
     if not tenant_id or not user_key:
@@ -5695,18 +5697,18 @@ def telegram_reset_conversation(tenant_id: str, user_key: str) -> None:
             text("""
             DELETE FROM conversations
             WHERE tenant_id = :tenant_id
-              AND user_key = :user_key
+            AND user_key = :user_key
             """),
             {"tenant_id": tenant_id, "user_key": user_key},
         )
 
-
 @app.post("/telegram/reset")
-def telegram_reset(user_key: str, tenant_id: str = ""):
-    default_tenant_id = (tenant_id or os.getenv("TELEGRAM_DEFAULT_TENANT_ID", "").strip() or TENANT_ID_DEFAULT).strip()
-    telegram_reset_conversation(default_tenant_id, user_key)
-    return {"ok": True, "tenant_id": default_tenant_id, "user_key": norm_user_key(user_key), "status": "reset"}
-
+def telegram_reset(tenant_id: str = "", user_key: str = ""):
+    effective_tenant_id = (tenant_id or os.getenv("TELEGRAM_DEFAULT_TENANT_ID", "").strip() or TENANT_ID_DEFAULT).strip()
+    if not user_key:
+        raise HTTPException(status_code=400, detail="user_key is required")
+    reset_telegram_conversation_state(effective_tenant_id, user_key)
+    return {"ok": True, "tenant_id": effective_tenant_id, "user_key": norm_user_key(user_key), "status": "reset_ok"}
 
 @app.post("/telegram/webhook")
 async def telegram_webhook(request: Request, tenant_id: str = ""):
@@ -5720,7 +5722,7 @@ async def telegram_webhook(request: Request, tenant_id: str = ""):
         handle_user_text_with_logging=handle_user_text_with_logging,
         detect_language_func=detect_language,
         unavailable_text_func=lambda lang: t(lang, "service_unavailable_text"),
-        reset_conversation_func=telegram_reset_conversation,
+        reset_conversation_func=reset_telegram_conversation_state,
     )
 
 
