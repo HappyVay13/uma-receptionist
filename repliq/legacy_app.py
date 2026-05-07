@@ -2191,6 +2191,172 @@ def ensure_default_barbershop_aliases(catalog: List[Dict[str, Any]], alias_map: 
     return out
 
 
+
+# -------------------------
+# STAGE 14 — TENANT RUNTIME CONFIG LAYER
+# -------------------------
+_TENANT_RUNTIME_CONFIG_CACHE: Dict[str, Dict[str, Any]] = {}
+_TENANT_RUNTIME_CONFIG_CACHE_TS: Dict[str, datetime] = {}
+TENANT_RUNTIME_CONFIG_CACHE_SECONDS = 60
+
+
+def _runtime_config_cache_key(tenant: Dict[str, Any], lang: str) -> str:
+    tenant_id = str((tenant or {}).get("_id") or (tenant or {}).get("id") or "").strip()
+    return f"{tenant_id}:{get_lang(lang)}"
+
+
+def clear_tenant_runtime_config_cache(tenant_id: Optional[str] = None) -> None:
+    """Clear runtime config cache after tenant config changes.
+
+    In production this keeps dashboard/onboarding edits immediately visible to
+    Telegram, dev_chat, webchat, and any future channel adapters.
+    """
+    global _TENANT_RUNTIME_CONFIG_CACHE, _TENANT_RUNTIME_CONFIG_CACHE_TS
+    if not tenant_id:
+        _TENANT_RUNTIME_CONFIG_CACHE = {}
+        _TENANT_RUNTIME_CONFIG_CACHE_TS = {}
+        return
+    prefix = f"{str(tenant_id).strip()}:"
+    for key in list(_TENANT_RUNTIME_CONFIG_CACHE.keys()):
+        if key.startswith(prefix):
+            _TENANT_RUNTIME_CONFIG_CACHE.pop(key, None)
+            _TENANT_RUNTIME_CONFIG_CACHE_TS.pop(key, None)
+
+
+def _runtime_config_cache_get(tenant: Dict[str, Any], lang: str) -> Optional[Dict[str, Any]]:
+    key = _runtime_config_cache_key(tenant, lang)
+    if not key or key == ":lv":
+        return None
+    cached = _TENANT_RUNTIME_CONFIG_CACHE.get(key)
+    ts = _TENANT_RUNTIME_CONFIG_CACHE_TS.get(key)
+    if not cached or not ts:
+        return None
+    if (now_ts() - ts).total_seconds() > TENANT_RUNTIME_CONFIG_CACHE_SECONDS:
+        _TENANT_RUNTIME_CONFIG_CACHE.pop(key, None)
+        _TENANT_RUNTIME_CONFIG_CACHE_TS.pop(key, None)
+        return None
+    return dict(cached)
+
+
+def _runtime_config_cache_set(tenant: Dict[str, Any], lang: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    key = _runtime_config_cache_key(tenant, lang)
+    if key and key != ":lv":
+        _TENANT_RUNTIME_CONFIG_CACHE[key] = dict(payload)
+        _TENANT_RUNTIME_CONFIG_CACHE_TS[key] = now_ts()
+    return payload
+
+
+def tenant_primary_language(tenant: Dict[str, Any]) -> str:
+    return get_lang((tenant or {}).get("language") or (tenant or {}).get("primary_language") or "lv")
+
+
+def tenant_language_config(tenant: Dict[str, Any]) -> Dict[str, Any]:
+    primary = tenant_primary_language(tenant)
+    supported = []
+    raw_supported = (tenant or {}).get("supported_languages") or (tenant or {}).get("languages")
+    parsed = _safe_json_obj(raw_supported)
+    if isinstance(parsed, list):
+        supported = [get_lang(x) for x in parsed if str(x).strip()]
+    elif isinstance(raw_supported, str) and raw_supported.strip():
+        supported = [get_lang(x) for x in raw_supported.split(",") if str(x).strip()]
+    if not supported:
+        supported = [primary, "ru", "en"] if primary == "lv" else [primary, "lv", "en"]
+    # stable unique order
+    unique: List[str] = []
+    for item in supported:
+        item = get_lang(item)
+        if item not in unique:
+            unique.append(item)
+    return {
+        "primary": primary,
+        "supported": unique,
+        "fallback": "lv",
+    }
+
+
+def tenant_runtime_config(tenant: Dict[str, Any], lang: Optional[str] = None, use_cache: bool = True) -> Dict[str, Any]:
+    """Return the single runtime config object used by all channels.
+
+    This intentionally composes existing stable helpers instead of replacing
+    them. It is the bridge between the self-service UI and runtime channels.
+    """
+    tenant = normalize_tenant_saas_fields(tenant or {})
+    effective_lang = get_lang(lang or tenant_primary_language(tenant))
+    if use_cache:
+        cached = _runtime_config_cache_get(tenant, effective_lang)
+        if cached:
+            return cached
+
+    settings = tenant_settings(tenant, effective_lang)
+    catalog = tenant_service_catalog(tenant)
+    aliases = ensure_default_barbershop_aliases(
+        catalog,
+        merged_service_alias_map(catalog, tenant, effective_lang),
+        effective_lang,
+    )
+    business_memory = tenant_business_memory(tenant, effective_lang)
+    tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip()
+    payload = {
+        "tenant_id": tenant_id,
+        "lang": effective_lang,
+        "language": tenant_language_config(tenant),
+        "business": {
+            "name": settings.get("biz_name"),
+            "address": settings.get("addr"),
+            "type": settings.get("business_type"),
+            "timezone": tenant.get("timezone") or "Europe/Riga",
+        },
+        "booking": {
+            "calendar_id": settings.get("calendar_id"),
+            "calendar_configured": calendar_is_configured(settings.get("calendar_id")),
+            "service_account_configured": tenant_has_service_account_json(tenant),
+            "work_start": settings.get("work_start"),
+            "work_end": settings.get("work_end"),
+            "rules": settings.get("business_rules") or {},
+        },
+        "services": {
+            "catalog": catalog,
+            "summary": service_catalog_summary(catalog, effective_lang),
+            "aliases": aliases,
+            "hint": settings.get("services_hint"),
+        },
+        "memory": {
+            "text": business_memory,
+            "has_memory": bool(str(business_memory or "").strip()),
+            "by_lang": {
+                "lv": str(tenant.get("business_memory_lv") or tenant.get("faq_lv") or "").strip(),
+                "ru": str(tenant.get("business_memory_ru") or tenant.get("faq_ru") or "").strip(),
+                "en": str(tenant.get("business_memory_en") or tenant.get("faq_en") or "").strip(),
+            },
+        },
+        "saas": {
+            "plan": tenant_plan_meta(tenant).get("plan"),
+            "subscription_status": tenant.get("subscription_status"),
+            "effective_status": effective_subscription_status(tenant),
+            "usage": tenant_usage_snapshot(tenant),
+        },
+        "readiness": tenant_ready_status_payload(tenant),
+        "links": onboarding_links_payload(tenant_id) if tenant_id else {},
+    }
+    return _runtime_config_cache_set(tenant, effective_lang, payload) if use_cache else payload
+
+
+def tenant_runtime_config_public_view(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Runtime config safe for dashboard/onboarding UI.
+
+    Keeps secrets out of the response while preserving enough structure for
+    self-service setup screens.
+    """
+    cfg = dict(config or {})
+    services = dict(cfg.get("services") or {})
+    # Alias maps can get large; keep them for debug endpoints, not public UI.
+    services.pop("aliases", None)
+    cfg["services"] = services
+    booking = dict(cfg.get("booking") or {})
+    booking.pop("calendar_id", None)
+    cfg["booking"] = booking
+    return cfg
+
 def calendar_is_configured(calendar_id: str) -> bool:
     return bool((calendar_id or "").strip())
 
@@ -4336,14 +4502,15 @@ def handle_user_text(
     if not tenant_runtime_ready(tenant):
         log_tenant_runtime_validation(tenant)
         return blocked_result_for_reason(lang, "unavailable")
+    runtime_config = tenant_runtime_config(tenant, lang)
     settings = tenant_settings(tenant, lang)
-    service_catalog = tenant_service_catalog(tenant)
-    service_aliases = ensure_default_barbershop_aliases(
+    service_catalog = (runtime_config.get("services") or {}).get("catalog") or tenant_service_catalog(tenant)
+    service_aliases = (runtime_config.get("services") or {}).get("aliases") or ensure_default_barbershop_aliases(
         service_catalog,
         merged_service_alias_map(service_catalog, tenant, lang),
         lang,
     )
-    business_memory = tenant_business_memory(tenant, lang)
+    business_memory = (runtime_config.get("memory") or {}).get("text") or tenant_business_memory(tenant, lang)
     calendar_ready = calendar_is_configured(settings["calendar_id"])
 
     c["state"] = conversation_state(c)
@@ -7722,6 +7889,7 @@ def tenant_config(tenant_id: str = TENANT_ID_DEFAULT):
     return {
         "tenant": _jsonable_tenant_view(tenant),
         "resolved_settings": settings,
+        "runtime_config": tenant_runtime_config_public_view(tenant_runtime_config(tenant, get_lang(tenant.get("language") or "lv"), use_cache=False)),
         "phone_routes": routes,
         "onboarding": onboarding_status_payload(tenant),
         "readiness": tenant_ready_status_payload(tenant),
@@ -7817,6 +7985,7 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
     if new_phone:
         upsert_phone_route(new_phone, tenant_id)
 
+    clear_tenant_runtime_config_cache(tenant_id)
     updated = get_tenant(tenant_id)
     return {
         "status": "ok",
@@ -7827,6 +7996,33 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
         "plan_meta": tenant_plan_meta(updated),
         "links": onboarding_links_payload(tenant_id),
     }
+
+
+@app.get("/tenant/runtime-config")
+def tenant_runtime_config_endpoint(tenant_id: str = TENANT_ID_DEFAULT, lang: str = ""):
+    tenant = get_tenant_or_404((tenant_id or "").strip() or TENANT_ID_DEFAULT)
+    effective_lang = get_lang(lang or tenant.get("language") or "lv")
+    return tenant_runtime_config_public_view(tenant_runtime_config(tenant, effective_lang, use_cache=False))
+
+
+@app.get("/tenant/runtime-config/debug")
+def tenant_runtime_config_debug_endpoint(tenant_id: str = TENANT_ID_DEFAULT, lang: str = ""):
+    tenant = get_tenant_or_404((tenant_id or "").strip() or TENANT_ID_DEFAULT)
+    effective_lang = get_lang(lang or tenant.get("language") or "lv")
+    return tenant_runtime_config(tenant, effective_lang, use_cache=False)
+
+
+@app.post("/tenant/runtime-config/refresh")
+def tenant_runtime_config_refresh(tenant_id: str = TENANT_ID_DEFAULT):
+    tenant_id = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    clear_tenant_runtime_config_cache(tenant_id)
+    tenant = get_tenant_or_404(tenant_id)
+    return {
+        "status": "ok",
+        "tenant_id": tenant_id,
+        "runtime_config": tenant_runtime_config_public_view(tenant_runtime_config(tenant, get_lang(tenant.get("language") or "lv"), use_cache=False)),
+    }
+
 
 @app.get("/tenant/routes")
 def tenant_routes(tenant_id: str = TENANT_ID_DEFAULT):
