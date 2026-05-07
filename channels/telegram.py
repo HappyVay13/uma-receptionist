@@ -164,6 +164,16 @@ def _extract_text(message: Dict[str, Any]) -> str:
     return ""
 
 
+
+def _send_telegram_reply(chat_id: Any, text: str, sender: Optional[Callable[..., Dict[str, Any]]] = None, tenant_id: str = "") -> Dict[str, Any]:
+    if sender:
+        try:
+            return sender("telegram", chat_id, text, tenant_id=tenant_id)
+        except TypeError:
+            return sender("telegram", chat_id, text)
+    return telegram_send_message(chat_id, text)
+
+
 async def handle_telegram_incoming(
     request: Request,
     default_tenant_id: str,
@@ -173,6 +183,7 @@ async def handle_telegram_incoming(
     handle_user_text_with_logging: Callable[..., Dict[str, Any]],
     detect_language_func: Callable[[str], str],
     unavailable_text_func: Callable[[str], str],
+    send_channel_message_func: Optional[Callable[..., Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     _validate_telegram_secret(request)
 
@@ -194,7 +205,7 @@ async def handle_telegram_incoming(
 
     text_in = _extract_text(message)
     if not text_in:
-        telegram_send_message(chat_id, "Lūdzu, atsūtiet ziņu tekstā.")
+        _send_telegram_reply(chat_id, "Lūdzu, atsūtiet ziņu tekstā.", send_channel_message_func, default_tenant_id)
         return {"ok": True, "ignored": True, "reason": "empty_text"}
 
     tenant_id = (default_tenant_id or "").strip()
@@ -202,7 +213,7 @@ async def handle_telegram_incoming(
     lang = detect_language_func(text_in)
 
     if not tenant_is_resolved(tenant):
-        telegram_send_message(chat_id, unavailable_text_func(lang))
+        _send_telegram_reply(chat_id, unavailable_text_func(lang), send_channel_message_func, tenant_id)
         return {"ok": True, "tenant_id": tenant_id or None, "status": "unavailable"}
 
     user_key = _extract_user_key(message, chat_id)
@@ -218,14 +229,14 @@ async def handle_telegram_incoming(
         )
     except Exception as exc:
         log.exception("telegram_core_failed tenant_id=%s chat_id=%s", tenant_id, chat_id)
-        telegram_send_message(chat_id, unavailable_text_func(lang))
+        _send_telegram_reply(chat_id, unavailable_text_func(lang), send_channel_message_func, tenant_id)
         return {"ok": True, "tenant_id": tenant_id, "status": "core_error", "error": str(exc)}
 
     reply = str(result.get("msg_out") or result.get("reply_voice") or "").strip()
     if not reply:
         reply = unavailable_text_func(result.get("lang") or lang)
 
-    telegram_send_message(chat_id, reply)
+    _send_telegram_reply(chat_id, reply, send_channel_message_func, tenant.get("_id") or tenant_id)
 
     try:
         settings = tenant_settings_func(tenant, result.get("lang") or lang)

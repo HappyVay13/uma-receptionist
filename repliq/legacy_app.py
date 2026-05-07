@@ -119,12 +119,15 @@ from db.database import engine  # expects engine in db/database.py
 from db.conversations import db_get_or_create_conversation, db_save_conversation
 from db.runtime_tables import ensure_call_logs_table, ensure_phone_routes_table, ensure_usage_events_table
 from integrations.twilio_client import send_message
+from core.messaging import send_channel_message
 from integrations.twilio_validation import install_twilio_signature_middleware
 from channels.telegram import (
     handle_telegram_incoming,
     telegram_config_status,
     telegram_set_webhook_request,
 )
+from channels.sms import handle_sms_incoming
+from channels.whatsapp import handle_whatsapp_incoming
 
 log = logging.getLogger("repliq")
 
@@ -2366,7 +2369,7 @@ def send_booking_confirmation_if_needed(tenant: Dict[str, Any], raw_user: str, c
     if not body.strip():
         body = f"{biz_name}: {result.get('msg_out') or result.get('reply_voice') or ''}".strip()
     try:
-        send_message(to_number, body)
+        send_channel_message(ch if ch in ("sms", "whatsapp") else "sms", to_number, body, tenant_id=str(tenant.get("_id") or ""))
         log.info("booking_confirmation_sent channel=%s to=%s tenant_id=%s", ch, to_number, tenant.get("_id"))
         return True
     except Exception:
@@ -5361,49 +5364,32 @@ async def voice_intent(request: Request):
 
     if result["status"] in ("booked", "busy", "cancelled") and caller != "unknown" and channel_supports_messaging("voice", caller):
         biz_name = tenant_settings(tenant, result["lang"])["biz_name"]
-        send_message(caller, f"{biz_name}: {result['msg_out']}")
+        send_channel_message("sms", caller, f"{biz_name}: {result['msg_out']}", tenant_id=tenant.get("_id"))
 
     return twiml(vr)
 
 
+def channel_runtime(channel_name: str) -> Dict[str, Any]:
+    return {
+        "resolve_tenant_for_incoming": resolve_tenant_for_incoming,
+        "log_tenant_resolution": log_tenant_resolution,
+        "tenant_is_resolved": tenant_is_resolved,
+        "handle_user_text_with_logging": handle_user_text_with_logging,
+        "detect_language": detect_language,
+        "tenant_settings": tenant_settings,
+        "t": t,
+        "send_message": lambda to, text: send_channel_message(channel_name, to, text),
+    }
+
+
 @app.post("/sms/incoming")
 async def sms_incoming(request: Request):
-    form = await request.form()
-    to_num = str(form.get("To", ""))
-    from_num = str(form.get("From", ""))
-    body = str(form.get("Body", "")).strip()
-
-    tenant = resolve_tenant_for_incoming(to_num)
-    log_tenant_resolution("sms", to_num, tenant)
-    if not tenant_is_resolved(tenant):
-        send_message(from_num, t(detect_language(body), "service_unavailable_text"))
-        return Response(status_code=204)
-    result = handle_user_text_with_logging(
-        tenant["_id"], from_num, body, "sms", detect_language(body)
-    )
-    biz = tenant_settings(tenant, result["lang"])["biz_name"]
-    send_message(from_num, f"{biz}: {result['msg_out']}")
-    return Response(status_code=204)
+    return await handle_sms_incoming(request, channel_runtime("sms"))
 
 
 @app.post("/whatsapp/incoming")
 async def whatsapp_incoming(request: Request):
-    form = await request.form()
-    to_num = str(form.get("To", "")).replace("whatsapp:", "")
-    from_num = str(form.get("From", ""))
-    body = str(form.get("Body", "")).strip()
-
-    tenant = resolve_tenant_for_incoming(to_num)
-    log_tenant_resolution("whatsapp", to_num, tenant)
-    if not tenant_is_resolved(tenant):
-        send_message(from_num, t(detect_language(body), "service_unavailable_text"))
-        return Response(status_code=204)
-    result = handle_user_text_with_logging(
-        tenant["_id"], from_num, body, "whatsapp", detect_language(body)
-    )
-    biz = tenant_settings(tenant, result["lang"])["biz_name"]
-    send_message(from_num, f"{biz}: {result['msg_out']}")
-    return Response(status_code=204)
+    return await handle_whatsapp_incoming(request, channel_runtime("whatsapp"))
 
 
 
@@ -5697,6 +5683,7 @@ async def telegram_webhook(request: Request, tenant_id: str = ""):
         handle_user_text_with_logging=handle_user_text_with_logging,
         detect_language_func=detect_language,
         unavailable_text_func=lambda lang: t(lang, "service_unavailable_text"),
+        send_channel_message_func=send_channel_message,
     )
 
 
