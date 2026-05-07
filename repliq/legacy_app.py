@@ -119,15 +119,12 @@ from db.database import engine  # expects engine in db/database.py
 from db.conversations import db_get_or_create_conversation, db_save_conversation
 from db.runtime_tables import ensure_call_logs_table, ensure_phone_routes_table, ensure_usage_events_table
 from integrations.twilio_client import send_message
-from core.messaging import send_channel_message
 from integrations.twilio_validation import install_twilio_signature_middleware
 from channels.telegram import (
     handle_telegram_incoming,
     telegram_config_status,
     telegram_set_webhook_request,
 )
-from channels.sms import handle_sms_incoming
-from channels.whatsapp import handle_whatsapp_incoming
 
 log = logging.getLogger("repliq")
 
@@ -2369,7 +2366,7 @@ def send_booking_confirmation_if_needed(tenant: Dict[str, Any], raw_user: str, c
     if not body.strip():
         body = f"{biz_name}: {result.get('msg_out') or result.get('reply_voice') or ''}".strip()
     try:
-        send_channel_message(ch if ch in ("sms", "whatsapp") else "sms", to_number, body, tenant_id=str(tenant.get("_id") or ""))
+        send_message(to_number, body)
         log.info("booking_confirmation_sent channel=%s to=%s tenant_id=%s", ch, to_number, tenant.get("_id"))
         return True
     except Exception:
@@ -4301,16 +4298,6 @@ def book_appointment_for_datetime(
     }
 
 
-
-
-def is_compact_date_only_input(text_: Optional[str]) -> bool:
-    """Return True for inputs like 14.05 / 14-05 / 14.05.2026.
-
-    This prevents date-only messages from being misread as explicit times
-    such as 14:05 during chat booking flows.
-    """
-    return bool(re.fullmatch(r"\s*\d{1,2}[./-]\d{1,2}(?:[./-]\d{2,4})?\s*", str(text_ or "")))
-
 # -------------------------
 # CORE LOGIC: handle_user_text
 # -------------------------
@@ -4542,13 +4529,8 @@ def handle_user_text(
     llm_conf = float((llm_hint or {}).get("confidence") or 0.0)
     explicit_time_present = has_explicit_time(msg)
     date_only_dt_for_msg = parse_date_only_text(msg)
-    compact_date_only_input = bool(date_only_dt_for_msg and is_compact_date_only_input(msg))
-    natural_dt_for_msg = None if compact_date_only_input else parse_natural_datetime(msg)
+    natural_dt_for_msg = parse_natural_datetime(msg)
     time_window_for_msg = parse_time_window(msg)
-    if compact_date_only_input:
-        # Example: "14.05" means May 14, not 14:05.
-        explicit_time_present = False
-    natural_time_hint_present = (not compact_date_only_input) and has_natural_time_hint(msg)
 
     # IMPORTANT:
     # Do not restart an already active booking flow just because the LLM
@@ -4770,17 +4752,17 @@ def handle_user_text(
                 "lang": lang,
             }
         dt_start = None
-        natural_dt = None if compact_date_only_input else parse_natural_datetime(msg)
+        natural_dt = parse_natural_datetime(msg)
         if natural_dt:
             dt_start = natural_dt
         elif msg:
             data = get_ai_data()
             dt_start = parse_dt_from_iso_or_fallback(data.get("datetime_iso"), data.get("time_text"), msg)
-        if dt_start and (explicit_time_present or natural_time_hint_present):
+        if dt_start and (explicit_time_present or has_natural_time_hint(msg)):
             result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, dt_start)
             db_save_conversation(tenant_id, user_key, c)
             return result
-        if date_only_dt or (dt_start and not (explicit_time_present or natural_time_hint_present)):
+        if date_only_dt or (dt_start and not (explicit_time_present or has_natural_time_hint(msg))):
             base_date = date_only_dt or dt_start
             pending["booking_intent"] = True
             service_item_current = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
@@ -5379,32 +5361,49 @@ async def voice_intent(request: Request):
 
     if result["status"] in ("booked", "busy", "cancelled") and caller != "unknown" and channel_supports_messaging("voice", caller):
         biz_name = tenant_settings(tenant, result["lang"])["biz_name"]
-        send_channel_message("sms", caller, f"{biz_name}: {result['msg_out']}", tenant_id=tenant.get("_id"))
+        send_message(caller, f"{biz_name}: {result['msg_out']}")
 
     return twiml(vr)
 
 
-def channel_runtime(channel_name: str) -> Dict[str, Any]:
-    return {
-        "resolve_tenant_for_incoming": resolve_tenant_for_incoming,
-        "log_tenant_resolution": log_tenant_resolution,
-        "tenant_is_resolved": tenant_is_resolved,
-        "handle_user_text_with_logging": handle_user_text_with_logging,
-        "detect_language": detect_language,
-        "tenant_settings": tenant_settings,
-        "t": t,
-        "send_message": lambda to, text: send_channel_message(channel_name, to, text),
-    }
-
-
 @app.post("/sms/incoming")
 async def sms_incoming(request: Request):
-    return await handle_sms_incoming(request, channel_runtime("sms"))
+    form = await request.form()
+    to_num = str(form.get("To", ""))
+    from_num = str(form.get("From", ""))
+    body = str(form.get("Body", "")).strip()
+
+    tenant = resolve_tenant_for_incoming(to_num)
+    log_tenant_resolution("sms", to_num, tenant)
+    if not tenant_is_resolved(tenant):
+        send_message(from_num, t(detect_language(body), "service_unavailable_text"))
+        return Response(status_code=204)
+    result = handle_user_text_with_logging(
+        tenant["_id"], from_num, body, "sms", detect_language(body)
+    )
+    biz = tenant_settings(tenant, result["lang"])["biz_name"]
+    send_message(from_num, f"{biz}: {result['msg_out']}")
+    return Response(status_code=204)
 
 
 @app.post("/whatsapp/incoming")
 async def whatsapp_incoming(request: Request):
-    return await handle_whatsapp_incoming(request, channel_runtime("whatsapp"))
+    form = await request.form()
+    to_num = str(form.get("To", "")).replace("whatsapp:", "")
+    from_num = str(form.get("From", ""))
+    body = str(form.get("Body", "")).strip()
+
+    tenant = resolve_tenant_for_incoming(to_num)
+    log_tenant_resolution("whatsapp", to_num, tenant)
+    if not tenant_is_resolved(tenant):
+        send_message(from_num, t(detect_language(body), "service_unavailable_text"))
+        return Response(status_code=204)
+    result = handle_user_text_with_logging(
+        tenant["_id"], from_num, body, "whatsapp", detect_language(body)
+    )
+    biz = tenant_settings(tenant, result["lang"])["biz_name"]
+    send_message(from_num, f"{biz}: {result['msg_out']}")
+    return Response(status_code=204)
 
 
 
@@ -5686,6 +5685,29 @@ def telegram_set_webhook(url: str = "", tenant_id: str = ""):
     return result
 
 
+def telegram_reset_conversation(tenant_id: str, user_key: str) -> None:
+    tenant_id = (tenant_id or "").strip()
+    user_key = norm_user_key(user_key)
+    if not tenant_id or not user_key:
+        return
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
+            DELETE FROM conversations
+            WHERE tenant_id = :tenant_id
+              AND user_key = :user_key
+            """),
+            {"tenant_id": tenant_id, "user_key": user_key},
+        )
+
+
+@app.post("/telegram/reset")
+def telegram_reset(user_key: str, tenant_id: str = ""):
+    default_tenant_id = (tenant_id or os.getenv("TELEGRAM_DEFAULT_TENANT_ID", "").strip() or TENANT_ID_DEFAULT).strip()
+    telegram_reset_conversation(default_tenant_id, user_key)
+    return {"ok": True, "tenant_id": default_tenant_id, "user_key": norm_user_key(user_key), "status": "reset"}
+
+
 @app.post("/telegram/webhook")
 async def telegram_webhook(request: Request, tenant_id: str = ""):
     default_tenant_id = (tenant_id or os.getenv("TELEGRAM_DEFAULT_TENANT_ID", "").strip() or TENANT_ID_DEFAULT).strip()
@@ -5698,7 +5720,7 @@ async def telegram_webhook(request: Request, tenant_id: str = ""):
         handle_user_text_with_logging=handle_user_text_with_logging,
         detect_language_func=detect_language,
         unavailable_text_func=lambda lang: t(lang, "service_unavailable_text"),
-        send_channel_message_func=send_channel_message,
+        reset_conversation_func=telegram_reset_conversation,
     )
 
 
