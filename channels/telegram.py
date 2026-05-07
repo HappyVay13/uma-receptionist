@@ -210,10 +210,10 @@ async def handle_telegram_incoming(
 
     tenant_id = (default_tenant_id or "").strip()
     tenant = get_tenant(tenant_id) if tenant_id else {}
-    lang = detect_language_func(text_in)
+    detected_lang = detect_language_func(text_in)
 
     if not tenant_is_resolved(tenant):
-        _send_telegram_reply(chat_id, unavailable_text_func(lang), send_channel_message_func, tenant_id)
+        _send_telegram_reply(chat_id, unavailable_text_func(detected_lang), send_channel_message_func, tenant_id)
         return {"ok": True, "tenant_id": tenant_id or None, "status": "unavailable"}
 
     user_key = _extract_user_key(message, chat_id)
@@ -224,22 +224,25 @@ async def handle_telegram_incoming(
             raw_phone=user_key,
             text_in=text_in,
             channel="telegram",
-            lang_hint=lang,
+            # Do not hard-lock language on every Telegram message.
+            # Short replies like "Ok" are language-neutral and should keep
+            # the conversation language already stored in core state.
+            lang_hint="",
             source="telegram",
         )
     except Exception as exc:
         log.exception("telegram_core_failed tenant_id=%s chat_id=%s", tenant_id, chat_id)
-        _send_telegram_reply(chat_id, unavailable_text_func(lang), send_channel_message_func, tenant_id)
+        _send_telegram_reply(chat_id, unavailable_text_func(detected_lang), send_channel_message_func, tenant_id)
         return {"ok": True, "tenant_id": tenant_id, "status": "core_error", "error": str(exc)}
 
     reply = str(result.get("msg_out") or result.get("reply_voice") or "").strip()
     if not reply:
-        reply = unavailable_text_func(result.get("lang") or lang)
+        reply = unavailable_text_func(result.get("lang") or detected_lang)
 
     _send_telegram_reply(chat_id, reply, send_channel_message_func, tenant.get("_id") or tenant_id)
 
     try:
-        settings = tenant_settings_func(tenant, result.get("lang") or lang)
+        settings = tenant_settings_func(tenant, result.get("lang") or detected_lang)
         business_name = settings.get("biz_name")
     except Exception:
         business_name = None

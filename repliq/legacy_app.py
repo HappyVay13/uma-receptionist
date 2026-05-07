@@ -4301,6 +4301,16 @@ def book_appointment_for_datetime(
     }
 
 
+
+
+def is_compact_date_only_input(text_: Optional[str]) -> bool:
+    """Return True for inputs like 14.05 / 14-05 / 14.05.2026.
+
+    This prevents date-only messages from being misread as explicit times
+    such as 14:05 during chat booking flows.
+    """
+    return bool(re.fullmatch(r"\s*\d{1,2}[./-]\d{1,2}(?:[./-]\d{2,4})?\s*", str(text_ or "")))
+
 # -------------------------
 # CORE LOGIC: handle_user_text
 # -------------------------
@@ -4532,8 +4542,13 @@ def handle_user_text(
     llm_conf = float((llm_hint or {}).get("confidence") or 0.0)
     explicit_time_present = has_explicit_time(msg)
     date_only_dt_for_msg = parse_date_only_text(msg)
-    natural_dt_for_msg = parse_natural_datetime(msg)
+    compact_date_only_input = bool(date_only_dt_for_msg and is_compact_date_only_input(msg))
+    natural_dt_for_msg = None if compact_date_only_input else parse_natural_datetime(msg)
     time_window_for_msg = parse_time_window(msg)
+    if compact_date_only_input:
+        # Example: "14.05" means May 14, not 14:05.
+        explicit_time_present = False
+    natural_time_hint_present = (not compact_date_only_input) and has_natural_time_hint(msg)
 
     # IMPORTANT:
     # Do not restart an already active booking flow just because the LLM
@@ -4755,17 +4770,17 @@ def handle_user_text(
                 "lang": lang,
             }
         dt_start = None
-        natural_dt = parse_natural_datetime(msg)
+        natural_dt = None if compact_date_only_input else parse_natural_datetime(msg)
         if natural_dt:
             dt_start = natural_dt
         elif msg:
             data = get_ai_data()
             dt_start = parse_dt_from_iso_or_fallback(data.get("datetime_iso"), data.get("time_text"), msg)
-        if dt_start and (explicit_time_present or has_natural_time_hint(msg)):
+        if dt_start and (explicit_time_present or natural_time_hint_present):
             result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, dt_start)
             db_save_conversation(tenant_id, user_key, c)
             return result
-        if date_only_dt or (dt_start and not (explicit_time_present or has_natural_time_hint(msg))):
+        if date_only_dt or (dt_start and not (explicit_time_present or natural_time_hint_present)):
             base_date = date_only_dt or dt_start
             pending["booking_intent"] = True
             service_item_current = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
