@@ -6919,6 +6919,342 @@ def dashboard_analytics(tenant_id: str) -> Dict[str, Any]:
         "today_bookings": int(today_bookings),
     }
 
+
+
+# -------------------------
+# STAGE 15 — UMA INTELLIGENCE LAYER
+# -------------------------
+def _uma_safe_ratio(numerator: int, denominator: int, precision: int = 3) -> float:
+    try:
+        numerator = int(numerator or 0)
+        denominator = int(denominator or 0)
+        if denominator <= 0:
+            return 0.0
+        return round(float(numerator) / float(denominator), precision)
+    except Exception:
+        return 0.0
+
+
+def _uma_severity(value: float, medium_at: float, high_at: float, inverse: bool = False) -> str:
+    try:
+        v = float(value or 0.0)
+        if inverse:
+            if v <= high_at:
+                return "high"
+            if v <= medium_at:
+                return "medium"
+            return "low"
+        if v >= high_at:
+            return "high"
+        if v >= medium_at:
+            return "medium"
+        return "low"
+    except Exception:
+        return "low"
+
+
+def uma_clean_memory_candidate(value: Any) -> Optional[str]:
+    txt = str(value or "").strip()
+    if not txt:
+        return None
+    txt = re.sub(r"\s+", " ", txt)
+    low = txt.lower().strip(" .,!?:;-/\\")
+    if len(low) < 3 or len(low) > 80:
+        return None
+    # Remove pure dates, times and technical fragments from UMA memory suggestions.
+    if re.fullmatch(r"\d{1,2}[:.]\d{2}", low):
+        return None
+    if re.fullmatch(r"\d{1,2}[./-]\d{1,2}(?:[./-]\d{2,4})?", low):
+        return None
+    if re.fullmatch(r"\d+", low):
+        return None
+    if not re.search(r"[A-Za-zĀ-žА-Яа-яЁё]", low):
+        return None
+    stop_exact = {
+        "labdien", "sveiki", "hello", "hi", "hey", "привет", "здравствуйте",
+        "ok", "okay", "labi", "jā", "ja", "да", "yes", "no", "nē", "нет",
+        "gribu pierakstīties", "vēlos pierakstīties", "хочу записаться", "i want to book",
+    }
+    if low in stop_exact:
+        return None
+    stop_contains = [
+        "pierakst", "запис", "appointment", "book", "confirm", "apstiprin", "подтверж",
+    ]
+    # Keep service-like phrases but reject generic intent phrases.
+    if any(x in low for x in stop_contains) and len(low.split()) <= 4:
+        return None
+    return txt[:80]
+
+
+def uma_grouped_rows(tenant_id: str, days: int, group_column: str, limit: int = 10) -> List[Dict[str, Any]]:
+    allowed = {"service", "channel", "intent", "status"}
+    if group_column not in allowed:
+        return []
+    days = max(1, min(int(days or 14), 90))
+    limit = max(1, min(int(limit or 10), 50))
+    since_ts = now_ts() - timedelta(days=days)
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                f"""
+                SELECT COALESCE(NULLIF({group_column}, ''), 'unknown') AS label,
+                       COUNT(*) AS cnt
+                FROM call_logs
+                WHERE tenant_id=:tenant_id
+                  AND created_at >= :since_ts
+                GROUP BY COALESCE(NULLIF({group_column}, ''), 'unknown')
+                ORDER BY cnt DESC, label ASC
+                LIMIT :limit
+                """
+            ),
+            {"tenant_id": tenant_id, "since_ts": since_ts, "limit": limit},
+        ).fetchall()
+    key = group_column
+    return [{key: str(r[0] or "unknown"), "count": int(r[1] or 0)} for r in rows]
+
+
+def uma_recent_friction_samples(tenant_id: str, days: int = 14, limit: int = 8) -> List[Dict[str, Any]]:
+    days = max(1, min(int(days or 14), 90))
+    limit = max(1, min(int(limit or 8), 25))
+    since_ts = now_ts() - timedelta(days=days)
+    friction_statuses = ["need_more", "busy", "recovery", "booking_failed", "no_booking", "reschedule_wait"]
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT created_at, channel, intent, status, service, raw_text, ai_reply
+                FROM call_logs
+                WHERE tenant_id=:tenant_id
+                  AND created_at >= :since_ts
+                  AND status = ANY(:statuses)
+                ORDER BY created_at DESC
+                LIMIT :limit
+                """
+            ),
+            {"tenant_id": tenant_id, "since_ts": since_ts, "statuses": friction_statuses, "limit": limit},
+        ).fetchall()
+    return [
+        {
+            "created_at": r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0]),
+            "channel": r[1],
+            "intent": r[2],
+            "status": r[3],
+            "service": r[4],
+            "user_message": r[5],
+            "ai_reply": r[6],
+        }
+        for r in rows
+    ]
+
+
+def uma_memory_candidates(tenant_id: str, days: int = 14, limit: int = 10) -> List[Dict[str, Any]]:
+    days = max(1, min(int(days or 14), 90))
+    limit = max(1, min(int(limit or 10), 30))
+    since_ts = now_ts() - timedelta(days=days)
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT raw_text, COUNT(*) AS cnt
+                FROM call_logs
+                WHERE tenant_id=:tenant_id
+                  AND created_at >= :since_ts
+                  AND raw_text IS NOT NULL
+                  AND LENGTH(TRIM(raw_text)) BETWEEN 3 AND 120
+                GROUP BY raw_text
+                HAVING COUNT(*) >= 1
+                ORDER BY cnt DESC, MAX(created_at) DESC
+                LIMIT 100
+                """
+            ),
+            {"tenant_id": tenant_id, "since_ts": since_ts},
+        ).fetchall()
+    out: List[Dict[str, Any]] = []
+    seen = set()
+    for raw, cnt in rows:
+        candidate = uma_clean_memory_candidate(raw)
+        if not candidate:
+            continue
+        key = candidate.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({
+            "source": "conversation_pattern",
+            "candidate": candidate,
+            "count": int(cnt or 0),
+            "reason": f"Repeated or potentially useful client phrase ({int(cnt or 0)}x).",
+            "suggested_action": "Review and add as service alias, FAQ entry, or business memory if relevant.",
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
+def uma_recommendations(summary: Dict[str, Any], top_services: List[Dict[str, Any]], channels: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    total = int(summary.get("total_dialogs") or 0)
+    booking_rate = float(summary.get("booking_rate") or 0.0)
+    friction_rate = float(summary.get("friction_rate") or 0.0)
+    unfinished = int(summary.get("unfinished") or 0)
+    recommendations: List[Dict[str, Any]] = []
+
+    if total >= 5 and booking_rate < 0.25:
+        recommendations.append({
+            "priority": "high" if booking_rate < 0.15 else "medium",
+            "area": "conversion",
+            "title": "Shorten the path from first message to booking confirmation",
+            "why": "Booking conversion is low compared with total dialogues.",
+            "action": "Ask for only the missing piece at each step: service, day, or time. Avoid asking for everything at once.",
+        })
+    if total >= 5 and (friction_rate >= 0.2 or unfinished >= max(3, int(total * 0.35))):
+        recommendations.append({
+            "priority": "medium",
+            "area": "dialogue",
+            "title": "Improve clarification prompts",
+            "why": "Many conversations remain unresolved or need follow-up.",
+            "action": "Use numbered options in Telegram and keep clarification prompts specific to the current state.",
+        })
+    if top_services:
+        leading = str(top_services[0].get("service") or "").strip()
+        if leading and leading != "unknown":
+            recommendations.append({
+                "priority": "low",
+                "area": "growth",
+                "title": "Use the most requested service as the default sales path",
+                "why": f"The leading service is {leading}.",
+                "action": "Show this service first in onboarding, Telegram examples, dashboard demo flows, and landing page copy.",
+            })
+    if channels:
+        leading_channel = str(channels[0].get("channel") or "").strip()
+        if leading_channel:
+            recommendations.append({
+                "priority": "low",
+                "area": "channel",
+                "title": "Optimize the strongest active channel first",
+                "why": f"Most conversations currently come from {leading_channel}.",
+                "action": "Polish this channel before adding more integrations, then reuse the same flow for WhatsApp/webchat.",
+            })
+    if not recommendations:
+        recommendations.append({
+            "priority": "low",
+            "area": "baseline",
+            "title": "Collect more conversations before changing the flow",
+            "why": "There is not enough traffic yet for strong conclusions.",
+            "action": "Run 20–50 realistic test conversations across Telegram and dev_chat, then review UMA again.",
+        })
+    return recommendations[:5]
+
+
+def uma_insights_payload(tenant_id: str, days: int = 14) -> Dict[str, Any]:
+    tenant_id = (tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
+    days = max(1, min(int(days or 14), 90))
+    tenant = get_tenant_or_404(tenant_id)
+    since_ts = now_ts() - timedelta(days=days)
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT
+                    COUNT(*) AS total_dialogs,
+                    COUNT(*) FILTER (WHERE status='booked') AS bookings,
+                    COUNT(*) FILTER (WHERE status IN ('need_more','busy','recovery','booking_failed','no_booking','reschedule_wait')) AS friction_events,
+                    COUNT(*) FILTER (WHERE intent='info' OR status='info') AS info_requests,
+                    COUNT(*) FILTER (WHERE status='cancelled') AS cancellations,
+                    COUNT(*) FILTER (WHERE status IN ('need_more','reschedule_wait')) AS unfinished,
+                    COUNT(DISTINCT COALESCE(user_id, 'unknown')) AS unique_users
+                FROM call_logs
+                WHERE tenant_id=:tenant_id
+                  AND created_at >= :since_ts
+                """
+            ),
+            {"tenant_id": tenant_id, "since_ts": since_ts},
+        ).fetchone()
+    total = int((row[0] if row else 0) or 0)
+    bookings = int((row[1] if row else 0) or 0)
+    friction_events = int((row[2] if row else 0) or 0)
+    info_requests = int((row[3] if row else 0) or 0)
+    cancellations = int((row[4] if row else 0) or 0)
+    unfinished = int((row[5] if row else 0) or 0)
+    unique_users = int((row[6] if row else 0) or 0)
+    booking_rate = _uma_safe_ratio(bookings, total)
+    friction_rate = _uma_safe_ratio(friction_events, total)
+    summary = {
+        "total_dialogs": total,
+        "unique_users": unique_users,
+        "bookings": bookings,
+        "booking_rate": booking_rate,
+        "friction_events": friction_events,
+        "friction_rate": friction_rate,
+        "info_requests": info_requests,
+        "cancellations": cancellations,
+        "unfinished": unfinished,
+    }
+    top_services = uma_grouped_rows(tenant_id, days, "service", limit=5)
+    channels = uma_grouped_rows(tenant_id, days, "channel", limit=8)
+    intents = uma_grouped_rows(tenant_id, days, "intent", limit=8)
+    statuses = uma_grouped_rows(tenant_id, days, "status", limit=8)
+
+    signals: List[Dict[str, Any]] = []
+    if total >= 5 and booking_rate < 0.25:
+        signals.append({
+            "type": "low_booking_conversion",
+            "severity": _uma_severity(booking_rate, medium_at=0.25, high_at=0.15, inverse=True),
+            "title": "Low booking conversion",
+            "value": booking_rate,
+            "explain": "Bookings are low compared with the number of conversations.",
+        })
+    if total >= 5 and friction_rate >= 0.15:
+        signals.append({
+            "type": "conversation_friction",
+            "severity": _uma_severity(friction_rate, medium_at=0.15, high_at=0.35),
+            "title": "Many conversations need follow-up",
+            "value": friction_rate,
+            "explain": "A noticeable share of conversations remain unresolved, busy, or need clarification.",
+        })
+    if unfinished >= max(3, int(total * 0.35)) and total >= 5:
+        signals.append({
+            "type": "unfinished_dialogues",
+            "severity": "medium",
+            "title": "Unfinished conversations are accumulating",
+            "value": unfinished,
+            "explain": "Several users reached a waiting state but did not complete the flow.",
+        })
+    if not signals:
+        signals.append({
+            "type": "baseline_ok",
+            "severity": "low",
+            "title": "No major risk signal yet",
+            "value": total,
+            "explain": "UMA needs more data or current metrics do not show a strong issue.",
+        })
+
+    return {
+        "tenant_id": tenant_id,
+        "window_days": days,
+        "generated_at": now_ts().isoformat(),
+        "business": {
+            "name": tenant.get("business_name") or tenant.get("name"),
+            "type": tenant.get("business_type") or "barbershop",
+            "primary_language": tenant_primary_language(tenant),
+        },
+        "summary": summary,
+        "signals": signals,
+        "top_services": top_services,
+        "channels": channels,
+        "intents": intents,
+        "statuses": statuses,
+        "memory_candidates": uma_memory_candidates(tenant_id, days=days, limit=10),
+        "recommendations": uma_recommendations(summary, top_services, channels),
+        "friction_samples": uma_recent_friction_samples(tenant_id, days=days, limit=8),
+        "dashboard_ready": True,
+    }
+
+
+@app.get("/uma/insights")
+@app.get("/dashboard/uma-insights")
+def uma_insights_endpoint(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    return uma_insights_payload(tenant_id, days=days)
+
 @app.get("/dashboard/bookings")
 @app.get("/bookings")
 def dashboard_bookings(tenant_id: str = TENANT_ID_DEFAULT, limit: int = 50):
