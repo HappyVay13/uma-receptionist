@@ -2191,172 +2191,6 @@ def ensure_default_barbershop_aliases(catalog: List[Dict[str, Any]], alias_map: 
     return out
 
 
-
-# -------------------------
-# STAGE 14 — TENANT RUNTIME CONFIG LAYER
-# -------------------------
-_TENANT_RUNTIME_CONFIG_CACHE: Dict[str, Dict[str, Any]] = {}
-_TENANT_RUNTIME_CONFIG_CACHE_TS: Dict[str, datetime] = {}
-TENANT_RUNTIME_CONFIG_CACHE_SECONDS = 60
-
-
-def _runtime_config_cache_key(tenant: Dict[str, Any], lang: str) -> str:
-    tenant_id = str((tenant or {}).get("_id") or (tenant or {}).get("id") or "").strip()
-    return f"{tenant_id}:{get_lang(lang)}"
-
-
-def clear_tenant_runtime_config_cache(tenant_id: Optional[str] = None) -> None:
-    """Clear runtime config cache after tenant config changes.
-
-    In production this keeps dashboard/onboarding edits immediately visible to
-    Telegram, dev_chat, webchat, and any future channel adapters.
-    """
-    global _TENANT_RUNTIME_CONFIG_CACHE, _TENANT_RUNTIME_CONFIG_CACHE_TS
-    if not tenant_id:
-        _TENANT_RUNTIME_CONFIG_CACHE = {}
-        _TENANT_RUNTIME_CONFIG_CACHE_TS = {}
-        return
-    prefix = f"{str(tenant_id).strip()}:"
-    for key in list(_TENANT_RUNTIME_CONFIG_CACHE.keys()):
-        if key.startswith(prefix):
-            _TENANT_RUNTIME_CONFIG_CACHE.pop(key, None)
-            _TENANT_RUNTIME_CONFIG_CACHE_TS.pop(key, None)
-
-
-def _runtime_config_cache_get(tenant: Dict[str, Any], lang: str) -> Optional[Dict[str, Any]]:
-    key = _runtime_config_cache_key(tenant, lang)
-    if not key or key == ":lv":
-        return None
-    cached = _TENANT_RUNTIME_CONFIG_CACHE.get(key)
-    ts = _TENANT_RUNTIME_CONFIG_CACHE_TS.get(key)
-    if not cached or not ts:
-        return None
-    if (now_ts() - ts).total_seconds() > TENANT_RUNTIME_CONFIG_CACHE_SECONDS:
-        _TENANT_RUNTIME_CONFIG_CACHE.pop(key, None)
-        _TENANT_RUNTIME_CONFIG_CACHE_TS.pop(key, None)
-        return None
-    return dict(cached)
-
-
-def _runtime_config_cache_set(tenant: Dict[str, Any], lang: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    key = _runtime_config_cache_key(tenant, lang)
-    if key and key != ":lv":
-        _TENANT_RUNTIME_CONFIG_CACHE[key] = dict(payload)
-        _TENANT_RUNTIME_CONFIG_CACHE_TS[key] = now_ts()
-    return payload
-
-
-def tenant_primary_language(tenant: Dict[str, Any]) -> str:
-    return get_lang((tenant or {}).get("language") or (tenant or {}).get("primary_language") or "lv")
-
-
-def tenant_language_config(tenant: Dict[str, Any]) -> Dict[str, Any]:
-    primary = tenant_primary_language(tenant)
-    supported = []
-    raw_supported = (tenant or {}).get("supported_languages") or (tenant or {}).get("languages")
-    parsed = _safe_json_obj(raw_supported)
-    if isinstance(parsed, list):
-        supported = [get_lang(x) for x in parsed if str(x).strip()]
-    elif isinstance(raw_supported, str) and raw_supported.strip():
-        supported = [get_lang(x) for x in raw_supported.split(",") if str(x).strip()]
-    if not supported:
-        supported = [primary, "ru", "en"] if primary == "lv" else [primary, "lv", "en"]
-    # stable unique order
-    unique: List[str] = []
-    for item in supported:
-        item = get_lang(item)
-        if item not in unique:
-            unique.append(item)
-    return {
-        "primary": primary,
-        "supported": unique,
-        "fallback": "lv",
-    }
-
-
-def tenant_runtime_config(tenant: Dict[str, Any], lang: Optional[str] = None, use_cache: bool = True) -> Dict[str, Any]:
-    """Return the single runtime config object used by all channels.
-
-    This intentionally composes existing stable helpers instead of replacing
-    them. It is the bridge between the self-service UI and runtime channels.
-    """
-    tenant = normalize_tenant_saas_fields(tenant or {})
-    effective_lang = get_lang(lang or tenant_primary_language(tenant))
-    if use_cache:
-        cached = _runtime_config_cache_get(tenant, effective_lang)
-        if cached:
-            return cached
-
-    settings = tenant_settings(tenant, effective_lang)
-    catalog = tenant_service_catalog(tenant)
-    aliases = ensure_default_barbershop_aliases(
-        catalog,
-        merged_service_alias_map(catalog, tenant, effective_lang),
-        effective_lang,
-    )
-    business_memory = tenant_business_memory(tenant, effective_lang)
-    tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip()
-    payload = {
-        "tenant_id": tenant_id,
-        "lang": effective_lang,
-        "language": tenant_language_config(tenant),
-        "business": {
-            "name": settings.get("biz_name"),
-            "address": settings.get("addr"),
-            "type": settings.get("business_type"),
-            "timezone": tenant.get("timezone") or "Europe/Riga",
-        },
-        "booking": {
-            "calendar_id": settings.get("calendar_id"),
-            "calendar_configured": calendar_is_configured(settings.get("calendar_id")),
-            "service_account_configured": tenant_has_service_account_json(tenant),
-            "work_start": settings.get("work_start"),
-            "work_end": settings.get("work_end"),
-            "rules": settings.get("business_rules") or {},
-        },
-        "services": {
-            "catalog": catalog,
-            "summary": service_catalog_summary(catalog, effective_lang),
-            "aliases": aliases,
-            "hint": settings.get("services_hint"),
-        },
-        "memory": {
-            "text": business_memory,
-            "has_memory": bool(str(business_memory or "").strip()),
-            "by_lang": {
-                "lv": str(tenant.get("business_memory_lv") or tenant.get("faq_lv") or "").strip(),
-                "ru": str(tenant.get("business_memory_ru") or tenant.get("faq_ru") or "").strip(),
-                "en": str(tenant.get("business_memory_en") or tenant.get("faq_en") or "").strip(),
-            },
-        },
-        "saas": {
-            "plan": tenant_plan_meta(tenant).get("plan"),
-            "subscription_status": tenant.get("subscription_status"),
-            "effective_status": effective_subscription_status(tenant),
-            "usage": tenant_usage_snapshot(tenant),
-        },
-        "readiness": tenant_ready_status_payload(tenant),
-        "links": onboarding_links_payload(tenant_id) if tenant_id else {},
-    }
-    return _runtime_config_cache_set(tenant, effective_lang, payload) if use_cache else payload
-
-
-def tenant_runtime_config_public_view(config: Dict[str, Any]) -> Dict[str, Any]:
-    """Runtime config safe for dashboard/onboarding UI.
-
-    Keeps secrets out of the response while preserving enough structure for
-    self-service setup screens.
-    """
-    cfg = dict(config or {})
-    services = dict(cfg.get("services") or {})
-    # Alias maps can get large; keep them for debug endpoints, not public UI.
-    services.pop("aliases", None)
-    cfg["services"] = services
-    booking = dict(cfg.get("booking") or {})
-    booking.pop("calendar_id", None)
-    cfg["booking"] = booking
-    return cfg
-
 def calendar_is_configured(calendar_id: str) -> bool:
     return bool((calendar_id or "").strip())
 
@@ -4502,15 +4336,14 @@ def handle_user_text(
     if not tenant_runtime_ready(tenant):
         log_tenant_runtime_validation(tenant)
         return blocked_result_for_reason(lang, "unavailable")
-    runtime_config = tenant_runtime_config(tenant, lang)
     settings = tenant_settings(tenant, lang)
-    service_catalog = (runtime_config.get("services") or {}).get("catalog") or tenant_service_catalog(tenant)
-    service_aliases = (runtime_config.get("services") or {}).get("aliases") or ensure_default_barbershop_aliases(
+    service_catalog = tenant_service_catalog(tenant)
+    service_aliases = ensure_default_barbershop_aliases(
         service_catalog,
         merged_service_alias_map(service_catalog, tenant, lang),
         lang,
     )
-    business_memory = (runtime_config.get("memory") or {}).get("text") or tenant_business_memory(tenant, lang)
+    business_memory = tenant_business_memory(tenant, lang)
     calendar_ready = calendar_is_configured(settings["calendar_id"])
 
     c["state"] = conversation_state(c)
@@ -5852,31 +5685,6 @@ def telegram_set_webhook(url: str = "", tenant_id: str = ""):
     return result
 
 
-
-
-def reset_telegram_conversation_state(tenant_id: str, user_key: str) -> None:
-    tenant_id = (tenant_id or "").strip()
-    user_key = norm_user_key(user_key)
-    if not tenant_id or not user_key:
-        return
-    with engine.begin() as conn:
-        conn.execute(
-            text("""
-            DELETE FROM conversations
-            WHERE tenant_id = :tenant_id
-            AND user_key = :user_key
-            """),
-            {"tenant_id": tenant_id, "user_key": user_key},
-        )
-
-@app.post("/telegram/reset")
-def telegram_reset(tenant_id: str = "", user_key: str = ""):
-    effective_tenant_id = (tenant_id or os.getenv("TELEGRAM_DEFAULT_TENANT_ID", "").strip() or TENANT_ID_DEFAULT).strip()
-    if not user_key:
-        raise HTTPException(status_code=400, detail="user_key is required")
-    reset_telegram_conversation_state(effective_tenant_id, user_key)
-    return {"ok": True, "tenant_id": effective_tenant_id, "user_key": norm_user_key(user_key), "status": "reset_ok"}
-
 @app.post("/telegram/webhook")
 async def telegram_webhook(request: Request, tenant_id: str = ""):
     default_tenant_id = (tenant_id or os.getenv("TELEGRAM_DEFAULT_TENANT_ID", "").strip() or TENANT_ID_DEFAULT).strip()
@@ -5889,7 +5697,6 @@ async def telegram_webhook(request: Request, tenant_id: str = ""):
         handle_user_text_with_logging=handle_user_text_with_logging,
         detect_language_func=detect_language,
         unavailable_text_func=lambda lang: t(lang, "service_unavailable_text"),
-        reset_conversation_func=reset_telegram_conversation_state,
     )
 
 
@@ -6919,342 +6726,6 @@ def dashboard_analytics(tenant_id: str) -> Dict[str, Any]:
         "today_bookings": int(today_bookings),
     }
 
-
-
-# -------------------------
-# STAGE 15 — UMA INTELLIGENCE LAYER
-# -------------------------
-def _uma_safe_ratio(numerator: int, denominator: int, precision: int = 3) -> float:
-    try:
-        numerator = int(numerator or 0)
-        denominator = int(denominator or 0)
-        if denominator <= 0:
-            return 0.0
-        return round(float(numerator) / float(denominator), precision)
-    except Exception:
-        return 0.0
-
-
-def _uma_severity(value: float, medium_at: float, high_at: float, inverse: bool = False) -> str:
-    try:
-        v = float(value or 0.0)
-        if inverse:
-            if v <= high_at:
-                return "high"
-            if v <= medium_at:
-                return "medium"
-            return "low"
-        if v >= high_at:
-            return "high"
-        if v >= medium_at:
-            return "medium"
-        return "low"
-    except Exception:
-        return "low"
-
-
-def uma_clean_memory_candidate(value: Any) -> Optional[str]:
-    txt = str(value or "").strip()
-    if not txt:
-        return None
-    txt = re.sub(r"\s+", " ", txt)
-    low = txt.lower().strip(" .,!?:;-/\\")
-    if len(low) < 3 or len(low) > 80:
-        return None
-    # Remove pure dates, times and technical fragments from UMA memory suggestions.
-    if re.fullmatch(r"\d{1,2}[:.]\d{2}", low):
-        return None
-    if re.fullmatch(r"\d{1,2}[./-]\d{1,2}(?:[./-]\d{2,4})?", low):
-        return None
-    if re.fullmatch(r"\d+", low):
-        return None
-    if not re.search(r"[A-Za-zĀ-žА-Яа-яЁё]", low):
-        return None
-    stop_exact = {
-        "labdien", "sveiki", "hello", "hi", "hey", "привет", "здравствуйте",
-        "ok", "okay", "labi", "jā", "ja", "да", "yes", "no", "nē", "нет",
-        "gribu pierakstīties", "vēlos pierakstīties", "хочу записаться", "i want to book",
-    }
-    if low in stop_exact:
-        return None
-    stop_contains = [
-        "pierakst", "запис", "appointment", "book", "confirm", "apstiprin", "подтверж",
-    ]
-    # Keep service-like phrases but reject generic intent phrases.
-    if any(x in low for x in stop_contains) and len(low.split()) <= 4:
-        return None
-    return txt[:80]
-
-
-def uma_grouped_rows(tenant_id: str, days: int, group_column: str, limit: int = 10) -> List[Dict[str, Any]]:
-    allowed = {"service", "channel", "intent", "status"}
-    if group_column not in allowed:
-        return []
-    days = max(1, min(int(days or 14), 90))
-    limit = max(1, min(int(limit or 10), 50))
-    since_ts = now_ts() - timedelta(days=days)
-    with engine.connect() as conn:
-        rows = conn.execute(
-            text(
-                f"""
-                SELECT COALESCE(NULLIF({group_column}, ''), 'unknown') AS label,
-                       COUNT(*) AS cnt
-                FROM call_logs
-                WHERE tenant_id=:tenant_id
-                  AND created_at >= :since_ts
-                GROUP BY COALESCE(NULLIF({group_column}, ''), 'unknown')
-                ORDER BY cnt DESC, label ASC
-                LIMIT :limit
-                """
-            ),
-            {"tenant_id": tenant_id, "since_ts": since_ts, "limit": limit},
-        ).fetchall()
-    key = group_column
-    return [{key: str(r[0] or "unknown"), "count": int(r[1] or 0)} for r in rows]
-
-
-def uma_recent_friction_samples(tenant_id: str, days: int = 14, limit: int = 8) -> List[Dict[str, Any]]:
-    days = max(1, min(int(days or 14), 90))
-    limit = max(1, min(int(limit or 8), 25))
-    since_ts = now_ts() - timedelta(days=days)
-    friction_statuses = ["need_more", "busy", "recovery", "booking_failed", "no_booking", "reschedule_wait"]
-    with engine.connect() as conn:
-        rows = conn.execute(
-            text(
-                """
-                SELECT created_at, channel, intent, status, service, raw_text, ai_reply
-                FROM call_logs
-                WHERE tenant_id=:tenant_id
-                  AND created_at >= :since_ts
-                  AND status = ANY(:statuses)
-                ORDER BY created_at DESC
-                LIMIT :limit
-                """
-            ),
-            {"tenant_id": tenant_id, "since_ts": since_ts, "statuses": friction_statuses, "limit": limit},
-        ).fetchall()
-    return [
-        {
-            "created_at": r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0]),
-            "channel": r[1],
-            "intent": r[2],
-            "status": r[3],
-            "service": r[4],
-            "user_message": r[5],
-            "ai_reply": r[6],
-        }
-        for r in rows
-    ]
-
-
-def uma_memory_candidates(tenant_id: str, days: int = 14, limit: int = 10) -> List[Dict[str, Any]]:
-    days = max(1, min(int(days or 14), 90))
-    limit = max(1, min(int(limit or 10), 30))
-    since_ts = now_ts() - timedelta(days=days)
-    with engine.connect() as conn:
-        rows = conn.execute(
-            text(
-                """
-                SELECT raw_text, COUNT(*) AS cnt
-                FROM call_logs
-                WHERE tenant_id=:tenant_id
-                  AND created_at >= :since_ts
-                  AND raw_text IS NOT NULL
-                  AND LENGTH(TRIM(raw_text)) BETWEEN 3 AND 120
-                GROUP BY raw_text
-                HAVING COUNT(*) >= 1
-                ORDER BY cnt DESC, MAX(created_at) DESC
-                LIMIT 100
-                """
-            ),
-            {"tenant_id": tenant_id, "since_ts": since_ts},
-        ).fetchall()
-    out: List[Dict[str, Any]] = []
-    seen = set()
-    for raw, cnt in rows:
-        candidate = uma_clean_memory_candidate(raw)
-        if not candidate:
-            continue
-        key = candidate.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append({
-            "source": "conversation_pattern",
-            "candidate": candidate,
-            "count": int(cnt or 0),
-            "reason": f"Repeated or potentially useful client phrase ({int(cnt or 0)}x).",
-            "suggested_action": "Review and add as service alias, FAQ entry, or business memory if relevant.",
-        })
-        if len(out) >= limit:
-            break
-    return out
-
-
-def uma_recommendations(summary: Dict[str, Any], top_services: List[Dict[str, Any]], channels: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    total = int(summary.get("total_dialogs") or 0)
-    booking_rate = float(summary.get("booking_rate") or 0.0)
-    friction_rate = float(summary.get("friction_rate") or 0.0)
-    unfinished = int(summary.get("unfinished") or 0)
-    recommendations: List[Dict[str, Any]] = []
-
-    if total >= 5 and booking_rate < 0.25:
-        recommendations.append({
-            "priority": "high" if booking_rate < 0.15 else "medium",
-            "area": "conversion",
-            "title": "Shorten the path from first message to booking confirmation",
-            "why": "Booking conversion is low compared with total dialogues.",
-            "action": "Ask for only the missing piece at each step: service, day, or time. Avoid asking for everything at once.",
-        })
-    if total >= 5 and (friction_rate >= 0.2 or unfinished >= max(3, int(total * 0.35))):
-        recommendations.append({
-            "priority": "medium",
-            "area": "dialogue",
-            "title": "Improve clarification prompts",
-            "why": "Many conversations remain unresolved or need follow-up.",
-            "action": "Use numbered options in Telegram and keep clarification prompts specific to the current state.",
-        })
-    if top_services:
-        leading = str(top_services[0].get("service") or "").strip()
-        if leading and leading != "unknown":
-            recommendations.append({
-                "priority": "low",
-                "area": "growth",
-                "title": "Use the most requested service as the default sales path",
-                "why": f"The leading service is {leading}.",
-                "action": "Show this service first in onboarding, Telegram examples, dashboard demo flows, and landing page copy.",
-            })
-    if channels:
-        leading_channel = str(channels[0].get("channel") or "").strip()
-        if leading_channel:
-            recommendations.append({
-                "priority": "low",
-                "area": "channel",
-                "title": "Optimize the strongest active channel first",
-                "why": f"Most conversations currently come from {leading_channel}.",
-                "action": "Polish this channel before adding more integrations, then reuse the same flow for WhatsApp/webchat.",
-            })
-    if not recommendations:
-        recommendations.append({
-            "priority": "low",
-            "area": "baseline",
-            "title": "Collect more conversations before changing the flow",
-            "why": "There is not enough traffic yet for strong conclusions.",
-            "action": "Run 20–50 realistic test conversations across Telegram and dev_chat, then review UMA again.",
-        })
-    return recommendations[:5]
-
-
-def uma_insights_payload(tenant_id: str, days: int = 14) -> Dict[str, Any]:
-    tenant_id = (tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
-    days = max(1, min(int(days or 14), 90))
-    tenant = get_tenant_or_404(tenant_id)
-    since_ts = now_ts() - timedelta(days=days)
-    with engine.connect() as conn:
-        row = conn.execute(
-            text(
-                """
-                SELECT
-                    COUNT(*) AS total_dialogs,
-                    COUNT(*) FILTER (WHERE status='booked') AS bookings,
-                    COUNT(*) FILTER (WHERE status IN ('need_more','busy','recovery','booking_failed','no_booking','reschedule_wait')) AS friction_events,
-                    COUNT(*) FILTER (WHERE intent='info' OR status='info') AS info_requests,
-                    COUNT(*) FILTER (WHERE status='cancelled') AS cancellations,
-                    COUNT(*) FILTER (WHERE status IN ('need_more','reschedule_wait')) AS unfinished,
-                    COUNT(DISTINCT COALESCE(user_id, 'unknown')) AS unique_users
-                FROM call_logs
-                WHERE tenant_id=:tenant_id
-                  AND created_at >= :since_ts
-                """
-            ),
-            {"tenant_id": tenant_id, "since_ts": since_ts},
-        ).fetchone()
-    total = int((row[0] if row else 0) or 0)
-    bookings = int((row[1] if row else 0) or 0)
-    friction_events = int((row[2] if row else 0) or 0)
-    info_requests = int((row[3] if row else 0) or 0)
-    cancellations = int((row[4] if row else 0) or 0)
-    unfinished = int((row[5] if row else 0) or 0)
-    unique_users = int((row[6] if row else 0) or 0)
-    booking_rate = _uma_safe_ratio(bookings, total)
-    friction_rate = _uma_safe_ratio(friction_events, total)
-    summary = {
-        "total_dialogs": total,
-        "unique_users": unique_users,
-        "bookings": bookings,
-        "booking_rate": booking_rate,
-        "friction_events": friction_events,
-        "friction_rate": friction_rate,
-        "info_requests": info_requests,
-        "cancellations": cancellations,
-        "unfinished": unfinished,
-    }
-    top_services = uma_grouped_rows(tenant_id, days, "service", limit=5)
-    channels = uma_grouped_rows(tenant_id, days, "channel", limit=8)
-    intents = uma_grouped_rows(tenant_id, days, "intent", limit=8)
-    statuses = uma_grouped_rows(tenant_id, days, "status", limit=8)
-
-    signals: List[Dict[str, Any]] = []
-    if total >= 5 and booking_rate < 0.25:
-        signals.append({
-            "type": "low_booking_conversion",
-            "severity": _uma_severity(booking_rate, medium_at=0.25, high_at=0.15, inverse=True),
-            "title": "Low booking conversion",
-            "value": booking_rate,
-            "explain": "Bookings are low compared with the number of conversations.",
-        })
-    if total >= 5 and friction_rate >= 0.15:
-        signals.append({
-            "type": "conversation_friction",
-            "severity": _uma_severity(friction_rate, medium_at=0.15, high_at=0.35),
-            "title": "Many conversations need follow-up",
-            "value": friction_rate,
-            "explain": "A noticeable share of conversations remain unresolved, busy, or need clarification.",
-        })
-    if unfinished >= max(3, int(total * 0.35)) and total >= 5:
-        signals.append({
-            "type": "unfinished_dialogues",
-            "severity": "medium",
-            "title": "Unfinished conversations are accumulating",
-            "value": unfinished,
-            "explain": "Several users reached a waiting state but did not complete the flow.",
-        })
-    if not signals:
-        signals.append({
-            "type": "baseline_ok",
-            "severity": "low",
-            "title": "No major risk signal yet",
-            "value": total,
-            "explain": "UMA needs more data or current metrics do not show a strong issue.",
-        })
-
-    return {
-        "tenant_id": tenant_id,
-        "window_days": days,
-        "generated_at": now_ts().isoformat(),
-        "business": {
-            "name": tenant.get("business_name") or tenant.get("name"),
-            "type": tenant.get("business_type") or "barbershop",
-            "primary_language": tenant_primary_language(tenant),
-        },
-        "summary": summary,
-        "signals": signals,
-        "top_services": top_services,
-        "channels": channels,
-        "intents": intents,
-        "statuses": statuses,
-        "memory_candidates": uma_memory_candidates(tenant_id, days=days, limit=10),
-        "recommendations": uma_recommendations(summary, top_services, channels),
-        "friction_samples": uma_recent_friction_samples(tenant_id, days=days, limit=8),
-        "dashboard_ready": True,
-    }
-
-
-@app.get("/uma/insights")
-@app.get("/dashboard/uma-insights")
-def uma_insights_endpoint(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
-    return uma_insights_payload(tenant_id, days=days)
-
 @app.get("/dashboard/bookings")
 @app.get("/bookings")
 def dashboard_bookings(tenant_id: str = TENANT_ID_DEFAULT, limit: int = 50):
@@ -7322,429 +6793,221 @@ def dashboard_chart_data_endpoint(tenant_id: str = TENANT_ID_DEFAULT, days: int 
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
     tenant_id = (tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
-    html = f"""
-<!DOCTYPE html>
-<html lang="en">
+    html = """
+<!doctype html>
+<html lang="lv">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Repliq Dashboard</title>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <style>
-    body {{ font-family: Arial, sans-serif; margin: 0; background: #f6f7fb; color: #111827; }}
-    .wrap {{ max-width: 1320px; margin: 0 auto; padding: 20px; }}
-    .panel {{ background: white; border-radius: 16px; box-shadow: 0 8px 24px rgba(0,0,0,0.08); padding: 16px; margin-bottom: 16px; }}
-    .top {{ display:flex; gap:12px; align-items:center; margin-bottom:16px; flex-wrap:wrap; }}
-    input, button, select {{ font: inherit; }}
-    input, select {{ padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 10px; background:#fff; }}
-    button {{ border:none; border-radius: 10px; padding:10px 14px; background:#111827; color:white; cursor:pointer; }}
-    button.secondary {{ background:#fff; color:#111827; border:1px solid #d1d5db; }}
-    .metrics {{ display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:12px; }}
-    .card {{ background:#fafafa; border:1px solid #e5e7eb; border-radius: 12px; padding: 14px; }}
-    .card .num {{ font-size: 28px; font-weight: bold; margin-top: 6px; }}
-    .card .sub {{ font-size:12px; color:#6b7280; margin-top:6px; }}
-    table {{ width:100%; border-collapse: collapse; font-size:14px; }}
-    th, td {{ text-align:left; padding:10px 8px; border-bottom:1px solid #e5e7eb; vertical-align:top; }}
-    th {{ background:#fafafa; }}
-    .muted {{ color:#6b7280; font-size:12px; }}
-    .section-title {{ margin:0 0 12px 0; }}
-    .grid-2 {{ display:grid; grid-template-columns: 1.15fr .85fr; gap:16px; }}
-    .grid-3 {{ display:grid; grid-template-columns: 1.3fr .85fr .85fr; gap:16px; }}
-    .toolbar-label {{ font-size:12px; color:#6b7280; margin-bottom:4px; display:block; }}
-    .empty {{ color:#9ca3af; font-style:italic; padding: 8px 0; }}
-    .chart-wrap {{ height: 280px; }}
-    .mini-chart-wrap {{ height: 240px; }}
-    .badge {{ display:inline-block; font-size:12px; color:#374151; background:#f3f4f6; border:1px solid #e5e7eb; padding:6px 10px; border-radius:999px; margin-right:6px; margin-bottom:6px; }}
-    .ok {{ color:#065f46; background:#ecfdf5; border-color:#a7f3d0; }}
-    .warn {{ color:#92400e; background:#fffbeb; border-color:#fde68a; }}
-    .err {{ color:#991b1b; background:#fef2f2; border-color:#fecaca; }}
-    .status-grid {{ display:grid; grid-template-columns: 1.2fr .8fr; gap:16px; }}
-    .status-list {{ margin:8px 0 0 18px; color:#6b7280; }}
-    .nav-links a {{ margin-right:10px; }}
-    @media (max-width: 1120px) {{
-      .grid-3 {{ grid-template-columns: 1fr; }}
-      .grid-2 {{ grid-template-columns: 1fr; }}
-      .status-grid {{ grid-template-columns: 1fr; }}
-      .metrics {{ grid-template-columns: repeat(2, minmax(0,1fr)); }}
-    }}
-  </style>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Repliq Klienta kabinets</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+:root { --bg:#f5f7fb; --panel:#ffffff; --ink:#111827; --muted:#6b7280; --line:#e5e7eb; --soft:#f9fafb; --brand:#111827; --ok:#047857; --warn:#b45309; --bad:#b91c1c; }
+* { box-sizing:border-box; }
+body { margin:0; font-family: Inter, Arial, sans-serif; background:var(--bg); color:var(--ink); }
+.wrap { max-width:1380px; margin:0 auto; padding:22px; }
+.header { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; margin-bottom:18px; }
+.kicker { color:var(--muted); font-size:13px; margin-bottom:5px; }
+h1 { margin:0; font-size:28px; letter-spacing:-.03em; }
+h2 { margin:0 0 12px; font-size:18px; letter-spacing:-.02em; }
+h3 { margin:0 0 8px; font-size:15px; }
+.panel { background:var(--panel); border:1px solid var(--line); border-radius:20px; box-shadow:0 12px 30px rgba(15,23,42,.06); padding:18px; margin-bottom:16px; }
+.grid-4 { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:14px; }
+.grid-3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px; }
+.grid-2 { display:grid; grid-template-columns:1.1fr .9fr; gap:14px; }
+.card { background:var(--soft); border:1px solid var(--line); border-radius:16px; padding:14px; min-height:92px; }
+.metric { font-size:28px; font-weight:800; margin-top:7px; }
+.muted { color:var(--muted); font-size:13px; }
+.small { color:var(--muted); font-size:12px; }
+.badge { display:inline-flex; align-items:center; gap:6px; padding:7px 10px; border-radius:999px; border:1px solid var(--line); background:#fff; font-size:12px; margin:3px 5px 3px 0; }
+.badge.ok { color:var(--ok); background:#ecfdf5; border-color:#a7f3d0; }
+.badge.warn { color:var(--warn); background:#fffbeb; border-color:#fde68a; }
+.badge.bad { color:var(--bad); background:#fef2f2; border-color:#fecaca; }
+.toolbar { display:flex; align-items:end; gap:10px; flex-wrap:wrap; }
+label { display:block; font-size:12px; color:var(--muted); margin-bottom:5px; }
+input, select, textarea, button { font:inherit; }
+input, select, textarea { width:100%; border:1px solid #d1d5db; border-radius:12px; padding:10px 12px; background:#fff; color:var(--ink); }
+textarea { min-height:98px; resize:vertical; font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size:13px; }
+button { border:0; border-radius:12px; padding:10px 14px; cursor:pointer; background:var(--brand); color:#fff; font-weight:650; }
+button.secondary { background:#fff; color:var(--ink); border:1px solid #d1d5db; }
+button.good { background:#047857; }
+button:disabled { opacity:.55; cursor:not-allowed; }
+.row { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+.row3 { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
+.statusbar { padding:12px 14px; border-radius:14px; margin-bottom:14px; display:none; }
+.statusbar.ok { display:block; color:#065f46; background:#ecfdf5; border:1px solid #a7f3d0; }
+.statusbar.warn { display:block; color:#92400e; background:#fffbeb; border:1px solid #fde68a; }
+.statusbar.bad { display:block; color:#991b1b; background:#fef2f2; border:1px solid #fecaca; }
+.tabs { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
+.tab { background:#fff; color:#374151; border:1px solid var(--line); }
+.tab.active { background:#111827; color:#fff; }
+.tab-panel { display:none; }
+.tab-panel.active { display:block; }
+.list { display:flex; flex-direction:column; gap:10px; }
+.insight { border:1px solid var(--line); border-radius:14px; padding:12px; background:#fff; }
+table { width:100%; border-collapse:collapse; font-size:14px; }
+th,td { text-align:left; padding:10px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+th { background:#fafafa; }
+pre { white-space:pre-wrap; word-break:break-word; background:#0b1020; color:#e5e7eb; padding:14px; border-radius:14px; max-height:330px; overflow:auto; font-size:12px; }
+.chart-box { height:260px; }
+@media (max-width: 980px) { .grid-4,.grid-3,.grid-2,.row,.row3 { grid-template-columns:1fr; } .header { flex-direction:column; } }
+</style>
 </head>
 <body>
-  <div class="wrap">
-    <div class="panel">
-      <div class="top">
-        <div>
-          <label class="toolbar-label">Tenant</label>
-          <input id="tenant" value="{tenant_id}" placeholder="tenant_id" />
-        </div>
-        <div>
-          <label class="toolbar-label">Window</label>
-          <select id="days">
-            <option value="7">7 days</option>
-            <option value="14" selected>14 days</option>
-            <option value="30">30 days</option>
-          </select>
-        </div>
-        <div>
-          <label class="toolbar-label">Table limit</label>
-          <select id="limit">
-            <option value="10">10</option>
-            <option value="20" selected>20</option>
-            <option value="50">50</option>
-          </select>
-        </div>
-        <div style="display:flex; gap:12px; align-items:end; margin-left:auto; flex-wrap:wrap;">
-          <button onclick="loadAll()">Refresh</button>
-          <button class="secondary" onclick="openPath('/tenants/ui')">Tenants</button>
-          <button class="secondary" onclick="openPath('/onboarding/ui?tenant_id='+encodeURIComponent(currentTenant()))">Onboarding</button>
-          <button class="secondary" onclick="openPath('/tenant/config/ui?tenant_id='+encodeURIComponent(currentTenant()))">Tenant config</button>
-        </div>
-      </div>
-      <div class="muted nav-links">JSON endpoints:
-        <a id="lnk_analytics" href="#">analytics</a> ·
-        <a id="lnk_usage" href="#">usage</a> ·
-        <a id="lnk_activity" href="#">activity</a> ·
-        <a id="lnk_chart_data" href="#">chart data</a> ·
-        <a id="lnk_bookings" href="#">bookings</a> ·
-        <a id="lnk_conversations" href="#">conversations</a> ·
-        <a id="lnk_tenant" href="#">tenant config</a> ·
-        <a id="lnk_tenant_ui" href="#">tenant config ui</a> ·
-        <a id="lnk_status" href="#">tenant status</a> ·
-        <a id="lnk_overview" href="#">tenant overview</a> ·
-        <a id="lnk_tenants_ui" href="/tenants/ui">tenants ui</a>
-      </div>
+<div class="wrap">
+  <div class="header">
+    <div>
+      <div class="kicker">Repliq klienta kabinets · pašapkalpošanās</div>
+      <h1 id="page_title">Kabinets</h1>
+      <div class="muted" id="page_sub">Iestatījumi, gatavība un UMA ieskati vienā vietā.</div>
     </div>
-
-    <div class="status-grid">
-      <div class="panel">
-        <div style="display:flex; justify-content:space-between; align-items:center; gap:12px;">
-          <div>
-            <h3 class="section-title" id="biz_title">Business status</h3>
-            <div class="muted" id="biz_sub">Loading tenant status…</div>
-          </div>
-          <div id="ready_badges"></div>
-        </div>
-        <div class="metrics" style="margin-top:14px;">
-          <div class="card"><div>Plan</div><div id="m_plan" class="num" style="font-size:22px">-</div><div id="m_plan_sub" class="sub"></div></div>
-          <div class="card"><div>Dialogs limit</div><div id="m_limit_dialogs" class="num">-</div><div id="m_limit_source" class="sub">Monthly cap by plan</div></div>
-          <div class="card"><div>LLM mode</div><div id="m_llm_mode" class="num" style="font-size:22px">-</div><div id="m_llm_calls" class="sub"></div></div>
-          <div class="card"><div>Phone routes</div><div id="m_routes" class="num">-</div><div class="sub">Connected incoming numbers</div></div>
-        </div>
-        <div style="margin-top:14px;">
-          <div class="muted">Missing setup items</div>
-          <ul id="missing_list" class="status-list"></ul>
-        </div>
+    <div class="toolbar">
+      <div style="min-width:220px;">
+        <label>Tenant ID</label>
+        <input id="tenant_id" value="__TENANT_ID__"/>
       </div>
-      <div class="panel">
-        <h3 class="section-title">Setup checkpoints</h3>
-        <div id="checkpoint_block"></div>
-        <div style="margin-top:14px;" class="muted">Quick actions</div>
-        <div style="margin-top:8px; display:flex; flex-wrap:wrap; gap:8px;">
-          <button class="secondary" onclick="openPath(document.getElementById('lnk_status').href)">Open status JSON</button>
-          <button class="secondary" onclick="openPath(document.getElementById('lnk_overview').href)">Open overview JSON</button>
-          <button class="secondary" onclick="openPath('/google/connect?tenant_id='+encodeURIComponent(currentTenant()))">Connect Google</button>
-          <button class="secondary" onclick="openPath('/google/calendars/ui?tenant_id='+encodeURIComponent(currentTenant()))">Select calendar</button>
-        </div>
+      <div style="min-width:110px;">
+        <label>Periods</label>
+        <select id="days"><option value="7">7d</option><option value="14" selected>14d</option><option value="30">30d</option></select>
       </div>
-    </div>
-
-    <div class="panel">
-      <div class="metrics">
-        <div class="card"><div>Total requests</div><div id="m_requests" class="num">-</div><div class="sub">All-time requests</div></div>
-        <div class="card"><div>Total bookings</div><div id="m_bookings" class="num">-</div><div class="sub">All-time successful bookings</div></div>
-        <div class="card"><div>Conversion</div><div id="m_conv" class="num">-</div><div class="sub">All-time booking rate</div></div>
-        <div class="card"><div>Today bookings</div><div id="m_today" class="num">-</div><div class="sub">Booked today</div></div>
-      </div>
-      <div class="metrics" style="margin-top:12px;">
-        <div class="card"><div>Window unique users</div><div id="m_users" class="num">-</div><div class="sub">Distinct users in selected window</div></div>
-        <div class="card"><div>Window reschedules</div><div id="m_reschedules" class="num">-</div><div class="sub">Intent=reschedule in selected window</div></div>
-        <div class="card"><div>Window cancelled</div><div id="m_cancelled" class="num">-</div><div class="sub">Cancelled in selected window</div></div>
-        <div class="card"><div>Main channel</div><div id="m_channel" class="num" style="font-size:20px">-</div><div id="m_channel_sub" class="sub"></div></div>
-      </div>
-    </div>
-
-    <div class="grid-3">
-      <div class="panel">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-          <h3 class="section-title">Usage trend</h3>
-          <span class="badge" id="usage_badge">Selected window</span>
-        </div>
-        <div class="chart-wrap"><canvas id="trend_chart"></canvas></div>
-      </div>
-      <div class="panel">
-        <h3 class="section-title">Channel mix</h3>
-        <div class="mini-chart-wrap"><canvas id="channel_chart"></canvas></div>
-      </div>
-      <div class="panel">
-        <h3 class="section-title">Top services</h3>
-        <div class="mini-chart-wrap"><canvas id="services_chart"></canvas></div>
-      </div>
-    </div>
-
-    <div class="grid-2">
-      <div class="panel">
-        <h3 class="section-title">Recent bookings</h3>
-        <table id="bookings_tbl"><thead><tr><th>User</th><th>Service</th><th>Date/Time</th><th>Status</th><th>Created</th></tr></thead><tbody></tbody></table>
-      </div>
-      <div class="panel">
-        <h3 class="section-title">Top services (table)</h3>
-        <table id="services_tbl"><thead><tr><th>Service</th><th>Bookings</th></tr></thead><tbody></tbody></table>
-      </div>
-    </div>
-
-    <div class="grid-2">
-      <div class="panel">
-        <h3 class="section-title">Recent activity</h3>
-        <table id="activity_tbl"><thead><tr><th>Time</th><th>Type</th><th>Channel</th><th>User</th><th>Message</th><th>Status</th></tr></thead><tbody></tbody></table>
-      </div>
-      <div class="panel">
-        <h3 class="section-title">Daily usage (table)</h3>
-        <table id="daily_tbl"><thead><tr><th>Date</th><th>Requests</th><th>Bookings</th><th>Cancelled</th></tr></thead><tbody></tbody></table>
-      </div>
-    </div>
-
-    <div class="panel">
-      <h3 class="section-title">Recent conversations</h3>
-      <table id="conv_tbl"><thead><tr><th>Time</th><th>User</th><th>Channel</th><th>User message</th><th>AI reply</th><th>Status</th></tr></thead><tbody></tbody></table>
+      <button onclick="loadAll()">Atjaunot</button>
+      <button class="secondary" onclick="openJson('/tenant/runtime-config')">Runtime</button>
+      <button class="secondary" onclick="openJson('/uma/insights')">UMA JSON</button>
     </div>
   </div>
+
+  <div id="banner" class="statusbar"></div>
+
+  <div class="grid-4">
+    <div class="card"><div class="muted">Dialogi</div><div class="metric" id="m_dialogs">—</div><div class="small">izvēlētajā periodā</div></div>
+    <div class="card"><div class="muted">Pieraksti</div><div class="metric" id="m_bookings">—</div><div class="small">apstiprinātie booking</div></div>
+    <div class="card"><div class="muted">Konversija</div><div class="metric" id="m_rate">—</div><div class="small">booking rate</div></div>
+    <div class="card"><div class="muted">Gatavība</div><div class="metric" id="m_ready">—</div><div class="small" id="m_ready_sub">runtime status</div></div>
+  </div>
+
+  <div class="grid-2">
+    <div class="panel">
+      <h2>Business Configuration</h2>
+      <div class="tabs">
+        <button class="tab active" data-tab="basic" onclick="showTab('basic')">Pamata dati</button>
+        <button class="tab" data-tab="services" onclick="showTab('services')">Pakalpojumi</button>
+        <button class="tab" data-tab="memory" onclick="showTab('memory')">FAQ / atmiņa</button>
+        <button class="tab" data-tab="rules" onclick="showTab('rules')">Darba laiks</button>
+      </div>
+
+      <div id="tab_basic" class="tab-panel active">
+        <div class="row">
+          <div><label>Business name</label><input id="business_name" placeholder="Piem. Repliq Demo Clinic"/></div>
+          <div><label>Business type</label><select id="business_type"><option value="barbershop">Barbershop</option><option value="clinic">Clinic</option><option value="salon">Salon</option><option value="restaurant">Restaurant</option></select></div>
+        </div>
+        <div class="row3" style="margin-top:12px;">
+          <div><label>Language</label><select id="language"><option value="lv">Latviešu</option><option value="ru">Русский</option><option value="en">English</option></select></div>
+          <div><label>Timezone</label><input id="timezone" placeholder="Europe/Riga"/></div>
+          <div><label>Phone / route</label><input id="phone_number" placeholder="+371..."/></div>
+        </div>
+      </div>
+
+      <div id="tab_services" class="tab-panel">
+        <div class="row3">
+          <div><label>Services LV</label><textarea id="services_lv"></textarea></div>
+          <div><label>Services RU</label><textarea id="services_ru"></textarea></div>
+          <div><label>Services EN</label><textarea id="services_en"></textarea></div>
+        </div>
+        <div style="margin-top:12px;"><label>Service catalog JSON</label><textarea id="service_catalog_json" style="min-height:190px;"></textarea></div>
+        <div class="small">Ieteicams lietot JSON katalogu ar key/name_lv/name_ru/name_en/duration_min/aliases.</div>
+      </div>
+
+      <div id="tab_memory" class="tab-panel">
+        <div class="row3">
+          <div><label>FAQ / Memory LV</label><textarea id="business_memory_lv"></textarea></div>
+          <div><label>FAQ / Memory RU</label><textarea id="business_memory_ru"></textarea></div>
+          <div><label>FAQ / Memory EN</label><textarea id="business_memory_en"></textarea></div>
+        </div>
+      </div>
+
+      <div id="tab_rules" class="tab-panel">
+        <div class="row3">
+          <div><label>Work start</label><input id="work_start" placeholder="09:00"/></div>
+          <div><label>Work end</label><input id="work_end" placeholder="18:00"/></div>
+          <div><label>Min notice minutes</label><input id="min_notice_minutes" type="number" min="0"/></div>
+        </div>
+        <div class="row" style="margin-top:12px;">
+          <div><label>Buffer minutes</label><input id="buffer_minutes" type="number" min="0"/></div>
+          <div><label>Google service account JSON</label><input id="service_account_json" placeholder="optional"/></div>
+        </div>
+        <div style="margin-top:12px;"><label>Weekly hours JSON</label><textarea id="weekly_hours_json"></textarea></div>
+        <div class="row" style="margin-top:12px;"><div><label>Days off JSON</label><textarea id="days_off_json"></textarea></div><div><label>Breaks JSON</label><textarea id="breaks_json"></textarea></div></div>
+        <div style="margin-top:12px;"><label>Holidays JSON</label><textarea id="holidays_json"></textarea></div>
+      </div>
+
+      <div style="display:flex;gap:10px;align-items:center;margin-top:16px;flex-wrap:wrap;">
+        <button class="good" id="save_btn" onclick="saveConfig()">Saglabāt konfigurāciju</button>
+        <button class="secondary" onclick="loadConfig()">Atcelt izmaiņas</button>
+        <span id="save_status" class="small"></span>
+      </div>
+    </div>
+
+    <div>
+      <div class="panel">
+        <h2>Readiness</h2>
+        <div id="readiness_badges"></div>
+        <div class="small" id="readiness_missing" style="margin-top:8px;"></div>
+      </div>
+      <div class="panel">
+        <h2>UMA Insights</h2>
+        <div id="uma_list" class="list"><div class="muted">Ielādē...</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <div class="panel">
+      <h2>Conversation analytics</h2>
+      <div class="chart-box"><canvas id="intent_chart"></canvas></div>
+    </div>
+    <div class="panel">
+      <h2>Runtime Config Preview</h2>
+      <pre id="runtime_preview">Loading...</pre>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Quick links</h2>
+    <div id="quick_links" class="muted"></div>
+  </div>
+</div>
+
 <script>
-let trendChart = null;
-let channelChart = null;
-let servicesChart = null;
-function currentTenant() {{ return document.getElementById('tenant').value.trim() || 'default'; }}
-function openPath(url) {{ if (url) window.location = url; }}
-function esc(v) {{ if (v === null || v === undefined) return ''; return String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'", '&#39;'); }}
-function setEmpty(tbody, colSpan, label='No data yet') {{ tbody.innerHTML = `<tr><td colspan="${{colSpan}}" class="empty">${{esc(label)}}</td></tr>`; }}
-async function fetchJson(url) {{ const r = await fetch(url); if (!r.ok) {{ const text = await r.text(); throw new Error(text || `HTTP ${{r.status}}`); }} return r.json(); }}
-function destroyIf(chartObj) {{ if (chartObj) chartObj.destroy(); }}
-function statusBadge(label, cls) {{ return `<span class="badge ${{cls||''}}">${{esc(label)}}</span>`; }}
-function el(id) {{ return document.getElementById(id); }}
-function setText(id, value, fallback='-') {{ const node = el(id); if (!node) return; node.textContent = (value === null || value === undefined || value === '') ? fallback : String(value); }}
-function safeArray(value) {{ return Array.isArray(value) ? value : []; }}
-function normalizeDailyPayload(value) {{
-  if (Array.isArray(value)) return value;
-  if (Array.isArray(value?.daily)) return value.daily;
-  if (Array.isArray(value?.items)) return value.items;
-  return [];
-}}
-function normalizeChannelPayload(value) {{
-  if (Array.isArray(value)) return value;
-  if (Array.isArray(value?.channels)) return value.channels;
-  return [];
-}}
-function normalizeServicePayload(value) {{
-  if (Array.isArray(value)) return value;
-  if (Array.isArray(value?.top_services)) return value.top_services;
-  if (Array.isArray(value?.items)) return value.items;
-  return [];
-}}
-function normalizeOverview(value) {{
-  return (value && typeof value === 'object') ? value : {{}};
-}}
-function renderTrendChart(rawDaily) {{
-  const canvas = el('trend_chart');
-  if (!canvas || typeof Chart === 'undefined') return;
-  const daily = normalizeDailyPayload(rawDaily);
-  const ctx = canvas.getContext('2d');
-  destroyIf(trendChart);
-  trendChart = new Chart(ctx, {{
-    type:'line',
-    data:{{
-      labels: daily.map(x=>x?.date||''),
-      datasets:[
-        {{label:'Requests', data: daily.map(x=>x?.requests||0), borderWidth:2, tension:0.3}},
-        {{label:'Bookings', data: daily.map(x=>x?.bookings||0), borderWidth:2, tension:0.3}},
-        {{label:'Cancelled', data: daily.map(x=>x?.cancelled||0), borderWidth:2, tension:0.3}}
-      ]
-    }},
-    options:{{responsive:true, maintainAspectRatio:false, interaction:{{mode:'index', intersect:false}}, plugins:{{legend:{{position:'bottom'}}}}, scales:{{y:{{beginAtZero:true, ticks:{{precision:0}}}}}}}}
-  }});
-}}
-function renderChannelChart(rawChannels) {{
-  const canvas = el('channel_chart');
-  if (!canvas || typeof Chart === 'undefined') return;
-  const channels = normalizeChannelPayload(rawChannels);
-  const ctx = canvas.getContext('2d');
-  destroyIf(channelChart);
-  channelChart = new Chart(ctx, {{
-    type:'doughnut',
-    data:{{labels: channels.map(x=>x?.channel||'unknown'), datasets:[{{data: channels.map(x=>x?.count||0), borderWidth:1}}]}},
-    options:{{responsive:true, maintainAspectRatio:false, plugins:{{legend:{{position:'bottom'}}}}}}
-  }});
-}}
-function renderServicesChart(rawItems) {{
-  const canvas = el('services_chart');
-  if (!canvas || typeof Chart === 'undefined') return;
-  const items = normalizeServicePayload(rawItems);
-  const ctx = canvas.getContext('2d');
-  destroyIf(servicesChart);
-  servicesChart = new Chart(ctx, {{
-    type:'bar',
-    data:{{labels: items.map(x=>x?.service||'unknown'), datasets:[{{label:'Bookings', data: items.map(x=>x?.count||0), borderWidth:1}}]}},
-    options:{{responsive:true, maintainAspectRatio:false, indexAxis:'y', plugins:{{legend:{{display:false}}}}, scales:{{x:{{beginAtZero:true, ticks:{{precision:0}}}}}}}}
-  }});
-}}
-function renderOverview(rawOverview) {{
-  const ov = normalizeOverview(rawOverview);
-  const tenant = ov?.tenant || {{}};
-  const readiness = ov?.readiness || {{}};
-  const onboarding = ov?.onboarding || {{}};
-  const planMeta = ov?.plan_meta || {{}};
-  const limits = planMeta?.limits || {{}};
-  setText('biz_title', tenant.business_name || tenant._id || currentTenant());
-  setText('biz_sub', `Tenant ${{tenant._id || currentTenant()}} · timezone ${{tenant.timezone || '—'}} · language ${{tenant.language || '—'}}`, '');
-  setText('m_plan', planMeta.plan || 'starter');
-  setText('m_plan_sub', planMeta.subscription_status || 'trial', 'trial');
-  setText('m_limit_dialogs', limits.dialogs_per_month ?? '-');
-  const limitSource = planMeta?.limits_source || 'plan_default';
-  const limitSourceText = limitSource === 'tenant_override' ? 'Custom limit override' : 'Monthly cap by plan';
-  setText('m_limit_source', limitSourceText, 'Monthly cap by plan');
-  setText('m_llm_mode', limits.llm_mode || '-');
-  setText('m_llm_calls', `LLM calls/month: ${{limits.llm_calls_per_month ?? 0}}`, 'LLM calls/month: 0');
-  setText('m_routes', ov?.phone_routes_count ?? tenant?.phone_routes_count ?? 0, '0');
-  const badges = [];
-  badges.push(readiness.ready ? statusBadge('Ready','ok') : statusBadge('Setup incomplete','warn'));
-  badges.push(onboarding.google_connected ? statusBadge('Google connected','ok') : statusBadge('Google pending','warn'));
-  badges.push(onboarding.calendar_selected ? statusBadge('Calendar selected','ok') : statusBadge('Calendar missing','warn'));
-  const readyBadges = el('ready_badges');
-  if (readyBadges) readyBadges.innerHTML = badges.join(' ');
-  const ml = el('missing_list');
-  if (ml) {{
-    ml.innerHTML = '';
-    const missing = Array.isArray(readiness.missing) ? readiness.missing : [];
-    if (!missing.length) {{
-      ml.innerHTML = '<li>No blocking setup issues</li>';
-    }} else {{
-      missing.forEach(x => {{
-        const li = document.createElement('li');
-        li.textContent = x;
-        ml.appendChild(li);
-      }});
-    }}
-  }}
-  const checkpoints = [];
-  checkpoints.push(`<div>${{statusBadge(onboarding.google_connected ? 'Google connected' : 'Google not connected', onboarding.google_connected ? 'ok' : 'warn')}}</div>`);
-  checkpoints.push(`<div>${{statusBadge(onboarding.calendar_selected ? 'Calendar selected' : 'Calendar not selected', onboarding.calendar_selected ? 'ok' : 'warn')}}</div>`);
-  checkpoints.push(`<div>${{statusBadge(onboarding.onboarding_completed ? 'Onboarding completed' : 'Onboarding in progress', onboarding.onboarding_completed ? 'ok' : 'warn')}}</div>`);
-  checkpoints.push(`<div class="muted" style="margin-top:8px;">Next step: ${{esc(onboarding.next_step || readiness.next_step || 'done')}}</div>`);
-  checkpoints.push(`<div class="muted">Owner: ${{esc(tenant.owner_email || onboarding.owner_email || '—')}} · Phone: ${{esc(tenant.phone_number || onboarding.phone_number || '—')}}</div>`);
-  const checkpointBlock = el('checkpoint_block');
-  if (checkpointBlock) checkpointBlock.innerHTML = checkpoints.join('');
-}}
-function renderTableRows(selector, rows, colSpan, emptyLabel, rowRenderer) {{
-  const tbody = document.querySelector(selector);
-  if (!tbody) return;
-  tbody.innerHTML = '';
-  const safeRows = safeArray(rows);
-  if (!safeRows.length) {{
-    setEmpty(tbody, colSpan, emptyLabel);
-    return;
-  }}
-  safeRows.forEach(item => {{
-    const tr = document.createElement('tr');
-    tr.innerHTML = rowRenderer(item || {{}});
-    tbody.appendChild(tr);
-  }});
-}}
-function clearDashboardBanner() {{
-  const existingBanner = el('dash_error_banner');
-  if (existingBanner) existingBanner.remove();
-}}
-function showDashboardBanner(message, kind='warn') {{
-  clearDashboardBanner();
-  const banner = document.createElement('div');
-  banner.id = 'dash_error_banner';
-  const styleMap = {{
-    warn: 'background:#fef3c7;color:#92400e;',
-    err: 'background:#fee2e2;color:#991b1b;',
-    ok: 'background:#dcfce7;color:#166534;'
-  }};
-  banner.style = `${{styleMap[kind] || styleMap.warn}}padding:12px 16px;font-size:14px;margin-bottom:12px;border-radius:12px;`;
-  banner.textContent = message;
-  const wrap = document.querySelector('.wrap');
-  if (wrap) wrap.prepend(banner);
-}}
-async function loadAll() {{
-  const tenant = currentTenant();
-  const days = el('days')?.value || '14';
-  const limit = el('limit')?.value || '20';
-  setText('usage_badge', `${{days}} day window`, 'Selected window');
-  el('lnk_analytics').href = `/dashboard/analytics?tenant_id=${{encodeURIComponent(tenant)}}`;
-  el('lnk_usage').href = `/dashboard/usage?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
-  el('lnk_activity').href = `/dashboard/activity?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
-  el('lnk_chart_data').href = `/dashboard/chart-data?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
-  el('lnk_bookings').href = `/dashboard/bookings?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
-  el('lnk_conversations').href = `/dashboard/conversations?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
-  el('lnk_tenant').href = `/tenant/config?tenant_id=${{encodeURIComponent(tenant)}}`;
-  el('lnk_tenant_ui').href = `/tenant/config/ui?tenant_id=${{encodeURIComponent(tenant)}}`;
-  el('lnk_status').href = `/tenant/status?tenant_id=${{encodeURIComponent(tenant)}}`;
-  el('lnk_overview').href = `/tenant/overview?tenant_id=${{encodeURIComponent(tenant)}}`;
-  clearDashboardBanner();
-
-  const requests = [
-    ['analytics', `/dashboard/analytics?tenant_id=${{encodeURIComponent(tenant)}}`],
-    ['usage', `/dashboard/usage?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`],
-    ['activity', `/dashboard/activity?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`],
-    ['bookings', `/dashboard/bookings?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`],
-    ['conversations', `/dashboard/conversations?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`],
-    ['chartData', `/dashboard/chart-data?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`],
-    ['overview', `/tenant/overview?tenant_id=${{encodeURIComponent(tenant)}}`]
-  ];
-
-  const settled = await Promise.allSettled(requests.map(([_, url]) => fetchJson(url)));
-  const data = {{}};
-  const errors = [];
-  settled.forEach((result, idx) => {{
-    const key = requests[idx][0];
-    if (result.status === 'fulfilled') {{
-      data[key] = result.value;
-    }} else {{
-      data[key] = null;
-      errors.push(`${{key}}: ${{result.reason?.message || result.reason || 'load failed'}}`);
-      console.error('dashboard_block_failed', key, result.reason);
-    }}
-  }});
-
-  const a = data.analytics || {{}};
-  const u = data.usage || {{}};
-  const act = data.activity || {{}};
-  const b = data.bookings || {{}};
-  const c = data.conversations || {{}};
-  const chartData = data.chartData || {{}};
-  const ov = data.overview || {{}};
-
-  try {{ renderOverview(ov); }} catch (err) {{ errors.push(`overview render: ${{err?.message || err}}`); console.error(err); }}
-  setText('m_requests', a?.total_requests ?? '-');
-  setText('m_bookings', a?.total_bookings ?? '-');
-  setText('m_conv', `${{a?.conversion_rate ?? 0}}%`);
-  setText('m_today', a?.today_bookings ?? '-');
-  setText('m_users', u?.unique_users ?? '-');
-  setText('m_reschedules', u?.total_reschedules ?? '-');
-  setText('m_cancelled', u?.total_cancelled ?? '-');
-  const topChannelObj = Array.isArray(u?.channels) && u.channels.length ? u.channels[0] : null;
-  setText('m_channel', topChannelObj?.channel || '-');
-  setText('m_channel_sub', topChannelObj ? `${{topChannelObj.count || 0}} events in selected window` : '', '');
-
-  try {{ renderTrendChart(chartData?.daily || u?.daily || []); }} catch (err) {{ errors.push(`trend chart: ${{err?.message || err}}`); console.error(err); }}
-  try {{ renderChannelChart(chartData?.channels || u?.channels || []); }} catch (err) {{ errors.push(`channel chart: ${{err?.message || err}}`); console.error(err); }}
-  try {{ renderServicesChart(chartData?.top_services || u?.top_services || []); }} catch (err) {{ errors.push(`services chart: ${{err?.message || err}}`); console.error(err); }}
-
-  renderTableRows('#bookings_tbl tbody', b?.items, 5, 'No bookings yet', item => `<td>${{esc(item?.client_name || item?.user_id || '')}}</td><td>${{esc(item?.service || 'unknown')}}</td><td>${{esc(item?.datetime_iso || '')}}</td><td>${{esc(item?.status || '')}}</td><td><span class="muted">${{esc(item?.created_at || '')}}</span></td>`);
-  renderTableRows('#services_tbl tbody', u?.top_services, 2, 'No booked services in selected window', item => `<td>${{esc(item?.service || 'unknown')}}</td><td>${{esc(item?.count ?? 0)}}</td>`);
-  renderTableRows('#activity_tbl tbody', act?.items, 6, 'No activity yet', item => `<td><span class="muted">${{esc(item?.created_at || '')}}</span></td><td>${{esc(item?.type || '')}}</td><td>${{esc(item?.channel || '')}}</td><td>${{esc(item?.user_id || '')}}</td><td>${{esc(item?.message || '')}}</td><td>${{esc(item?.status || '')}}</td>`);
-  renderTableRows('#daily_tbl tbody', u?.daily, 4, 'No daily usage yet', item => `<td>${{esc(item?.date || '')}}</td><td>${{esc(item?.requests ?? 0)}}</td><td>${{esc(item?.bookings ?? 0)}}</td><td>${{esc(item?.cancelled ?? 0)}}</td>`);
-  renderTableRows('#conv_tbl tbody', c?.items, 6, 'No conversations yet', item => `<td><span class="muted">${{esc(item?.created_at || '')}}</span></td><td>${{esc(item?.user_id || '')}}</td><td>${{esc(item?.channel || '')}}</td><td>${{esc(item?.user_message || '')}}</td><td>${{esc(item?.ai_reply || '')}}</td><td>${{esc(item?.status || '')}}</td>`);
-
-  if (errors.length) {{
-    showDashboardBanner(`Dashboard loaded with partial issues: ${{errors.join(' | ')}}`, 'warn');
-  }}
-}}
-document.addEventListener('DOMContentLoaded', loadAll);
+let state = { tenant:null, runtime:null, uma:null, analytics:null, chart:null };
+function el(id){ return document.getElementById(id); }
+function esc(v){ return String(v ?? '').replace(/[&<>\"]/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[s])); }
+function tid(){ return (el('tenant_id').value || 'default').trim(); }
+function days(){ return el('days').value || '14'; }
+function showBanner(kind, msg){ const b=el('banner'); b.className='statusbar '+kind; b.textContent=msg; }
+function clearBanner(){ const b=el('banner'); b.className='statusbar'; b.textContent=''; }
+function showTab(name){ document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x.dataset.tab===name)); document.querySelectorAll('.tab-panel').forEach(x=>x.classList.toggle('active',x.id==='tab_'+name)); }
+function j(v){ if(v===null||v===undefined||v==='') return ''; if(typeof v==='string') return v; return JSON.stringify(v,null,2); }
+async function fetchJson(url, opts){ const r=await fetch(url,opts); const txt=await r.text(); let data={}; try{ data=txt?JSON.parse(txt):{}; }catch(e){ data={raw:txt}; } if(!r.ok) throw new Error(data.detail||txt||r.statusText); return data; }
+function parseMaybeJsonText(id){ const value=el(id).value.trim(); if(!value) return null; return value; }
+function setVal(id, value){ const node=el(id); if(node) node.value = value ?? ''; }
+function openJson(path){ window.open(path+'?tenant_id='+encodeURIComponent(tid())+(path.includes('uma')?'&days='+encodeURIComponent(days()):''),'_blank'); }
+function quickLinks(){ const t=encodeURIComponent(tid()); const links=[['Runtime','/tenant/runtime-config?tenant_id='+t],['Runtime debug','/tenant/runtime-config/debug?tenant_id='+t],['UMA','/uma/insights?tenant_id='+t+'&days='+encodeURIComponent(days())],['Telegram','/telegram/status'],['Tenant config UI','/tenant/config/ui?tenant_id='+t],['Tenants','/tenants/ui'],['Dev chat','/dev_chat_ui']]; el('quick_links').innerHTML=links.map(([a,u])=>`<a href="${u}" style="margin-right:12px;">${a}</a>`).join(''); }
+async function loadConfig(){ const data=await fetchJson('/tenant/config?tenant_id='+encodeURIComponent(tid())); const t=data.tenant||{}; state.tenant=t; setVal('business_name',t.business_name); setVal('business_type',t.business_type||'barbershop'); setVal('phone_number',t.phone_number); setVal('timezone',t.timezone||'Europe/Riga'); setVal('language',t.language||'lv'); setVal('work_start',t.work_start||'09:00'); setVal('work_end',t.work_end||'18:00'); setVal('services_lv',t.services_lv); setVal('services_ru',t.services_ru); setVal('services_en',t.services_en); setVal('weekly_hours_json',j(t.weekly_hours_json)); setVal('days_off_json',j(t.days_off_json)); setVal('breaks_json',j(t.breaks_json)); setVal('holidays_json',j(t.holidays_json)); setVal('min_notice_minutes',t.min_notice_minutes); setVal('buffer_minutes',t.buffer_minutes); setVal('service_catalog_json',j(t.service_catalog_json||t.service_catalog)); setVal('service_account_json',t.service_account_json||t.google_service_account_json||''); setVal('business_memory_lv',t.business_memory_lv||t.faq_lv); setVal('business_memory_ru',t.business_memory_ru||t.faq_ru); setVal('business_memory_en',t.business_memory_en||t.faq_en); }
+async function loadRuntime(){ const data=await fetchJson('/tenant/runtime-config?tenant_id='+encodeURIComponent(tid())); state.runtime=data; el('runtime_preview').textContent=JSON.stringify(data,null,2); renderReadiness(data); }
+async function loadUma(){ try{ state.uma=await fetchJson('/uma/insights?tenant_id='+encodeURIComponent(tid())+'&days='+encodeURIComponent(days())); }catch(e){ try{ state.uma=await fetchJson('/dashboard/uma-insights?tenant_id='+encodeURIComponent(tid())+'&days='+encodeURIComponent(days())); }catch(e2){ state.uma=null; } } renderUma(); }
+async function loadAnalytics(){ try{ state.analytics=await fetchJson('/dashboard/analytics?tenant_id='+encodeURIComponent(tid())); }catch(e){ state.analytics=null; } renderMetrics(); renderIntentChart(); }
+async function loadAll(){ clearBanner(); quickLinks(); try{ await loadConfig(); await Promise.allSettled([loadRuntime(),loadUma(),loadAnalytics()]); renderHeader(); showBanner('ok','Kabinets ielādēts.'); }catch(e){ showBanner('bad','Kļūda: '+e.message); } }
+function renderHeader(){ const t=state.tenant||{}; const name=t.business_name||state.runtime?.business?.name||tid(); el('page_title').textContent=name; el('page_sub').textContent=`Tenant: ${tid()} · ${t.timezone||'Europe/Riga'} · ${t.language||'lv'}`; }
+function renderMetrics(){ const s=state.uma?.summary||{}; const total=s.total_dialogs ?? state.analytics?.total_dialogs ?? '—'; const bookings=s.bookings ?? state.analytics?.bookings ?? '—'; const rate=(s.booking_rate!==undefined)?Math.round(Number(s.booking_rate)*100)+'%':(state.analytics?.booking_rate!==undefined?Math.round(Number(state.analytics.booking_rate)*100)+'%':'—'); el('m_dialogs').textContent=total; el('m_bookings').textContent=bookings; el('m_rate').textContent=rate; const ready=state.runtime?.readiness?.ready; el('m_ready').textContent=ready===true?'Ready':ready===false?'Issues':'—'; el('m_ready_sub').textContent=ready===false?'needs setup':'runtime status'; }
+function renderReadiness(cfg){ const r=cfg?.readiness||{}; const missing=r.missing||[]; const checks=[['Calendar',cfg?.booking?.calendar_configured],['Service account',cfg?.booking?.service_account_configured],['Services',(cfg?.services?.catalog||[]).length>0],['Business memory',cfg?.memory?.has_memory],['Work hours',!!cfg?.booking?.work_start&&!!cfg?.booking?.work_end]]; el('readiness_badges').innerHTML=checks.map(([name,ok])=>`<span class="badge ${ok?'ok':'warn'}">${ok?'✅':'⚠'} ${name}</span>`).join(''); el('readiness_missing').textContent=missing.length?'Missing: '+missing.join(', '):'Viss izskatās gatavs.'; renderMetrics(); }
+function renderUma(){ const box=el('uma_list'); const recs=state.uma?.recommendations||[]; const signals=state.uma?.signals||[]; const top=state.uma?.top_services||[]; const items=[]; signals.slice(0,3).forEach(x=>items.push(`<div class="insight"><strong>${esc(x.title||x.type)}</strong><div class="small">Severity: ${esc(x.severity||'info')} · Value: ${esc(x.value)}</div></div>`)); recs.slice(0,3).forEach(x=>items.push(`<div class="insight"><strong>${esc(x.title)}</strong><div class="small">${esc(x.why||'')}</div><div style="margin-top:6px;">${esc(x.action||'')}</div></div>`)); if(top[0]) items.unshift(`<div class="insight"><strong>Populārākais pakalpojums</strong><div>${esc(top[0].service)} · ${esc(top[0].count)} pieprasījumi</div></div>`); box.innerHTML=items.length?items.join(''):'<div class="muted">Nav pietiekami daudz datu.</div>'; renderMetrics(); }
+function renderIntentChart(){ const intents=state.uma?.intents||[]; const labels=intents.map(x=>x.intent); const values=intents.map(x=>x.count); const ctx=el('intent_chart'); if(!ctx||!labels.length) return; if(state.chart) state.chart.destroy(); state.chart=new Chart(ctx,{type:'bar',data:{labels,datasets:[{label:'Intents',data:values}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}}}}); }
+async function saveConfig(){ const btn=el('save_btn'); const st=el('save_status'); btn.disabled=true; st.textContent='Saglabā...'; const payload={tenant_id:tid(),business_name:el('business_name').value||null,phone_number:el('phone_number').value||null,timezone:el('timezone').value||'Europe/Riga',language:el('language').value||'lv',work_start:el('work_start').value||null,work_end:el('work_end').value||null,services_lv:el('services_lv').value||null,services_ru:el('services_ru').value||null,services_en:el('services_en').value||null,weekly_hours_json:parseMaybeJsonText('weekly_hours_json'),days_off_json:parseMaybeJsonText('days_off_json'),breaks_json:parseMaybeJsonText('breaks_json'),holidays_json:parseMaybeJsonText('holidays_json'),min_notice_minutes:el('min_notice_minutes').value?Number(el('min_notice_minutes').value):null,buffer_minutes:el('buffer_minutes').value?Number(el('buffer_minutes').value):null,service_catalog_json:parseMaybeJsonText('service_catalog_json'),service_account_json:el('service_account_json').value||null,business_memory_lv:el('business_memory_lv').value||null,business_memory_ru:el('business_memory_ru').value||null,business_memory_en:el('business_memory_en').value||null}; try{ await fetchJson('/tenant/config/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}); await fetchJson('/tenant/runtime-config/refresh?tenant_id='+encodeURIComponent(tid()),{method:'POST'}); st.textContent='Saglabāts'; showBanner('ok','Konfigurācija saglabāta un runtime cache atjaunots.'); await loadAll(); }catch(e){ st.textContent='Kļūda'; showBanner('bad','Saglabāšanas kļūda: '+e.message); }finally{ btn.disabled=false; } }
+document.addEventListener('DOMContentLoaded',loadAll);
 </script>
 </body>
 </html>
-    """
+    """.replace("__TENANT_ID__", tenant_id)
     return HTMLResponse(content=html)
 
 
@@ -7996,17 +7259,6 @@ class TenantConfigUpdateRequest(BaseModel):
     reset_override: bool = False
 
 
-
-
-class DashboardConfigUpdateRequest(BaseModel):
-    tenant_id: str
-    business: Optional[Dict[str, Any]] = None
-    booking: Optional[Dict[str, Any]] = None
-    services: Optional[Any] = None
-    memory: Optional[Dict[str, Any]] = None
-    language: Optional[Dict[str, Any]] = None
-    saas: Optional[Dict[str, Any]] = None
-
 class TenantPlanChangeRequest(BaseModel):
     tenant_id: str
     plan: str
@@ -8212,223 +7464,6 @@ def tenant_change_plan(payload: TenantPlanChangeRequest):
     }
 
 
-
-
-# -------------------------
-# STAGE 16 — DASHBOARD SELF-SERVICE CONFIG API
-# -------------------------
-def dashboard_config_schema_payload() -> Dict[str, Any]:
-    """Return a UI-friendly schema for the future client dashboard.
-
-    This endpoint is intentionally Latvian-first because Repliq's first market
-    is Latvia, while still keeping stable technical keys for frontend code.
-    """
-    return {
-        "language": "lv",
-        "sections": [
-            {
-                "key": "business",
-                "title": "Uzņēmuma informācija",
-                "fields": [
-                    {"key": "name", "label": "Uzņēmuma nosaukums", "type": "text", "required": True},
-                    {"key": "phone_number", "label": "Tālrunis / kanāla numurs", "type": "text"},
-                    {"key": "timezone", "label": "Laika zona", "type": "text", "default": "Europe/Riga"},
-                    {"key": "primary_language", "label": "Galvenā valoda", "type": "select", "options": ["lv", "ru", "en"]},
-                ],
-            },
-            {
-                "key": "booking",
-                "title": "Pierakstu noteikumi",
-                "fields": [
-                    {"key": "work_start", "label": "Darba sākums", "type": "time"},
-                    {"key": "work_end", "label": "Darba beigas", "type": "time"},
-                    {"key": "weekly_hours", "label": "Nedēļas grafiks", "type": "json"},
-                    {"key": "days_off", "label": "Brīvdienas", "type": "json"},
-                    {"key": "breaks", "label": "Pārtraukumi", "type": "json"},
-                    {"key": "holidays", "label": "Svētku / slēgtās dienas", "type": "json"},
-                    {"key": "min_notice_minutes", "label": "Minimālais pieraksta brīdinājums", "type": "number"},
-                    {"key": "buffer_minutes", "label": "Pauze starp pierakstiem", "type": "number"},
-                ],
-            },
-            {
-                "key": "services",
-                "title": "Pakalpojumi",
-                "fields": [
-                    {"key": "catalog", "label": "Pakalpojumu katalogs", "type": "service_catalog"},
-                    {"key": "services_lv", "label": "Pakalpojumi LV", "type": "textarea"},
-                    {"key": "services_ru", "label": "Pakalpojumi RU", "type": "textarea"},
-                    {"key": "services_en", "label": "Pakalpojumi EN", "type": "textarea"},
-                ],
-            },
-            {
-                "key": "memory",
-                "title": "FAQ / biznesa atmiņa",
-                "fields": [
-                    {"key": "lv", "label": "Atmiņa LV", "type": "textarea"},
-                    {"key": "ru", "label": "Atmiņa RU", "type": "textarea"},
-                    {"key": "en", "label": "Atmiņa EN", "type": "textarea"},
-                ],
-            },
-            {
-                "key": "saas",
-                "title": "Plāns un limits",
-                "fields": [
-                    {"key": "plan", "label": "Plāns", "type": "select", "options": ["starter", "pro", "business"]},
-                    {"key": "subscription_status", "label": "Statuss", "type": "select", "options": ["trial", "active", "past_due", "inactive", "expired"]},
-                    {"key": "dialogs_per_month", "label": "Dialogi mēnesī", "type": "number"},
-                ],
-            },
-        ],
-    }
-
-
-def _json_text_or_none(value: Any) -> Optional[str]:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        return value
-    try:
-        return json.dumps(value, ensure_ascii=False, indent=2)
-    except Exception:
-        return None
-
-
-def dashboard_config_payload(tenant: Dict[str, Any]) -> Dict[str, Any]:
-    tenant = normalize_tenant_saas_fields(tenant or {})
-    tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip()
-    lang = get_lang(tenant.get("language") or tenant.get("primary_language") or "lv")
-    runtime = tenant_runtime_config_public_view(tenant_runtime_config(tenant, lang, use_cache=False))
-    settings = tenant_settings(tenant, lang)
-    business_rules = settings.get("business_rules") or {}
-    return {
-        "tenant_id": tenant_id,
-        "schema": dashboard_config_schema_payload(),
-        "business": {
-            "name": tenant.get("business_name") or tenant.get("name") or settings.get("biz_name"),
-            "phone_number": tenant.get("phone_number") or "",
-            "timezone": tenant.get("timezone") or "Europe/Riga",
-            "primary_language": lang,
-            "address": tenant.get("address") or settings.get("addr") or "",
-            "business_type": tenant.get("business_type") or settings.get("business_type") or "barbershop",
-        },
-        "booking": {
-            "work_start": settings.get("work_start"),
-            "work_end": settings.get("work_end"),
-            "weekly_hours": business_rules.get("weekly_hours") or {},
-            "days_off": business_rules.get("days_off") or [],
-            "breaks": business_rules.get("breaks") or {},
-            "holidays": business_rules.get("holidays") or [],
-            "min_notice_minutes": business_rules.get("min_notice_minutes") or 0,
-            "buffer_minutes": business_rules.get("buffer_minutes") or 0,
-            "calendar_configured": bool((runtime.get("booking") or {}).get("calendar_configured")),
-            "service_account_configured": bool((runtime.get("booking") or {}).get("service_account_configured")),
-        },
-        "services": {
-            "catalog": (runtime.get("services") or {}).get("catalog") or tenant_service_catalog(tenant),
-            "summary": (runtime.get("services") or {}).get("summary") or "",
-            "services_lv": tenant.get("services_lv") or "",
-            "services_ru": tenant.get("services_ru") or "",
-            "services_en": tenant.get("services_en") or "",
-        },
-        "memory": {
-            "lv": str(tenant.get("business_memory_lv") or tenant.get("faq_lv") or "").strip(),
-            "ru": str(tenant.get("business_memory_ru") or tenant.get("faq_ru") or "").strip(),
-            "en": str(tenant.get("business_memory_en") or tenant.get("faq_en") or "").strip(),
-            "has_memory": bool((runtime.get("memory") or {}).get("has_memory")),
-        },
-        "saas": {
-            "plan": tenant_plan_meta(tenant).get("plan"),
-            "subscription_status": effective_subscription_status(tenant),
-            "dialogs_per_month": tenant_dialog_limit(tenant),
-            "usage": tenant_usage_snapshot(tenant),
-        },
-        "readiness": tenant_ready_status_payload(tenant),
-        "onboarding": onboarding_status_payload(tenant),
-        "links": onboarding_links_payload(tenant_id),
-        "runtime_config": runtime,
-    }
-
-
-def dashboard_update_to_tenant_request(payload: DashboardConfigUpdateRequest) -> TenantConfigUpdateRequest:
-    business = payload.business or {}
-    booking = payload.booking or {}
-    memory = payload.memory or {}
-    language_cfg = payload.language or {}
-    saas = payload.saas or {}
-    services_payload = payload.services
-    services_obj: Dict[str, Any] = {}
-    if isinstance(services_payload, dict):
-        services_obj = services_payload
-    elif services_payload is not None:
-        services_obj = {"catalog": services_payload}
-
-    weekly_hours = booking.get("weekly_hours") if isinstance(booking, dict) else None
-    days_off = booking.get("days_off") if isinstance(booking, dict) else None
-    breaks = booking.get("breaks") if isinstance(booking, dict) else None
-    holidays = booking.get("holidays") if isinstance(booking, dict) else None
-    catalog = services_obj.get("catalog") if isinstance(services_obj, dict) else None
-
-    return TenantConfigUpdateRequest(
-        tenant_id=(payload.tenant_id or "").strip(),
-        business_name=business.get("name") or business.get("business_name"),
-        phone_number=business.get("phone_number"),
-        timezone=business.get("timezone"),
-        language=language_cfg.get("primary") or business.get("primary_language"),
-        work_start=booking.get("work_start"),
-        work_end=booking.get("work_end"),
-        services_lv=services_obj.get("services_lv"),
-        services_ru=services_obj.get("services_ru"),
-        services_en=services_obj.get("services_en"),
-        weekly_hours_json=_json_text_or_none(weekly_hours),
-        days_off_json=_json_text_or_none(days_off),
-        breaks_json=_json_text_or_none(breaks),
-        holidays_json=_json_text_or_none(holidays),
-        min_notice_minutes=booking.get("min_notice_minutes"),
-        buffer_minutes=booking.get("buffer_minutes"),
-        service_catalog_json=_json_text_or_none(catalog),
-        business_memory_lv=memory.get("lv"),
-        business_memory_ru=memory.get("ru"),
-        business_memory_en=memory.get("en"),
-        plan=saas.get("plan"),
-        subscription_status=saas.get("subscription_status"),
-        dialogs_per_month=saas.get("dialogs_per_month"),
-        reset_override=bool(saas.get("reset_override")),
-    )
-
-
-@app.get("/dashboard/config/schema")
-def dashboard_config_schema_endpoint():
-    return dashboard_config_schema_payload()
-
-
-@app.get("/dashboard/config")
-def dashboard_config_endpoint(tenant_id: str = TENANT_ID_DEFAULT):
-    tenant = get_tenant_or_404((tenant_id or "").strip() or TENANT_ID_DEFAULT)
-    return dashboard_config_payload(tenant)
-
-
-@app.post("/dashboard/config/update")
-def dashboard_config_update_endpoint(payload: DashboardConfigUpdateRequest):
-    request_payload = dashboard_update_to_tenant_request(payload)
-    result = tenant_config_update(request_payload)
-    tenant = get_tenant_or_404(request_payload.tenant_id)
-    result["dashboard_config"] = dashboard_config_payload(tenant)
-    result["runtime_refreshed"] = True
-    return result
-
-
-@app.post("/dashboard/config/refresh")
-def dashboard_config_refresh_endpoint(tenant_id: str = TENANT_ID_DEFAULT):
-    tenant_id = (tenant_id or "").strip() or TENANT_ID_DEFAULT
-    clear_tenant_runtime_config_cache(tenant_id)
-    tenant = get_tenant_or_404(tenant_id)
-    return {
-        "status": "ok",
-        "tenant_id": tenant_id,
-        "dashboard_config": dashboard_config_payload(tenant),
-    }
-
-
 @app.get("/tenant/config")
 def tenant_config(tenant_id: str = TENANT_ID_DEFAULT):
     tenant = get_tenant((tenant_id or "").strip() or TENANT_ID_DEFAULT)
@@ -8453,7 +7488,6 @@ def tenant_config(tenant_id: str = TENANT_ID_DEFAULT):
     return {
         "tenant": _jsonable_tenant_view(tenant),
         "resolved_settings": settings,
-        "runtime_config": tenant_runtime_config_public_view(tenant_runtime_config(tenant, get_lang(tenant.get("language") or "lv"), use_cache=False)),
         "phone_routes": routes,
         "onboarding": onboarding_status_payload(tenant),
         "readiness": tenant_ready_status_payload(tenant),
@@ -8549,7 +7583,6 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
     if new_phone:
         upsert_phone_route(new_phone, tenant_id)
 
-    clear_tenant_runtime_config_cache(tenant_id)
     updated = get_tenant(tenant_id)
     return {
         "status": "ok",
@@ -8560,33 +7593,6 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
         "plan_meta": tenant_plan_meta(updated),
         "links": onboarding_links_payload(tenant_id),
     }
-
-
-@app.get("/tenant/runtime-config")
-def tenant_runtime_config_endpoint(tenant_id: str = TENANT_ID_DEFAULT, lang: str = ""):
-    tenant = get_tenant_or_404((tenant_id or "").strip() or TENANT_ID_DEFAULT)
-    effective_lang = get_lang(lang or tenant.get("language") or "lv")
-    return tenant_runtime_config_public_view(tenant_runtime_config(tenant, effective_lang, use_cache=False))
-
-
-@app.get("/tenant/runtime-config/debug")
-def tenant_runtime_config_debug_endpoint(tenant_id: str = TENANT_ID_DEFAULT, lang: str = ""):
-    tenant = get_tenant_or_404((tenant_id or "").strip() or TENANT_ID_DEFAULT)
-    effective_lang = get_lang(lang or tenant.get("language") or "lv")
-    return tenant_runtime_config(tenant, effective_lang, use_cache=False)
-
-
-@app.post("/tenant/runtime-config/refresh")
-def tenant_runtime_config_refresh(tenant_id: str = TENANT_ID_DEFAULT):
-    tenant_id = (tenant_id or "").strip() or TENANT_ID_DEFAULT
-    clear_tenant_runtime_config_cache(tenant_id)
-    tenant = get_tenant_or_404(tenant_id)
-    return {
-        "status": "ok",
-        "tenant_id": tenant_id,
-        "runtime_config": tenant_runtime_config_public_view(tenant_runtime_config(tenant, get_lang(tenant.get("language") or "lv"), use_cache=False)),
-    }
-
 
 @app.get("/tenant/routes")
 def tenant_routes(tenant_id: str = TENANT_ID_DEFAULT):
