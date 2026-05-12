@@ -5657,7 +5657,193 @@ def health():
         "allow_default_tenant_fallback": ALLOW_DEFAULT_TENANT_FALLBACK,
         "twilio_validate_signature": TWILIO_VALIDATE_SIGNATURE,
         "google_oauth_ready": oauth_ready(),
+        "repliq_production_mode": repliq_production_mode() if "repliq_production_mode" in globals() else False,
+        "repliq_dev_tools_enabled": repliq_dev_tools_enabled() if "repliq_dev_tools_enabled" in globals() else True,
     }
+
+
+# -------------------------
+# STAGE 18 — CLIENT PORTAL / PRODUCTION GUARD FOUNDATION
+# -------------------------
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = str(os.getenv(name, "")).strip().lower()
+    if raw in {"1", "true", "yes", "y", "on"}:
+        return True
+    if raw in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
+def _env_csv(name: str) -> List[str]:
+    return [x.strip().lower() for x in str(os.getenv(name, "")).split(",") if x.strip()]
+
+
+def repliq_production_mode() -> bool:
+    return _env_bool("REPLIQ_PRODUCTION_MODE", False)
+
+
+def repliq_dev_tools_enabled() -> bool:
+    # Default stays permissive so current development/testing flow does not break.
+    # In production set REPLIQ_PRODUCTION_MODE=true and optionally REPLIQ_DEV_TOOLS_ENABLED=false.
+    return _env_bool("REPLIQ_DEV_TOOLS_ENABLED", not repliq_production_mode())
+
+
+def repliq_admin_token() -> str:
+    return str(os.getenv("REPLIQ_ADMIN_TOKEN", "")).strip()
+
+
+def repliq_portal_token() -> str:
+    return str(os.getenv("REPLIQ_PORTAL_TOKEN", "")).strip()
+
+
+def require_dev_tools_access() -> None:
+    if not repliq_dev_tools_enabled():
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
+def portal_token_valid(token: str = "") -> bool:
+    expected = repliq_portal_token() or repliq_admin_token()
+    if not expected:
+        # No token configured: keep old links usable during MVP/dev.
+        return True
+    return str(token or "").strip() == expected
+
+
+def admin_token_valid(token: str = "") -> bool:
+    expected = repliq_admin_token()
+    if not expected:
+        return not repliq_production_mode()
+    return str(token or "").strip() == expected
+
+
+def safe_dashboard_url(tenant_id: str, token: str = "") -> str:
+    tenant_id = (tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
+    suffix = f"&access_token={requests.utils.quote(token)}" if token else ""
+    return f"/dashboard?tenant_id={requests.utils.quote(tenant_id)}{suffix}"
+
+
+def client_portal_context_payload(tenant: Dict[str, Any], token: str = "") -> Dict[str, Any]:
+    tenant = normalize_tenant_saas_fields(tenant or {})
+    tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip()
+    runtime_ready = tenant_runtime_ready(tenant) if tenant_id else False
+    readiness = tenant_ready_status_payload(tenant) if tenant_id else {"ready": False, "missing": ["tenant"]}
+    plan = tenant_plan_meta(tenant) if tenant_id else {}
+    return {
+        "ok": bool(tenant_id),
+        "tenant_id": tenant_id,
+        "business_name": str(tenant.get("business_name") or tenant.get("name") or "").strip(),
+        "owner_email": str(tenant.get("owner_email") or "").strip(),
+        "production_mode": repliq_production_mode(),
+        "dev_tools_enabled": repliq_dev_tools_enabled(),
+        "runtime_ready": runtime_ready,
+        "readiness": readiness,
+        "plan": plan,
+        "links": {
+            "dashboard": safe_dashboard_url(tenant_id, token),
+            "config": f"/tenant/config/ui?tenant_id={requests.utils.quote(tenant_id)}",
+            "onboarding": f"/onboarding/ui?tenant_id={requests.utils.quote(tenant_id)}",
+            "runtime_config": f"/tenant/runtime-config?tenant_id={requests.utils.quote(tenant_id)}",
+            "uma_insights": f"/uma/insights?tenant_id={requests.utils.quote(tenant_id)}&days=14",
+        },
+        "client_safe": True,
+    }
+
+
+@app.get("/production/status")
+def production_status():
+    return {
+        "production_mode": repliq_production_mode(),
+        "dev_tools_enabled": repliq_dev_tools_enabled(),
+        "has_admin_token": bool(repliq_admin_token()),
+        "has_portal_token": bool(repliq_portal_token()),
+        "default_tenant_id": TENANT_ID_DEFAULT,
+    }
+
+
+@app.get("/portal/access-check")
+def portal_access_check(tenant_id: str = TENANT_ID_DEFAULT, access_token: str = ""):
+    tenant = get_tenant_or_404((tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT)
+    allowed = portal_token_valid(access_token)
+    return {
+        "ok": allowed,
+        "tenant_id": tenant.get("_id"),
+        "production_mode": repliq_production_mode(),
+        "runtime_ready": tenant_runtime_ready(tenant),
+        "readiness": tenant_ready_status_payload(tenant),
+    }
+
+
+@app.get("/portal/context")
+def portal_context(tenant_id: str = TENANT_ID_DEFAULT, access_token: str = ""):
+    if not portal_token_valid(access_token):
+        raise HTTPException(status_code=403, detail="Portal access denied")
+    tenant = get_tenant_or_404((tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT)
+    return client_portal_context_payload(tenant, access_token)
+
+
+@app.get("/portal", response_class=HTMLResponse)
+def client_portal(tenant_id: str = TENANT_ID_DEFAULT, access_token: str = ""):
+    if not portal_token_valid(access_token):
+        return HTMLResponse("""
+        <html><head><title>Repliq Portal</title></head>
+        <body style='font-family:Arial,sans-serif;background:#f6f7fb;padding:40px;'>
+          <div style='max-width:520px;margin:0 auto;background:white;border-radius:18px;padding:24px;box-shadow:0 8px 24px rgba(0,0,0,.08)'>
+            <h2>Repliq portāls</h2>
+            <p>Piekļuve nav apstiprināta.</p>
+            <p style='color:#6b7280'>Lūdzu, izmantojiet uzņēmumam piešķirto portāla saiti.</p>
+          </div>
+        </body></html>
+        """, status_code=403)
+    tenant = get_tenant_or_404((tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT)
+    ctx = client_portal_context_payload(tenant, access_token)
+    dashboard_url = ctx["links"]["dashboard"]
+    config_url = ctx["links"]["config"]
+    onboarding_url = ctx["links"]["onboarding"]
+    name = ctx.get("business_name") or ctx.get("tenant_id") or "Repliq"
+    ready_badge = "Gatavs" if ctx.get("runtime_ready") else "Nepabeigts"
+    return f"""
+    <html lang='lv'>
+      <head>
+        <meta charset='utf-8' />
+        <meta name='viewport' content='width=device-width, initial-scale=1' />
+        <title>Repliq klienta portāls</title>
+        <style>
+          body{{font-family:Arial,sans-serif;background:#f6f7fb;color:#111827;margin:0;padding:32px;}}
+          .wrap{{max-width:920px;margin:0 auto;}}
+          .card{{background:white;border-radius:20px;padding:24px;box-shadow:0 8px 24px rgba(0,0,0,.08);margin-bottom:16px;}}
+          .grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;}}
+          a.button{{display:inline-block;background:#111827;color:white;text-decoration:none;border-radius:12px;padding:12px 16px;margin:6px 6px 0 0;}}
+          a.secondary{{background:white;color:#111827;border:1px solid #d1d5db;}}
+          .muted{{color:#6b7280;}} .badge{{display:inline-block;border-radius:999px;padding:6px 10px;background:#f3f4f6;}}
+          @media(max-width:800px){{.grid{{grid-template-columns:1fr;}}}}
+        </style>
+      </head>
+      <body>
+        <div class='wrap'>
+          <div class='card'>
+            <div class='badge'>{ready_badge}</div>
+            <h1>Repliq klienta portāls</h1>
+            <p class='muted'>{name}</p>
+            <a class='button' href='{dashboard_url}'>Atvērt dashboard</a>
+            <a class='button secondary' href='{config_url}'>Uzņēmuma iestatījumi</a>
+            <a class='button secondary' href='{onboarding_url}'>Onboarding</a>
+          </div>
+          <div class='grid'>
+            <div class='card'><h3>Kanāli</h3><p class='muted'>Telegram/dev_chat šobrīd aktīvi. WhatsApp/Meta vēlāk.</p></div>
+            <div class='card'><h3>Konfigurācija</h3><p class='muted'>Pakalpojumi, darba laiks un FAQ tiek laboti bez JSON.</p></div>
+            <div class='card'><h3>UMA</h3><p class='muted'>Ieskati un rekomendācijas dashboard sadaļā.</p></div>
+          </div>
+        </div>
+      </body>
+    </html>
+    """
+
+
+@app.get("/client/dashboard")
+def client_dashboard_redirect(tenant_id: str = TENANT_ID_DEFAULT, access_token: str = ""):
+    if not portal_token_valid(access_token):
+        raise HTTPException(status_code=403, detail="Portal access denied")
+    return RedirectResponse(url=safe_dashboard_url(tenant_id, access_token))
 
 
 # -------------------------
@@ -7905,6 +8091,7 @@ def tenant_routes(tenant_id: str = TENANT_ID_DEFAULT):
 
 @app.get("/dev_rules")
 def dev_rules(tenant_id: str):
+    require_dev_tools_access()
     tenant = get_tenant((tenant_id or "").strip() or TENANT_ID_DEFAULT)
     settings = tenant_settings(tenant, get_lang(tenant.get("language") or "lv"))
     return {
@@ -7919,6 +8106,7 @@ def dev_rules(tenant_id: str):
 
 @app.get("/dev_logs")
 def dev_logs(tenant_id: str, limit: int = 50):
+    require_dev_tools_access()
     limit = max(1, min(int(limit or 50), 200))
     with engine.connect() as conn:
         rows = conn.execute(
@@ -7972,6 +8160,7 @@ def _dev_raw_user(user_id: str) -> str:
 
 @app.post("/dev_chat")
 async def dev_chat(req: DevChatRequest):
+    require_dev_tools_access()
     try:
         raw_user = _dev_raw_user(req.user_id)
         result = handle_user_text_with_logging(
@@ -8027,6 +8216,7 @@ async def dev_chat(req: DevChatRequest):
 
 @app.post("/dev_reset")
 async def dev_reset(req: DevResetRequest):
+    require_dev_tools_access()
     try:
         with engine.begin() as conn:
             conn.execute(
@@ -8056,6 +8246,7 @@ class DevFocusTestRequest(BaseModel):
 
 @app.post("/dev_understand")
 async def dev_understand(req: DevChatRequest):
+    require_dev_tools_access()
     tenant = get_tenant(req.tenant_id)
     lang = get_lang(req.lang)
     settings = tenant_settings(tenant, lang)
@@ -8079,6 +8270,7 @@ async def dev_understand(req: DevChatRequest):
 
 @app.post("/dev_focus_test")
 async def dev_focus_test(req: DevFocusTestRequest):
+    require_dev_tools_access()
     tenant = get_tenant(req.tenant_id)
     lang = get_lang(req.lang)
     cases = req.cases or [
@@ -8137,6 +8329,7 @@ async def dev_focus_test(req: DevFocusTestRequest):
 
 @app.get("/dev_chat_ui", response_class=HTMLResponse)
 def dev_chat_ui():
+    require_dev_tools_access()
     html = """
 <!DOCTYPE html>
 <html lang="en">
