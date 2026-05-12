@@ -6793,221 +6793,429 @@ def dashboard_chart_data_endpoint(tenant_id: str = TENANT_ID_DEFAULT, days: int 
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
     tenant_id = (tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
-    html = """
-<!doctype html>
-<html lang="lv">
+    html = f"""
+<!DOCTYPE html>
+<html lang="en">
 <head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>Repliq Klienta kabinets</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<style>
-:root { --bg:#f5f7fb; --panel:#ffffff; --ink:#111827; --muted:#6b7280; --line:#e5e7eb; --soft:#f9fafb; --brand:#111827; --ok:#047857; --warn:#b45309; --bad:#b91c1c; }
-* { box-sizing:border-box; }
-body { margin:0; font-family: Inter, Arial, sans-serif; background:var(--bg); color:var(--ink); }
-.wrap { max-width:1380px; margin:0 auto; padding:22px; }
-.header { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; margin-bottom:18px; }
-.kicker { color:var(--muted); font-size:13px; margin-bottom:5px; }
-h1 { margin:0; font-size:28px; letter-spacing:-.03em; }
-h2 { margin:0 0 12px; font-size:18px; letter-spacing:-.02em; }
-h3 { margin:0 0 8px; font-size:15px; }
-.panel { background:var(--panel); border:1px solid var(--line); border-radius:20px; box-shadow:0 12px 30px rgba(15,23,42,.06); padding:18px; margin-bottom:16px; }
-.grid-4 { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:14px; }
-.grid-3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px; }
-.grid-2 { display:grid; grid-template-columns:1.1fr .9fr; gap:14px; }
-.card { background:var(--soft); border:1px solid var(--line); border-radius:16px; padding:14px; min-height:92px; }
-.metric { font-size:28px; font-weight:800; margin-top:7px; }
-.muted { color:var(--muted); font-size:13px; }
-.small { color:var(--muted); font-size:12px; }
-.badge { display:inline-flex; align-items:center; gap:6px; padding:7px 10px; border-radius:999px; border:1px solid var(--line); background:#fff; font-size:12px; margin:3px 5px 3px 0; }
-.badge.ok { color:var(--ok); background:#ecfdf5; border-color:#a7f3d0; }
-.badge.warn { color:var(--warn); background:#fffbeb; border-color:#fde68a; }
-.badge.bad { color:var(--bad); background:#fef2f2; border-color:#fecaca; }
-.toolbar { display:flex; align-items:end; gap:10px; flex-wrap:wrap; }
-label { display:block; font-size:12px; color:var(--muted); margin-bottom:5px; }
-input, select, textarea, button { font:inherit; }
-input, select, textarea { width:100%; border:1px solid #d1d5db; border-radius:12px; padding:10px 12px; background:#fff; color:var(--ink); }
-textarea { min-height:98px; resize:vertical; font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size:13px; }
-button { border:0; border-radius:12px; padding:10px 14px; cursor:pointer; background:var(--brand); color:#fff; font-weight:650; }
-button.secondary { background:#fff; color:var(--ink); border:1px solid #d1d5db; }
-button.good { background:#047857; }
-button:disabled { opacity:.55; cursor:not-allowed; }
-.row { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
-.row3 { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
-.statusbar { padding:12px 14px; border-radius:14px; margin-bottom:14px; display:none; }
-.statusbar.ok { display:block; color:#065f46; background:#ecfdf5; border:1px solid #a7f3d0; }
-.statusbar.warn { display:block; color:#92400e; background:#fffbeb; border:1px solid #fde68a; }
-.statusbar.bad { display:block; color:#991b1b; background:#fef2f2; border:1px solid #fecaca; }
-.tabs { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
-.tab { background:#fff; color:#374151; border:1px solid var(--line); }
-.tab.active { background:#111827; color:#fff; }
-.tab-panel { display:none; }
-.tab-panel.active { display:block; }
-.list { display:flex; flex-direction:column; gap:10px; }
-.insight { border:1px solid var(--line); border-radius:14px; padding:12px; background:#fff; }
-table { width:100%; border-collapse:collapse; font-size:14px; }
-th,td { text-align:left; padding:10px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
-th { background:#fafafa; }
-pre { white-space:pre-wrap; word-break:break-word; background:#0b1020; color:#e5e7eb; padding:14px; border-radius:14px; max-height:330px; overflow:auto; font-size:12px; }
-.chart-box { height:260px; }
-@media (max-width: 980px) { .grid-4,.grid-3,.grid-2,.row,.row3 { grid-template-columns:1fr; } .header { flex-direction:column; } }
-</style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Repliq Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body {{ font-family: Arial, sans-serif; margin: 0; background: #f6f7fb; color: #111827; }}
+    .wrap {{ max-width: 1320px; margin: 0 auto; padding: 20px; }}
+    .panel {{ background: white; border-radius: 16px; box-shadow: 0 8px 24px rgba(0,0,0,0.08); padding: 16px; margin-bottom: 16px; }}
+    .top {{ display:flex; gap:12px; align-items:center; margin-bottom:16px; flex-wrap:wrap; }}
+    input, button, select {{ font: inherit; }}
+    input, select {{ padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 10px; background:#fff; }}
+    button {{ border:none; border-radius: 10px; padding:10px 14px; background:#111827; color:white; cursor:pointer; }}
+    button.secondary {{ background:#fff; color:#111827; border:1px solid #d1d5db; }}
+    .metrics {{ display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:12px; }}
+    .card {{ background:#fafafa; border:1px solid #e5e7eb; border-radius: 12px; padding: 14px; }}
+    .card .num {{ font-size: 28px; font-weight: bold; margin-top: 6px; }}
+    .card .sub {{ font-size:12px; color:#6b7280; margin-top:6px; }}
+    table {{ width:100%; border-collapse: collapse; font-size:14px; }}
+    th, td {{ text-align:left; padding:10px 8px; border-bottom:1px solid #e5e7eb; vertical-align:top; }}
+    th {{ background:#fafafa; }}
+    .muted {{ color:#6b7280; font-size:12px; }}
+    .section-title {{ margin:0 0 12px 0; }}
+    .grid-2 {{ display:grid; grid-template-columns: 1.15fr .85fr; gap:16px; }}
+    .grid-3 {{ display:grid; grid-template-columns: 1.3fr .85fr .85fr; gap:16px; }}
+    .toolbar-label {{ font-size:12px; color:#6b7280; margin-bottom:4px; display:block; }}
+    .empty {{ color:#9ca3af; font-style:italic; padding: 8px 0; }}
+    .chart-wrap {{ height: 280px; }}
+    .mini-chart-wrap {{ height: 240px; }}
+    .badge {{ display:inline-block; font-size:12px; color:#374151; background:#f3f4f6; border:1px solid #e5e7eb; padding:6px 10px; border-radius:999px; margin-right:6px; margin-bottom:6px; }}
+    .ok {{ color:#065f46; background:#ecfdf5; border-color:#a7f3d0; }}
+    .warn {{ color:#92400e; background:#fffbeb; border-color:#fde68a; }}
+    .err {{ color:#991b1b; background:#fef2f2; border-color:#fecaca; }}
+    .status-grid {{ display:grid; grid-template-columns: 1.2fr .8fr; gap:16px; }}
+    .status-list {{ margin:8px 0 0 18px; color:#6b7280; }}
+    .nav-links a {{ margin-right:10px; }}
+    @media (max-width: 1120px) {{
+      .grid-3 {{ grid-template-columns: 1fr; }}
+      .grid-2 {{ grid-template-columns: 1fr; }}
+      .status-grid {{ grid-template-columns: 1fr; }}
+      .metrics {{ grid-template-columns: repeat(2, minmax(0,1fr)); }}
+    }}
+  </style>
 </head>
 <body>
-<div class="wrap">
-  <div class="header">
-    <div>
-      <div class="kicker">Repliq klienta kabinets · pašapkalpošanās</div>
-      <h1 id="page_title">Kabinets</h1>
-      <div class="muted" id="page_sub">Iestatījumi, gatavība un UMA ieskati vienā vietā.</div>
-    </div>
-    <div class="toolbar">
-      <div style="min-width:220px;">
-        <label>Tenant ID</label>
-        <input id="tenant_id" value="__TENANT_ID__"/>
-      </div>
-      <div style="min-width:110px;">
-        <label>Periods</label>
-        <select id="days"><option value="7">7d</option><option value="14" selected>14d</option><option value="30">30d</option></select>
-      </div>
-      <button onclick="loadAll()">Atjaunot</button>
-      <button class="secondary" onclick="openJson('/tenant/runtime-config')">Runtime</button>
-      <button class="secondary" onclick="openJson('/uma/insights')">UMA JSON</button>
-    </div>
-  </div>
-
-  <div id="banner" class="statusbar"></div>
-
-  <div class="grid-4">
-    <div class="card"><div class="muted">Dialogi</div><div class="metric" id="m_dialogs">—</div><div class="small">izvēlētajā periodā</div></div>
-    <div class="card"><div class="muted">Pieraksti</div><div class="metric" id="m_bookings">—</div><div class="small">apstiprinātie booking</div></div>
-    <div class="card"><div class="muted">Konversija</div><div class="metric" id="m_rate">—</div><div class="small">booking rate</div></div>
-    <div class="card"><div class="muted">Gatavība</div><div class="metric" id="m_ready">—</div><div class="small" id="m_ready_sub">runtime status</div></div>
-  </div>
-
-  <div class="grid-2">
+  <div class="wrap">
     <div class="panel">
-      <h2>Business Configuration</h2>
-      <div class="tabs">
-        <button class="tab active" data-tab="basic" onclick="showTab('basic')">Pamata dati</button>
-        <button class="tab" data-tab="services" onclick="showTab('services')">Pakalpojumi</button>
-        <button class="tab" data-tab="memory" onclick="showTab('memory')">FAQ / atmiņa</button>
-        <button class="tab" data-tab="rules" onclick="showTab('rules')">Darba laiks</button>
-      </div>
-
-      <div id="tab_basic" class="tab-panel active">
-        <div class="row">
-          <div><label>Business name</label><input id="business_name" placeholder="Piem. Repliq Demo Clinic"/></div>
-          <div><label>Business type</label><select id="business_type"><option value="barbershop">Barbershop</option><option value="clinic">Clinic</option><option value="salon">Salon</option><option value="restaurant">Restaurant</option></select></div>
+      <div class="top">
+        <div>
+          <label class="toolbar-label">Tenant</label>
+          <input id="tenant" value="{tenant_id}" placeholder="tenant_id" />
         </div>
-        <div class="row3" style="margin-top:12px;">
-          <div><label>Language</label><select id="language"><option value="lv">Latviešu</option><option value="ru">Русский</option><option value="en">English</option></select></div>
-          <div><label>Timezone</label><input id="timezone" placeholder="Europe/Riga"/></div>
-          <div><label>Phone / route</label><input id="phone_number" placeholder="+371..."/></div>
+        <div>
+          <label class="toolbar-label">Window</label>
+          <select id="days">
+            <option value="7">7 days</option>
+            <option value="14" selected>14 days</option>
+            <option value="30">30 days</option>
+          </select>
         </div>
-      </div>
-
-      <div id="tab_services" class="tab-panel">
-        <div class="row3">
-          <div><label>Services LV</label><textarea id="services_lv"></textarea></div>
-          <div><label>Services RU</label><textarea id="services_ru"></textarea></div>
-          <div><label>Services EN</label><textarea id="services_en"></textarea></div>
+        <div>
+          <label class="toolbar-label">Table limit</label>
+          <select id="limit">
+            <option value="10">10</option>
+            <option value="20" selected>20</option>
+            <option value="50">50</option>
+          </select>
         </div>
-        <div style="margin-top:12px;"><label>Service catalog JSON</label><textarea id="service_catalog_json" style="min-height:190px;"></textarea></div>
-        <div class="small">Ieteicams lietot JSON katalogu ar key/name_lv/name_ru/name_en/duration_min/aliases.</div>
-      </div>
-
-      <div id="tab_memory" class="tab-panel">
-        <div class="row3">
-          <div><label>FAQ / Memory LV</label><textarea id="business_memory_lv"></textarea></div>
-          <div><label>FAQ / Memory RU</label><textarea id="business_memory_ru"></textarea></div>
-          <div><label>FAQ / Memory EN</label><textarea id="business_memory_en"></textarea></div>
+        <div style="display:flex; gap:12px; align-items:end; margin-left:auto; flex-wrap:wrap;">
+          <button onclick="loadAll()">Refresh</button>
+          <button class="secondary" onclick="openPath('/tenants/ui')">Tenants</button>
+          <button class="secondary" onclick="openPath('/onboarding/ui?tenant_id='+encodeURIComponent(currentTenant()))">Onboarding</button>
+          <button class="secondary" onclick="openPath('/tenant/config/ui?tenant_id='+encodeURIComponent(currentTenant()))">Tenant config</button>
         </div>
       </div>
-
-      <div id="tab_rules" class="tab-panel">
-        <div class="row3">
-          <div><label>Work start</label><input id="work_start" placeholder="09:00"/></div>
-          <div><label>Work end</label><input id="work_end" placeholder="18:00"/></div>
-          <div><label>Min notice minutes</label><input id="min_notice_minutes" type="number" min="0"/></div>
-        </div>
-        <div class="row" style="margin-top:12px;">
-          <div><label>Buffer minutes</label><input id="buffer_minutes" type="number" min="0"/></div>
-          <div><label>Google service account JSON</label><input id="service_account_json" placeholder="optional"/></div>
-        </div>
-        <div style="margin-top:12px;"><label>Weekly hours JSON</label><textarea id="weekly_hours_json"></textarea></div>
-        <div class="row" style="margin-top:12px;"><div><label>Days off JSON</label><textarea id="days_off_json"></textarea></div><div><label>Breaks JSON</label><textarea id="breaks_json"></textarea></div></div>
-        <div style="margin-top:12px;"><label>Holidays JSON</label><textarea id="holidays_json"></textarea></div>
-      </div>
-
-      <div style="display:flex;gap:10px;align-items:center;margin-top:16px;flex-wrap:wrap;">
-        <button class="good" id="save_btn" onclick="saveConfig()">Saglabāt konfigurāciju</button>
-        <button class="secondary" onclick="loadConfig()">Atcelt izmaiņas</button>
-        <span id="save_status" class="small"></span>
+      <div class="muted nav-links">JSON endpoints:
+        <a id="lnk_analytics" href="#">analytics</a> ·
+        <a id="lnk_usage" href="#">usage</a> ·
+        <a id="lnk_activity" href="#">activity</a> ·
+        <a id="lnk_chart_data" href="#">chart data</a> ·
+        <a id="lnk_bookings" href="#">bookings</a> ·
+        <a id="lnk_conversations" href="#">conversations</a> ·
+        <a id="lnk_tenant" href="#">tenant config</a> ·
+        <a id="lnk_tenant_ui" href="#">tenant config ui</a> ·
+        <a id="lnk_status" href="#">tenant status</a> ·
+        <a id="lnk_overview" href="#">tenant overview</a> ·
+        <a id="lnk_tenants_ui" href="/tenants/ui">tenants ui</a>
       </div>
     </div>
 
-    <div>
+    <div class="status-grid">
       <div class="panel">
-        <h2>Readiness</h2>
-        <div id="readiness_badges"></div>
-        <div class="small" id="readiness_missing" style="margin-top:8px;"></div>
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:12px;">
+          <div>
+            <h3 class="section-title" id="biz_title">Business status</h3>
+            <div class="muted" id="biz_sub">Loading tenant status…</div>
+          </div>
+          <div id="ready_badges"></div>
+        </div>
+        <div class="metrics" style="margin-top:14px;">
+          <div class="card"><div>Plan</div><div id="m_plan" class="num" style="font-size:22px">-</div><div id="m_plan_sub" class="sub"></div></div>
+          <div class="card"><div>Dialogs limit</div><div id="m_limit_dialogs" class="num">-</div><div id="m_limit_source" class="sub">Monthly cap by plan</div></div>
+          <div class="card"><div>LLM mode</div><div id="m_llm_mode" class="num" style="font-size:22px">-</div><div id="m_llm_calls" class="sub"></div></div>
+          <div class="card"><div>Phone routes</div><div id="m_routes" class="num">-</div><div class="sub">Connected incoming numbers</div></div>
+        </div>
+        <div style="margin-top:14px;">
+          <div class="muted">Missing setup items</div>
+          <ul id="missing_list" class="status-list"></ul>
+        </div>
       </div>
       <div class="panel">
-        <h2>UMA Insights</h2>
-        <div id="uma_list" class="list"><div class="muted">Ielādē...</div></div>
+        <h3 class="section-title">Setup checkpoints</h3>
+        <div id="checkpoint_block"></div>
+        <div style="margin-top:14px;" class="muted">Quick actions</div>
+        <div style="margin-top:8px; display:flex; flex-wrap:wrap; gap:8px;">
+          <button class="secondary" onclick="openPath(document.getElementById('lnk_status').href)">Open status JSON</button>
+          <button class="secondary" onclick="openPath(document.getElementById('lnk_overview').href)">Open overview JSON</button>
+          <button class="secondary" onclick="openPath('/google/connect?tenant_id='+encodeURIComponent(currentTenant()))">Connect Google</button>
+          <button class="secondary" onclick="openPath('/google/calendars/ui?tenant_id='+encodeURIComponent(currentTenant()))">Select calendar</button>
+        </div>
       </div>
     </div>
-  </div>
 
-  <div class="grid-2">
     <div class="panel">
-      <h2>Conversation analytics</h2>
-      <div class="chart-box"><canvas id="intent_chart"></canvas></div>
+      <div class="metrics">
+        <div class="card"><div>Total requests</div><div id="m_requests" class="num">-</div><div class="sub">All-time requests</div></div>
+        <div class="card"><div>Total bookings</div><div id="m_bookings" class="num">-</div><div class="sub">All-time successful bookings</div></div>
+        <div class="card"><div>Conversion</div><div id="m_conv" class="num">-</div><div class="sub">All-time booking rate</div></div>
+        <div class="card"><div>Today bookings</div><div id="m_today" class="num">-</div><div class="sub">Booked today</div></div>
+      </div>
+      <div class="metrics" style="margin-top:12px;">
+        <div class="card"><div>Window unique users</div><div id="m_users" class="num">-</div><div class="sub">Distinct users in selected window</div></div>
+        <div class="card"><div>Window reschedules</div><div id="m_reschedules" class="num">-</div><div class="sub">Intent=reschedule in selected window</div></div>
+        <div class="card"><div>Window cancelled</div><div id="m_cancelled" class="num">-</div><div class="sub">Cancelled in selected window</div></div>
+        <div class="card"><div>Main channel</div><div id="m_channel" class="num" style="font-size:20px">-</div><div id="m_channel_sub" class="sub"></div></div>
+      </div>
     </div>
+
+    <div class="grid-3">
+      <div class="panel">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <h3 class="section-title">Usage trend</h3>
+          <span class="badge" id="usage_badge">Selected window</span>
+        </div>
+        <div class="chart-wrap"><canvas id="trend_chart"></canvas></div>
+      </div>
+      <div class="panel">
+        <h3 class="section-title">Channel mix</h3>
+        <div class="mini-chart-wrap"><canvas id="channel_chart"></canvas></div>
+      </div>
+      <div class="panel">
+        <h3 class="section-title">Top services</h3>
+        <div class="mini-chart-wrap"><canvas id="services_chart"></canvas></div>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="panel">
+        <h3 class="section-title">Recent bookings</h3>
+        <table id="bookings_tbl"><thead><tr><th>User</th><th>Service</th><th>Date/Time</th><th>Status</th><th>Created</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div class="panel">
+        <h3 class="section-title">Top services (table)</h3>
+        <table id="services_tbl"><thead><tr><th>Service</th><th>Bookings</th></tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="panel">
+        <h3 class="section-title">Recent activity</h3>
+        <table id="activity_tbl"><thead><tr><th>Time</th><th>Type</th><th>Channel</th><th>User</th><th>Message</th><th>Status</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div class="panel">
+        <h3 class="section-title">Daily usage (table)</h3>
+        <table id="daily_tbl"><thead><tr><th>Date</th><th>Requests</th><th>Bookings</th><th>Cancelled</th></tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+
     <div class="panel">
-      <h2>Runtime Config Preview</h2>
-      <pre id="runtime_preview">Loading...</pre>
+      <h3 class="section-title">Recent conversations</h3>
+      <table id="conv_tbl"><thead><tr><th>Time</th><th>User</th><th>Channel</th><th>User message</th><th>AI reply</th><th>Status</th></tr></thead><tbody></tbody></table>
     </div>
   </div>
-
-  <div class="panel">
-    <h2>Quick links</h2>
-    <div id="quick_links" class="muted"></div>
-  </div>
-</div>
-
 <script>
-let state = { tenant:null, runtime:null, uma:null, analytics:null, chart:null };
-function el(id){ return document.getElementById(id); }
-function esc(v){ return String(v ?? '').replace(/[&<>\"]/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[s])); }
-function tid(){ return (el('tenant_id').value || 'default').trim(); }
-function days(){ return el('days').value || '14'; }
-function showBanner(kind, msg){ const b=el('banner'); b.className='statusbar '+kind; b.textContent=msg; }
-function clearBanner(){ const b=el('banner'); b.className='statusbar'; b.textContent=''; }
-function showTab(name){ document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x.dataset.tab===name)); document.querySelectorAll('.tab-panel').forEach(x=>x.classList.toggle('active',x.id==='tab_'+name)); }
-function j(v){ if(v===null||v===undefined||v==='') return ''; if(typeof v==='string') return v; return JSON.stringify(v,null,2); }
-async function fetchJson(url, opts){ const r=await fetch(url,opts); const txt=await r.text(); let data={}; try{ data=txt?JSON.parse(txt):{}; }catch(e){ data={raw:txt}; } if(!r.ok) throw new Error(data.detail||txt||r.statusText); return data; }
-function parseMaybeJsonText(id){ const value=el(id).value.trim(); if(!value) return null; return value; }
-function setVal(id, value){ const node=el(id); if(node) node.value = value ?? ''; }
-function openJson(path){ window.open(path+'?tenant_id='+encodeURIComponent(tid())+(path.includes('uma')?'&days='+encodeURIComponent(days()):''),'_blank'); }
-function quickLinks(){ const t=encodeURIComponent(tid()); const links=[['Runtime','/tenant/runtime-config?tenant_id='+t],['Runtime debug','/tenant/runtime-config/debug?tenant_id='+t],['UMA','/uma/insights?tenant_id='+t+'&days='+encodeURIComponent(days())],['Telegram','/telegram/status'],['Tenant config UI','/tenant/config/ui?tenant_id='+t],['Tenants','/tenants/ui'],['Dev chat','/dev_chat_ui']]; el('quick_links').innerHTML=links.map(([a,u])=>`<a href="${u}" style="margin-right:12px;">${a}</a>`).join(''); }
-async function loadConfig(){ const data=await fetchJson('/tenant/config?tenant_id='+encodeURIComponent(tid())); const t=data.tenant||{}; state.tenant=t; setVal('business_name',t.business_name); setVal('business_type',t.business_type||'barbershop'); setVal('phone_number',t.phone_number); setVal('timezone',t.timezone||'Europe/Riga'); setVal('language',t.language||'lv'); setVal('work_start',t.work_start||'09:00'); setVal('work_end',t.work_end||'18:00'); setVal('services_lv',t.services_lv); setVal('services_ru',t.services_ru); setVal('services_en',t.services_en); setVal('weekly_hours_json',j(t.weekly_hours_json)); setVal('days_off_json',j(t.days_off_json)); setVal('breaks_json',j(t.breaks_json)); setVal('holidays_json',j(t.holidays_json)); setVal('min_notice_minutes',t.min_notice_minutes); setVal('buffer_minutes',t.buffer_minutes); setVal('service_catalog_json',j(t.service_catalog_json||t.service_catalog)); setVal('service_account_json',t.service_account_json||t.google_service_account_json||''); setVal('business_memory_lv',t.business_memory_lv||t.faq_lv); setVal('business_memory_ru',t.business_memory_ru||t.faq_ru); setVal('business_memory_en',t.business_memory_en||t.faq_en); }
-async function loadRuntime(){ const data=await fetchJson('/tenant/runtime-config?tenant_id='+encodeURIComponent(tid())); state.runtime=data; el('runtime_preview').textContent=JSON.stringify(data,null,2); renderReadiness(data); }
-async function loadUma(){ try{ state.uma=await fetchJson('/uma/insights?tenant_id='+encodeURIComponent(tid())+'&days='+encodeURIComponent(days())); }catch(e){ try{ state.uma=await fetchJson('/dashboard/uma-insights?tenant_id='+encodeURIComponent(tid())+'&days='+encodeURIComponent(days())); }catch(e2){ state.uma=null; } } renderUma(); }
-async function loadAnalytics(){ try{ state.analytics=await fetchJson('/dashboard/analytics?tenant_id='+encodeURIComponent(tid())); }catch(e){ state.analytics=null; } renderMetrics(); renderIntentChart(); }
-async function loadAll(){ clearBanner(); quickLinks(); try{ await loadConfig(); await Promise.allSettled([loadRuntime(),loadUma(),loadAnalytics()]); renderHeader(); showBanner('ok','Kabinets ielādēts.'); }catch(e){ showBanner('bad','Kļūda: '+e.message); } }
-function renderHeader(){ const t=state.tenant||{}; const name=t.business_name||state.runtime?.business?.name||tid(); el('page_title').textContent=name; el('page_sub').textContent=`Tenant: ${tid()} · ${t.timezone||'Europe/Riga'} · ${t.language||'lv'}`; }
-function renderMetrics(){ const s=state.uma?.summary||{}; const total=s.total_dialogs ?? state.analytics?.total_dialogs ?? '—'; const bookings=s.bookings ?? state.analytics?.bookings ?? '—'; const rate=(s.booking_rate!==undefined)?Math.round(Number(s.booking_rate)*100)+'%':(state.analytics?.booking_rate!==undefined?Math.round(Number(state.analytics.booking_rate)*100)+'%':'—'); el('m_dialogs').textContent=total; el('m_bookings').textContent=bookings; el('m_rate').textContent=rate; const ready=state.runtime?.readiness?.ready; el('m_ready').textContent=ready===true?'Ready':ready===false?'Issues':'—'; el('m_ready_sub').textContent=ready===false?'needs setup':'runtime status'; }
-function renderReadiness(cfg){ const r=cfg?.readiness||{}; const missing=r.missing||[]; const checks=[['Calendar',cfg?.booking?.calendar_configured],['Service account',cfg?.booking?.service_account_configured],['Services',(cfg?.services?.catalog||[]).length>0],['Business memory',cfg?.memory?.has_memory],['Work hours',!!cfg?.booking?.work_start&&!!cfg?.booking?.work_end]]; el('readiness_badges').innerHTML=checks.map(([name,ok])=>`<span class="badge ${ok?'ok':'warn'}">${ok?'✅':'⚠'} ${name}</span>`).join(''); el('readiness_missing').textContent=missing.length?'Missing: '+missing.join(', '):'Viss izskatās gatavs.'; renderMetrics(); }
-function renderUma(){ const box=el('uma_list'); const recs=state.uma?.recommendations||[]; const signals=state.uma?.signals||[]; const top=state.uma?.top_services||[]; const items=[]; signals.slice(0,3).forEach(x=>items.push(`<div class="insight"><strong>${esc(x.title||x.type)}</strong><div class="small">Severity: ${esc(x.severity||'info')} · Value: ${esc(x.value)}</div></div>`)); recs.slice(0,3).forEach(x=>items.push(`<div class="insight"><strong>${esc(x.title)}</strong><div class="small">${esc(x.why||'')}</div><div style="margin-top:6px;">${esc(x.action||'')}</div></div>`)); if(top[0]) items.unshift(`<div class="insight"><strong>Populārākais pakalpojums</strong><div>${esc(top[0].service)} · ${esc(top[0].count)} pieprasījumi</div></div>`); box.innerHTML=items.length?items.join(''):'<div class="muted">Nav pietiekami daudz datu.</div>'; renderMetrics(); }
-function renderIntentChart(){ const intents=state.uma?.intents||[]; const labels=intents.map(x=>x.intent); const values=intents.map(x=>x.count); const ctx=el('intent_chart'); if(!ctx||!labels.length) return; if(state.chart) state.chart.destroy(); state.chart=new Chart(ctx,{type:'bar',data:{labels,datasets:[{label:'Intents',data:values}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}}}}); }
-async function saveConfig(){ const btn=el('save_btn'); const st=el('save_status'); btn.disabled=true; st.textContent='Saglabā...'; const payload={tenant_id:tid(),business_name:el('business_name').value||null,phone_number:el('phone_number').value||null,timezone:el('timezone').value||'Europe/Riga',language:el('language').value||'lv',work_start:el('work_start').value||null,work_end:el('work_end').value||null,services_lv:el('services_lv').value||null,services_ru:el('services_ru').value||null,services_en:el('services_en').value||null,weekly_hours_json:parseMaybeJsonText('weekly_hours_json'),days_off_json:parseMaybeJsonText('days_off_json'),breaks_json:parseMaybeJsonText('breaks_json'),holidays_json:parseMaybeJsonText('holidays_json'),min_notice_minutes:el('min_notice_minutes').value?Number(el('min_notice_minutes').value):null,buffer_minutes:el('buffer_minutes').value?Number(el('buffer_minutes').value):null,service_catalog_json:parseMaybeJsonText('service_catalog_json'),service_account_json:el('service_account_json').value||null,business_memory_lv:el('business_memory_lv').value||null,business_memory_ru:el('business_memory_ru').value||null,business_memory_en:el('business_memory_en').value||null}; try{ await fetchJson('/tenant/config/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}); await fetchJson('/tenant/runtime-config/refresh?tenant_id='+encodeURIComponent(tid()),{method:'POST'}); st.textContent='Saglabāts'; showBanner('ok','Konfigurācija saglabāta un runtime cache atjaunots.'); await loadAll(); }catch(e){ st.textContent='Kļūda'; showBanner('bad','Saglabāšanas kļūda: '+e.message); }finally{ btn.disabled=false; } }
-document.addEventListener('DOMContentLoaded',loadAll);
+let trendChart = null;
+let channelChart = null;
+let servicesChart = null;
+function currentTenant() {{ return document.getElementById('tenant').value.trim() || 'default'; }}
+function openPath(url) {{ if (url) window.location = url; }}
+function esc(v) {{ if (v === null || v === undefined) return ''; return String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'", '&#39;'); }}
+function setEmpty(tbody, colSpan, label='No data yet') {{ tbody.innerHTML = `<tr><td colspan="${{colSpan}}" class="empty">${{esc(label)}}</td></tr>`; }}
+async function fetchJson(url) {{ const r = await fetch(url); if (!r.ok) {{ const text = await r.text(); throw new Error(text || `HTTP ${{r.status}}`); }} return r.json(); }}
+function destroyIf(chartObj) {{ if (chartObj) chartObj.destroy(); }}
+function statusBadge(label, cls) {{ return `<span class="badge ${{cls||''}}">${{esc(label)}}</span>`; }}
+function el(id) {{ return document.getElementById(id); }}
+function setText(id, value, fallback='-') {{ const node = el(id); if (!node) return; node.textContent = (value === null || value === undefined || value === '') ? fallback : String(value); }}
+function safeArray(value) {{ return Array.isArray(value) ? value : []; }}
+function normalizeDailyPayload(value) {{
+  if (Array.isArray(value)) return value;
+  if (Array.isArray(value?.daily)) return value.daily;
+  if (Array.isArray(value?.items)) return value.items;
+  return [];
+}}
+function normalizeChannelPayload(value) {{
+  if (Array.isArray(value)) return value;
+  if (Array.isArray(value?.channels)) return value.channels;
+  return [];
+}}
+function normalizeServicePayload(value) {{
+  if (Array.isArray(value)) return value;
+  if (Array.isArray(value?.top_services)) return value.top_services;
+  if (Array.isArray(value?.items)) return value.items;
+  return [];
+}}
+function normalizeOverview(value) {{
+  return (value && typeof value === 'object') ? value : {{}};
+}}
+function renderTrendChart(rawDaily) {{
+  const canvas = el('trend_chart');
+  if (!canvas || typeof Chart === 'undefined') return;
+  const daily = normalizeDailyPayload(rawDaily);
+  const ctx = canvas.getContext('2d');
+  destroyIf(trendChart);
+  trendChart = new Chart(ctx, {{
+    type:'line',
+    data:{{
+      labels: daily.map(x=>x?.date||''),
+      datasets:[
+        {{label:'Requests', data: daily.map(x=>x?.requests||0), borderWidth:2, tension:0.3}},
+        {{label:'Bookings', data: daily.map(x=>x?.bookings||0), borderWidth:2, tension:0.3}},
+        {{label:'Cancelled', data: daily.map(x=>x?.cancelled||0), borderWidth:2, tension:0.3}}
+      ]
+    }},
+    options:{{responsive:true, maintainAspectRatio:false, interaction:{{mode:'index', intersect:false}}, plugins:{{legend:{{position:'bottom'}}}}, scales:{{y:{{beginAtZero:true, ticks:{{precision:0}}}}}}}}
+  }});
+}}
+function renderChannelChart(rawChannels) {{
+  const canvas = el('channel_chart');
+  if (!canvas || typeof Chart === 'undefined') return;
+  const channels = normalizeChannelPayload(rawChannels);
+  const ctx = canvas.getContext('2d');
+  destroyIf(channelChart);
+  channelChart = new Chart(ctx, {{
+    type:'doughnut',
+    data:{{labels: channels.map(x=>x?.channel||'unknown'), datasets:[{{data: channels.map(x=>x?.count||0), borderWidth:1}}]}},
+    options:{{responsive:true, maintainAspectRatio:false, plugins:{{legend:{{position:'bottom'}}}}}}
+  }});
+}}
+function renderServicesChart(rawItems) {{
+  const canvas = el('services_chart');
+  if (!canvas || typeof Chart === 'undefined') return;
+  const items = normalizeServicePayload(rawItems);
+  const ctx = canvas.getContext('2d');
+  destroyIf(servicesChart);
+  servicesChart = new Chart(ctx, {{
+    type:'bar',
+    data:{{labels: items.map(x=>x?.service||'unknown'), datasets:[{{label:'Bookings', data: items.map(x=>x?.count||0), borderWidth:1}}]}},
+    options:{{responsive:true, maintainAspectRatio:false, indexAxis:'y', plugins:{{legend:{{display:false}}}}, scales:{{x:{{beginAtZero:true, ticks:{{precision:0}}}}}}}}
+  }});
+}}
+function renderOverview(rawOverview) {{
+  const ov = normalizeOverview(rawOverview);
+  const tenant = ov?.tenant || {{}};
+  const readiness = ov?.readiness || {{}};
+  const onboarding = ov?.onboarding || {{}};
+  const planMeta = ov?.plan_meta || {{}};
+  const limits = planMeta?.limits || {{}};
+  setText('biz_title', tenant.business_name || tenant._id || currentTenant());
+  setText('biz_sub', `Tenant ${{tenant._id || currentTenant()}} · timezone ${{tenant.timezone || '—'}} · language ${{tenant.language || '—'}}`, '');
+  setText('m_plan', planMeta.plan || 'starter');
+  setText('m_plan_sub', planMeta.subscription_status || 'trial', 'trial');
+  setText('m_limit_dialogs', limits.dialogs_per_month ?? '-');
+  const limitSource = planMeta?.limits_source || 'plan_default';
+  const limitSourceText = limitSource === 'tenant_override' ? 'Custom limit override' : 'Monthly cap by plan';
+  setText('m_limit_source', limitSourceText, 'Monthly cap by plan');
+  setText('m_llm_mode', limits.llm_mode || '-');
+  setText('m_llm_calls', `LLM calls/month: ${{limits.llm_calls_per_month ?? 0}}`, 'LLM calls/month: 0');
+  setText('m_routes', ov?.phone_routes_count ?? tenant?.phone_routes_count ?? 0, '0');
+  const badges = [];
+  badges.push(readiness.ready ? statusBadge('Ready','ok') : statusBadge('Setup incomplete','warn'));
+  badges.push(onboarding.google_connected ? statusBadge('Google connected','ok') : statusBadge('Google pending','warn'));
+  badges.push(onboarding.calendar_selected ? statusBadge('Calendar selected','ok') : statusBadge('Calendar missing','warn'));
+  const readyBadges = el('ready_badges');
+  if (readyBadges) readyBadges.innerHTML = badges.join(' ');
+  const ml = el('missing_list');
+  if (ml) {{
+    ml.innerHTML = '';
+    const missing = Array.isArray(readiness.missing) ? readiness.missing : [];
+    if (!missing.length) {{
+      ml.innerHTML = '<li>No blocking setup issues</li>';
+    }} else {{
+      missing.forEach(x => {{
+        const li = document.createElement('li');
+        li.textContent = x;
+        ml.appendChild(li);
+      }});
+    }}
+  }}
+  const checkpoints = [];
+  checkpoints.push(`<div>${{statusBadge(onboarding.google_connected ? 'Google connected' : 'Google not connected', onboarding.google_connected ? 'ok' : 'warn')}}</div>`);
+  checkpoints.push(`<div>${{statusBadge(onboarding.calendar_selected ? 'Calendar selected' : 'Calendar not selected', onboarding.calendar_selected ? 'ok' : 'warn')}}</div>`);
+  checkpoints.push(`<div>${{statusBadge(onboarding.onboarding_completed ? 'Onboarding completed' : 'Onboarding in progress', onboarding.onboarding_completed ? 'ok' : 'warn')}}</div>`);
+  checkpoints.push(`<div class="muted" style="margin-top:8px;">Next step: ${{esc(onboarding.next_step || readiness.next_step || 'done')}}</div>`);
+  checkpoints.push(`<div class="muted">Owner: ${{esc(tenant.owner_email || onboarding.owner_email || '—')}} · Phone: ${{esc(tenant.phone_number || onboarding.phone_number || '—')}}</div>`);
+  const checkpointBlock = el('checkpoint_block');
+  if (checkpointBlock) checkpointBlock.innerHTML = checkpoints.join('');
+}}
+function renderTableRows(selector, rows, colSpan, emptyLabel, rowRenderer) {{
+  const tbody = document.querySelector(selector);
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  const safeRows = safeArray(rows);
+  if (!safeRows.length) {{
+    setEmpty(tbody, colSpan, emptyLabel);
+    return;
+  }}
+  safeRows.forEach(item => {{
+    const tr = document.createElement('tr');
+    tr.innerHTML = rowRenderer(item || {{}});
+    tbody.appendChild(tr);
+  }});
+}}
+function clearDashboardBanner() {{
+  const existingBanner = el('dash_error_banner');
+  if (existingBanner) existingBanner.remove();
+}}
+function showDashboardBanner(message, kind='warn') {{
+  clearDashboardBanner();
+  const banner = document.createElement('div');
+  banner.id = 'dash_error_banner';
+  const styleMap = {{
+    warn: 'background:#fef3c7;color:#92400e;',
+    err: 'background:#fee2e2;color:#991b1b;',
+    ok: 'background:#dcfce7;color:#166534;'
+  }};
+  banner.style = `${{styleMap[kind] || styleMap.warn}}padding:12px 16px;font-size:14px;margin-bottom:12px;border-radius:12px;`;
+  banner.textContent = message;
+  const wrap = document.querySelector('.wrap');
+  if (wrap) wrap.prepend(banner);
+}}
+async function loadAll() {{
+  const tenant = currentTenant();
+  const days = el('days')?.value || '14';
+  const limit = el('limit')?.value || '20';
+  setText('usage_badge', `${{days}} day window`, 'Selected window');
+  el('lnk_analytics').href = `/dashboard/analytics?tenant_id=${{encodeURIComponent(tenant)}}`;
+  el('lnk_usage').href = `/dashboard/usage?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
+  el('lnk_activity').href = `/dashboard/activity?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
+  el('lnk_chart_data').href = `/dashboard/chart-data?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
+  el('lnk_bookings').href = `/dashboard/bookings?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
+  el('lnk_conversations').href = `/dashboard/conversations?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
+  el('lnk_tenant').href = `/tenant/config?tenant_id=${{encodeURIComponent(tenant)}}`;
+  el('lnk_tenant_ui').href = `/tenant/config/ui?tenant_id=${{encodeURIComponent(tenant)}}`;
+  el('lnk_status').href = `/tenant/status?tenant_id=${{encodeURIComponent(tenant)}}`;
+  el('lnk_overview').href = `/tenant/overview?tenant_id=${{encodeURIComponent(tenant)}}`;
+  clearDashboardBanner();
+
+  const requests = [
+    ['analytics', `/dashboard/analytics?tenant_id=${{encodeURIComponent(tenant)}}`],
+    ['usage', `/dashboard/usage?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`],
+    ['activity', `/dashboard/activity?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`],
+    ['bookings', `/dashboard/bookings?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`],
+    ['conversations', `/dashboard/conversations?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`],
+    ['chartData', `/dashboard/chart-data?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`],
+    ['overview', `/tenant/overview?tenant_id=${{encodeURIComponent(tenant)}}`]
+  ];
+
+  const settled = await Promise.allSettled(requests.map(([_, url]) => fetchJson(url)));
+  const data = {{}};
+  const errors = [];
+  settled.forEach((result, idx) => {{
+    const key = requests[idx][0];
+    if (result.status === 'fulfilled') {{
+      data[key] = result.value;
+    }} else {{
+      data[key] = null;
+      errors.push(`${{key}}: ${{result.reason?.message || result.reason || 'load failed'}}`);
+      console.error('dashboard_block_failed', key, result.reason);
+    }}
+  }});
+
+  const a = data.analytics || {{}};
+  const u = data.usage || {{}};
+  const act = data.activity || {{}};
+  const b = data.bookings || {{}};
+  const c = data.conversations || {{}};
+  const chartData = data.chartData || {{}};
+  const ov = data.overview || {{}};
+
+  try {{ renderOverview(ov); }} catch (err) {{ errors.push(`overview render: ${{err?.message || err}}`); console.error(err); }}
+  setText('m_requests', a?.total_requests ?? u?.total_requests ?? 0);
+  setText('m_bookings', a?.total_bookings ?? u?.total_bookings ?? 0);
+  setText('m_conv', `${{a?.conversion_rate ?? 0}}%`);
+  setText('m_today', a?.today_bookings ?? 0);
+  setText('m_users', u?.unique_users ?? 0);
+  setText('m_reschedules', u?.total_reschedules ?? 0);
+  setText('m_cancelled', u?.total_cancelled ?? 0);
+  const topChannelObj = Array.isArray(u?.channels) && u.channels.length ? u.channels[0] : null;
+  setText('m_channel', topChannelObj?.channel || '—');
+  setText('m_channel_sub', topChannelObj ? `${{topChannelObj.count || 0}} events in selected window` : '', '');
+
+  try {{ renderTrendChart(chartData?.daily || u?.daily || []); }} catch (err) {{ errors.push(`trend chart: ${{err?.message || err}}`); console.error(err); }}
+  try {{ renderChannelChart(chartData?.channels || u?.channels || []); }} catch (err) {{ errors.push(`channel chart: ${{err?.message || err}}`); console.error(err); }}
+  try {{ renderServicesChart(chartData?.top_services || u?.top_services || []); }} catch (err) {{ errors.push(`services chart: ${{err?.message || err}}`); console.error(err); }}
+
+  renderTableRows('#bookings_tbl tbody', b?.items, 5, 'No bookings yet', item => `<td>${{esc(item?.client_name || item?.user_id || '')}}</td><td>${{esc(item?.service || 'unknown')}}</td><td>${{esc(item?.datetime_iso || '')}}</td><td>${{esc(item?.status || '')}}</td><td><span class="muted">${{esc(item?.created_at || '')}}</span></td>`);
+  renderTableRows('#services_tbl tbody', u?.top_services, 2, 'No booked services in selected window', item => `<td>${{esc(item?.service || 'unknown')}}</td><td>${{esc(item?.count ?? 0)}}</td>`);
+  renderTableRows('#activity_tbl tbody', act?.items, 6, 'No activity yet', item => `<td><span class="muted">${{esc(item?.created_at || '')}}</span></td><td>${{esc(item?.type || '')}}</td><td>${{esc(item?.channel || '')}}</td><td>${{esc(item?.user_id || '')}}</td><td>${{esc(item?.message || '')}}</td><td>${{esc(item?.status || '')}}</td>`);
+  renderTableRows('#daily_tbl tbody', u?.daily, 4, 'No daily usage yet', item => `<td>${{esc(item?.date || '')}}</td><td>${{esc(item?.requests ?? 0)}}</td><td>${{esc(item?.bookings ?? 0)}}</td><td>${{esc(item?.cancelled ?? 0)}}</td>`);
+  renderTableRows('#conv_tbl tbody', c?.items, 6, 'No conversations yet', item => `<td><span class="muted">${{esc(item?.created_at || '')}}</span></td><td>${{esc(item?.user_id || '')}}</td><td>${{esc(item?.channel || '')}}</td><td>${{esc(item?.user_message || '')}}</td><td>${{esc(item?.ai_reply || '')}}</td><td>${{esc(item?.status || '')}}</td>`);
+
+  if (errors.length) {{
+    showDashboardBanner(`Dashboard loaded with partial issues: ${{errors.join(' | ')}}`, 'warn');
+  }}
+}}
+document.addEventListener('DOMContentLoaded', loadAll);
 </script>
 </body>
 </html>
-    """.replace("__TENANT_ID__", tenant_id)
+    """
     return HTMLResponse(content=html)
 
 
@@ -7074,10 +7282,17 @@ button.secondary {{ background:#fff; color:#111827; border:1px solid #d1d5db; }}
   <div class="card">
     <h2>Services and rules</h2>
     <div class="grid">
-      <div><label>Services LV</label><textarea id="services_lv"></textarea></div>
-      <div><label>Services RU</label><textarea id="services_ru"></textarea></div>
-      <div class="full"><label>Services EN</label><textarea id="services_en"></textarea></div>
-      <div class="full"><label>Service catalog JSON</label><textarea id="service_catalog_json" placeholder='[{{"key":"mens_haircut","name_lv":"vīriešu frizūra","name_ru":"мужская стрижка","name_en":"men&#39;s haircut","duration_min":30,"aliases_lv":["matu griezums"],"aliases_ru":["стрижка"],"aliases_en":["haircut"]}}]'></textarea></div>
+      <div class="full"><label>Services / Pakalpojumi</label><textarea id="service_lines" placeholder="konsultācija
+masāža
+diagnostika"></textarea><div class="small">Client-friendly mode: one service per line or comma-separated. Repliq converts this to service catalog automatically.</div></div>
+      <details class="full"><summary class="small">Advanced / Developer mode</summary>
+        <div class="grid" style="margin-top:12px;">
+          <div><label>Services LV</label><textarea id="services_lv"></textarea></div>
+          <div><label>Services RU</label><textarea id="services_ru"></textarea></div>
+          <div class="full"><label>Services EN</label><textarea id="services_en"></textarea></div>
+          <div class="full"><label>Service catalog JSON</label><textarea id="service_catalog_json" placeholder='[{{"key":"consultation","name_lv":"konsultācija","name_ru":"konsultācija","name_en":"konsultācija","duration_min":30}}]'></textarea></div>
+        </div>
+      </details>
       <div class="full"><label>Service account JSON</label><textarea id="service_account_json" placeholder='{{"type":"service_account",...}}'></textarea></div>
       <div><label>Weekly hours JSON</label><textarea id="weekly_hours_json"></textarea></div>
       <div><label>Days off JSON</label><textarea id="days_off_json"></textarea></div>
@@ -7130,6 +7345,7 @@ async function loadConfig() {{
   document.getElementById('language').value = t.language || 'lv';
   document.getElementById('work_start').value = t.work_start || '';
   document.getElementById('work_end').value = t.work_end || '';
+  document.getElementById('service_lines').value = data.service_lines || t.services_lv || '';
   document.getElementById('services_lv').value = t.services_lv || '';
   document.getElementById('services_ru').value = t.services_ru || '';
   document.getElementById('services_en').value = t.services_en || '';
@@ -7155,6 +7371,7 @@ async function saveConfig() {{
     language: document.getElementById('language').value || null,
     work_start: document.getElementById('work_start').value || null,
     work_end: document.getElementById('work_end').value || null,
+    service_lines: document.getElementById('service_lines').value || null,
     services_lv: document.getElementById('services_lv').value || null,
     services_ru: document.getElementById('services_ru').value || null,
     services_en: document.getElementById('services_en').value || null,
@@ -7209,6 +7426,68 @@ def _safe_parse_json_text(value: Any):
     except Exception:
         return None
 
+
+
+def tenant_service_lines_text(tenant: Dict[str, Any], lang: str = "lv") -> str:
+    """Human-friendly services list for dashboard/config UI.
+
+    One service per line. This is what the client edits; backend keeps
+    service_catalog_json internally for parsing, aliases and calendar summaries.
+    """
+    tenant = tenant or {}
+    catalog = tenant_service_catalog(tenant)
+    if catalog:
+        names = [service_display_name(item, lang) for item in catalog]
+        cleaned = [str(x).strip() for x in names if str(x).strip()]
+        if cleaned:
+            return "\n".join(cleaned)
+    raw = tenant_services_for_lang(tenant, lang)
+    parts = [x.strip() for x in re.split(r"[\n,;]+", str(raw or "")) if x.strip()]
+    return "\n".join(parts)
+
+def parse_human_service_lines(value: Any) -> List[str]:
+    txt = str(value or "").strip()
+    if not txt:
+        return []
+    # Accept both formats: one per line or comma/semicolon separated.
+    # This keeps the client UI human-friendly and hides JSON.
+    raw_parts = []
+    for line in txt.splitlines():
+        raw_parts.extend(re.split(r"[,;]+", line))
+    out: List[str] = []
+    seen = set()
+    for part in raw_parts:
+        name = re.sub(r"\s+", " ", str(part or "").strip())
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(name)
+    return out
+
+def build_service_catalog_from_names(names: List[str], duration_min: int = APPT_MINUTES) -> List[Dict[str, Any]]:
+    catalog: List[Dict[str, Any]] = []
+    for name in names:
+        clean = re.sub(r"\s+", " ", str(name or "").strip())
+        if not clean:
+            continue
+        catalog.append({
+            "key": _slugify_service_key(clean),
+            "name_lv": clean,
+            "name_ru": clean,
+            "name_en": clean,
+            "duration_min": max(5, int(duration_min or APPT_MINUTES)),
+            "aliases_lv": [clean],
+            "aliases_ru": [clean],
+            "aliases_en": [clean],
+        })
+    return catalog
+
+def service_names_csv(names: List[str]) -> str:
+    return ", ".join([str(x).strip() for x in names if str(x).strip()])
+
 def _sync_weekly_hours_with_fallback_bounds(
     weekly_hours_value: Any,
     work_start: Optional[str],
@@ -7242,6 +7521,7 @@ class TenantConfigUpdateRequest(BaseModel):
     services_lv: Optional[str] = None
     services_ru: Optional[str] = None
     services_en: Optional[str] = None
+    service_lines: Optional[str] = None
     weekly_hours_json: Optional[str] = None
     days_off_json: Optional[str] = None
     breaks_json: Optional[str] = None
@@ -7487,6 +7767,7 @@ def tenant_config(tenant_id: str = TENANT_ID_DEFAULT):
         routes = []
     return {
         "tenant": _jsonable_tenant_view(tenant),
+        "service_lines": tenant_service_lines_text(tenant, get_lang(tenant.get("language") or "lv")),
         "resolved_settings": settings,
         "phone_routes": routes,
         "onboarding": onboarding_status_payload(tenant),
@@ -7525,6 +7806,17 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
 
     add_field("work_start", clean_work_start)
     add_field("work_end", clean_work_end)
+    service_names_from_lines = parse_human_service_lines(payload.service_lines) if payload.service_lines is not None else []
+    if service_names_from_lines:
+        services_csv_value = service_names_csv(service_names_from_lines)
+        # Human-friendly services editor is the source of truth in the client UI.
+        # It intentionally overrides stale advanced fields so the client never
+        # has to edit JSON to fix service names.
+        payload.services_lv = services_csv_value
+        payload.services_ru = services_csv_value
+        payload.services_en = services_csv_value
+        payload.service_catalog_json = json.dumps(build_service_catalog_from_names(service_names_from_lines), ensure_ascii=False, indent=2)
+
     add_field("services_lv", payload.services_lv)
     add_field("services_ru", payload.services_ru)
     add_field("services_en", payload.services_en)
@@ -7583,7 +7875,6 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
     if new_phone:
         upsert_phone_route(new_phone, tenant_id)
 
-    clear_tenant_runtime_config_cache(tenant_id)
     updated = get_tenant(tenant_id)
     return {
         "status": "ok",
@@ -7594,152 +7885,6 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
         "plan_meta": tenant_plan_meta(updated),
         "links": onboarding_links_payload(tenant_id),
     }
-
-
-
-# -------------------------
-# STAGE 17 HOTFIX: Tenant Runtime Config endpoints
-# -------------------------
-_TENANT_RUNTIME_CONFIG_CACHE: Dict[str, Dict[str, Any]] = {}
-
-
-def _runtime_config_cache_key(tenant: Dict[str, Any], lang: str) -> str:
-    tenant_id = str((tenant or {}).get("_id") or (tenant or {}).get("id") or "").strip()
-    return f"{tenant_id}:{get_lang(lang)}"
-
-
-def clear_tenant_runtime_config_cache(tenant_id: str = "") -> None:
-    tenant_id = str(tenant_id or "").strip()
-    if not tenant_id:
-        _TENANT_RUNTIME_CONFIG_CACHE.clear()
-        return
-    prefix = f"{tenant_id}:"
-    for key in list(_TENANT_RUNTIME_CONFIG_CACHE.keys()):
-        if key.startswith(prefix):
-            _TENANT_RUNTIME_CONFIG_CACHE.pop(key, None)
-
-
-def _runtime_config_cache_set(tenant: Dict[str, Any], lang: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    key = _runtime_config_cache_key(tenant, lang)
-    if key and not key.startswith(":"):
-        _TENANT_RUNTIME_CONFIG_CACHE[key] = payload
-    return payload
-
-
-def tenant_language_config(tenant: Dict[str, Any]) -> Dict[str, Any]:
-    primary = get_lang((tenant or {}).get("language") or "lv")
-    enabled = ["lv", "ru", "en"]
-    return {
-        "primary": primary,
-        "enabled": enabled,
-        "fallback": "en" if primary != "en" else "lv",
-    }
-
-
-def tenant_runtime_config(tenant: Dict[str, Any], lang: str = "", use_cache: bool = True) -> Dict[str, Any]:
-    tenant = normalize_tenant_saas_fields(tenant or {})
-    effective_lang = get_lang(lang or tenant.get("language") or "lv")
-    cache_key = _runtime_config_cache_key(tenant, effective_lang)
-    if use_cache and cache_key in _TENANT_RUNTIME_CONFIG_CACHE:
-        return _TENANT_RUNTIME_CONFIG_CACHE[cache_key]
-
-    settings = tenant_settings(tenant, effective_lang)
-    catalog = tenant_service_catalog(tenant)
-    aliases = ensure_default_barbershop_aliases(
-        catalog,
-        merged_service_alias_map(catalog, tenant, effective_lang),
-        effective_lang,
-    )
-    business_memory = tenant_business_memory(tenant, effective_lang)
-    tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip()
-    payload = {
-        "tenant_id": tenant_id,
-        "lang": effective_lang,
-        "language": tenant_language_config(tenant),
-        "business": {
-            "name": settings.get("biz_name"),
-            "address": settings.get("addr"),
-            "type": settings.get("business_type"),
-            "timezone": tenant.get("timezone") or "Europe/Riga",
-            "phone_number": tenant.get("phone_number") or tenant.get("phone") or "",
-        },
-        "booking": {
-            "calendar_id": settings.get("calendar_id"),
-            "calendar_configured": calendar_is_configured(settings.get("calendar_id")),
-            "service_account_configured": tenant_has_service_account_json(tenant),
-            "work_start": settings.get("work_start"),
-            "work_end": settings.get("work_end"),
-            "rules": settings.get("business_rules") or {},
-        },
-        "services": {
-            "catalog": catalog,
-            "summary": service_catalog_summary(catalog, effective_lang),
-            "aliases": aliases,
-            "hint": settings.get("services_hint"),
-            "by_lang": {
-                "lv": str(tenant.get("services_lv") or "").strip(),
-                "ru": str(tenant.get("services_ru") or "").strip(),
-                "en": str(tenant.get("services_en") or "").strip(),
-            },
-        },
-        "memory": {
-            "text": business_memory,
-            "has_memory": bool(str(business_memory or "").strip()),
-            "by_lang": {
-                "lv": str(tenant.get("business_memory_lv") or tenant.get("faq_lv") or "").strip(),
-                "ru": str(tenant.get("business_memory_ru") or tenant.get("faq_ru") or "").strip(),
-                "en": str(tenant.get("business_memory_en") or tenant.get("faq_en") or "").strip(),
-            },
-        },
-        "saas": {
-            "plan": tenant_plan_meta(tenant).get("plan"),
-            "subscription_status": tenant.get("subscription_status"),
-            "effective_status": effective_subscription_status(tenant),
-            "usage": tenant_usage_snapshot(tenant),
-        },
-        "readiness": tenant_ready_status_payload(tenant),
-        "links": onboarding_links_payload(tenant_id) if tenant_id else {},
-    }
-    return _runtime_config_cache_set(tenant, effective_lang, payload) if use_cache else payload
-
-
-def tenant_runtime_config_public_view(config: Dict[str, Any]) -> Dict[str, Any]:
-    cfg = dict(config or {})
-    services = dict(cfg.get("services") or {})
-    services.pop("aliases", None)
-    cfg["services"] = services
-    booking = dict(cfg.get("booking") or {})
-    booking.pop("calendar_id", None)
-    cfg["booking"] = booking
-    return cfg
-
-
-@app.get("/tenant/runtime-config")
-def tenant_runtime_config_endpoint(tenant_id: str = TENANT_ID_DEFAULT, lang: str = ""):
-    tenant = get_tenant_or_404((tenant_id or "").strip() or TENANT_ID_DEFAULT)
-    effective_lang = get_lang(lang or tenant.get("language") or "lv")
-    return tenant_runtime_config_public_view(tenant_runtime_config(tenant, effective_lang, use_cache=False))
-
-
-@app.get("/tenant/runtime-config/debug")
-def tenant_runtime_config_debug_endpoint(tenant_id: str = TENANT_ID_DEFAULT, lang: str = ""):
-    tenant = get_tenant_or_404((tenant_id or "").strip() or TENANT_ID_DEFAULT)
-    effective_lang = get_lang(lang or tenant.get("language") or "lv")
-    return tenant_runtime_config(tenant, effective_lang, use_cache=False)
-
-
-@app.post("/tenant/runtime-config/refresh")
-def tenant_runtime_config_refresh(tenant_id: str = TENANT_ID_DEFAULT):
-    tenant_id = (tenant_id or "").strip() or TENANT_ID_DEFAULT
-    clear_tenant_runtime_config_cache(tenant_id)
-    tenant = get_tenant_or_404(tenant_id)
-    effective_lang = get_lang(tenant.get("language") or "lv")
-    return {
-        "status": "ok",
-        "tenant_id": tenant_id,
-        "runtime_config": tenant_runtime_config_public_view(tenant_runtime_config(tenant, effective_lang, use_cache=False)),
-    }
-
 
 @app.get("/tenant/routes")
 def tenant_routes(tenant_id: str = TENANT_ID_DEFAULT):
