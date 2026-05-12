@@ -1141,12 +1141,11 @@ def _extract_price_from_line(line: str) -> Optional[str]:
         r"(€\s*\d+(?:[\.,]\d{1,2})?)",
         r"(\d+(?:[\.,]\d{1,2})?\s*€)",
         r"(\d+(?:[\.,]\d{1,2})?\s*eur)",
-        r"(\d+(?:[\.,]\d{1,2})?\s*eiro)",
     ]
     for pat in patterns:
         m = re.search(pat, src, flags=re.IGNORECASE)
         if m:
-            return m.group(1).replace("eur", "EUR").replace("Eur", "EUR")
+            return m.group(1).replace("eur", "EUR")
     return None
 
 
@@ -1194,93 +1193,6 @@ def barber_service_prompt(lang: str, catalog: List[Dict[str, Any]]) -> str:
     return f"Uz kādu pakalpojumu vēlaties pierakstīties? Piemēram: {options}." if options else "Uz kādu pakalpojumu vēlaties pierakstīties?"
 
 
-
-def _phrase_any(low: str, markers: List[str]) -> bool:
-    low = _normalize_phrase_text(low)
-    for marker in markers:
-        marker_norm = _normalize_phrase_text(marker)
-        if marker_norm and marker_norm in low:
-            return True
-    return False
-
-
-def _catalog_services_sentence(lang: str, service_catalog: List[Dict[str, Any]], max_items: int = 8) -> str:
-    names: List[str] = []
-    for item in service_catalog[:max_items]:
-        display = service_display_name(item, lang)
-        if display and display not in names:
-            names.append(display)
-    if not names:
-        return ""
-    if len(names) == 1:
-        return names[0]
-    if lang == "ru":
-        return ", ".join(names[:-1]) + " или " + names[-1]
-    if lang == "en":
-        return ", ".join(names[:-1]) + " or " + names[-1]
-    return ", ".join(names[:-1]) + " vai " + names[-1]
-
-
-def _memory_price_for_service(memory: str, service_item: Optional[Dict[str, Any]], lang: str = "lv") -> Optional[str]:
-    if not memory or not service_item:
-        return None
-    line = _memory_line_for_service(memory, service_item)
-    price = _extract_price_from_line(line or "")
-    if price:
-        return price
-
-    service_terms = [
-        str(service_item.get("key") or ""),
-        str(service_item.get("name_lv") or ""),
-        str(service_item.get("name_ru") or ""),
-        str(service_item.get("name_en") or ""),
-    ]
-    service_terms += list(service_item.get("aliases_lv") or [])
-    service_terms += list(service_item.get("aliases_ru") or [])
-    service_terms += list(service_item.get("aliases_en") or [])
-    terms = [x.strip().lower() for x in service_terms if str(x).strip()]
-
-    for line in _line_candidates_from_memory(memory):
-        low = line.lower()
-        if any(term and term in low for term in terms):
-            price = _extract_price_from_line(line)
-            if price:
-                return price
-    return None
-
-
-def _generic_memory_answer(msg: str, lang: str, business_memory: str) -> Optional[str]:
-    low = _normalize_phrase_text(msg)
-    if not business_memory or not low:
-        return None
-    lines = _line_candidates_from_memory(business_memory)
-    keyword_hits: List[str] = []
-    for line in lines:
-        line_low = _normalize_phrase_text(line)
-        if not line_low:
-            continue
-        if any(word and word in line_low for word in low.split() if len(word) >= 4):
-            keyword_hits.append(line)
-    if keyword_hits:
-        best = sorted(keyword_hits, key=len)[0]
-        if len(best) <= 280:
-            return best
-    return None
-
-
-def _is_generic_price_question_without_service(msg: str, service_item: Optional[Dict[str, Any]]) -> bool:
-    low = _normalize_phrase_text(msg)
-    if not low or service_item:
-        return False
-    generic_forms = {
-        "cik maksā", "cik maksa", "cik tas maksā", "cik tas maksa", "cik cena", "kāda cena", "kada cena",
-        "сколько стоит", "какая цена", "цена", "стоимость",
-        "how much", "how much does it cost", "what is the price", "price"
-    }
-    return any(form in low for form in generic_forms)
-
-
-
 def try_barbershop_faq(
     msg: str,
     lang: str,
@@ -1290,80 +1202,44 @@ def try_barbershop_faq(
     service_aliases: Dict[str, str],
     business_memory: str,
 ) -> Optional[Dict[str, Any]]:
-    # Historical name kept for compatibility. This is now a generic natural FAQ router.
+    business_type = str(tenant.get("business_type") or "barbershop").strip().lower()
+    if business_type != "barbershop":
+        return None
+
     low = (msg or "").strip().lower()
     if not low:
         return None
 
-    price_markers = [
-        "цена", "стоимость", "сколько стоит", "сколько будет стоить", "прайс",
-        "price", "pricing", "cost", "how much", "how much is", "how much does",
-        "cena", "cenrādis", "cenradis", "cik maksā", "cik maksa", "cik izmaksā", "cik izmaksa",
-        "kāda cena", "kada cena", "cik maksas", "maksā", "maksa"
-    ]
-    location_markers = [
-        "where", "address", "location", "where are you", "адрес", "где вы", "где находитесь",
-        "kur jūs", "kur jus", "adrese", "kur atrodaties", "atrašanās vieta", "atrasanas vieta"
-    ]
-    services_markers = [
-        "какие услуги", "список услуг", "что делаете", "что есть", "услуги", "прайс услуг",
-        "services", "service list", "what services", "what do you offer",
-        "pakalpojumi", "pakalpojumu saraksts", "kādi pakalpojumi", "kadi pakalpojumi",
-        "ko jūs darāt", "ko jus darat", "ko piedāvājat", "ko piedavajat", "kas jums ir"
-    ]
-    duration_markers = [
-        "сколько по времени", "сколько длится", "длительность",
-        "how long", "duration", "how much time",
-        "cik ilgi", "ilgums", "cik aizņem", "cik aiznem"
-    ]
-    hours_markers = [
-        "darba laiks", "cikos strādājat", "cikos stradajat", "kad strādājat", "kad stradajat",
-        "working hours", "opening hours", "when are you open",
-        "часы работы", "когда работаете", "во сколько работаете"
-    ]
+    price_markers = ["цена", "сколько стоит", "price", "how much", "cena", "cik maksā", "cik maksa"]
+    location_markers = ["where", "address", "адрес", "где вы", "где находитесь", "kur jūs", "adrese", "kur atrodaties"]
+    services_markers = ["какие услуги", "что делаете", "services", "what services", "pakalpojumi", "ko jūs darāt", "ko jus darat"]
+    duration_markers = ["сколько по времени", "сколько длится", "how long", "duration", "cik ilgi", "ilgums"]
 
-    service_key = canonical_service_key_from_text(low, service_aliases)
-    service_item = get_service_item_by_key(service_catalog, service_key) if service_key else extract_service_from_text(low, service_catalog, lang)
-
-    if _phrase_any(low, hours_markers):
-        if lang == "ru":
-            text = f"Мы работаем с {settings.get('work_start')} до {settings.get('work_end')}."
-        elif lang == "en":
-            text = f"We are open from {settings.get('work_start')} to {settings.get('work_end')}."
-        else:
-            text = f"Mēs strādājam no {settings.get('work_start')} līdz {settings.get('work_end')}."
-        return {"status": "info", "reply_voice": text, "msg_out": text, "lang": lang, "preserve_text": True}
-
-    if _phrase_any(low, location_markers):
+    if any(x in low for x in location_markers):
         addr = str(settings.get("addr") or tenant.get("address") or "").strip()
         if not addr:
-            if lang == "ru":
-                text = "Адрес пока не указан в настройках."
-            elif lang == "en":
-                text = "The address is not specified in the business settings yet."
-            else:
-                text = "Adrese pagaidām nav norādīta uzņēmuma iestatījumos."
-        elif lang == "ru":
+            return None
+        if lang == "ru":
             text = f"Мы находимся по адресу: {addr}."
         elif lang == "en":
             text = f"We are located at: {addr}."
         else:
             text = f"Mēs atrodamies: {addr}."
-        return {"status": "info", "reply_voice": text, "msg_out": text, "lang": lang, "preserve_text": True}
+        return {"status": "info", "reply_voice": text, "msg_out": text, "lang": lang}
 
-    if _phrase_any(low, services_markers):
-        options = _catalog_services_sentence(lang, service_catalog, max_items=8)
-        if not options:
-            options = str(settings.get("services_hint") or "").strip()
+    if any(x in low for x in services_markers):
+        options = barber_service_options_text(lang, service_catalog, max_items=4)
         if lang == "ru":
-            text = f"Доступные услуги: {options}. Если хотите, могу сразу помочь с записью." if options else "Список услуг пока не заполнен."
+            text = f"Обычно у нас доступны такие услуги: {options}. Если хотите, могу сразу помочь с записью."
         elif lang == "en":
-            text = f"Available services: {options}. If you want, I can help you book right away." if options else "The service list is not filled in yet."
+            text = f"We usually offer services such as {options}. If you want, I can help you book right away."
         else:
-            text = f"Pieejamie pakalpojumi: {options}. Ja vēlaties, varu uzreiz palīdzēt ar pierakstu." if options else "Pakalpojumu saraksts pagaidām nav aizpildīts."
-        return {"status": "info", "reply_voice": text, "msg_out": text, "lang": lang, "preserve_text": True}
+            text = f"Parasti pie mums ir pieejami šādi pakalpojumi: {options}. Ja vēlaties, varu uzreiz palīdzēt ar pierakstu."
+        return {"status": "info", "reply_voice": text, "msg_out": text, "lang": lang}
 
-    if _phrase_any(low, duration_markers):
+    if any(x in low for x in duration_markers):
+        service_key = canonical_service_key_from_text(low, service_aliases)
+        service_item = get_service_item_by_key(service_catalog, service_key) if service_key else extract_service_from_text(low, service_catalog, lang)
         if service_item:
             duration = service_duration_min(service_item)
             display = service_display_name(service_item, lang)
@@ -1373,20 +1249,14 @@ def try_barbershop_faq(
                 text = f"{display} usually takes about {duration} minutes."
             else:
                 text = f"{display} parasti aizņem apmēram {duration} minūtes."
-        else:
-            if lang == "ru":
-                text = "Уточните, пожалуйста, по какой услуге интересует длительность."
-            elif lang == "en":
-                text = "Please specify which service duration you would like to know."
-            else:
-                text = "Lūdzu, precizējiet, par kuru pakalpojumu vēlaties zināt ilgumu."
-        return {"status": "info", "reply_voice": text, "msg_out": text, "lang": lang, "preserve_text": True}
+            return {"status": "info", "reply_voice": text, "msg_out": text, "lang": lang}
 
-    if _phrase_any(low, price_markers):
-        if not service_item and len(service_catalog) == 1:
-            service_item = service_catalog[0]
+    if any(x in low for x in price_markers):
+        service_key = canonical_service_key_from_text(low, service_aliases)
+        service_item = get_service_item_by_key(service_catalog, service_key) if service_key else extract_service_from_text(low, service_catalog, lang)
         if service_item:
-            price = _memory_price_for_service(business_memory, service_item, lang)
+            line = _memory_line_for_service(business_memory, service_item)
+            price = _extract_price_from_line(line or "")
             display = service_display_name(service_item, lang)
             if price:
                 if lang == "ru":
@@ -1398,28 +1268,12 @@ def try_barbershop_faq(
             else:
                 duration = service_duration_min(service_item)
                 if lang == "ru":
-                    text = f"По услуге {display} цена пока не указана в настройках. Обычно услуга занимает около {duration} минут."
+                    text = f"По услуге {display} лучше уточнить цену у мастера. По времени это обычно около {duration} минут."
                 elif lang == "en":
-                    text = f"The price for {display} is not specified in the settings yet. It usually takes about {duration} minutes."
+                    text = f"For {display}, it is best to confirm the price with the barber. It usually takes about {duration} minutes."
                 else:
-                    text = f"Pakalpojumam {display} cena pagaidām nav norādīta iestatījumos. Parasti tas aizņem apmēram {duration} minūtes."
-        else:
-            options = _catalog_services_sentence(lang, service_catalog, max_items=5)
-            if lang == "ru":
-                text = f"По какой услуге хотите узнать цену? Доступные услуги: {options}." if options else "По какой услуге хотите узнать цену?"
-            elif lang == "en":
-                text = f"Which service price would you like to know? Available services: {options}." if options else "Which service price would you like to know?"
-            else:
-                text = f"Par kuru pakalpojumu vēlaties uzzināt cenu? Pieejamie pakalpojumi: {options}." if options else "Par kuru pakalpojumu vēlaties uzzināt cenu?"
-        result = {"status": "info", "reply_voice": text, "msg_out": text, "lang": lang, "preserve_text": True}
-        if _is_generic_price_question_without_service(low, service_item):
-            result["faq_price_clarify"] = True
-        return result
-
-    if any(ch in low for ch in ["?", "？"]) or _phrase_any(low, ["vai", "как", "kā", "ka", "what", "что", "kur", "где"]):
-        memory_answer = _generic_memory_answer(low, lang, business_memory)
-        if memory_answer:
-            return {"status": "info", "reply_voice": memory_answer, "msg_out": memory_answer, "lang": lang, "preserve_text": True}
+                    text = f"Par pakalpojumu {display} cenu vislabāk precizēt pie meistara. Parasti tas aizņem apmēram {duration} minūtes."
+            return {"status": "info", "reply_voice": text, "msg_out": text, "lang": lang}
 
     return None
 
@@ -1433,14 +1287,7 @@ def faq_with_flow_followup(
     active_flow: bool,
 ) -> Dict[str, Any]:
     result = dict(faq_result or {})
-    result["preserve_text"] = True
     if not active_flow:
-        return result
-
-    # Do not aggressively push booking after informational FAQ unless there is real booking context.
-    has_real_booking_context = bool(c.get("service") or c.get("datetime_iso") or (pending or {}).get("awaiting_time_date_iso") or (pending or {}).get("confirm_slot_iso") or get_offered_slots(pending or {}))
-    if not has_real_booking_context:
-        result["status"] = "info"
         return result
 
     followup = prompt_for_state(lang, c, pending or {}, service_catalog)
@@ -1455,30 +1302,11 @@ def faq_with_flow_followup(
     result["reply_voice"] = combined
     result["lang"] = lang
     result["flow_preserved"] = True
-    result["preserve_text"] = True
     return result
 
 
 
 
-
-
-@app.get("/dev/faq-router-test")
-def dev_faq_router_test(tenant_id: str = "clinic_demo", q: str = "kādi pakalpojumi jums ir?", lang: str = "lv"):
-    tenant = get_tenant_or_404(tenant_id)
-    lang = get_lang(lang)
-    settings = tenant_settings(tenant, lang)
-    catalog = tenant_service_catalog(tenant)
-    aliases = ensure_default_barbershop_aliases(catalog, merged_service_alias_map(catalog, tenant, lang), lang)
-    memory = tenant_business_memory(tenant, lang)
-    result = try_barbershop_faq(q, lang, tenant, settings, catalog, aliases, memory)
-    return {
-        "tenant_id": tenant_id,
-        "query": q,
-        "matched": bool(result),
-        "result": result,
-        "services": [service_display_name(x, lang) for x in catalog],
-    }
 
 
 def ensure_lang_update(tenant_id: str, user_key: str, c: Dict[str, Any], lang: str) -> Dict[str, Any]:
@@ -1627,10 +1455,206 @@ def log_call_event(
     except Exception as e:
         log.error("call_log_write_failed tenant_id=%s user_id=%s err=%s", tenant_id, user_id, e)
 
+
+# -------------------------
+# STAGE 21 — CONVERSATIONAL AUDIT FOUNDATION
+# -------------------------
+DIALOGUE_TEST_MATRIX: List[Dict[str, Any]] = [
+    {"id": "lv_single_booking_full", "category": "single_message_booking", "lang": "lv", "message": "labdien! Es gribu pierakstīties uz konsultāciju uz 16 maiju 16:00", "expected": ["booking", "service", "date", "time"]},
+    {"id": "lv_services_faq", "category": "faq_services", "lang": "lv", "message": "kādi pakalpojumi jums ir?", "expected": ["info", "services"]},
+    {"id": "lv_price_generic", "category": "faq_price", "lang": "lv", "message": "cik maksā?", "expected": ["info", "price_clarify"]},
+    {"id": "lv_price_specific", "category": "faq_price", "lang": "lv", "message": "cik maksā konsultācija?", "expected": ["info", "price"]},
+    {"id": "lv_today_free", "category": "natural_availability", "lang": "lv", "message": "hej, jums šodien ir kas brīvs?", "expected": ["availability", "natural"]},
+    {"id": "lv_after_work", "category": "time_window", "lang": "lv", "message": "var pēc darba?", "expected": ["time_window", "evening"]},
+    {"id": "ru_single_booking", "category": "single_message_booking", "lang": "ru", "message": "Здравствуйте, можно записаться на консультацию завтра в 15:00?", "expected": ["booking", "service", "date", "time"]},
+    {"id": "ru_price", "category": "faq_price", "lang": "ru", "message": "сколько стоит консультация?", "expected": ["info", "price"]},
+    {"id": "en_single_booking", "category": "single_message_booking", "lang": "en", "message": "Hi, I want to book a consultation tomorrow at 3 pm", "expected": ["booking", "service", "date", "time"]},
+    {"id": "mixed_lang", "category": "language_switch", "lang": "lv", "message": "Labdien, можно консультацию завтра?", "expected": ["booking", "mixed_language"]},
+    {"id": "typo_booking", "category": "typo", "lang": "lv", "message": "gribetuu konsulatciju rit 15", "expected": ["booking", "typo_tolerant"]},
+    {"id": "interrupt_price", "category": "faq_during_booking", "lang": "lv", "message": "a cik tas maksā?", "expected": ["info", "preserve_flow"]},
+]
+
+
+def ensure_dialogue_audit_table() -> None:
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS dialogue_audit_events (
+                    id SERIAL PRIMARY KEY,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    tenant_id TEXT,
+                    user_id TEXT,
+                    channel TEXT,
+                    source TEXT,
+                    lang TEXT,
+                    state_before TEXT,
+                    state_after TEXT,
+                    intent TEXT,
+                    status TEXT,
+                    raw_text TEXT,
+                    ai_reply TEXT,
+                    score INTEGER,
+                    flags_json JSONB,
+                    meta_json JSONB
+                )
+            """))
+    except Exception as e:
+        log.error("ensure_dialogue_audit_table_failed err=%s", e)
+
+
+def dialogue_flags_for_turn(raw_text: str, result: Dict[str, Any], conv_before: Optional[Dict[str, Any]], conv_after: Optional[Dict[str, Any]]) -> List[str]:
+    raw = str(raw_text or "").strip()
+    low = _normalize_phrase_text(raw)
+    reply = str((result or {}).get("msg_out") or (result or {}).get("reply_voice") or "").strip()
+    reply_low = _normalize_phrase_text(reply)
+    status = str((result or {}).get("status") or "").strip().lower()
+    before_state = conversation_state(conv_before or {})
+    after_state = conversation_state(conv_after or {})
+    flags: List[str] = []
+
+    if not reply:
+        flags.append("empty_reply")
+    if status in {"booking_failed", "recovery", "blocked"}:
+        flags.append(f"status_{status}")
+    if len(reply) > 420:
+        flags.append("reply_too_long")
+    if reply_low and any(reply_low.count(p) >= 2 for p in ["uz kuru", "kurš datums", "kuru dienu", "на какую", "which service"]):
+        flags.append("possible_repetition")
+    if any(x in low for x in ["cik maksa", "cik maksā", "сколько стоит", "price", "how much"]) and after_state == STATE_AWAITING_DATE:
+        flags.append("faq_price_to_date_collision")
+    if any(x in low for x in ["pakalpojumi", "услуги", "services"]) and after_state in {STATE_AWAITING_DATE, STATE_AWAITING_TIME, STATE_AWAITING_CONFIRM}:
+        flags.append("faq_services_started_booking")
+    if before_state != STATE_NEW and after_state == STATE_NEW and status not in {"booked", "cancelled", "info", "greeting"}:
+        flags.append("unexpected_state_reset")
+    if raw and len(raw.split()) >= 7 and after_state == STATE_AWAITING_SERVICE:
+        flags.append("long_message_missing_service")
+    if has_date_reference(raw) and has_explicit_time(raw) and after_state in {STATE_AWAITING_SERVICE, STATE_AWAITING_DATE}:
+        flags.append("single_message_missing_date_or_time")
+    if str((result or {}).get("lang") or "").strip() and str((conv_after or {}).get("lang") or "").strip():
+        if get_lang((result or {}).get("lang")) != get_lang((conv_after or {}).get("lang")):
+            flags.append("language_mismatch")
+    if reply.lower().startswith(("sure", "great", "okay")) and get_lang((result or {}).get("lang")) == "lv":
+        flags.append("english_leak_in_lv")
+    return sorted(set(flags))
+
+
+def dialogue_quality_score(flags: List[str], result: Dict[str, Any]) -> int:
+    score = 100
+    penalties = {
+        "empty_reply": 40,
+        "status_booking_failed": 30,
+        "status_recovery": 20,
+        "status_blocked": 15,
+        "reply_too_long": 10,
+        "possible_repetition": 15,
+        "faq_price_to_date_collision": 35,
+        "faq_services_started_booking": 35,
+        "unexpected_state_reset": 25,
+        "long_message_missing_service": 25,
+        "single_message_missing_date_or_time": 30,
+        "language_mismatch": 20,
+        "english_leak_in_lv": 30,
+    }
+    for flag in flags:
+        score -= penalties.get(flag, 8)
+    return max(0, min(100, score))
+
+
+def record_dialogue_audit_event(
+    tenant_id: str,
+    user_id: str,
+    channel: str,
+    source: str,
+    raw_text: str,
+    result: Dict[str, Any],
+    conv_before: Optional[Dict[str, Any]],
+    conv_after: Optional[Dict[str, Any]],
+) -> None:
+    try:
+        ensure_dialogue_audit_table()
+        flags = dialogue_flags_for_turn(raw_text, result, conv_before, conv_after)
+        score = dialogue_quality_score(flags, result)
+        status = str((result or {}).get("status") or "").strip() or "unknown"
+        intent = infer_intent_label(raw_text, status, conv_after or conv_before or {})
+        payload_meta = {
+            "service": (conv_after or {}).get("service"),
+            "datetime_iso": (conv_after or {}).get("datetime_iso"),
+            "pending": (conv_after or {}).get("pending"),
+        }
+        with engine.begin() as conn:
+            conn.execute(text("""
+                INSERT INTO dialogue_audit_events
+                (tenant_id, user_id, channel, source, lang, state_before, state_after, intent, status, raw_text, ai_reply, score, flags_json, meta_json)
+                VALUES
+                (:tenant_id, :user_id, :channel, :source, :lang, :state_before, :state_after, :intent, :status, :raw_text, :ai_reply, :score, CAST(:flags_json AS JSONB), CAST(:meta_json AS JSONB))
+            """), {
+                "tenant_id": (tenant_id or "").strip() or TENANT_ID_DEFAULT,
+                "user_id": norm_user_key(user_id),
+                "channel": (channel or "").strip().lower() or "unknown",
+                "source": (source or "runtime").strip().lower() or "runtime",
+                "lang": get_lang((result or {}).get("lang") or (conv_after or {}).get("lang") or "lv"),
+                "state_before": conversation_state(conv_before or {}),
+                "state_after": conversation_state(conv_after or {}),
+                "intent": intent,
+                "status": status,
+                "raw_text": (raw_text or "").strip(),
+                "ai_reply": str((result or {}).get("msg_out") or (result or {}).get("reply_voice") or "").strip(),
+                "score": score,
+                "flags_json": json.dumps(flags, ensure_ascii=False),
+                "meta_json": json.dumps(payload_meta, ensure_ascii=False, default=str),
+            })
+    except Exception as e:
+        log.error("dialogue_audit_write_failed tenant_id=%s user_id=%s err=%s", tenant_id, user_id, e)
+
+
+def dialogue_audit_summary(tenant_id: str, limit: int = 50) -> Dict[str, Any]:
+    ensure_dialogue_audit_table()
+    tenant_id = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    limit = max(1, min(int(limit or 50), 200))
+    with engine.connect() as conn:
+        total = conn.execute(text("SELECT COUNT(*) FROM dialogue_audit_events WHERE tenant_id=:tid"), {"tid": tenant_id}).scalar() or 0
+        avg_score = conn.execute(text("SELECT COALESCE(AVG(score), 0) FROM dialogue_audit_events WHERE tenant_id=:tid"), {"tid": tenant_id}).scalar() or 0
+        bad = conn.execute(text("SELECT COUNT(*) FROM dialogue_audit_events WHERE tenant_id=:tid AND score < 70"), {"tid": tenant_id}).scalar() or 0
+        rows = conn.execute(text("""
+            SELECT created_at, channel, lang, state_before, state_after, intent, status, raw_text, ai_reply, score, flags_json
+            FROM dialogue_audit_events
+            WHERE tenant_id=:tid
+            ORDER BY created_at DESC
+            LIMIT :lim
+        """), {"tid": tenant_id, "lim": limit}).fetchall()
+    items = []
+    flag_counts: Dict[str, int] = {}
+    for r in rows:
+        flags = r[10] if isinstance(r[10], list) else []
+        if isinstance(r[10], str):
+            try: flags = json.loads(r[10])
+            except Exception: flags = []
+        for f in flags or []:
+            flag_counts[str(f)] = flag_counts.get(str(f), 0) + 1
+        items.append({
+            "created_at": r[0], "channel": r[1], "lang": r[2], "state_before": r[3], "state_after": r[4],
+            "intent": r[5], "status": r[6], "raw_text": r[7], "ai_reply": r[8], "score": r[9], "flags": flags or [],
+        })
+    return {
+        "tenant_id": tenant_id,
+        "total_events": int(total or 0),
+        "average_score": round(float(avg_score or 0), 1),
+        "low_score_events": int(bad or 0),
+        "top_flags": sorted([{"flag": k, "count": v} for k, v in flag_counts.items()], key=lambda x: x["count"], reverse=True)[:20],
+        "recent": items,
+    }
+
+
 def handle_user_text_with_logging(
     tenant_id: str, raw_phone: str, text_in: str, channel: str, lang_hint: str, source: str = "runtime"
 ) -> Dict[str, Any]:
+    try:
+        conv_before = dict(db_get_or_create_conversation(tenant_id, raw_phone, lang_hint or "lv") or {})
+    except Exception:
+        conv_before = {}
+
     result = handle_user_text(tenant_id, raw_phone, text_in, channel, lang_hint, source=source)
+
     try:
         conv = db_get_or_create_conversation(tenant_id, raw_phone, lang_hint or "lv")
     except Exception:
@@ -1638,7 +1662,7 @@ def handle_user_text_with_logging(
     try:
         tenant = get_tenant(tenant_id)
         result = humanize_result(result, conv, tenant)
-        result = apply_usage_soft_limit_warning(result, result.get("lang") or lang, tenant, channel, source=source)
+        result = apply_usage_soft_limit_warning(result, result.get("lang") or get_lang((conv or {}).get("lang") or lang_hint or "lv"), tenant, channel, source=source)
     except Exception as e:
         log.error("humanize_result_failed tenant_id=%s err=%s", tenant_id, e)
         tenant = {}
@@ -1649,6 +1673,16 @@ def handle_user_text_with_logging(
         raw_text=text_in,
         result=result,
         conv=conv,
+    )
+    record_dialogue_audit_event(
+        tenant_id=tenant_id,
+        user_id=raw_phone,
+        channel=channel,
+        source=source,
+        raw_text=text_in,
+        result=result,
+        conv_before=conv_before,
+        conv_after=conv,
     )
     record_usage_event(
         tenant_id=tenant_id,
@@ -2282,73 +2316,21 @@ def service_alias_map_from_catalog(catalog: List[Dict[str, Any]], lang: str) -> 
     return out
 
 
-def _service_text_variants(value: Optional[str]) -> List[str]:
-    raw = str(value or "").strip().lower()
-    if not raw:
-        return []
-    base = re.sub(r"\s+", " ", re.sub(r"[^\wĀ-žА-Яа-яЁё]+", " ", raw, flags=re.UNICODE)).strip()
-    variants = {raw, base}
-
-    # Latvian common accusative/dative variants:
-    # konsultācija -> konsultāciju / konsultacijai / konsultaciju
-    words = base.split()
-    stripped_words: List[str] = []
-    for w in words:
-        ww = w.strip()
-        stripped_words.append(ww)
-        for suffix in ["iju", "iju", "iju", "ciju", "āciju", "aciju", "ijai", "ijām", "ijam", "ai", "u", "a", "s"]:
-            if len(ww) > len(suffix) + 3 and ww.endswith(suffix):
-                stripped_words.append(ww[: -len(suffix)])
-    if stripped_words:
-        variants.add(" ".join(stripped_words))
-
-    # More direct LV transformations for service names ending in -ācija/-acija.
-    replacements = {
-        "āciju": "ācija",
-        "aciju": "acija",
-        "ijai": "ija",
-        "iju": "ija",
-        "ai": "a",
-    }
-    for src_suf, dst_suf in replacements.items():
-        if base.endswith(src_suf) and len(base) > len(src_suf) + 2:
-            variants.add(base[: -len(src_suf)] + dst_suf)
-
-    return [v for v in variants if v]
-
-
-def _service_text_contains(haystack: str, needle: str) -> bool:
-    hay_variants = _service_text_variants(haystack)
-    needle_variants = _service_text_variants(needle)
-    for hv in hay_variants:
-        for nv in needle_variants:
-            if not hv or not nv:
-                continue
-            if nv == hv or nv in hv or hv in nv:
-                return True
-    return False
-
-
-
 def canonical_service_key_from_text(text_: Optional[str], alias_map: Dict[str, str]) -> Optional[str]:
     low = (text_ or "").strip().lower()
     if not low:
         return None
     norm_low = re.sub(r"\s+", " ", re.sub(r"[^\wĀ-žА-Яа-яЁё]+", " ", low, flags=re.UNICODE)).strip()
-
-    lookup_keys = set(_service_text_variants(low) + _service_text_variants(norm_low))
-    for key in lookup_keys:
-        if key in alias_map:
-            return alias_map[key]
-
-    # Prefer longest alias first so generic words don't beat specific phrases.
+    if low in alias_map:
+        return alias_map[low]
+    if norm_low in alias_map:
+        return alias_map[norm_low]
+    # Prefer longest alias first so generic words don't beat specific phrases
     for alias in sorted(alias_map.keys(), key=len, reverse=True):
         if not alias:
             continue
         norm_alias = re.sub(r"\s+", " ", re.sub(r"[^\wĀ-žА-Яа-яЁё]+", " ", alias, flags=re.UNICODE)).strip()
         if alias in low or (norm_alias and norm_alias in norm_low):
-            return alias_map[alias]
-        if _service_text_contains(norm_low, norm_alias or alias):
             return alias_map[alias]
     return None
 
@@ -2414,172 +2396,6 @@ def ensure_default_barbershop_aliases(catalog: List[Dict[str, Any]], alias_map: 
     ])
     return out
 
-
-
-# -------------------------
-# STAGE 14 — TENANT RUNTIME CONFIG LAYER
-# -------------------------
-_TENANT_RUNTIME_CONFIG_CACHE: Dict[str, Dict[str, Any]] = {}
-_TENANT_RUNTIME_CONFIG_CACHE_TS: Dict[str, datetime] = {}
-TENANT_RUNTIME_CONFIG_CACHE_SECONDS = 60
-
-
-def _runtime_config_cache_key(tenant: Dict[str, Any], lang: str) -> str:
-    tenant_id = str((tenant or {}).get("_id") or (tenant or {}).get("id") or "").strip()
-    return f"{tenant_id}:{get_lang(lang)}"
-
-
-def clear_tenant_runtime_config_cache(tenant_id: Optional[str] = None) -> None:
-    """Clear runtime config cache after tenant config changes.
-
-    In production this keeps dashboard/onboarding edits immediately visible to
-    Telegram, dev_chat, webchat, and any future channel adapters.
-    """
-    global _TENANT_RUNTIME_CONFIG_CACHE, _TENANT_RUNTIME_CONFIG_CACHE_TS
-    if not tenant_id:
-        _TENANT_RUNTIME_CONFIG_CACHE = {}
-        _TENANT_RUNTIME_CONFIG_CACHE_TS = {}
-        return
-    prefix = f"{str(tenant_id).strip()}:"
-    for key in list(_TENANT_RUNTIME_CONFIG_CACHE.keys()):
-        if key.startswith(prefix):
-            _TENANT_RUNTIME_CONFIG_CACHE.pop(key, None)
-            _TENANT_RUNTIME_CONFIG_CACHE_TS.pop(key, None)
-
-
-def _runtime_config_cache_get(tenant: Dict[str, Any], lang: str) -> Optional[Dict[str, Any]]:
-    key = _runtime_config_cache_key(tenant, lang)
-    if not key or key == ":lv":
-        return None
-    cached = _TENANT_RUNTIME_CONFIG_CACHE.get(key)
-    ts = _TENANT_RUNTIME_CONFIG_CACHE_TS.get(key)
-    if not cached or not ts:
-        return None
-    if (now_ts() - ts).total_seconds() > TENANT_RUNTIME_CONFIG_CACHE_SECONDS:
-        _TENANT_RUNTIME_CONFIG_CACHE.pop(key, None)
-        _TENANT_RUNTIME_CONFIG_CACHE_TS.pop(key, None)
-        return None
-    return dict(cached)
-
-
-def _runtime_config_cache_set(tenant: Dict[str, Any], lang: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    key = _runtime_config_cache_key(tenant, lang)
-    if key and key != ":lv":
-        _TENANT_RUNTIME_CONFIG_CACHE[key] = dict(payload)
-        _TENANT_RUNTIME_CONFIG_CACHE_TS[key] = now_ts()
-    return payload
-
-
-def tenant_primary_language(tenant: Dict[str, Any]) -> str:
-    return get_lang((tenant or {}).get("language") or (tenant or {}).get("primary_language") or "lv")
-
-
-def tenant_language_config(tenant: Dict[str, Any]) -> Dict[str, Any]:
-    primary = tenant_primary_language(tenant)
-    supported = []
-    raw_supported = (tenant or {}).get("supported_languages") or (tenant or {}).get("languages")
-    parsed = _safe_json_obj(raw_supported)
-    if isinstance(parsed, list):
-        supported = [get_lang(x) for x in parsed if str(x).strip()]
-    elif isinstance(raw_supported, str) and raw_supported.strip():
-        supported = [get_lang(x) for x in raw_supported.split(",") if str(x).strip()]
-    if not supported:
-        supported = [primary, "ru", "en"] if primary == "lv" else [primary, "lv", "en"]
-    # stable unique order
-    unique: List[str] = []
-    for item in supported:
-        item = get_lang(item)
-        if item not in unique:
-            unique.append(item)
-    return {
-        "primary": primary,
-        "supported": unique,
-        "fallback": "lv",
-    }
-
-
-def tenant_runtime_config(tenant: Dict[str, Any], lang: Optional[str] = None, use_cache: bool = True) -> Dict[str, Any]:
-    """Return the single runtime config object used by all channels.
-
-    This intentionally composes existing stable helpers instead of replacing
-    them. It is the bridge between the self-service UI and runtime channels.
-    """
-    tenant = normalize_tenant_saas_fields(tenant or {})
-    effective_lang = get_lang(lang or tenant_primary_language(tenant))
-    if use_cache:
-        cached = _runtime_config_cache_get(tenant, effective_lang)
-        if cached:
-            return cached
-
-    settings = tenant_settings(tenant, effective_lang)
-    catalog = tenant_service_catalog(tenant)
-    aliases = ensure_default_barbershop_aliases(
-        catalog,
-        merged_service_alias_map(catalog, tenant, effective_lang),
-        effective_lang,
-    )
-    business_memory = tenant_business_memory(tenant, effective_lang)
-    tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip()
-    payload = {
-        "tenant_id": tenant_id,
-        "lang": effective_lang,
-        "language": tenant_language_config(tenant),
-        "business": {
-            "name": settings.get("biz_name"),
-            "address": settings.get("addr"),
-            "type": settings.get("business_type"),
-            "timezone": tenant.get("timezone") or "Europe/Riga",
-        },
-        "booking": {
-            "calendar_id": settings.get("calendar_id"),
-            "calendar_configured": calendar_is_configured(settings.get("calendar_id")),
-            "service_account_configured": tenant_has_service_account_json(tenant),
-            "work_start": settings.get("work_start"),
-            "work_end": settings.get("work_end"),
-            "rules": settings.get("business_rules") or {},
-        },
-        "services": {
-            "catalog": catalog,
-            "summary": service_catalog_summary(catalog, effective_lang),
-            "aliases": aliases,
-            "hint": settings.get("services_hint"),
-        },
-        "memory": {
-            "text": business_memory,
-            "has_memory": bool(str(business_memory or "").strip()),
-            "by_lang": {
-                "lv": str(tenant.get("business_memory_lv") or tenant.get("faq_lv") or "").strip(),
-                "ru": str(tenant.get("business_memory_ru") or tenant.get("faq_ru") or "").strip(),
-                "en": str(tenant.get("business_memory_en") or tenant.get("faq_en") or "").strip(),
-            },
-        },
-        "saas": {
-            "plan": tenant_plan_meta(tenant).get("plan"),
-            "subscription_status": tenant.get("subscription_status"),
-            "effective_status": effective_subscription_status(tenant),
-            "usage": tenant_usage_snapshot(tenant),
-        },
-        "readiness": tenant_ready_status_payload(tenant),
-        "links": onboarding_links_payload(tenant_id) if tenant_id else {},
-    }
-    return _runtime_config_cache_set(tenant, effective_lang, payload) if use_cache else payload
-
-
-def tenant_runtime_config_public_view(config: Dict[str, Any]) -> Dict[str, Any]:
-    """Runtime config safe for dashboard/onboarding UI.
-
-    Keeps secrets out of the response while preserving enough structure for
-    self-service setup screens.
-    """
-    cfg = dict(config or {})
-    services = dict(cfg.get("services") or {})
-    # Alias maps can get large; keep them for debug endpoints, not public UI.
-    services.pop("aliases", None)
-    cfg["services"] = services
-    booking = dict(cfg.get("booking") or {})
-    booking.pop("calendar_id", None)
-    cfg["booking"] = booking
-    return cfg
 
 def calendar_is_configured(calendar_id: str) -> bool:
     return bool((calendar_id or "").strip())
@@ -3969,31 +3785,6 @@ def parse_date_only_text(text_: Optional[str]) -> Optional[datetime]:
     if _contains_any_phrase(src, ["šodien", "sodien", "šorīt", "sorit", "šovakar", "sovakar", "сегодня", "сегодня утром", "сегодня днем", "сегодня днём", "сегодня вечером", "today", "this morning", "this afternoon", "this evening", "tonight"]):
         return datetime.combine(base, datetime.min.time(), tzinfo=TZ).replace(hour=9)
 
-    month_names = {
-        "janvāris": 1, "janvaris": 1, "janvāri": 1, "janvari": 1,
-        "februāris": 2, "februaris": 2, "februāri": 2, "februari": 2,
-        "marts": 3, "martā": 3, "marta": 3,
-        "aprīlis": 4, "aprilis": 4, "aprīli": 4, "aprili": 4,
-        "maijs": 5, "maijā": 5, "maija": 5, "maiju": 5,
-        "jūnijs": 6, "junijs": 6, "jūnijā": 6, "junija": 6, "jūniju": 6, "juniju": 6,
-        "jūlijs": 7, "julijs": 7, "jūlijā": 7, "julija": 7, "jūliju": 7, "juliju": 7,
-        "augusts": 8, "augustā": 8, "augusta": 8,
-        "septembris": 9, "septembrī": 9, "septembri": 9,
-        "oktobris": 10, "oktobrī": 10, "oktobri": 10,
-        "novembris": 11, "novembrī": 11, "novembri": 11,
-        "decembris": 12, "decembrī": 12, "decembri": 12,
-    }
-    mname = re.search(r"\b(\d{1,2})\.?\s+([a-zāčēģīķļņšūž]+)\b", src, flags=re.IGNORECASE)
-    if mname:
-        dd = int(mname.group(1))
-        month_word = mname.group(2).lower()
-        mo = month_names.get(month_word)
-        if mo:
-            try:
-                return datetime(today_local().year, mo, dd, 9, 0, tzinfo=TZ)
-            except Exception:
-                pass
-
     return None
 
 
@@ -4158,14 +3949,8 @@ def extract_service_from_text(text_: Optional[str], catalog: List[Dict[str, Any]
             if cand:
                 candidates_index.append((len(cand), cand, item))
 
-    norm_low = re.sub(r"\s+", " ", re.sub(r"[^\wĀ-žА-Яа-яЁё]+", " ", low, flags=re.UNICODE)).strip()
     for _, cand, item in sorted(candidates_index, key=lambda x: x[0], reverse=True):
-        norm_cand = re.sub(r"\s+", " ", re.sub(r"[^\wĀ-žА-Яа-яЁё]+", " ", cand, flags=re.UNICODE)).strip()
         if cand == low or cand in low or low in cand:
-            return item
-        if norm_cand and (norm_cand in norm_low or norm_low in norm_cand):
-            return item
-        if _service_text_contains(norm_low, norm_cand or cand):
             return item
     return None
 
@@ -4757,73 +4542,20 @@ def handle_user_text(
     if not tenant_runtime_ready(tenant):
         log_tenant_runtime_validation(tenant)
         return blocked_result_for_reason(lang, "unavailable")
-    runtime_config = tenant_runtime_config(tenant, lang)
     settings = tenant_settings(tenant, lang)
-    service_catalog = (runtime_config.get("services") or {}).get("catalog") or tenant_service_catalog(tenant)
-    service_aliases = (runtime_config.get("services") or {}).get("aliases") or ensure_default_barbershop_aliases(
+    service_catalog = tenant_service_catalog(tenant)
+    service_aliases = ensure_default_barbershop_aliases(
         service_catalog,
         merged_service_alias_map(service_catalog, tenant, lang),
         lang,
     )
-    business_memory = (runtime_config.get("memory") or {}).get("text") or tenant_business_memory(tenant, lang)
+    business_memory = tenant_business_memory(tenant, lang)
     calendar_ready = calendar_is_configured(settings["calendar_id"])
 
     c["state"] = conversation_state(c)
     c = normalize_booking_state(c)
     pending = c.get("pending") or {}
     t_low = msg.lower()
-
-    # Short-lived FAQ clarification mode:
-    # User: "cik maksā?"
-    # Bot: "Par kuru pakalpojumu?"
-    # User: "Serviss"
-    # Bot must answer price, not start booking.
-    if str((pending or {}).get("faq_mode") or "") == "price_clarify" and msg:
-        service_key_for_price = canonical_service_key_from_text(msg, ensure_default_barbershop_aliases(
-            tenant_service_catalog(tenant),
-            merged_service_alias_map(tenant_service_catalog(tenant), tenant, lang),
-            lang,
-        ))
-        catalog_for_price = tenant_service_catalog(tenant)
-        aliases_for_price = ensure_default_barbershop_aliases(
-            catalog_for_price,
-            merged_service_alias_map(catalog_for_price, tenant, lang),
-            lang,
-        )
-        service_item_for_price = get_service_item_by_key(catalog_for_price, service_key_for_price) if service_key_for_price else extract_service_from_text(msg, catalog_for_price, lang)
-        if service_item_for_price:
-            memory_for_price = tenant_business_memory(tenant, lang)
-            price_value = _memory_price_for_service(memory_for_price, service_item_for_price, lang)
-            display_value = service_display_name(service_item_for_price, lang)
-            if price_value:
-                if lang == "ru":
-                    answer_text = f"{display_value} стоит {price_value}. Если хотите, могу помочь с записью."
-                elif lang == "en":
-                    answer_text = f"{display_value} costs {price_value}. If you want, I can help you book it."
-                else:
-                    answer_text = f"{display_value} maksā {price_value}. Ja vēlaties, varu palīdzēt ar pierakstu."
-            else:
-                if lang == "ru":
-                    answer_text = f"По услуге {display_value} цена пока не указана в настройках."
-                elif lang == "en":
-                    answer_text = f"The price for {display_value} is not specified in the settings yet."
-                else:
-                    answer_text = f"Pakalpojumam {display_value} cena pagaidām nav norādīta iestatījumos."
-            pending.pop("faq_mode", None)
-            # Do not turn this clarification into booking service selection.
-            if conversation_state(c) == STATE_AWAITING_SERVICE and not c.get("service"):
-                c["state"] = STATE_NEW
-                c["pending"] = pending or None
-            else:
-                c["pending"] = pending or None
-            db_save_conversation(tenant_id, user_key, c)
-            return {
-                "status": "info",
-                "reply_voice": answer_text,
-                "msg_out": answer_text,
-                "lang": lang,
-                "preserve_text": True,
-            }
 
     ai_data: Optional[Dict[str, Any]] = None
     llm_data: Optional[Dict[str, Any]] = None
@@ -4963,21 +4695,7 @@ def handle_user_text(
         }
 
     if orchestration.get("action") == ORCH_ACTION_FAQ and understanding.get("faq_result"):
-        raw_faq_result = dict(understanding.get("faq_result") or {})
-
-        # If user asks a generic price question ("cik maksā?"), do not start or continue booking.
-        # Store a short-lived clarification mode so the next service-only message returns the price.
-        if raw_faq_result.get("faq_price_clarify"):
-            pending = c.get("pending") or {}
-            pending["faq_mode"] = "price_clarify"
-            c["pending"] = pending
-            # Keep current state if already active, but do not push a booking prompt into this answer.
-            db_save_conversation(tenant_id, user_key, c)
-            raw_faq_result["status"] = "info"
-            raw_faq_result["preserve_text"] = True
-            return raw_faq_result
-
-        faq_result = faq_with_flow_followup(raw_faq_result, lang, c, pending, service_catalog, active_flow)
+        faq_result = faq_with_flow_followup(understanding.get("faq_result"), lang, c, pending, service_catalog, active_flow)
         if active_flow:
             db_save_conversation(tenant_id, user_key, c)
         return faq_result
@@ -6134,6 +5852,7 @@ def _startup():
     ensure_tenant_row(TENANT_ID_DEFAULT)
     ensure_call_logs_table()
     ensure_phone_routes_table()
+    ensure_dialogue_audit_table()
 
 
 @app.get("/health")
@@ -6173,31 +5892,6 @@ def telegram_set_webhook(url: str = "", tenant_id: str = ""):
     return result
 
 
-
-
-def reset_telegram_conversation_state(tenant_id: str, user_key: str) -> None:
-    tenant_id = (tenant_id or "").strip()
-    user_key = norm_user_key(user_key)
-    if not tenant_id or not user_key:
-        return
-    with engine.begin() as conn:
-        conn.execute(
-            text("""
-            DELETE FROM conversations
-            WHERE tenant_id = :tenant_id
-            AND user_key = :user_key
-            """),
-            {"tenant_id": tenant_id, "user_key": user_key},
-        )
-
-@app.post("/telegram/reset")
-def telegram_reset(tenant_id: str = "", user_key: str = ""):
-    effective_tenant_id = (tenant_id or os.getenv("TELEGRAM_DEFAULT_TENANT_ID", "").strip() or TENANT_ID_DEFAULT).strip()
-    if not user_key:
-        raise HTTPException(status_code=400, detail="user_key is required")
-    reset_telegram_conversation_state(effective_tenant_id, user_key)
-    return {"ok": True, "tenant_id": effective_tenant_id, "user_key": norm_user_key(user_key), "status": "reset_ok"}
-
 @app.post("/telegram/webhook")
 async def telegram_webhook(request: Request, tenant_id: str = ""):
     default_tenant_id = (tenant_id or os.getenv("TELEGRAM_DEFAULT_TENANT_ID", "").strip() or TENANT_ID_DEFAULT).strip()
@@ -6210,7 +5904,6 @@ async def telegram_webhook(request: Request, tenant_id: str = ""):
         handle_user_text_with_logging=handle_user_text_with_logging,
         detect_language_func=detect_language,
         unavailable_text_func=lambda lang: t(lang, "service_unavailable_text"),
-        reset_conversation_func=reset_telegram_conversation_state,
     )
 
 
@@ -7240,342 +6933,6 @@ def dashboard_analytics(tenant_id: str) -> Dict[str, Any]:
         "today_bookings": int(today_bookings),
     }
 
-
-
-# -------------------------
-# STAGE 15 — UMA INTELLIGENCE LAYER
-# -------------------------
-def _uma_safe_ratio(numerator: int, denominator: int, precision: int = 3) -> float:
-    try:
-        numerator = int(numerator or 0)
-        denominator = int(denominator or 0)
-        if denominator <= 0:
-            return 0.0
-        return round(float(numerator) / float(denominator), precision)
-    except Exception:
-        return 0.0
-
-
-def _uma_severity(value: float, medium_at: float, high_at: float, inverse: bool = False) -> str:
-    try:
-        v = float(value or 0.0)
-        if inverse:
-            if v <= high_at:
-                return "high"
-            if v <= medium_at:
-                return "medium"
-            return "low"
-        if v >= high_at:
-            return "high"
-        if v >= medium_at:
-            return "medium"
-        return "low"
-    except Exception:
-        return "low"
-
-
-def uma_clean_memory_candidate(value: Any) -> Optional[str]:
-    txt = str(value or "").strip()
-    if not txt:
-        return None
-    txt = re.sub(r"\s+", " ", txt)
-    low = txt.lower().strip(" .,!?:;-/\\")
-    if len(low) < 3 or len(low) > 80:
-        return None
-    # Remove pure dates, times and technical fragments from UMA memory suggestions.
-    if re.fullmatch(r"\d{1,2}[:.]\d{2}", low):
-        return None
-    if re.fullmatch(r"\d{1,2}[./-]\d{1,2}(?:[./-]\d{2,4})?", low):
-        return None
-    if re.fullmatch(r"\d+", low):
-        return None
-    if not re.search(r"[A-Za-zĀ-žА-Яа-яЁё]", low):
-        return None
-    stop_exact = {
-        "labdien", "sveiki", "hello", "hi", "hey", "привет", "здравствуйте",
-        "ok", "okay", "labi", "jā", "ja", "да", "yes", "no", "nē", "нет",
-        "gribu pierakstīties", "vēlos pierakstīties", "хочу записаться", "i want to book",
-    }
-    if low in stop_exact:
-        return None
-    stop_contains = [
-        "pierakst", "запис", "appointment", "book", "confirm", "apstiprin", "подтверж",
-    ]
-    # Keep service-like phrases but reject generic intent phrases.
-    if any(x in low for x in stop_contains) and len(low.split()) <= 4:
-        return None
-    return txt[:80]
-
-
-def uma_grouped_rows(tenant_id: str, days: int, group_column: str, limit: int = 10) -> List[Dict[str, Any]]:
-    allowed = {"service", "channel", "intent", "status"}
-    if group_column not in allowed:
-        return []
-    days = max(1, min(int(days or 14), 90))
-    limit = max(1, min(int(limit or 10), 50))
-    since_ts = now_ts() - timedelta(days=days)
-    with engine.connect() as conn:
-        rows = conn.execute(
-            text(
-                f"""
-                SELECT COALESCE(NULLIF({group_column}, ''), 'unknown') AS label,
-                       COUNT(*) AS cnt
-                FROM call_logs
-                WHERE tenant_id=:tenant_id
-                  AND created_at >= :since_ts
-                GROUP BY COALESCE(NULLIF({group_column}, ''), 'unknown')
-                ORDER BY cnt DESC, label ASC
-                LIMIT :limit
-                """
-            ),
-            {"tenant_id": tenant_id, "since_ts": since_ts, "limit": limit},
-        ).fetchall()
-    key = group_column
-    return [{key: str(r[0] or "unknown"), "count": int(r[1] or 0)} for r in rows]
-
-
-def uma_recent_friction_samples(tenant_id: str, days: int = 14, limit: int = 8) -> List[Dict[str, Any]]:
-    days = max(1, min(int(days or 14), 90))
-    limit = max(1, min(int(limit or 8), 25))
-    since_ts = now_ts() - timedelta(days=days)
-    friction_statuses = ["need_more", "busy", "recovery", "booking_failed", "no_booking", "reschedule_wait"]
-    with engine.connect() as conn:
-        rows = conn.execute(
-            text(
-                """
-                SELECT created_at, channel, intent, status, service, raw_text, ai_reply
-                FROM call_logs
-                WHERE tenant_id=:tenant_id
-                  AND created_at >= :since_ts
-                  AND status = ANY(:statuses)
-                ORDER BY created_at DESC
-                LIMIT :limit
-                """
-            ),
-            {"tenant_id": tenant_id, "since_ts": since_ts, "statuses": friction_statuses, "limit": limit},
-        ).fetchall()
-    return [
-        {
-            "created_at": r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0]),
-            "channel": r[1],
-            "intent": r[2],
-            "status": r[3],
-            "service": r[4],
-            "user_message": r[5],
-            "ai_reply": r[6],
-        }
-        for r in rows
-    ]
-
-
-def uma_memory_candidates(tenant_id: str, days: int = 14, limit: int = 10) -> List[Dict[str, Any]]:
-    days = max(1, min(int(days or 14), 90))
-    limit = max(1, min(int(limit or 10), 30))
-    since_ts = now_ts() - timedelta(days=days)
-    with engine.connect() as conn:
-        rows = conn.execute(
-            text(
-                """
-                SELECT raw_text, COUNT(*) AS cnt
-                FROM call_logs
-                WHERE tenant_id=:tenant_id
-                  AND created_at >= :since_ts
-                  AND raw_text IS NOT NULL
-                  AND LENGTH(TRIM(raw_text)) BETWEEN 3 AND 120
-                GROUP BY raw_text
-                HAVING COUNT(*) >= 1
-                ORDER BY cnt DESC, MAX(created_at) DESC
-                LIMIT 100
-                """
-            ),
-            {"tenant_id": tenant_id, "since_ts": since_ts},
-        ).fetchall()
-    out: List[Dict[str, Any]] = []
-    seen = set()
-    for raw, cnt in rows:
-        candidate = uma_clean_memory_candidate(raw)
-        if not candidate:
-            continue
-        key = candidate.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append({
-            "source": "conversation_pattern",
-            "candidate": candidate,
-            "count": int(cnt or 0),
-            "reason": f"Repeated or potentially useful client phrase ({int(cnt or 0)}x).",
-            "suggested_action": "Review and add as service alias, FAQ entry, or business memory if relevant.",
-        })
-        if len(out) >= limit:
-            break
-    return out
-
-
-def uma_recommendations(summary: Dict[str, Any], top_services: List[Dict[str, Any]], channels: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    total = int(summary.get("total_dialogs") or 0)
-    booking_rate = float(summary.get("booking_rate") or 0.0)
-    friction_rate = float(summary.get("friction_rate") or 0.0)
-    unfinished = int(summary.get("unfinished") or 0)
-    recommendations: List[Dict[str, Any]] = []
-
-    if total >= 5 and booking_rate < 0.25:
-        recommendations.append({
-            "priority": "high" if booking_rate < 0.15 else "medium",
-            "area": "conversion",
-            "title": "Shorten the path from first message to booking confirmation",
-            "why": "Booking conversion is low compared with total dialogues.",
-            "action": "Ask for only the missing piece at each step: service, day, or time. Avoid asking for everything at once.",
-        })
-    if total >= 5 and (friction_rate >= 0.2 or unfinished >= max(3, int(total * 0.35))):
-        recommendations.append({
-            "priority": "medium",
-            "area": "dialogue",
-            "title": "Improve clarification prompts",
-            "why": "Many conversations remain unresolved or need follow-up.",
-            "action": "Use numbered options in Telegram and keep clarification prompts specific to the current state.",
-        })
-    if top_services:
-        leading = str(top_services[0].get("service") or "").strip()
-        if leading and leading != "unknown":
-            recommendations.append({
-                "priority": "low",
-                "area": "growth",
-                "title": "Use the most requested service as the default sales path",
-                "why": f"The leading service is {leading}.",
-                "action": "Show this service first in onboarding, Telegram examples, dashboard demo flows, and landing page copy.",
-            })
-    if channels:
-        leading_channel = str(channels[0].get("channel") or "").strip()
-        if leading_channel:
-            recommendations.append({
-                "priority": "low",
-                "area": "channel",
-                "title": "Optimize the strongest active channel first",
-                "why": f"Most conversations currently come from {leading_channel}.",
-                "action": "Polish this channel before adding more integrations, then reuse the same flow for WhatsApp/webchat.",
-            })
-    if not recommendations:
-        recommendations.append({
-            "priority": "low",
-            "area": "baseline",
-            "title": "Collect more conversations before changing the flow",
-            "why": "There is not enough traffic yet for strong conclusions.",
-            "action": "Run 20–50 realistic test conversations across Telegram and dev_chat, then review UMA again.",
-        })
-    return recommendations[:5]
-
-
-def uma_insights_payload(tenant_id: str, days: int = 14) -> Dict[str, Any]:
-    tenant_id = (tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
-    days = max(1, min(int(days or 14), 90))
-    tenant = get_tenant_or_404(tenant_id)
-    since_ts = now_ts() - timedelta(days=days)
-    with engine.connect() as conn:
-        row = conn.execute(
-            text(
-                """
-                SELECT
-                    COUNT(*) AS total_dialogs,
-                    COUNT(*) FILTER (WHERE status='booked') AS bookings,
-                    COUNT(*) FILTER (WHERE status IN ('need_more','busy','recovery','booking_failed','no_booking','reschedule_wait')) AS friction_events,
-                    COUNT(*) FILTER (WHERE intent='info' OR status='info') AS info_requests,
-                    COUNT(*) FILTER (WHERE status='cancelled') AS cancellations,
-                    COUNT(*) FILTER (WHERE status IN ('need_more','reschedule_wait')) AS unfinished,
-                    COUNT(DISTINCT COALESCE(user_id, 'unknown')) AS unique_users
-                FROM call_logs
-                WHERE tenant_id=:tenant_id
-                  AND created_at >= :since_ts
-                """
-            ),
-            {"tenant_id": tenant_id, "since_ts": since_ts},
-        ).fetchone()
-    total = int((row[0] if row else 0) or 0)
-    bookings = int((row[1] if row else 0) or 0)
-    friction_events = int((row[2] if row else 0) or 0)
-    info_requests = int((row[3] if row else 0) or 0)
-    cancellations = int((row[4] if row else 0) or 0)
-    unfinished = int((row[5] if row else 0) or 0)
-    unique_users = int((row[6] if row else 0) or 0)
-    booking_rate = _uma_safe_ratio(bookings, total)
-    friction_rate = _uma_safe_ratio(friction_events, total)
-    summary = {
-        "total_dialogs": total,
-        "unique_users": unique_users,
-        "bookings": bookings,
-        "booking_rate": booking_rate,
-        "friction_events": friction_events,
-        "friction_rate": friction_rate,
-        "info_requests": info_requests,
-        "cancellations": cancellations,
-        "unfinished": unfinished,
-    }
-    top_services = uma_grouped_rows(tenant_id, days, "service", limit=5)
-    channels = uma_grouped_rows(tenant_id, days, "channel", limit=8)
-    intents = uma_grouped_rows(tenant_id, days, "intent", limit=8)
-    statuses = uma_grouped_rows(tenant_id, days, "status", limit=8)
-
-    signals: List[Dict[str, Any]] = []
-    if total >= 5 and booking_rate < 0.25:
-        signals.append({
-            "type": "low_booking_conversion",
-            "severity": _uma_severity(booking_rate, medium_at=0.25, high_at=0.15, inverse=True),
-            "title": "Low booking conversion",
-            "value": booking_rate,
-            "explain": "Bookings are low compared with the number of conversations.",
-        })
-    if total >= 5 and friction_rate >= 0.15:
-        signals.append({
-            "type": "conversation_friction",
-            "severity": _uma_severity(friction_rate, medium_at=0.15, high_at=0.35),
-            "title": "Many conversations need follow-up",
-            "value": friction_rate,
-            "explain": "A noticeable share of conversations remain unresolved, busy, or need clarification.",
-        })
-    if unfinished >= max(3, int(total * 0.35)) and total >= 5:
-        signals.append({
-            "type": "unfinished_dialogues",
-            "severity": "medium",
-            "title": "Unfinished conversations are accumulating",
-            "value": unfinished,
-            "explain": "Several users reached a waiting state but did not complete the flow.",
-        })
-    if not signals:
-        signals.append({
-            "type": "baseline_ok",
-            "severity": "low",
-            "title": "No major risk signal yet",
-            "value": total,
-            "explain": "UMA needs more data or current metrics do not show a strong issue.",
-        })
-
-    return {
-        "tenant_id": tenant_id,
-        "window_days": days,
-        "generated_at": now_ts().isoformat(),
-        "business": {
-            "name": tenant.get("business_name") or tenant.get("name"),
-            "type": tenant.get("business_type") or "barbershop",
-            "primary_language": tenant_primary_language(tenant),
-        },
-        "summary": summary,
-        "signals": signals,
-        "top_services": top_services,
-        "channels": channels,
-        "intents": intents,
-        "statuses": statuses,
-        "memory_candidates": uma_memory_candidates(tenant_id, days=days, limit=10),
-        "recommendations": uma_recommendations(summary, top_services, channels),
-        "friction_samples": uma_recent_friction_samples(tenant_id, days=days, limit=8),
-        "dashboard_ready": True,
-    }
-
-
-@app.get("/uma/insights")
-@app.get("/dashboard/uma-insights")
-def uma_insights_endpoint(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
-    return uma_insights_payload(tenant_id, days=days)
-
 @app.get("/dashboard/bookings")
 @app.get("/bookings")
 def dashboard_bookings(tenant_id: str = TENANT_ID_DEFAULT, limit: int = 50):
@@ -8317,17 +7674,6 @@ class TenantConfigUpdateRequest(BaseModel):
     reset_override: bool = False
 
 
-
-
-class DashboardConfigUpdateRequest(BaseModel):
-    tenant_id: str
-    business: Optional[Dict[str, Any]] = None
-    booking: Optional[Dict[str, Any]] = None
-    services: Optional[Any] = None
-    memory: Optional[Dict[str, Any]] = None
-    language: Optional[Dict[str, Any]] = None
-    saas: Optional[Dict[str, Any]] = None
-
 class TenantPlanChangeRequest(BaseModel):
     tenant_id: str
     plan: str
@@ -8533,223 +7879,6 @@ def tenant_change_plan(payload: TenantPlanChangeRequest):
     }
 
 
-
-
-# -------------------------
-# STAGE 16 — DASHBOARD SELF-SERVICE CONFIG API
-# -------------------------
-def dashboard_config_schema_payload() -> Dict[str, Any]:
-    """Return a UI-friendly schema for the future client dashboard.
-
-    This endpoint is intentionally Latvian-first because Repliq's first market
-    is Latvia, while still keeping stable technical keys for frontend code.
-    """
-    return {
-        "language": "lv",
-        "sections": [
-            {
-                "key": "business",
-                "title": "Uzņēmuma informācija",
-                "fields": [
-                    {"key": "name", "label": "Uzņēmuma nosaukums", "type": "text", "required": True},
-                    {"key": "phone_number", "label": "Tālrunis / kanāla numurs", "type": "text"},
-                    {"key": "timezone", "label": "Laika zona", "type": "text", "default": "Europe/Riga"},
-                    {"key": "primary_language", "label": "Galvenā valoda", "type": "select", "options": ["lv", "ru", "en"]},
-                ],
-            },
-            {
-                "key": "booking",
-                "title": "Pierakstu noteikumi",
-                "fields": [
-                    {"key": "work_start", "label": "Darba sākums", "type": "time"},
-                    {"key": "work_end", "label": "Darba beigas", "type": "time"},
-                    {"key": "weekly_hours", "label": "Nedēļas grafiks", "type": "json"},
-                    {"key": "days_off", "label": "Brīvdienas", "type": "json"},
-                    {"key": "breaks", "label": "Pārtraukumi", "type": "json"},
-                    {"key": "holidays", "label": "Svētku / slēgtās dienas", "type": "json"},
-                    {"key": "min_notice_minutes", "label": "Minimālais pieraksta brīdinājums", "type": "number"},
-                    {"key": "buffer_minutes", "label": "Pauze starp pierakstiem", "type": "number"},
-                ],
-            },
-            {
-                "key": "services",
-                "title": "Pakalpojumi",
-                "fields": [
-                    {"key": "catalog", "label": "Pakalpojumu katalogs", "type": "service_catalog"},
-                    {"key": "services_lv", "label": "Pakalpojumi LV", "type": "textarea"},
-                    {"key": "services_ru", "label": "Pakalpojumi RU", "type": "textarea"},
-                    {"key": "services_en", "label": "Pakalpojumi EN", "type": "textarea"},
-                ],
-            },
-            {
-                "key": "memory",
-                "title": "FAQ / biznesa atmiņa",
-                "fields": [
-                    {"key": "lv", "label": "Atmiņa LV", "type": "textarea"},
-                    {"key": "ru", "label": "Atmiņa RU", "type": "textarea"},
-                    {"key": "en", "label": "Atmiņa EN", "type": "textarea"},
-                ],
-            },
-            {
-                "key": "saas",
-                "title": "Plāns un limits",
-                "fields": [
-                    {"key": "plan", "label": "Plāns", "type": "select", "options": ["starter", "pro", "business"]},
-                    {"key": "subscription_status", "label": "Statuss", "type": "select", "options": ["trial", "active", "past_due", "inactive", "expired"]},
-                    {"key": "dialogs_per_month", "label": "Dialogi mēnesī", "type": "number"},
-                ],
-            },
-        ],
-    }
-
-
-def _json_text_or_none(value: Any) -> Optional[str]:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        return value
-    try:
-        return json.dumps(value, ensure_ascii=False, indent=2)
-    except Exception:
-        return None
-
-
-def dashboard_config_payload(tenant: Dict[str, Any]) -> Dict[str, Any]:
-    tenant = normalize_tenant_saas_fields(tenant or {})
-    tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip()
-    lang = get_lang(tenant.get("language") or tenant.get("primary_language") or "lv")
-    runtime = tenant_runtime_config_public_view(tenant_runtime_config(tenant, lang, use_cache=False))
-    settings = tenant_settings(tenant, lang)
-    business_rules = settings.get("business_rules") or {}
-    return {
-        "tenant_id": tenant_id,
-        "schema": dashboard_config_schema_payload(),
-        "business": {
-            "name": tenant.get("business_name") or tenant.get("name") or settings.get("biz_name"),
-            "phone_number": tenant.get("phone_number") or "",
-            "timezone": tenant.get("timezone") or "Europe/Riga",
-            "primary_language": lang,
-            "address": tenant.get("address") or settings.get("addr") or "",
-            "business_type": tenant.get("business_type") or settings.get("business_type") or "barbershop",
-        },
-        "booking": {
-            "work_start": settings.get("work_start"),
-            "work_end": settings.get("work_end"),
-            "weekly_hours": business_rules.get("weekly_hours") or {},
-            "days_off": business_rules.get("days_off") or [],
-            "breaks": business_rules.get("breaks") or {},
-            "holidays": business_rules.get("holidays") or [],
-            "min_notice_minutes": business_rules.get("min_notice_minutes") or 0,
-            "buffer_minutes": business_rules.get("buffer_minutes") or 0,
-            "calendar_configured": bool((runtime.get("booking") or {}).get("calendar_configured")),
-            "service_account_configured": bool((runtime.get("booking") or {}).get("service_account_configured")),
-        },
-        "services": {
-            "catalog": (runtime.get("services") or {}).get("catalog") or tenant_service_catalog(tenant),
-            "summary": (runtime.get("services") or {}).get("summary") or "",
-            "services_lv": tenant.get("services_lv") or "",
-            "services_ru": tenant.get("services_ru") or "",
-            "services_en": tenant.get("services_en") or "",
-        },
-        "memory": {
-            "lv": str(tenant.get("business_memory_lv") or tenant.get("faq_lv") or "").strip(),
-            "ru": str(tenant.get("business_memory_ru") or tenant.get("faq_ru") or "").strip(),
-            "en": str(tenant.get("business_memory_en") or tenant.get("faq_en") or "").strip(),
-            "has_memory": bool((runtime.get("memory") or {}).get("has_memory")),
-        },
-        "saas": {
-            "plan": tenant_plan_meta(tenant).get("plan"),
-            "subscription_status": effective_subscription_status(tenant),
-            "dialogs_per_month": tenant_dialog_limit(tenant),
-            "usage": tenant_usage_snapshot(tenant),
-        },
-        "readiness": tenant_ready_status_payload(tenant),
-        "onboarding": onboarding_status_payload(tenant),
-        "links": onboarding_links_payload(tenant_id),
-        "runtime_config": runtime,
-    }
-
-
-def dashboard_update_to_tenant_request(payload: DashboardConfigUpdateRequest) -> TenantConfigUpdateRequest:
-    business = payload.business or {}
-    booking = payload.booking or {}
-    memory = payload.memory or {}
-    language_cfg = payload.language or {}
-    saas = payload.saas or {}
-    services_payload = payload.services
-    services_obj: Dict[str, Any] = {}
-    if isinstance(services_payload, dict):
-        services_obj = services_payload
-    elif services_payload is not None:
-        services_obj = {"catalog": services_payload}
-
-    weekly_hours = booking.get("weekly_hours") if isinstance(booking, dict) else None
-    days_off = booking.get("days_off") if isinstance(booking, dict) else None
-    breaks = booking.get("breaks") if isinstance(booking, dict) else None
-    holidays = booking.get("holidays") if isinstance(booking, dict) else None
-    catalog = services_obj.get("catalog") if isinstance(services_obj, dict) else None
-
-    return TenantConfigUpdateRequest(
-        tenant_id=(payload.tenant_id or "").strip(),
-        business_name=business.get("name") or business.get("business_name"),
-        phone_number=business.get("phone_number"),
-        timezone=business.get("timezone"),
-        language=language_cfg.get("primary") or business.get("primary_language"),
-        work_start=booking.get("work_start"),
-        work_end=booking.get("work_end"),
-        services_lv=services_obj.get("services_lv"),
-        services_ru=services_obj.get("services_ru"),
-        services_en=services_obj.get("services_en"),
-        weekly_hours_json=_json_text_or_none(weekly_hours),
-        days_off_json=_json_text_or_none(days_off),
-        breaks_json=_json_text_or_none(breaks),
-        holidays_json=_json_text_or_none(holidays),
-        min_notice_minutes=booking.get("min_notice_minutes"),
-        buffer_minutes=booking.get("buffer_minutes"),
-        service_catalog_json=_json_text_or_none(catalog),
-        business_memory_lv=memory.get("lv"),
-        business_memory_ru=memory.get("ru"),
-        business_memory_en=memory.get("en"),
-        plan=saas.get("plan"),
-        subscription_status=saas.get("subscription_status"),
-        dialogs_per_month=saas.get("dialogs_per_month"),
-        reset_override=bool(saas.get("reset_override")),
-    )
-
-
-@app.get("/dashboard/config/schema")
-def dashboard_config_schema_endpoint():
-    return dashboard_config_schema_payload()
-
-
-@app.get("/dashboard/config")
-def dashboard_config_endpoint(tenant_id: str = TENANT_ID_DEFAULT):
-    tenant = get_tenant_or_404((tenant_id or "").strip() or TENANT_ID_DEFAULT)
-    return dashboard_config_payload(tenant)
-
-
-@app.post("/dashboard/config/update")
-def dashboard_config_update_endpoint(payload: DashboardConfigUpdateRequest):
-    request_payload = dashboard_update_to_tenant_request(payload)
-    result = tenant_config_update(request_payload)
-    tenant = get_tenant_or_404(request_payload.tenant_id)
-    result["dashboard_config"] = dashboard_config_payload(tenant)
-    result["runtime_refreshed"] = True
-    return result
-
-
-@app.post("/dashboard/config/refresh")
-def dashboard_config_refresh_endpoint(tenant_id: str = TENANT_ID_DEFAULT):
-    tenant_id = (tenant_id or "").strip() or TENANT_ID_DEFAULT
-    clear_tenant_runtime_config_cache(tenant_id)
-    tenant = get_tenant_or_404(tenant_id)
-    return {
-        "status": "ok",
-        "tenant_id": tenant_id,
-        "dashboard_config": dashboard_config_payload(tenant),
-    }
-
-
 @app.get("/tenant/config")
 def tenant_config(tenant_id: str = TENANT_ID_DEFAULT):
     tenant = get_tenant((tenant_id or "").strip() or TENANT_ID_DEFAULT)
@@ -8774,7 +7903,6 @@ def tenant_config(tenant_id: str = TENANT_ID_DEFAULT):
     return {
         "tenant": _jsonable_tenant_view(tenant),
         "resolved_settings": settings,
-        "runtime_config": tenant_runtime_config_public_view(tenant_runtime_config(tenant, get_lang(tenant.get("language") or "lv"), use_cache=False)),
         "phone_routes": routes,
         "onboarding": onboarding_status_payload(tenant),
         "readiness": tenant_ready_status_payload(tenant),
@@ -8870,7 +7998,6 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
     if new_phone:
         upsert_phone_route(new_phone, tenant_id)
 
-    clear_tenant_runtime_config_cache(tenant_id)
     updated = get_tenant(tenant_id)
     return {
         "status": "ok",
@@ -8881,33 +8008,6 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
         "plan_meta": tenant_plan_meta(updated),
         "links": onboarding_links_payload(tenant_id),
     }
-
-
-@app.get("/tenant/runtime-config")
-def tenant_runtime_config_endpoint(tenant_id: str = TENANT_ID_DEFAULT, lang: str = ""):
-    tenant = get_tenant_or_404((tenant_id or "").strip() or TENANT_ID_DEFAULT)
-    effective_lang = get_lang(lang or tenant.get("language") or "lv")
-    return tenant_runtime_config_public_view(tenant_runtime_config(tenant, effective_lang, use_cache=False))
-
-
-@app.get("/tenant/runtime-config/debug")
-def tenant_runtime_config_debug_endpoint(tenant_id: str = TENANT_ID_DEFAULT, lang: str = ""):
-    tenant = get_tenant_or_404((tenant_id or "").strip() or TENANT_ID_DEFAULT)
-    effective_lang = get_lang(lang or tenant.get("language") or "lv")
-    return tenant_runtime_config(tenant, effective_lang, use_cache=False)
-
-
-@app.post("/tenant/runtime-config/refresh")
-def tenant_runtime_config_refresh(tenant_id: str = TENANT_ID_DEFAULT):
-    tenant_id = (tenant_id or "").strip() or TENANT_ID_DEFAULT
-    clear_tenant_runtime_config_cache(tenant_id)
-    tenant = get_tenant_or_404(tenant_id)
-    return {
-        "status": "ok",
-        "tenant_id": tenant_id,
-        "runtime_config": tenant_runtime_config_public_view(tenant_runtime_config(tenant, get_lang(tenant.get("language") or "lv"), use_cache=False)),
-    }
-
 
 @app.get("/tenant/routes")
 def tenant_routes(tenant_id: str = TENANT_ID_DEFAULT):
@@ -9157,6 +8257,41 @@ async def dev_focus_test(req: DevFocusTestRequest):
             "success": bool(result.get("status") not in {"blocked", "booking_failed"}),
         })
     return {"tenant_id": req.tenant_id, "lang": lang, "items": items}
+
+
+
+@app.get("/dialogue/audit")
+def dialogue_audit(tenant_id: str = TENANT_ID_DEFAULT, limit: int = 50):
+    return dialogue_audit_summary(tenant_id, limit)
+
+
+@app.get("/dev/dialogue-test-matrix")
+def dev_dialogue_test_matrix():
+    return {
+        "count": len(DIALOGUE_TEST_MATRIX),
+        "categories": sorted(set(str(x.get("category")) for x in DIALOGUE_TEST_MATRIX)),
+        "scenarios": DIALOGUE_TEST_MATRIX,
+    }
+
+
+@app.get("/dev/dialogue-trace")
+def dev_dialogue_trace(tenant_id: str = TENANT_ID_DEFAULT, limit: int = 30):
+    return dialogue_audit_summary(tenant_id, limit)
+
+
+@app.post("/dev/dialogue-simulate")
+def dev_dialogue_simulate(payload: dict = Body(...)):
+    tenant_id = str(payload.get("tenant_id") or TENANT_ID_DEFAULT).strip()
+    user_id = str(payload.get("user_id") or f"sim_{uuid.uuid4().hex[:8]}").strip()
+    lang = get_lang(payload.get("lang") or "lv")
+    messages = payload.get("messages") or []
+    if isinstance(messages, str):
+        messages = [messages]
+    out = []
+    for msg in messages[:20]:
+        result = handle_user_text_with_logging(tenant_id, user_id, str(msg), "dev", lang, source="dialogue_simulate")
+        out.append({"user": str(msg), "assistant": result.get("msg_out") or result.get("reply_voice"), "status": result.get("status"), "lang": result.get("lang")})
+    return {"tenant_id": tenant_id, "user_id": user_id, "turns": out, "audit": dialogue_audit_summary(tenant_id, 20)}
 
 @app.get("/dev_chat_ui", response_class=HTMLResponse)
 def dev_chat_ui():
