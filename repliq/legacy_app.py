@@ -1141,11 +1141,12 @@ def _extract_price_from_line(line: str) -> Optional[str]:
         r"(€\s*\d+(?:[\.,]\d{1,2})?)",
         r"(\d+(?:[\.,]\d{1,2})?\s*€)",
         r"(\d+(?:[\.,]\d{1,2})?\s*eur)",
+        r"(\d+(?:[\.,]\d{1,2})?\s*eiro)",
     ]
     for pat in patterns:
         m = re.search(pat, src, flags=re.IGNORECASE)
         if m:
-            return m.group(1).replace("eur", "EUR")
+            return m.group(1).replace("eur", "EUR").replace("Eur", "EUR")
     return None
 
 
@@ -1265,6 +1266,19 @@ def _generic_memory_answer(msg: str, lang: str, business_memory: str) -> Optiona
         if len(best) <= 280:
             return best
     return None
+
+
+def _is_generic_price_question_without_service(msg: str, service_item: Optional[Dict[str, Any]]) -> bool:
+    low = _normalize_phrase_text(msg)
+    if not low or service_item:
+        return False
+    generic_forms = {
+        "cik maksā", "cik maksa", "cik tas maksā", "cik tas maksa", "cik cena", "kāda cena", "kada cena",
+        "сколько стоит", "какая цена", "цена", "стоимость",
+        "how much", "how much does it cost", "what is the price", "price"
+    }
+    return any(form in low for form in generic_forms)
+
 
 
 def try_barbershop_faq(
@@ -1397,7 +1411,10 @@ def try_barbershop_faq(
                 text = f"Which service price would you like to know? Available services: {options}." if options else "Which service price would you like to know?"
             else:
                 text = f"Par kuru pakalpojumu vēlaties uzzināt cenu? Pieejamie pakalpojumi: {options}." if options else "Par kuru pakalpojumu vēlaties uzzināt cenu?"
-        return {"status": "info", "reply_voice": text, "msg_out": text, "lang": lang, "preserve_text": True}
+        result = {"status": "info", "reply_voice": text, "msg_out": text, "lang": lang, "preserve_text": True}
+        if _is_generic_price_question_without_service(low, service_item):
+            result["faq_price_clarify"] = True
+        return result
 
     if any(ch in low for ch in ["?", "？"]) or _phrase_any(low, ["vai", "как", "kā", "ka", "what", "что", "kur", "где"]):
         memory_answer = _generic_memory_answer(low, lang, business_memory)
@@ -1418,6 +1435,12 @@ def faq_with_flow_followup(
     result = dict(faq_result or {})
     result["preserve_text"] = True
     if not active_flow:
+        return result
+
+    # Do not aggressively push booking after informational FAQ unless there is real booking context.
+    has_real_booking_context = bool(c.get("service") or c.get("datetime_iso") or (pending or {}).get("awaiting_time_date_iso") or (pending or {}).get("confirm_slot_iso") or get_offered_slots(pending or {}))
+    if not has_real_booking_context:
+        result["status"] = "info"
         return result
 
     followup = prompt_for_state(lang, c, pending or {}, service_catalog)
@@ -4667,6 +4690,58 @@ def handle_user_text(
     pending = c.get("pending") or {}
     t_low = msg.lower()
 
+    # Short-lived FAQ clarification mode:
+    # User: "cik maksā?"
+    # Bot: "Par kuru pakalpojumu?"
+    # User: "Serviss"
+    # Bot must answer price, not start booking.
+    if str((pending or {}).get("faq_mode") or "") == "price_clarify" and msg:
+        service_key_for_price = canonical_service_key_from_text(msg, ensure_default_barbershop_aliases(
+            tenant_service_catalog(tenant),
+            merged_service_alias_map(tenant_service_catalog(tenant), tenant, lang),
+            lang,
+        ))
+        catalog_for_price = tenant_service_catalog(tenant)
+        aliases_for_price = ensure_default_barbershop_aliases(
+            catalog_for_price,
+            merged_service_alias_map(catalog_for_price, tenant, lang),
+            lang,
+        )
+        service_item_for_price = get_service_item_by_key(catalog_for_price, service_key_for_price) if service_key_for_price else extract_service_from_text(msg, catalog_for_price, lang)
+        if service_item_for_price:
+            memory_for_price = tenant_business_memory(tenant, lang)
+            price_value = _memory_price_for_service(memory_for_price, service_item_for_price, lang)
+            display_value = service_display_name(service_item_for_price, lang)
+            if price_value:
+                if lang == "ru":
+                    answer_text = f"{display_value} стоит {price_value}. Если хотите, могу помочь с записью."
+                elif lang == "en":
+                    answer_text = f"{display_value} costs {price_value}. If you want, I can help you book it."
+                else:
+                    answer_text = f"{display_value} maksā {price_value}. Ja vēlaties, varu palīdzēt ar pierakstu."
+            else:
+                if lang == "ru":
+                    answer_text = f"По услуге {display_value} цена пока не указана в настройках."
+                elif lang == "en":
+                    answer_text = f"The price for {display_value} is not specified in the settings yet."
+                else:
+                    answer_text = f"Pakalpojumam {display_value} cena pagaidām nav norādīta iestatījumos."
+            pending.pop("faq_mode", None)
+            # Do not turn this clarification into booking service selection.
+            if conversation_state(c) == STATE_AWAITING_SERVICE and not c.get("service"):
+                c["state"] = STATE_NEW
+                c["pending"] = pending or None
+            else:
+                c["pending"] = pending or None
+            db_save_conversation(tenant_id, user_key, c)
+            return {
+                "status": "info",
+                "reply_voice": answer_text,
+                "msg_out": answer_text,
+                "lang": lang,
+                "preserve_text": True,
+            }
+
     ai_data: Optional[Dict[str, Any]] = None
     llm_data: Optional[Dict[str, Any]] = None
 
@@ -4805,7 +4880,21 @@ def handle_user_text(
         }
 
     if orchestration.get("action") == ORCH_ACTION_FAQ and understanding.get("faq_result"):
-        faq_result = faq_with_flow_followup(understanding.get("faq_result"), lang, c, pending, service_catalog, active_flow)
+        raw_faq_result = dict(understanding.get("faq_result") or {})
+
+        # If user asks a generic price question ("cik maksā?"), do not start or continue booking.
+        # Store a short-lived clarification mode so the next service-only message returns the price.
+        if raw_faq_result.get("faq_price_clarify"):
+            pending = c.get("pending") or {}
+            pending["faq_mode"] = "price_clarify"
+            c["pending"] = pending
+            # Keep current state if already active, but do not push a booking prompt into this answer.
+            db_save_conversation(tenant_id, user_key, c)
+            raw_faq_result["status"] = "info"
+            raw_faq_result["preserve_text"] = True
+            return raw_faq_result
+
+        faq_result = faq_with_flow_followup(raw_faq_result, lang, c, pending, service_catalog, active_flow)
         if active_flow:
             db_save_conversation(tenant_id, user_key, c)
         return faq_result
