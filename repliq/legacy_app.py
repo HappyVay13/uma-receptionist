@@ -2282,21 +2282,73 @@ def service_alias_map_from_catalog(catalog: List[Dict[str, Any]], lang: str) -> 
     return out
 
 
+def _service_text_variants(value: Optional[str]) -> List[str]:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return []
+    base = re.sub(r"\s+", " ", re.sub(r"[^\wĀ-žА-Яа-яЁё]+", " ", raw, flags=re.UNICODE)).strip()
+    variants = {raw, base}
+
+    # Latvian common accusative/dative variants:
+    # konsultācija -> konsultāciju / konsultacijai / konsultaciju
+    words = base.split()
+    stripped_words: List[str] = []
+    for w in words:
+        ww = w.strip()
+        stripped_words.append(ww)
+        for suffix in ["iju", "iju", "iju", "ciju", "āciju", "aciju", "ijai", "ijām", "ijam", "ai", "u", "a", "s"]:
+            if len(ww) > len(suffix) + 3 and ww.endswith(suffix):
+                stripped_words.append(ww[: -len(suffix)])
+    if stripped_words:
+        variants.add(" ".join(stripped_words))
+
+    # More direct LV transformations for service names ending in -ācija/-acija.
+    replacements = {
+        "āciju": "ācija",
+        "aciju": "acija",
+        "ijai": "ija",
+        "iju": "ija",
+        "ai": "a",
+    }
+    for src_suf, dst_suf in replacements.items():
+        if base.endswith(src_suf) and len(base) > len(src_suf) + 2:
+            variants.add(base[: -len(src_suf)] + dst_suf)
+
+    return [v for v in variants if v]
+
+
+def _service_text_contains(haystack: str, needle: str) -> bool:
+    hay_variants = _service_text_variants(haystack)
+    needle_variants = _service_text_variants(needle)
+    for hv in hay_variants:
+        for nv in needle_variants:
+            if not hv or not nv:
+                continue
+            if nv == hv or nv in hv or hv in nv:
+                return True
+    return False
+
+
+
 def canonical_service_key_from_text(text_: Optional[str], alias_map: Dict[str, str]) -> Optional[str]:
     low = (text_ or "").strip().lower()
     if not low:
         return None
     norm_low = re.sub(r"\s+", " ", re.sub(r"[^\wĀ-žА-Яа-яЁё]+", " ", low, flags=re.UNICODE)).strip()
-    if low in alias_map:
-        return alias_map[low]
-    if norm_low in alias_map:
-        return alias_map[norm_low]
-    # Prefer longest alias first so generic words don't beat specific phrases
+
+    lookup_keys = set(_service_text_variants(low) + _service_text_variants(norm_low))
+    for key in lookup_keys:
+        if key in alias_map:
+            return alias_map[key]
+
+    # Prefer longest alias first so generic words don't beat specific phrases.
     for alias in sorted(alias_map.keys(), key=len, reverse=True):
         if not alias:
             continue
         norm_alias = re.sub(r"\s+", " ", re.sub(r"[^\wĀ-žА-Яа-яЁё]+", " ", alias, flags=re.UNICODE)).strip()
         if alias in low or (norm_alias and norm_alias in norm_low):
+            return alias_map[alias]
+        if _service_text_contains(norm_low, norm_alias or alias):
             return alias_map[alias]
     return None
 
@@ -3917,6 +3969,31 @@ def parse_date_only_text(text_: Optional[str]) -> Optional[datetime]:
     if _contains_any_phrase(src, ["šodien", "sodien", "šorīt", "sorit", "šovakar", "sovakar", "сегодня", "сегодня утром", "сегодня днем", "сегодня днём", "сегодня вечером", "today", "this morning", "this afternoon", "this evening", "tonight"]):
         return datetime.combine(base, datetime.min.time(), tzinfo=TZ).replace(hour=9)
 
+    month_names = {
+        "janvāris": 1, "janvaris": 1, "janvāri": 1, "janvari": 1,
+        "februāris": 2, "februaris": 2, "februāri": 2, "februari": 2,
+        "marts": 3, "martā": 3, "marta": 3,
+        "aprīlis": 4, "aprilis": 4, "aprīli": 4, "aprili": 4,
+        "maijs": 5, "maijā": 5, "maija": 5, "maiju": 5,
+        "jūnijs": 6, "junijs": 6, "jūnijā": 6, "junija": 6, "jūniju": 6, "juniju": 6,
+        "jūlijs": 7, "julijs": 7, "jūlijā": 7, "julija": 7, "jūliju": 7, "juliju": 7,
+        "augusts": 8, "augustā": 8, "augusta": 8,
+        "septembris": 9, "septembrī": 9, "septembri": 9,
+        "oktobris": 10, "oktobrī": 10, "oktobri": 10,
+        "novembris": 11, "novembrī": 11, "novembri": 11,
+        "decembris": 12, "decembrī": 12, "decembri": 12,
+    }
+    mname = re.search(r"\b(\d{1,2})\.?\s+([a-zāčēģīķļņšūž]+)\b", src, flags=re.IGNORECASE)
+    if mname:
+        dd = int(mname.group(1))
+        month_word = mname.group(2).lower()
+        mo = month_names.get(month_word)
+        if mo:
+            try:
+                return datetime(today_local().year, mo, dd, 9, 0, tzinfo=TZ)
+            except Exception:
+                pass
+
     return None
 
 
@@ -4081,8 +4158,14 @@ def extract_service_from_text(text_: Optional[str], catalog: List[Dict[str, Any]
             if cand:
                 candidates_index.append((len(cand), cand, item))
 
+    norm_low = re.sub(r"\s+", " ", re.sub(r"[^\wĀ-žА-Яа-яЁё]+", " ", low, flags=re.UNICODE)).strip()
     for _, cand, item in sorted(candidates_index, key=lambda x: x[0], reverse=True):
+        norm_cand = re.sub(r"\s+", " ", re.sub(r"[^\wĀ-žА-Яа-яЁё]+", " ", cand, flags=re.UNICODE)).strip()
         if cand == low or cand in low or low in cand:
+            return item
+        if norm_cand and (norm_cand in norm_low or norm_low in norm_cand):
+            return item
+        if _service_text_contains(norm_low, norm_cand or cand):
             return item
     return None
 
