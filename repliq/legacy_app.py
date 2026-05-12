@@ -5741,7 +5741,7 @@ def client_portal_context_payload(tenant: Dict[str, Any], token: str = "") -> Di
         "links": {
             "dashboard": safe_dashboard_url(tenant_id, token),
             "config": f"/tenant/config/ui?tenant_id={requests.utils.quote(tenant_id)}",
-            "onboarding": f"/onboarding/ui?tenant_id={requests.utils.quote(tenant_id)}",
+            "onboarding": f"/client/onboarding?tenant_id={requests.utils.quote(tenant_id)}",
             "runtime_config": f"/tenant/runtime-config?tenant_id={requests.utils.quote(tenant_id)}",
             "uma_insights": f"/uma/insights?tenant_id={requests.utils.quote(tenant_id)}&days=14",
         },
@@ -5845,6 +5845,232 @@ def client_dashboard_redirect(tenant_id: str = TENANT_ID_DEFAULT, access_token: 
         raise HTTPException(status_code=403, detail="Portal access denied")
     return RedirectResponse(url=safe_dashboard_url(tenant_id, access_token))
 
+
+
+# -------------------------
+# STAGE 19 — CLIENT ONBOARDING FLOW
+# -------------------------
+def client_onboarding_steps_payload(tenant: Dict[str, Any]) -> Dict[str, Any]:
+    tenant = normalize_tenant_saas_fields(tenant or {})
+    tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip()
+    lang = get_lang(tenant.get("language") or "lv")
+    services = parse_human_service_lines(tenant_service_lines_text(tenant, lang)) if "parse_human_service_lines" in globals() else []
+    readiness = tenant_ready_status_payload(tenant) if tenant_id else {"ready": False, "missing": ["tenant"]}
+    onboarding = onboarding_status_payload(tenant) if tenant_id else {}
+    telegram_status_payload = telegram_config_status(
+        default_tenant_id=os.getenv("TELEGRAM_DEFAULT_TENANT_ID", "").strip() or tenant_id or TENANT_ID_DEFAULT,
+        server_base_url=SERVER_BASE_URL,
+    )
+    calendar_connected = bool(onboarding.get("google_connected") or tenant_google_connected_effective(tenant))
+    calendar_selected = bool(onboarding.get("calendar_selected") or str(tenant.get("calendar_id") or "").strip())
+    service_ready = bool(services or tenant_service_catalog(tenant))
+    memory_ready = bool(str(tenant.get("business_memory_lv") or tenant.get("business_memory") or tenant.get("faq_lv") or tenant.get("faq") or "").strip())
+    profile_ready = bool(str(tenant.get("business_name") or tenant.get("name") or "").strip())
+    hours_ready = bool(str(tenant.get("work_start") or "").strip() and str(tenant.get("work_end") or "").strip())
+    telegram_ready = bool(telegram_status_payload.get("configured"))
+    steps = [
+        {"id": "profile", "title": "Uzņēmuma profils", "done": profile_ready, "description": "Nosaukums, nozare un pamata valoda."},
+        {"id": "services", "title": "Pakalpojumi", "done": service_ready, "description": "Pakalpojumu saraksts vienkāršos vārdos, bez JSON."},
+        {"id": "hours", "title": "Darba laiks", "done": hours_ready, "description": "No cikiem līdz cikiem asistents drīkst piedāvāt laikus."},
+        {"id": "memory", "title": "FAQ / biznesa atmiņa", "done": memory_ready, "description": "Adrese, cenas, noteikumi un biežākie jautājumi."},
+        {"id": "calendar", "title": "Google Calendar", "done": bool(calendar_connected and calendar_selected), "description": "Kalendārs, kur pārbaudīt pieejamību un izveidot pierakstus."},
+        {"id": "telegram", "title": "Telegram", "done": telegram_ready, "description": "Pirmais bezmaksas čata kanāls testiem un startam."},
+        {"id": "launch", "title": "Palaist asistentu", "done": bool(readiness.get("ready")), "description": "Kad viss gatavs, asistents var pieņemt klientu ziņas."},
+    ]
+    done_count = sum(1 for x in steps if x.get("done"))
+    next_step = next((x["id"] for x in steps if not x.get("done")), "done")
+    return {
+        "tenant_id": tenant_id,
+        "language": lang,
+        "steps": steps,
+        "done_count": done_count,
+        "total_count": len(steps),
+        "progress": round(done_count / max(1, len(steps)), 3),
+        "next_step": next_step,
+        "readiness": readiness,
+        "onboarding": onboarding,
+        "telegram": telegram_status_payload,
+        "links": {
+            "dashboard": f"/dashboard?tenant_id={requests.utils.quote(tenant_id)}",
+            "config": f"/tenant/config/ui?tenant_id={requests.utils.quote(tenant_id)}",
+            "runtime_config": f"/tenant/runtime-config?tenant_id={requests.utils.quote(tenant_id)}",
+            "telegram_status": "/telegram/status",
+            "google_connect": f"/google/connect?tenant_id={requests.utils.quote(tenant_id)}",
+        },
+    }
+
+
+@app.get("/client/onboarding/context")
+def client_onboarding_context(tenant_id: str = TENANT_ID_DEFAULT, access_token: str = ""):
+    if not portal_token_valid(access_token):
+        raise HTTPException(status_code=403, detail="Portal access denied")
+    tenant = get_tenant_or_404((tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT)
+    return client_onboarding_steps_payload(tenant)
+
+
+@app.post("/client/onboarding/launch")
+def client_onboarding_launch(payload: dict = Body(...)):
+    tenant_id = str((payload or {}).get("tenant_id") or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
+    access_token = str((payload or {}).get("access_token") or "").strip()
+    if not portal_token_valid(access_token):
+        raise HTTPException(status_code=403, detail="Portal access denied")
+    tenant = get_tenant_or_404(tenant_id)
+    readiness = tenant_ready_status_payload(tenant)
+    if not readiness.get("ready"):
+        return {
+            "status": "not_ready",
+            "tenant_id": tenant_id,
+            "readiness": readiness,
+            "onboarding": client_onboarding_steps_payload(tenant),
+        }
+    cols = tenants_columns()
+    pk = tenants_pk(cols)
+    col_names = {c["name"] for c in cols}
+    updates = []
+    params: Dict[str, Any] = {"tid": tenant_id}
+    if "onboarding_completed" in col_names:
+        updates.append("onboarding_completed=true")
+    if "status" in col_names:
+        updates.append("status=:status")
+        params["status"] = "active"
+    if "subscription_status" in col_names and not str(tenant.get("subscription_status") or "").strip():
+        updates.append("subscription_status=:subscription_status")
+        params["subscription_status"] = "trial"
+    if "updated_at" in col_names:
+        updates.append("updated_at=NOW()")
+    if updates:
+        with engine.begin() as conn:
+            conn.execute(text(f"UPDATE tenants SET {', '.join(updates)} WHERE {pk}=:tid"), params)
+    updated = get_tenant_or_404(tenant_id)
+    return {
+        "status": "ok",
+        "tenant_id": tenant_id,
+        "readiness": tenant_ready_status_payload(updated),
+        "onboarding": client_onboarding_steps_payload(updated),
+        "dashboard_url": f"/dashboard?tenant_id={requests.utils.quote(tenant_id)}",
+    }
+
+
+@app.get("/client/onboarding", response_class=HTMLResponse)
+def client_onboarding_wizard(tenant_id: str = TENANT_ID_DEFAULT, access_token: str = ""):
+    if not portal_token_valid(access_token):
+        return HTMLResponse("""
+        <html><head><title>Repliq onboarding</title></head>
+        <body style='font-family:Arial,sans-serif;background:#f6f7fb;padding:40px;'>
+          <div style='max-width:520px;margin:0 auto;background:white;border-radius:18px;padding:24px;box-shadow:0 8px 24px rgba(0,0,0,.08)'>
+            <h2>Repliq onboarding</h2>
+            <p>Piekļuve nav apstiprināta.</p>
+          </div>
+        </body></html>
+        """, status_code=403)
+    safe_tid = (tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
+    token_js = json.dumps(access_token or "")
+    tenant_js = json.dumps(safe_tid)
+    return f"""
+    <html lang="lv">
+    <head>
+      <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <title>Repliq onboarding</title>
+      <style>
+        :root{{--bg:#f6f7fb;--card:#fff;--text:#101827;--muted:#6b7280;--line:#e5e7eb;--brand:#111827;--ok:#16a34a;--warn:#d97706;--soft:#f3f4f6;}}
+        *{{box-sizing:border-box}} body{{margin:0;background:var(--bg);color:var(--text);font-family:Inter,Arial,sans-serif;}}
+        .wrap{{max-width:1120px;margin:0 auto;padding:28px;}} .hero{{background:linear-gradient(135deg,#111827,#374151);color:white;border-radius:28px;padding:30px;box-shadow:0 16px 40px rgba(17,24,39,.18);}}
+        .hero p{{color:#d1d5db;max-width:720px;line-height:1.6}} .topbar{{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:18px;}}
+        .grid{{display:grid;grid-template-columns:1fr 380px;gap:18px;margin-top:18px;}} .card{{background:var(--card);border:1px solid var(--line);border-radius:22px;padding:20px;box-shadow:0 8px 24px rgba(0,0,0,.05);}}
+        .steps{{display:grid;gap:10px;}} .step{{display:grid;grid-template-columns:34px 1fr auto;gap:12px;align-items:start;border:1px solid var(--line);border-radius:16px;padding:14px;background:#fff;}}
+        .dot{{width:30px;height:30px;border-radius:999px;display:flex;align-items:center;justify-content:center;background:var(--soft);font-weight:800;}} .dot.ok{{background:#dcfce7;color:#166534}} .dot.warn{{background:#fef3c7;color:#92400e}}
+        .muted{{color:var(--muted)}} .small{{font-size:12px;color:var(--muted)}} .row{{display:flex;gap:10px;flex-wrap:wrap;align-items:center;}}
+        button,a.button{{border:0;border-radius:12px;background:var(--brand);color:white;padding:11px 14px;text-decoration:none;cursor:pointer;font-weight:700;display:inline-block;}}
+        button.secondary,a.secondary{{background:white;color:var(--brand);border:1px solid #d1d5db;}} button:disabled{{opacity:.55;cursor:not-allowed}}
+        label{{font-size:13px;color:#374151;font-weight:700;margin-top:12px;display:block}} input,textarea,select{{width:100%;border:1px solid #d1d5db;border-radius:12px;padding:11px;margin-top:6px;font:inherit;background:white;}}
+        textarea{{min-height:92px;resize:vertical}} .progress{{height:12px;background:#e5e7eb;border-radius:99px;overflow:hidden;}} .bar{{height:100%;width:0;background:#22c55e;transition:.25s;}}
+        .pill{{display:inline-flex;gap:6px;align-items:center;border-radius:999px;background:#f3f4f6;padding:6px 10px;font-size:13px;}} code{{background:#f3f4f6;border-radius:8px;padding:2px 6px;}}
+        @media(max-width:900px){{.grid{{grid-template-columns:1fr}}.topbar{{display:block}}}}
+      </style>
+    </head>
+    <body>
+      <div class="wrap">
+        <div class="topbar">
+          <div><strong>Repliq</strong> <span class="muted">klienta palaišana</span></div>
+          <div class="row"><a class="button secondary" id="dashboardLink">Dashboard</a><a class="button secondary" id="configLink">Iestatījumi</a><button class="secondary" onclick="loadAll()">Atjaunot</button></div>
+        </div>
+        <section class="hero">
+          <div class="pill" id="statusPill">Ielādē...</div>
+          <h1>Palaižam jūsu AI recepcionistu</h1>
+          <p>Iziesim cauri svarīgākajiem soļiem: uzņēmuma profils, pakalpojumi, darba laiks, FAQ, Google Calendar un Telegram. Viss ir latviski un bez JSON klienta pusē.</p>
+          <div class="progress"><div class="bar" id="progressBar"></div></div>
+          <p id="progressText" class="small">—</p>
+        </section>
+        <div class="grid">
+          <main class="card">
+            <h2>Onboarding checklist</h2>
+            <div class="steps" id="stepsBox"></div>
+          </main>
+          <aside class="card">
+            <h2>Ātrā konfigurācija</h2>
+            <form id="quickForm">
+              <label>Uzņēmuma nosaukums</label><input id="business_name" placeholder="Piemēram, Repliq Clinic" />
+              <label>Pamata valoda</label><select id="language"><option value="lv">Latviešu</option><option value="ru">Русский</option><option value="en">English</option></select>
+              <label>Darba sākums</label><input id="work_start" placeholder="09:00" />
+              <label>Darba beigas</label><input id="work_end" placeholder="18:00" />
+              <label>Pakalpojumi</label><textarea id="service_lines" placeholder="konsultācija\nmasāža\ndiagnostika"></textarea>
+              <label>FAQ / biznesa atmiņa</label><textarea id="business_memory_lv" placeholder="Adrese, cenas, noteikumi, biežākie jautājumi..."></textarea>
+              <div class="row" style="margin-top:14px"><button type="submit">Saglabāt</button><button type="button" class="secondary" onclick="launchAssistant()">Palaist asistentu</button></div>
+              <p class="small" id="saveStatus"></p>
+            </form>
+          </aside>
+        </div>
+      </div>
+      <script>
+        const TENANT_ID = {tenant_js};
+        const ACCESS_TOKEN = {token_js};
+        const q = (id)=>document.getElementById(id);
+        const esc = (v)=>String(v ?? '').replace(/[&<>"']/g, m=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[m]));
+        async function fetchJson(url, opts={{}}){{ const r = await fetch(url, opts); const txt = await r.text(); let data={{}}; try{{data=txt?JSON.parse(txt):{{}}}}catch(e){{data={{raw:txt}}}} if(!r.ok) throw new Error(data.detail || txt || r.status); return data; }}
+        function stepHtml(s, idx){{ return `<div class="step"><div class="dot ${{s.done?'ok':'warn'}}">${{s.done?'✓':idx+1}}</div><div><strong>${{esc(s.title)}}</strong><div class="small">${{esc(s.description)}}</div></div><div class="pill">${{s.done?'Gatavs':'Jādara'}}</div></div>`; }}
+        async function loadAll(){{
+          const tokenPart = ACCESS_TOKEN ? '&access_token='+encodeURIComponent(ACCESS_TOKEN) : '';
+          const ctx = await fetchJson('/client/onboarding/context?tenant_id='+encodeURIComponent(TENANT_ID)+tokenPart);
+          q('stepsBox').innerHTML = (ctx.steps||[]).map(stepHtml).join('');
+          q('progressBar').style.width = Math.round((ctx.progress||0)*100)+'%';
+          q('progressText').textContent = `${{ctx.done_count || 0}} no ${{ctx.total_count || 0}} soļiem pabeigti · nākamais solis: ${{ctx.next_step || 'done'}}`;
+          q('statusPill').textContent = ctx.readiness?.ready ? 'Asistents gatavs' : 'Nepieciešama konfigurācija';
+          q('dashboardLink').href = ctx.links?.dashboard || ('/dashboard?tenant_id='+encodeURIComponent(TENANT_ID));
+          q('configLink').href = ctx.links?.config || ('/tenant/config/ui?tenant_id='+encodeURIComponent(TENANT_ID));
+          try{{
+            const cfg = await fetchJson('/tenant/config?tenant_id='+encodeURIComponent(TENANT_ID));
+            const t = cfg.tenant || {{}};
+            q('business_name').value = t.business_name || '';
+            q('language').value = t.language || 'lv';
+            q('work_start').value = t.work_start || '09:00';
+            q('work_end').value = t.work_end || '18:00';
+            q('service_lines').value = cfg.service_lines || '';
+            q('business_memory_lv').value = t.business_memory_lv || t.business_memory || '';
+          }}catch(e){{ console.warn('config_load_failed', e); }}
+        }}
+        q('quickForm').addEventListener('submit', async (e)=>{{
+          e.preventDefault(); q('saveStatus').textContent='Saglabā...';
+          const payload = {{ tenant_id:TENANT_ID, business_name:q('business_name').value, language:q('language').value, work_start:q('work_start').value, work_end:q('work_end').value, service_lines:q('service_lines').value, business_memory_lv:q('business_memory_lv').value }};
+          try{{
+            await fetchJson('/tenant/config/update', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify(payload)}});
+            try{{ await fetchJson('/tenant/runtime-config/refresh?tenant_id='+encodeURIComponent(TENANT_ID), {{method:'POST'}}); }}catch(e){{}}
+            q('saveStatus').textContent='Saglabāts ✅'; await loadAll();
+          }}catch(err){{ q('saveStatus').textContent='Kļūda: '+err.message; }}
+        }});
+        async function launchAssistant(){{
+          q('saveStatus').textContent='Pārbaudu gatavību...';
+          try{{
+            const data = await fetchJson('/client/onboarding/launch', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify({{tenant_id:TENANT_ID, access_token:ACCESS_TOKEN}})}});
+            if(data.status === 'ok'){{ q('saveStatus').textContent='Asistents palaists ✅'; window.location = data.dashboard_url; }}
+            else {{ q('saveStatus').textContent='Vēl nav gatavs: '+((data.readiness?.missing||[]).join(', ') || 'missing setup'); await loadAll(); }}
+          }}catch(err){{ q('saveStatus').textContent='Kļūda: '+err.message; }}
+        }}
+        loadAll().catch(e=>{{ q('stepsBox').innerHTML='<p class="muted">Neizdevās ielādēt onboarding.</p>'; console.error(e); }});
+      </script>
+    </body>
+    </html>
+    """
 
 # -------------------------
 # TELEGRAM CHANNEL (chat-first)
