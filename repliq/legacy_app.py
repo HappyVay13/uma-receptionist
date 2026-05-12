@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, date
 from typing import Dict, Any, Optional, Tuple, List
 
 import requests
-from fastapi import FastAPI, Request, HTTPException, Body
+from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel
 from fastapi.responses import Response, StreamingResponse, HTMLResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -1193,6 +1193,80 @@ def barber_service_prompt(lang: str, catalog: List[Dict[str, Any]]) -> str:
     return f"Uz kādu pakalpojumu vēlaties pierakstīties? Piemēram: {options}." if options else "Uz kādu pakalpojumu vēlaties pierakstīties?"
 
 
+
+def _phrase_any(low: str, markers: List[str]) -> bool:
+    low = _normalize_phrase_text(low)
+    for marker in markers:
+        marker_norm = _normalize_phrase_text(marker)
+        if marker_norm and marker_norm in low:
+            return True
+    return False
+
+
+def _catalog_services_sentence(lang: str, service_catalog: List[Dict[str, Any]], max_items: int = 8) -> str:
+    names: List[str] = []
+    for item in service_catalog[:max_items]:
+        display = service_display_name(item, lang)
+        if display and display not in names:
+            names.append(display)
+    if not names:
+        return ""
+    if len(names) == 1:
+        return names[0]
+    if lang == "ru":
+        return ", ".join(names[:-1]) + " или " + names[-1]
+    if lang == "en":
+        return ", ".join(names[:-1]) + " or " + names[-1]
+    return ", ".join(names[:-1]) + " vai " + names[-1]
+
+
+def _memory_price_for_service(memory: str, service_item: Optional[Dict[str, Any]], lang: str = "lv") -> Optional[str]:
+    if not memory or not service_item:
+        return None
+    line = _memory_line_for_service(memory, service_item)
+    price = _extract_price_from_line(line or "")
+    if price:
+        return price
+
+    service_terms = [
+        str(service_item.get("key") or ""),
+        str(service_item.get("name_lv") or ""),
+        str(service_item.get("name_ru") or ""),
+        str(service_item.get("name_en") or ""),
+    ]
+    service_terms += list(service_item.get("aliases_lv") or [])
+    service_terms += list(service_item.get("aliases_ru") or [])
+    service_terms += list(service_item.get("aliases_en") or [])
+    terms = [x.strip().lower() for x in service_terms if str(x).strip()]
+
+    for line in _line_candidates_from_memory(memory):
+        low = line.lower()
+        if any(term and term in low for term in terms):
+            price = _extract_price_from_line(line)
+            if price:
+                return price
+    return None
+
+
+def _generic_memory_answer(msg: str, lang: str, business_memory: str) -> Optional[str]:
+    low = _normalize_phrase_text(msg)
+    if not business_memory or not low:
+        return None
+    lines = _line_candidates_from_memory(business_memory)
+    keyword_hits: List[str] = []
+    for line in lines:
+        line_low = _normalize_phrase_text(line)
+        if not line_low:
+            continue
+        if any(word and word in line_low for word in low.split() if len(word) >= 4):
+            keyword_hits.append(line)
+    if keyword_hits:
+        best = sorted(keyword_hits, key=len)[0]
+        if len(best) <= 280:
+            return best
+    return None
+
+
 def try_barbershop_faq(
     msg: str,
     lang: str,
@@ -1202,44 +1276,80 @@ def try_barbershop_faq(
     service_aliases: Dict[str, str],
     business_memory: str,
 ) -> Optional[Dict[str, Any]]:
-    business_type = str(tenant.get("business_type") or "barbershop").strip().lower()
-    if business_type != "barbershop":
-        return None
-
+    # Historical name kept for compatibility. This is now a generic natural FAQ router.
     low = (msg or "").strip().lower()
     if not low:
         return None
 
-    price_markers = ["цена", "сколько стоит", "price", "how much", "cena", "cik maksā", "cik maksa"]
-    location_markers = ["where", "address", "адрес", "где вы", "где находитесь", "kur jūs", "adrese", "kur atrodaties"]
-    services_markers = ["какие услуги", "что делаете", "services", "what services", "pakalpojumi", "ko jūs darāt", "ko jus darat"]
-    duration_markers = ["сколько по времени", "сколько длится", "how long", "duration", "cik ilgi", "ilgums"]
+    price_markers = [
+        "цена", "стоимость", "сколько стоит", "сколько будет стоить", "прайс",
+        "price", "pricing", "cost", "how much", "how much is", "how much does",
+        "cena", "cenrādis", "cenradis", "cik maksā", "cik maksa", "cik izmaksā", "cik izmaksa",
+        "kāda cena", "kada cena", "cik maksas", "maksā", "maksa"
+    ]
+    location_markers = [
+        "where", "address", "location", "where are you", "адрес", "где вы", "где находитесь",
+        "kur jūs", "kur jus", "adrese", "kur atrodaties", "atrašanās vieta", "atrasanas vieta"
+    ]
+    services_markers = [
+        "какие услуги", "список услуг", "что делаете", "что есть", "услуги", "прайс услуг",
+        "services", "service list", "what services", "what do you offer",
+        "pakalpojumi", "pakalpojumu saraksts", "kādi pakalpojumi", "kadi pakalpojumi",
+        "ko jūs darāt", "ko jus darat", "ko piedāvājat", "ko piedavajat", "kas jums ir"
+    ]
+    duration_markers = [
+        "сколько по времени", "сколько длится", "длительность",
+        "how long", "duration", "how much time",
+        "cik ilgi", "ilgums", "cik aizņem", "cik aiznem"
+    ]
+    hours_markers = [
+        "darba laiks", "cikos strādājat", "cikos stradajat", "kad strādājat", "kad stradajat",
+        "working hours", "opening hours", "when are you open",
+        "часы работы", "когда работаете", "во сколько работаете"
+    ]
 
-    if any(x in low for x in location_markers):
+    service_key = canonical_service_key_from_text(low, service_aliases)
+    service_item = get_service_item_by_key(service_catalog, service_key) if service_key else extract_service_from_text(low, service_catalog, lang)
+
+    if _phrase_any(low, hours_markers):
+        if lang == "ru":
+            text = f"Мы работаем с {settings.get('work_start')} до {settings.get('work_end')}."
+        elif lang == "en":
+            text = f"We are open from {settings.get('work_start')} to {settings.get('work_end')}."
+        else:
+            text = f"Mēs strādājam no {settings.get('work_start')} līdz {settings.get('work_end')}."
+        return {"status": "info", "reply_voice": text, "msg_out": text, "lang": lang, "preserve_text": True}
+
+    if _phrase_any(low, location_markers):
         addr = str(settings.get("addr") or tenant.get("address") or "").strip()
         if not addr:
-            return None
-        if lang == "ru":
+            if lang == "ru":
+                text = "Адрес пока не указан в настройках."
+            elif lang == "en":
+                text = "The address is not specified in the business settings yet."
+            else:
+                text = "Adrese pagaidām nav norādīta uzņēmuma iestatījumos."
+        elif lang == "ru":
             text = f"Мы находимся по адресу: {addr}."
         elif lang == "en":
             text = f"We are located at: {addr}."
         else:
             text = f"Mēs atrodamies: {addr}."
-        return {"status": "info", "reply_voice": text, "msg_out": text, "lang": lang}
+        return {"status": "info", "reply_voice": text, "msg_out": text, "lang": lang, "preserve_text": True}
 
-    if any(x in low for x in services_markers):
-        options = barber_service_options_text(lang, service_catalog, max_items=4)
+    if _phrase_any(low, services_markers):
+        options = _catalog_services_sentence(lang, service_catalog, max_items=8)
+        if not options:
+            options = str(settings.get("services_hint") or "").strip()
         if lang == "ru":
-            text = f"Обычно у нас доступны такие услуги: {options}. Если хотите, могу сразу помочь с записью."
+            text = f"Доступные услуги: {options}. Если хотите, могу сразу помочь с записью." if options else "Список услуг пока не заполнен."
         elif lang == "en":
-            text = f"We usually offer services such as {options}. If you want, I can help you book right away."
+            text = f"Available services: {options}. If you want, I can help you book right away." if options else "The service list is not filled in yet."
         else:
-            text = f"Parasti pie mums ir pieejami šādi pakalpojumi: {options}. Ja vēlaties, varu uzreiz palīdzēt ar pierakstu."
-        return {"status": "info", "reply_voice": text, "msg_out": text, "lang": lang}
+            text = f"Pieejamie pakalpojumi: {options}. Ja vēlaties, varu uzreiz palīdzēt ar pierakstu." if options else "Pakalpojumu saraksts pagaidām nav aizpildīts."
+        return {"status": "info", "reply_voice": text, "msg_out": text, "lang": lang, "preserve_text": True}
 
-    if any(x in low for x in duration_markers):
-        service_key = canonical_service_key_from_text(low, service_aliases)
-        service_item = get_service_item_by_key(service_catalog, service_key) if service_key else extract_service_from_text(low, service_catalog, lang)
+    if _phrase_any(low, duration_markers):
         if service_item:
             duration = service_duration_min(service_item)
             display = service_display_name(service_item, lang)
@@ -1249,14 +1359,20 @@ def try_barbershop_faq(
                 text = f"{display} usually takes about {duration} minutes."
             else:
                 text = f"{display} parasti aizņem apmēram {duration} minūtes."
-            return {"status": "info", "reply_voice": text, "msg_out": text, "lang": lang}
+        else:
+            if lang == "ru":
+                text = "Уточните, пожалуйста, по какой услуге интересует длительность."
+            elif lang == "en":
+                text = "Please specify which service duration you would like to know."
+            else:
+                text = "Lūdzu, precizējiet, par kuru pakalpojumu vēlaties zināt ilgumu."
+        return {"status": "info", "reply_voice": text, "msg_out": text, "lang": lang, "preserve_text": True}
 
-    if any(x in low for x in price_markers):
-        service_key = canonical_service_key_from_text(low, service_aliases)
-        service_item = get_service_item_by_key(service_catalog, service_key) if service_key else extract_service_from_text(low, service_catalog, lang)
+    if _phrase_any(low, price_markers):
+        if not service_item and len(service_catalog) == 1:
+            service_item = service_catalog[0]
         if service_item:
-            line = _memory_line_for_service(business_memory, service_item)
-            price = _extract_price_from_line(line or "")
+            price = _memory_price_for_service(business_memory, service_item, lang)
             display = service_display_name(service_item, lang)
             if price:
                 if lang == "ru":
@@ -1268,12 +1384,25 @@ def try_barbershop_faq(
             else:
                 duration = service_duration_min(service_item)
                 if lang == "ru":
-                    text = f"По услуге {display} лучше уточнить цену у мастера. По времени это обычно около {duration} минут."
+                    text = f"По услуге {display} цена пока не указана в настройках. Обычно услуга занимает около {duration} минут."
                 elif lang == "en":
-                    text = f"For {display}, it is best to confirm the price with the barber. It usually takes about {duration} minutes."
+                    text = f"The price for {display} is not specified in the settings yet. It usually takes about {duration} minutes."
                 else:
-                    text = f"Par pakalpojumu {display} cenu vislabāk precizēt pie meistara. Parasti tas aizņem apmēram {duration} minūtes."
-            return {"status": "info", "reply_voice": text, "msg_out": text, "lang": lang}
+                    text = f"Pakalpojumam {display} cena pagaidām nav norādīta iestatījumos. Parasti tas aizņem apmēram {duration} minūtes."
+        else:
+            options = _catalog_services_sentence(lang, service_catalog, max_items=5)
+            if lang == "ru":
+                text = f"По какой услуге хотите узнать цену? Доступные услуги: {options}." if options else "По какой услуге хотите узнать цену?"
+            elif lang == "en":
+                text = f"Which service price would you like to know? Available services: {options}." if options else "Which service price would you like to know?"
+            else:
+                text = f"Par kuru pakalpojumu vēlaties uzzināt cenu? Pieejamie pakalpojumi: {options}." if options else "Par kuru pakalpojumu vēlaties uzzināt cenu?"
+        return {"status": "info", "reply_voice": text, "msg_out": text, "lang": lang, "preserve_text": True}
+
+    if any(ch in low for ch in ["?", "？"]) or _phrase_any(low, ["vai", "как", "kā", "ka", "what", "что", "kur", "где"]):
+        memory_answer = _generic_memory_answer(low, lang, business_memory)
+        if memory_answer:
+            return {"status": "info", "reply_voice": memory_answer, "msg_out": memory_answer, "lang": lang, "preserve_text": True}
 
     return None
 
@@ -1287,6 +1416,7 @@ def faq_with_flow_followup(
     active_flow: bool,
 ) -> Dict[str, Any]:
     result = dict(faq_result or {})
+    result["preserve_text"] = True
     if not active_flow:
         return result
 
@@ -1302,11 +1432,30 @@ def faq_with_flow_followup(
     result["reply_voice"] = combined
     result["lang"] = lang
     result["flow_preserved"] = True
+    result["preserve_text"] = True
     return result
 
 
 
 
+
+
+@app.get("/dev/faq-router-test")
+def dev_faq_router_test(tenant_id: str = "clinic_demo", q: str = "kādi pakalpojumi jums ir?", lang: str = "lv"):
+    tenant = get_tenant_or_404(tenant_id)
+    lang = get_lang(lang)
+    settings = tenant_settings(tenant, lang)
+    catalog = tenant_service_catalog(tenant)
+    aliases = ensure_default_barbershop_aliases(catalog, merged_service_alias_map(catalog, tenant, lang), lang)
+    memory = tenant_business_memory(tenant, lang)
+    result = try_barbershop_faq(q, lang, tenant, settings, catalog, aliases, memory)
+    return {
+        "tenant_id": tenant_id,
+        "query": q,
+        "matched": bool(result),
+        "result": result,
+        "services": [service_display_name(x, lang) for x in catalog],
+    }
 
 
 def ensure_lang_update(tenant_id: str, user_key: str, c: Dict[str, Any], lang: str) -> Dict[str, Any]:
@@ -2190,6 +2339,172 @@ def ensure_default_barbershop_aliases(catalog: List[Dict[str, Any]], alias_map: 
     ])
     return out
 
+
+
+# -------------------------
+# STAGE 14 — TENANT RUNTIME CONFIG LAYER
+# -------------------------
+_TENANT_RUNTIME_CONFIG_CACHE: Dict[str, Dict[str, Any]] = {}
+_TENANT_RUNTIME_CONFIG_CACHE_TS: Dict[str, datetime] = {}
+TENANT_RUNTIME_CONFIG_CACHE_SECONDS = 60
+
+
+def _runtime_config_cache_key(tenant: Dict[str, Any], lang: str) -> str:
+    tenant_id = str((tenant or {}).get("_id") or (tenant or {}).get("id") or "").strip()
+    return f"{tenant_id}:{get_lang(lang)}"
+
+
+def clear_tenant_runtime_config_cache(tenant_id: Optional[str] = None) -> None:
+    """Clear runtime config cache after tenant config changes.
+
+    In production this keeps dashboard/onboarding edits immediately visible to
+    Telegram, dev_chat, webchat, and any future channel adapters.
+    """
+    global _TENANT_RUNTIME_CONFIG_CACHE, _TENANT_RUNTIME_CONFIG_CACHE_TS
+    if not tenant_id:
+        _TENANT_RUNTIME_CONFIG_CACHE = {}
+        _TENANT_RUNTIME_CONFIG_CACHE_TS = {}
+        return
+    prefix = f"{str(tenant_id).strip()}:"
+    for key in list(_TENANT_RUNTIME_CONFIG_CACHE.keys()):
+        if key.startswith(prefix):
+            _TENANT_RUNTIME_CONFIG_CACHE.pop(key, None)
+            _TENANT_RUNTIME_CONFIG_CACHE_TS.pop(key, None)
+
+
+def _runtime_config_cache_get(tenant: Dict[str, Any], lang: str) -> Optional[Dict[str, Any]]:
+    key = _runtime_config_cache_key(tenant, lang)
+    if not key or key == ":lv":
+        return None
+    cached = _TENANT_RUNTIME_CONFIG_CACHE.get(key)
+    ts = _TENANT_RUNTIME_CONFIG_CACHE_TS.get(key)
+    if not cached or not ts:
+        return None
+    if (now_ts() - ts).total_seconds() > TENANT_RUNTIME_CONFIG_CACHE_SECONDS:
+        _TENANT_RUNTIME_CONFIG_CACHE.pop(key, None)
+        _TENANT_RUNTIME_CONFIG_CACHE_TS.pop(key, None)
+        return None
+    return dict(cached)
+
+
+def _runtime_config_cache_set(tenant: Dict[str, Any], lang: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    key = _runtime_config_cache_key(tenant, lang)
+    if key and key != ":lv":
+        _TENANT_RUNTIME_CONFIG_CACHE[key] = dict(payload)
+        _TENANT_RUNTIME_CONFIG_CACHE_TS[key] = now_ts()
+    return payload
+
+
+def tenant_primary_language(tenant: Dict[str, Any]) -> str:
+    return get_lang((tenant or {}).get("language") or (tenant or {}).get("primary_language") or "lv")
+
+
+def tenant_language_config(tenant: Dict[str, Any]) -> Dict[str, Any]:
+    primary = tenant_primary_language(tenant)
+    supported = []
+    raw_supported = (tenant or {}).get("supported_languages") or (tenant or {}).get("languages")
+    parsed = _safe_json_obj(raw_supported)
+    if isinstance(parsed, list):
+        supported = [get_lang(x) for x in parsed if str(x).strip()]
+    elif isinstance(raw_supported, str) and raw_supported.strip():
+        supported = [get_lang(x) for x in raw_supported.split(",") if str(x).strip()]
+    if not supported:
+        supported = [primary, "ru", "en"] if primary == "lv" else [primary, "lv", "en"]
+    # stable unique order
+    unique: List[str] = []
+    for item in supported:
+        item = get_lang(item)
+        if item not in unique:
+            unique.append(item)
+    return {
+        "primary": primary,
+        "supported": unique,
+        "fallback": "lv",
+    }
+
+
+def tenant_runtime_config(tenant: Dict[str, Any], lang: Optional[str] = None, use_cache: bool = True) -> Dict[str, Any]:
+    """Return the single runtime config object used by all channels.
+
+    This intentionally composes existing stable helpers instead of replacing
+    them. It is the bridge between the self-service UI and runtime channels.
+    """
+    tenant = normalize_tenant_saas_fields(tenant or {})
+    effective_lang = get_lang(lang or tenant_primary_language(tenant))
+    if use_cache:
+        cached = _runtime_config_cache_get(tenant, effective_lang)
+        if cached:
+            return cached
+
+    settings = tenant_settings(tenant, effective_lang)
+    catalog = tenant_service_catalog(tenant)
+    aliases = ensure_default_barbershop_aliases(
+        catalog,
+        merged_service_alias_map(catalog, tenant, effective_lang),
+        effective_lang,
+    )
+    business_memory = tenant_business_memory(tenant, effective_lang)
+    tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip()
+    payload = {
+        "tenant_id": tenant_id,
+        "lang": effective_lang,
+        "language": tenant_language_config(tenant),
+        "business": {
+            "name": settings.get("biz_name"),
+            "address": settings.get("addr"),
+            "type": settings.get("business_type"),
+            "timezone": tenant.get("timezone") or "Europe/Riga",
+        },
+        "booking": {
+            "calendar_id": settings.get("calendar_id"),
+            "calendar_configured": calendar_is_configured(settings.get("calendar_id")),
+            "service_account_configured": tenant_has_service_account_json(tenant),
+            "work_start": settings.get("work_start"),
+            "work_end": settings.get("work_end"),
+            "rules": settings.get("business_rules") or {},
+        },
+        "services": {
+            "catalog": catalog,
+            "summary": service_catalog_summary(catalog, effective_lang),
+            "aliases": aliases,
+            "hint": settings.get("services_hint"),
+        },
+        "memory": {
+            "text": business_memory,
+            "has_memory": bool(str(business_memory or "").strip()),
+            "by_lang": {
+                "lv": str(tenant.get("business_memory_lv") or tenant.get("faq_lv") or "").strip(),
+                "ru": str(tenant.get("business_memory_ru") or tenant.get("faq_ru") or "").strip(),
+                "en": str(tenant.get("business_memory_en") or tenant.get("faq_en") or "").strip(),
+            },
+        },
+        "saas": {
+            "plan": tenant_plan_meta(tenant).get("plan"),
+            "subscription_status": tenant.get("subscription_status"),
+            "effective_status": effective_subscription_status(tenant),
+            "usage": tenant_usage_snapshot(tenant),
+        },
+        "readiness": tenant_ready_status_payload(tenant),
+        "links": onboarding_links_payload(tenant_id) if tenant_id else {},
+    }
+    return _runtime_config_cache_set(tenant, effective_lang, payload) if use_cache else payload
+
+
+def tenant_runtime_config_public_view(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Runtime config safe for dashboard/onboarding UI.
+
+    Keeps secrets out of the response while preserving enough structure for
+    self-service setup screens.
+    """
+    cfg = dict(config or {})
+    services = dict(cfg.get("services") or {})
+    # Alias maps can get large; keep them for debug endpoints, not public UI.
+    services.pop("aliases", None)
+    cfg["services"] = services
+    booking = dict(cfg.get("booking") or {})
+    booking.pop("calendar_id", None)
+    cfg["booking"] = booking
+    return cfg
 
 def calendar_is_configured(calendar_id: str) -> bool:
     return bool((calendar_id or "").strip())
@@ -4336,14 +4651,15 @@ def handle_user_text(
     if not tenant_runtime_ready(tenant):
         log_tenant_runtime_validation(tenant)
         return blocked_result_for_reason(lang, "unavailable")
+    runtime_config = tenant_runtime_config(tenant, lang)
     settings = tenant_settings(tenant, lang)
-    service_catalog = tenant_service_catalog(tenant)
-    service_aliases = ensure_default_barbershop_aliases(
+    service_catalog = (runtime_config.get("services") or {}).get("catalog") or tenant_service_catalog(tenant)
+    service_aliases = (runtime_config.get("services") or {}).get("aliases") or ensure_default_barbershop_aliases(
         service_catalog,
         merged_service_alias_map(service_catalog, tenant, lang),
         lang,
     )
-    business_memory = tenant_business_memory(tenant, lang)
+    business_memory = (runtime_config.get("memory") or {}).get("text") or tenant_business_memory(tenant, lang)
     calendar_ready = calendar_is_configured(settings["calendar_id"])
 
     c["state"] = conversation_state(c)
@@ -5657,420 +5973,8 @@ def health():
         "allow_default_tenant_fallback": ALLOW_DEFAULT_TENANT_FALLBACK,
         "twilio_validate_signature": TWILIO_VALIDATE_SIGNATURE,
         "google_oauth_ready": oauth_ready(),
-        "repliq_production_mode": repliq_production_mode() if "repliq_production_mode" in globals() else False,
-        "repliq_dev_tools_enabled": repliq_dev_tools_enabled() if "repliq_dev_tools_enabled" in globals() else True,
     }
 
-
-# -------------------------
-# STAGE 18 — CLIENT PORTAL / PRODUCTION GUARD FOUNDATION
-# -------------------------
-def _env_bool(name: str, default: bool = False) -> bool:
-    raw = str(os.getenv(name, "")).strip().lower()
-    if raw in {"1", "true", "yes", "y", "on"}:
-        return True
-    if raw in {"0", "false", "no", "n", "off"}:
-        return False
-    return default
-
-
-def _env_csv(name: str) -> List[str]:
-    return [x.strip().lower() for x in str(os.getenv(name, "")).split(",") if x.strip()]
-
-
-def repliq_production_mode() -> bool:
-    return _env_bool("REPLIQ_PRODUCTION_MODE", False)
-
-
-def repliq_dev_tools_enabled() -> bool:
-    # Default stays permissive so current development/testing flow does not break.
-    # In production set REPLIQ_PRODUCTION_MODE=true and optionally REPLIQ_DEV_TOOLS_ENABLED=false.
-    return _env_bool("REPLIQ_DEV_TOOLS_ENABLED", not repliq_production_mode())
-
-
-def repliq_admin_token() -> str:
-    return str(os.getenv("REPLIQ_ADMIN_TOKEN", "")).strip()
-
-
-def repliq_portal_token() -> str:
-    return str(os.getenv("REPLIQ_PORTAL_TOKEN", "")).strip()
-
-
-def require_dev_tools_access() -> None:
-    if not repliq_dev_tools_enabled():
-        raise HTTPException(status_code=404, detail="Not Found")
-
-
-def portal_token_valid(token: str = "") -> bool:
-    expected = repliq_portal_token() or repliq_admin_token()
-    if not expected:
-        # No token configured: keep old links usable during MVP/dev.
-        return True
-    return str(token or "").strip() == expected
-
-
-def admin_token_valid(token: str = "") -> bool:
-    expected = repliq_admin_token()
-    if not expected:
-        return not repliq_production_mode()
-    return str(token or "").strip() == expected
-
-
-def safe_dashboard_url(tenant_id: str, token: str = "") -> str:
-    tenant_id = (tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
-    suffix = f"&access_token={requests.utils.quote(token)}" if token else ""
-    return f"/dashboard?tenant_id={requests.utils.quote(tenant_id)}{suffix}"
-
-
-def client_portal_context_payload(tenant: Dict[str, Any], token: str = "") -> Dict[str, Any]:
-    tenant = normalize_tenant_saas_fields(tenant or {})
-    tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip()
-    runtime_ready = tenant_runtime_ready(tenant) if tenant_id else False
-    readiness = tenant_ready_status_payload(tenant) if tenant_id else {"ready": False, "missing": ["tenant"]}
-    plan = tenant_plan_meta(tenant) if tenant_id else {}
-    return {
-        "ok": bool(tenant_id),
-        "tenant_id": tenant_id,
-        "business_name": str(tenant.get("business_name") or tenant.get("name") or "").strip(),
-        "owner_email": str(tenant.get("owner_email") or "").strip(),
-        "production_mode": repliq_production_mode(),
-        "dev_tools_enabled": repliq_dev_tools_enabled(),
-        "runtime_ready": runtime_ready,
-        "readiness": readiness,
-        "plan": plan,
-        "links": {
-            "dashboard": safe_dashboard_url(tenant_id, token),
-            "config": f"/tenant/config/ui?tenant_id={requests.utils.quote(tenant_id)}",
-            "onboarding": f"/client/onboarding?tenant_id={requests.utils.quote(tenant_id)}",
-            "runtime_config": f"/tenant/runtime-config?tenant_id={requests.utils.quote(tenant_id)}",
-            "uma_insights": f"/uma/insights?tenant_id={requests.utils.quote(tenant_id)}&days=14",
-        },
-        "client_safe": True,
-    }
-
-
-@app.get("/production/status")
-def production_status():
-    return {
-        "production_mode": repliq_production_mode(),
-        "dev_tools_enabled": repliq_dev_tools_enabled(),
-        "has_admin_token": bool(repliq_admin_token()),
-        "has_portal_token": bool(repliq_portal_token()),
-        "default_tenant_id": TENANT_ID_DEFAULT,
-    }
-
-
-@app.get("/portal/access-check")
-def portal_access_check(tenant_id: str = TENANT_ID_DEFAULT, access_token: str = ""):
-    tenant = get_tenant_or_404((tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT)
-    allowed = portal_token_valid(access_token)
-    return {
-        "ok": allowed,
-        "tenant_id": tenant.get("_id"),
-        "production_mode": repliq_production_mode(),
-        "runtime_ready": tenant_runtime_ready(tenant),
-        "readiness": tenant_ready_status_payload(tenant),
-    }
-
-
-@app.get("/portal/context")
-def portal_context(tenant_id: str = TENANT_ID_DEFAULT, access_token: str = ""):
-    if not portal_token_valid(access_token):
-        raise HTTPException(status_code=403, detail="Portal access denied")
-    tenant = get_tenant_or_404((tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT)
-    return client_portal_context_payload(tenant, access_token)
-
-
-@app.get("/portal", response_class=HTMLResponse)
-def client_portal(tenant_id: str = TENANT_ID_DEFAULT, access_token: str = ""):
-    if not portal_token_valid(access_token):
-        return HTMLResponse("""
-        <html><head><title>Repliq Portal</title></head>
-        <body style='font-family:Arial,sans-serif;background:#f6f7fb;padding:40px;'>
-          <div style='max-width:520px;margin:0 auto;background:white;border-radius:18px;padding:24px;box-shadow:0 8px 24px rgba(0,0,0,.08)'>
-            <h2>Repliq portāls</h2>
-            <p>Piekļuve nav apstiprināta.</p>
-            <p style='color:#6b7280'>Lūdzu, izmantojiet uzņēmumam piešķirto portāla saiti.</p>
-          </div>
-        </body></html>
-        """, status_code=403)
-    tenant = get_tenant_or_404((tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT)
-    ctx = client_portal_context_payload(tenant, access_token)
-    dashboard_url = ctx["links"]["dashboard"]
-    config_url = ctx["links"]["config"]
-    onboarding_url = ctx["links"]["onboarding"]
-    name = ctx.get("business_name") or ctx.get("tenant_id") or "Repliq"
-    ready_badge = "Gatavs" if ctx.get("runtime_ready") else "Nepabeigts"
-    return f"""
-    <html lang='lv'>
-      <head>
-        <meta charset='utf-8' />
-        <meta name='viewport' content='width=device-width, initial-scale=1' />
-        <title>Repliq klienta portāls</title>
-        <style>
-          body{{font-family:Arial,sans-serif;background:#f6f7fb;color:#111827;margin:0;padding:32px;}}
-          .wrap{{max-width:920px;margin:0 auto;}}
-          .card{{background:white;border-radius:20px;padding:24px;box-shadow:0 8px 24px rgba(0,0,0,.08);margin-bottom:16px;}}
-          .grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;}}
-          a.button{{display:inline-block;background:#111827;color:white;text-decoration:none;border-radius:12px;padding:12px 16px;margin:6px 6px 0 0;}}
-          a.secondary{{background:white;color:#111827;border:1px solid #d1d5db;}}
-          .muted{{color:#6b7280;}} .badge{{display:inline-block;border-radius:999px;padding:6px 10px;background:#f3f4f6;}}
-          @media(max-width:800px){{.grid{{grid-template-columns:1fr;}}}}
-        </style>
-      </head>
-      <body>
-        <div class='wrap'>
-          <div class='card'>
-            <div class='badge'>{ready_badge}</div>
-            <h1>Repliq klienta portāls</h1>
-            <p class='muted'>{name}</p>
-            <a class='button' href='{dashboard_url}'>Atvērt dashboard</a>
-            <a class='button secondary' href='{config_url}'>Uzņēmuma iestatījumi</a>
-            <a class='button secondary' href='{onboarding_url}'>Onboarding</a>
-          </div>
-          <div class='grid'>
-            <div class='card'><h3>Kanāli</h3><p class='muted'>Telegram/dev_chat šobrīd aktīvi. WhatsApp/Meta vēlāk.</p></div>
-            <div class='card'><h3>Konfigurācija</h3><p class='muted'>Pakalpojumi, darba laiks un FAQ tiek laboti bez JSON.</p></div>
-            <div class='card'><h3>UMA</h3><p class='muted'>Ieskati un rekomendācijas dashboard sadaļā.</p></div>
-          </div>
-        </div>
-      </body>
-    </html>
-    """
-
-
-@app.get("/client/dashboard")
-def client_dashboard_redirect(tenant_id: str = TENANT_ID_DEFAULT, access_token: str = ""):
-    if not portal_token_valid(access_token):
-        raise HTTPException(status_code=403, detail="Portal access denied")
-    return RedirectResponse(url=safe_dashboard_url(tenant_id, access_token))
-
-
-
-# -------------------------
-# STAGE 19 — CLIENT ONBOARDING FLOW
-# -------------------------
-def client_onboarding_steps_payload(tenant: Dict[str, Any]) -> Dict[str, Any]:
-    tenant = normalize_tenant_saas_fields(tenant or {})
-    tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip()
-    lang = get_lang(tenant.get("language") or "lv")
-    services = parse_human_service_lines(tenant_service_lines_text(tenant, lang)) if "parse_human_service_lines" in globals() else []
-    readiness = tenant_ready_status_payload(tenant) if tenant_id else {"ready": False, "missing": ["tenant"]}
-    onboarding = onboarding_status_payload(tenant) if tenant_id else {}
-    telegram_status_payload = telegram_config_status(
-        default_tenant_id=os.getenv("TELEGRAM_DEFAULT_TENANT_ID", "").strip() or tenant_id or TENANT_ID_DEFAULT,
-        server_base_url=SERVER_BASE_URL,
-    )
-    calendar_connected = bool(onboarding.get("google_connected") or tenant_google_connected_effective(tenant))
-    calendar_selected = bool(onboarding.get("calendar_selected") or str(tenant.get("calendar_id") or "").strip())
-    service_ready = bool(services or tenant_service_catalog(tenant))
-    memory_ready = bool(str(tenant.get("business_memory_lv") or tenant.get("business_memory") or tenant.get("faq_lv") or tenant.get("faq") or "").strip())
-    profile_ready = bool(str(tenant.get("business_name") or tenant.get("name") or "").strip())
-    hours_ready = bool(str(tenant.get("work_start") or "").strip() and str(tenant.get("work_end") or "").strip())
-    telegram_ready = bool(telegram_status_payload.get("configured"))
-    steps = [
-        {"id": "profile", "title": "Uzņēmuma profils", "done": profile_ready, "description": "Nosaukums, nozare un pamata valoda."},
-        {"id": "services", "title": "Pakalpojumi", "done": service_ready, "description": "Pakalpojumu saraksts vienkāršos vārdos, bez JSON."},
-        {"id": "hours", "title": "Darba laiks", "done": hours_ready, "description": "No cikiem līdz cikiem asistents drīkst piedāvāt laikus."},
-        {"id": "memory", "title": "FAQ / biznesa atmiņa", "done": memory_ready, "description": "Adrese, cenas, noteikumi un biežākie jautājumi."},
-        {"id": "calendar", "title": "Google Calendar", "done": bool(calendar_connected and calendar_selected), "description": "Kalendārs, kur pārbaudīt pieejamību un izveidot pierakstus."},
-        {"id": "telegram", "title": "Telegram", "done": telegram_ready, "description": "Pirmais bezmaksas čata kanāls testiem un startam."},
-        {"id": "launch", "title": "Palaist asistentu", "done": bool(readiness.get("ready")), "description": "Kad viss gatavs, asistents var pieņemt klientu ziņas."},
-    ]
-    done_count = sum(1 for x in steps if x.get("done"))
-    next_step = next((x["id"] for x in steps if not x.get("done")), "done")
-    return {
-        "tenant_id": tenant_id,
-        "language": lang,
-        "steps": steps,
-        "done_count": done_count,
-        "total_count": len(steps),
-        "progress": round(done_count / max(1, len(steps)), 3),
-        "next_step": next_step,
-        "readiness": readiness,
-        "onboarding": onboarding,
-        "telegram": telegram_status_payload,
-        "links": {
-            "dashboard": f"/dashboard?tenant_id={requests.utils.quote(tenant_id)}",
-            "config": f"/tenant/config/ui?tenant_id={requests.utils.quote(tenant_id)}",
-            "runtime_config": f"/tenant/runtime-config?tenant_id={requests.utils.quote(tenant_id)}",
-            "telegram_status": "/telegram/status",
-            "google_connect": f"/google/connect?tenant_id={requests.utils.quote(tenant_id)}",
-        },
-    }
-
-
-@app.get("/client/onboarding/context")
-def client_onboarding_context(tenant_id: str = TENANT_ID_DEFAULT, access_token: str = ""):
-    if not portal_token_valid(access_token):
-        raise HTTPException(status_code=403, detail="Portal access denied")
-    tenant = get_tenant_or_404((tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT)
-    return client_onboarding_steps_payload(tenant)
-
-
-@app.post("/client/onboarding/launch")
-def client_onboarding_launch(payload: dict = Body(...)):
-    tenant_id = str((payload or {}).get("tenant_id") or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
-    access_token = str((payload or {}).get("access_token") or "").strip()
-    if not portal_token_valid(access_token):
-        raise HTTPException(status_code=403, detail="Portal access denied")
-    tenant = get_tenant_or_404(tenant_id)
-    readiness = tenant_ready_status_payload(tenant)
-    if not readiness.get("ready"):
-        return {
-            "status": "not_ready",
-            "tenant_id": tenant_id,
-            "readiness": readiness,
-            "onboarding": client_onboarding_steps_payload(tenant),
-        }
-    cols = tenants_columns()
-    pk = tenants_pk(cols)
-    col_names = {c["name"] for c in cols}
-    updates = []
-    params: Dict[str, Any] = {"tid": tenant_id}
-    if "onboarding_completed" in col_names:
-        updates.append("onboarding_completed=true")
-    if "status" in col_names:
-        updates.append("status=:status")
-        params["status"] = "active"
-    if "subscription_status" in col_names and not str(tenant.get("subscription_status") or "").strip():
-        updates.append("subscription_status=:subscription_status")
-        params["subscription_status"] = "trial"
-    if "updated_at" in col_names:
-        updates.append("updated_at=NOW()")
-    if updates:
-        with engine.begin() as conn:
-            conn.execute(text(f"UPDATE tenants SET {', '.join(updates)} WHERE {pk}=:tid"), params)
-    updated = get_tenant_or_404(tenant_id)
-    return {
-        "status": "ok",
-        "tenant_id": tenant_id,
-        "readiness": tenant_ready_status_payload(updated),
-        "onboarding": client_onboarding_steps_payload(updated),
-        "dashboard_url": f"/dashboard?tenant_id={requests.utils.quote(tenant_id)}",
-    }
-
-
-@app.get("/client/onboarding", response_class=HTMLResponse)
-def client_onboarding_wizard(tenant_id: str = TENANT_ID_DEFAULT, access_token: str = ""):
-    if not portal_token_valid(access_token):
-        return HTMLResponse("""
-        <html><head><title>Repliq onboarding</title></head>
-        <body style='font-family:Arial,sans-serif;background:#f6f7fb;padding:40px;'>
-          <div style='max-width:520px;margin:0 auto;background:white;border-radius:18px;padding:24px;box-shadow:0 8px 24px rgba(0,0,0,.08)'>
-            <h2>Repliq onboarding</h2>
-            <p>Piekļuve nav apstiprināta.</p>
-          </div>
-        </body></html>
-        """, status_code=403)
-    safe_tid = (tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
-    token_js = json.dumps(access_token or "")
-    tenant_js = json.dumps(safe_tid)
-    return f"""
-    <html lang="lv">
-    <head>
-      <meta charset="utf-8" />
-      <meta name="viewport" content="width=device-width, initial-scale=1" />
-      <title>Repliq onboarding</title>
-      <style>
-        :root{{--bg:#f6f7fb;--card:#fff;--text:#101827;--muted:#6b7280;--line:#e5e7eb;--brand:#111827;--ok:#16a34a;--warn:#d97706;--soft:#f3f4f6;}}
-        *{{box-sizing:border-box}} body{{margin:0;background:var(--bg);color:var(--text);font-family:Inter,Arial,sans-serif;}}
-        .wrap{{max-width:1120px;margin:0 auto;padding:28px;}} .hero{{background:linear-gradient(135deg,#111827,#374151);color:white;border-radius:28px;padding:30px;box-shadow:0 16px 40px rgba(17,24,39,.18);}}
-        .hero p{{color:#d1d5db;max-width:720px;line-height:1.6}} .topbar{{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:18px;}}
-        .grid{{display:grid;grid-template-columns:1fr 380px;gap:18px;margin-top:18px;}} .card{{background:var(--card);border:1px solid var(--line);border-radius:22px;padding:20px;box-shadow:0 8px 24px rgba(0,0,0,.05);}}
-        .steps{{display:grid;gap:10px;}} .step{{display:grid;grid-template-columns:34px 1fr auto;gap:12px;align-items:start;border:1px solid var(--line);border-radius:16px;padding:14px;background:#fff;}}
-        .dot{{width:30px;height:30px;border-radius:999px;display:flex;align-items:center;justify-content:center;background:var(--soft);font-weight:800;}} .dot.ok{{background:#dcfce7;color:#166534}} .dot.warn{{background:#fef3c7;color:#92400e}}
-        .muted{{color:var(--muted)}} .small{{font-size:12px;color:var(--muted)}} .row{{display:flex;gap:10px;flex-wrap:wrap;align-items:center;}}
-        button,a.button{{border:0;border-radius:12px;background:var(--brand);color:white;padding:11px 14px;text-decoration:none;cursor:pointer;font-weight:700;display:inline-block;}}
-        button.secondary,a.secondary{{background:white;color:var(--brand);border:1px solid #d1d5db;}} button:disabled{{opacity:.55;cursor:not-allowed}}
-        label{{font-size:13px;color:#374151;font-weight:700;margin-top:12px;display:block}} input,textarea,select{{width:100%;border:1px solid #d1d5db;border-radius:12px;padding:11px;margin-top:6px;font:inherit;background:white;}}
-        textarea{{min-height:92px;resize:vertical}} .progress{{height:12px;background:#e5e7eb;border-radius:99px;overflow:hidden;}} .bar{{height:100%;width:0;background:#22c55e;transition:.25s;}}
-        .pill{{display:inline-flex;gap:6px;align-items:center;border-radius:999px;background:#f3f4f6;padding:6px 10px;font-size:13px;}} code{{background:#f3f4f6;border-radius:8px;padding:2px 6px;}}
-        @media(max-width:900px){{.grid{{grid-template-columns:1fr}}.topbar{{display:block}}}}
-      </style>
-    </head>
-    <body>
-      <div class="wrap">
-        <div class="topbar">
-          <div><strong>Repliq</strong> <span class="muted">klienta palaišana</span></div>
-          <div class="row"><a class="button secondary" id="dashboardLink">Dashboard</a><a class="button secondary" id="configLink">Iestatījumi</a><button class="secondary" onclick="loadAll()">Atjaunot</button></div>
-        </div>
-        <section class="hero">
-          <div class="pill" id="statusPill">Ielādē...</div>
-          <h1>Palaižam jūsu AI recepcionistu</h1>
-          <p>Iziesim cauri svarīgākajiem soļiem: uzņēmuma profils, pakalpojumi, darba laiks, FAQ, Google Calendar un Telegram. Viss ir latviski un bez JSON klienta pusē.</p>
-          <div class="progress"><div class="bar" id="progressBar"></div></div>
-          <p id="progressText" class="small">—</p>
-        </section>
-        <div class="grid">
-          <main class="card">
-            <h2>Onboarding checklist</h2>
-            <div class="steps" id="stepsBox"></div>
-          </main>
-          <aside class="card">
-            <h2>Ātrā konfigurācija</h2>
-            <form id="quickForm">
-              <label>Uzņēmuma nosaukums</label><input id="business_name" placeholder="Piemēram, Repliq Clinic" />
-              <label>Pamata valoda</label><select id="language"><option value="lv">Latviešu</option><option value="ru">Русский</option><option value="en">English</option></select>
-              <label>Darba sākums</label><input id="work_start" placeholder="09:00" />
-              <label>Darba beigas</label><input id="work_end" placeholder="18:00" />
-              <label>Pakalpojumi</label><textarea id="service_lines" placeholder="konsultācija\nmasāža\ndiagnostika"></textarea>
-              <label>FAQ / biznesa atmiņa</label><textarea id="business_memory_lv" placeholder="Adrese, cenas, noteikumi, biežākie jautājumi..."></textarea>
-              <div class="row" style="margin-top:14px"><button type="submit">Saglabāt</button><button type="button" class="secondary" onclick="launchAssistant()">Palaist asistentu</button></div>
-              <p class="small" id="saveStatus"></p>
-            </form>
-          </aside>
-        </div>
-      </div>
-      <script>
-        const TENANT_ID = {tenant_js};
-        const ACCESS_TOKEN = {token_js};
-        const q = (id)=>document.getElementById(id);
-        const esc = (v)=>String(v ?? '').replace(/[&<>"']/g, m=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[m]));
-        async function fetchJson(url, opts={{}}){{ const r = await fetch(url, opts); const txt = await r.text(); let data={{}}; try{{data=txt?JSON.parse(txt):{{}}}}catch(e){{data={{raw:txt}}}} if(!r.ok) throw new Error(data.detail || txt || r.status); return data; }}
-        function stepHtml(s, idx){{ return `<div class="step"><div class="dot ${{s.done?'ok':'warn'}}">${{s.done?'✓':idx+1}}</div><div><strong>${{esc(s.title)}}</strong><div class="small">${{esc(s.description)}}</div></div><div class="pill">${{s.done?'Gatavs':'Jādara'}}</div></div>`; }}
-        async function loadAll(){{
-          const tokenPart = ACCESS_TOKEN ? '&access_token='+encodeURIComponent(ACCESS_TOKEN) : '';
-          const ctx = await fetchJson('/client/onboarding/context?tenant_id='+encodeURIComponent(TENANT_ID)+tokenPart);
-          q('stepsBox').innerHTML = (ctx.steps||[]).map(stepHtml).join('');
-          q('progressBar').style.width = Math.round((ctx.progress||0)*100)+'%';
-          q('progressText').textContent = `${{ctx.done_count || 0}} no ${{ctx.total_count || 0}} soļiem pabeigti · nākamais solis: ${{ctx.next_step || 'done'}}`;
-          q('statusPill').textContent = ctx.readiness?.ready ? 'Asistents gatavs' : 'Nepieciešama konfigurācija';
-          q('dashboardLink').href = ctx.links?.dashboard || ('/dashboard?tenant_id='+encodeURIComponent(TENANT_ID));
-          q('configLink').href = ctx.links?.config || ('/tenant/config/ui?tenant_id='+encodeURIComponent(TENANT_ID));
-          try{{
-            const cfg = await fetchJson('/tenant/config?tenant_id='+encodeURIComponent(TENANT_ID));
-            const t = cfg.tenant || {{}};
-            q('business_name').value = t.business_name || '';
-            q('language').value = t.language || 'lv';
-            q('work_start').value = t.work_start || '09:00';
-            q('work_end').value = t.work_end || '18:00';
-            q('service_lines').value = cfg.service_lines || '';
-            q('business_memory_lv').value = t.business_memory_lv || t.business_memory || '';
-          }}catch(e){{ console.warn('config_load_failed', e); }}
-        }}
-        q('quickForm').addEventListener('submit', async (e)=>{{
-          e.preventDefault(); q('saveStatus').textContent='Saglabā...';
-          const payload = {{ tenant_id:TENANT_ID, business_name:q('business_name').value, language:q('language').value, work_start:q('work_start').value, work_end:q('work_end').value, service_lines:q('service_lines').value, business_memory_lv:q('business_memory_lv').value }};
-          try{{
-            await fetchJson('/tenant/config/update', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify(payload)}});
-            try{{ await fetchJson('/tenant/runtime-config/refresh?tenant_id='+encodeURIComponent(TENANT_ID), {{method:'POST'}}); }}catch(e){{}}
-            q('saveStatus').textContent='Saglabāts ✅'; await loadAll();
-          }}catch(err){{ q('saveStatus').textContent='Kļūda: '+err.message; }}
-        }});
-        async function launchAssistant(){{
-          q('saveStatus').textContent='Pārbaudu gatavību...';
-          try{{
-            const data = await fetchJson('/client/onboarding/launch', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify({{tenant_id:TENANT_ID, access_token:ACCESS_TOKEN}})}});
-            if(data.status === 'ok'){{ q('saveStatus').textContent='Asistents palaists ✅'; window.location = data.dashboard_url; }}
-            else {{ q('saveStatus').textContent='Vēl nav gatavs: '+((data.readiness?.missing||[]).join(', ') || 'missing setup'); await loadAll(); }}
-          }}catch(err){{ q('saveStatus').textContent='Kļūda: '+err.message; }}
-        }}
-        loadAll().catch(e=>{{ q('stepsBox').innerHTML='<p class="muted">Neizdevās ielādēt onboarding.</p>'; console.error(e); }});
-      </script>
-    </body>
-    </html>
-    """
 
 # -------------------------
 # TELEGRAM CHANNEL (chat-first)
@@ -6097,6 +6001,31 @@ def telegram_set_webhook(url: str = "", tenant_id: str = ""):
     return result
 
 
+
+
+def reset_telegram_conversation_state(tenant_id: str, user_key: str) -> None:
+    tenant_id = (tenant_id or "").strip()
+    user_key = norm_user_key(user_key)
+    if not tenant_id or not user_key:
+        return
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
+            DELETE FROM conversations
+            WHERE tenant_id = :tenant_id
+            AND user_key = :user_key
+            """),
+            {"tenant_id": tenant_id, "user_key": user_key},
+        )
+
+@app.post("/telegram/reset")
+def telegram_reset(tenant_id: str = "", user_key: str = ""):
+    effective_tenant_id = (tenant_id or os.getenv("TELEGRAM_DEFAULT_TENANT_ID", "").strip() or TENANT_ID_DEFAULT).strip()
+    if not user_key:
+        raise HTTPException(status_code=400, detail="user_key is required")
+    reset_telegram_conversation_state(effective_tenant_id, user_key)
+    return {"ok": True, "tenant_id": effective_tenant_id, "user_key": norm_user_key(user_key), "status": "reset_ok"}
+
 @app.post("/telegram/webhook")
 async def telegram_webhook(request: Request, tenant_id: str = ""):
     default_tenant_id = (tenant_id or os.getenv("TELEGRAM_DEFAULT_TENANT_ID", "").strip() or TENANT_ID_DEFAULT).strip()
@@ -6109,6 +6038,7 @@ async def telegram_webhook(request: Request, tenant_id: str = ""):
         handle_user_text_with_logging=handle_user_text_with_logging,
         detect_language_func=detect_language,
         unavailable_text_func=lambda lang: t(lang, "service_unavailable_text"),
+        reset_conversation_func=reset_telegram_conversation_state,
     )
 
 
@@ -7138,6 +7068,342 @@ def dashboard_analytics(tenant_id: str) -> Dict[str, Any]:
         "today_bookings": int(today_bookings),
     }
 
+
+
+# -------------------------
+# STAGE 15 — UMA INTELLIGENCE LAYER
+# -------------------------
+def _uma_safe_ratio(numerator: int, denominator: int, precision: int = 3) -> float:
+    try:
+        numerator = int(numerator or 0)
+        denominator = int(denominator or 0)
+        if denominator <= 0:
+            return 0.0
+        return round(float(numerator) / float(denominator), precision)
+    except Exception:
+        return 0.0
+
+
+def _uma_severity(value: float, medium_at: float, high_at: float, inverse: bool = False) -> str:
+    try:
+        v = float(value or 0.0)
+        if inverse:
+            if v <= high_at:
+                return "high"
+            if v <= medium_at:
+                return "medium"
+            return "low"
+        if v >= high_at:
+            return "high"
+        if v >= medium_at:
+            return "medium"
+        return "low"
+    except Exception:
+        return "low"
+
+
+def uma_clean_memory_candidate(value: Any) -> Optional[str]:
+    txt = str(value or "").strip()
+    if not txt:
+        return None
+    txt = re.sub(r"\s+", " ", txt)
+    low = txt.lower().strip(" .,!?:;-/\\")
+    if len(low) < 3 or len(low) > 80:
+        return None
+    # Remove pure dates, times and technical fragments from UMA memory suggestions.
+    if re.fullmatch(r"\d{1,2}[:.]\d{2}", low):
+        return None
+    if re.fullmatch(r"\d{1,2}[./-]\d{1,2}(?:[./-]\d{2,4})?", low):
+        return None
+    if re.fullmatch(r"\d+", low):
+        return None
+    if not re.search(r"[A-Za-zĀ-žА-Яа-яЁё]", low):
+        return None
+    stop_exact = {
+        "labdien", "sveiki", "hello", "hi", "hey", "привет", "здравствуйте",
+        "ok", "okay", "labi", "jā", "ja", "да", "yes", "no", "nē", "нет",
+        "gribu pierakstīties", "vēlos pierakstīties", "хочу записаться", "i want to book",
+    }
+    if low in stop_exact:
+        return None
+    stop_contains = [
+        "pierakst", "запис", "appointment", "book", "confirm", "apstiprin", "подтверж",
+    ]
+    # Keep service-like phrases but reject generic intent phrases.
+    if any(x in low for x in stop_contains) and len(low.split()) <= 4:
+        return None
+    return txt[:80]
+
+
+def uma_grouped_rows(tenant_id: str, days: int, group_column: str, limit: int = 10) -> List[Dict[str, Any]]:
+    allowed = {"service", "channel", "intent", "status"}
+    if group_column not in allowed:
+        return []
+    days = max(1, min(int(days or 14), 90))
+    limit = max(1, min(int(limit or 10), 50))
+    since_ts = now_ts() - timedelta(days=days)
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                f"""
+                SELECT COALESCE(NULLIF({group_column}, ''), 'unknown') AS label,
+                       COUNT(*) AS cnt
+                FROM call_logs
+                WHERE tenant_id=:tenant_id
+                  AND created_at >= :since_ts
+                GROUP BY COALESCE(NULLIF({group_column}, ''), 'unknown')
+                ORDER BY cnt DESC, label ASC
+                LIMIT :limit
+                """
+            ),
+            {"tenant_id": tenant_id, "since_ts": since_ts, "limit": limit},
+        ).fetchall()
+    key = group_column
+    return [{key: str(r[0] or "unknown"), "count": int(r[1] or 0)} for r in rows]
+
+
+def uma_recent_friction_samples(tenant_id: str, days: int = 14, limit: int = 8) -> List[Dict[str, Any]]:
+    days = max(1, min(int(days or 14), 90))
+    limit = max(1, min(int(limit or 8), 25))
+    since_ts = now_ts() - timedelta(days=days)
+    friction_statuses = ["need_more", "busy", "recovery", "booking_failed", "no_booking", "reschedule_wait"]
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT created_at, channel, intent, status, service, raw_text, ai_reply
+                FROM call_logs
+                WHERE tenant_id=:tenant_id
+                  AND created_at >= :since_ts
+                  AND status = ANY(:statuses)
+                ORDER BY created_at DESC
+                LIMIT :limit
+                """
+            ),
+            {"tenant_id": tenant_id, "since_ts": since_ts, "statuses": friction_statuses, "limit": limit},
+        ).fetchall()
+    return [
+        {
+            "created_at": r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0]),
+            "channel": r[1],
+            "intent": r[2],
+            "status": r[3],
+            "service": r[4],
+            "user_message": r[5],
+            "ai_reply": r[6],
+        }
+        for r in rows
+    ]
+
+
+def uma_memory_candidates(tenant_id: str, days: int = 14, limit: int = 10) -> List[Dict[str, Any]]:
+    days = max(1, min(int(days or 14), 90))
+    limit = max(1, min(int(limit or 10), 30))
+    since_ts = now_ts() - timedelta(days=days)
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT raw_text, COUNT(*) AS cnt
+                FROM call_logs
+                WHERE tenant_id=:tenant_id
+                  AND created_at >= :since_ts
+                  AND raw_text IS NOT NULL
+                  AND LENGTH(TRIM(raw_text)) BETWEEN 3 AND 120
+                GROUP BY raw_text
+                HAVING COUNT(*) >= 1
+                ORDER BY cnt DESC, MAX(created_at) DESC
+                LIMIT 100
+                """
+            ),
+            {"tenant_id": tenant_id, "since_ts": since_ts},
+        ).fetchall()
+    out: List[Dict[str, Any]] = []
+    seen = set()
+    for raw, cnt in rows:
+        candidate = uma_clean_memory_candidate(raw)
+        if not candidate:
+            continue
+        key = candidate.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({
+            "source": "conversation_pattern",
+            "candidate": candidate,
+            "count": int(cnt or 0),
+            "reason": f"Repeated or potentially useful client phrase ({int(cnt or 0)}x).",
+            "suggested_action": "Review and add as service alias, FAQ entry, or business memory if relevant.",
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
+def uma_recommendations(summary: Dict[str, Any], top_services: List[Dict[str, Any]], channels: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    total = int(summary.get("total_dialogs") or 0)
+    booking_rate = float(summary.get("booking_rate") or 0.0)
+    friction_rate = float(summary.get("friction_rate") or 0.0)
+    unfinished = int(summary.get("unfinished") or 0)
+    recommendations: List[Dict[str, Any]] = []
+
+    if total >= 5 and booking_rate < 0.25:
+        recommendations.append({
+            "priority": "high" if booking_rate < 0.15 else "medium",
+            "area": "conversion",
+            "title": "Shorten the path from first message to booking confirmation",
+            "why": "Booking conversion is low compared with total dialogues.",
+            "action": "Ask for only the missing piece at each step: service, day, or time. Avoid asking for everything at once.",
+        })
+    if total >= 5 and (friction_rate >= 0.2 or unfinished >= max(3, int(total * 0.35))):
+        recommendations.append({
+            "priority": "medium",
+            "area": "dialogue",
+            "title": "Improve clarification prompts",
+            "why": "Many conversations remain unresolved or need follow-up.",
+            "action": "Use numbered options in Telegram and keep clarification prompts specific to the current state.",
+        })
+    if top_services:
+        leading = str(top_services[0].get("service") or "").strip()
+        if leading and leading != "unknown":
+            recommendations.append({
+                "priority": "low",
+                "area": "growth",
+                "title": "Use the most requested service as the default sales path",
+                "why": f"The leading service is {leading}.",
+                "action": "Show this service first in onboarding, Telegram examples, dashboard demo flows, and landing page copy.",
+            })
+    if channels:
+        leading_channel = str(channels[0].get("channel") or "").strip()
+        if leading_channel:
+            recommendations.append({
+                "priority": "low",
+                "area": "channel",
+                "title": "Optimize the strongest active channel first",
+                "why": f"Most conversations currently come from {leading_channel}.",
+                "action": "Polish this channel before adding more integrations, then reuse the same flow for WhatsApp/webchat.",
+            })
+    if not recommendations:
+        recommendations.append({
+            "priority": "low",
+            "area": "baseline",
+            "title": "Collect more conversations before changing the flow",
+            "why": "There is not enough traffic yet for strong conclusions.",
+            "action": "Run 20–50 realistic test conversations across Telegram and dev_chat, then review UMA again.",
+        })
+    return recommendations[:5]
+
+
+def uma_insights_payload(tenant_id: str, days: int = 14) -> Dict[str, Any]:
+    tenant_id = (tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
+    days = max(1, min(int(days or 14), 90))
+    tenant = get_tenant_or_404(tenant_id)
+    since_ts = now_ts() - timedelta(days=days)
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT
+                    COUNT(*) AS total_dialogs,
+                    COUNT(*) FILTER (WHERE status='booked') AS bookings,
+                    COUNT(*) FILTER (WHERE status IN ('need_more','busy','recovery','booking_failed','no_booking','reschedule_wait')) AS friction_events,
+                    COUNT(*) FILTER (WHERE intent='info' OR status='info') AS info_requests,
+                    COUNT(*) FILTER (WHERE status='cancelled') AS cancellations,
+                    COUNT(*) FILTER (WHERE status IN ('need_more','reschedule_wait')) AS unfinished,
+                    COUNT(DISTINCT COALESCE(user_id, 'unknown')) AS unique_users
+                FROM call_logs
+                WHERE tenant_id=:tenant_id
+                  AND created_at >= :since_ts
+                """
+            ),
+            {"tenant_id": tenant_id, "since_ts": since_ts},
+        ).fetchone()
+    total = int((row[0] if row else 0) or 0)
+    bookings = int((row[1] if row else 0) or 0)
+    friction_events = int((row[2] if row else 0) or 0)
+    info_requests = int((row[3] if row else 0) or 0)
+    cancellations = int((row[4] if row else 0) or 0)
+    unfinished = int((row[5] if row else 0) or 0)
+    unique_users = int((row[6] if row else 0) or 0)
+    booking_rate = _uma_safe_ratio(bookings, total)
+    friction_rate = _uma_safe_ratio(friction_events, total)
+    summary = {
+        "total_dialogs": total,
+        "unique_users": unique_users,
+        "bookings": bookings,
+        "booking_rate": booking_rate,
+        "friction_events": friction_events,
+        "friction_rate": friction_rate,
+        "info_requests": info_requests,
+        "cancellations": cancellations,
+        "unfinished": unfinished,
+    }
+    top_services = uma_grouped_rows(tenant_id, days, "service", limit=5)
+    channels = uma_grouped_rows(tenant_id, days, "channel", limit=8)
+    intents = uma_grouped_rows(tenant_id, days, "intent", limit=8)
+    statuses = uma_grouped_rows(tenant_id, days, "status", limit=8)
+
+    signals: List[Dict[str, Any]] = []
+    if total >= 5 and booking_rate < 0.25:
+        signals.append({
+            "type": "low_booking_conversion",
+            "severity": _uma_severity(booking_rate, medium_at=0.25, high_at=0.15, inverse=True),
+            "title": "Low booking conversion",
+            "value": booking_rate,
+            "explain": "Bookings are low compared with the number of conversations.",
+        })
+    if total >= 5 and friction_rate >= 0.15:
+        signals.append({
+            "type": "conversation_friction",
+            "severity": _uma_severity(friction_rate, medium_at=0.15, high_at=0.35),
+            "title": "Many conversations need follow-up",
+            "value": friction_rate,
+            "explain": "A noticeable share of conversations remain unresolved, busy, or need clarification.",
+        })
+    if unfinished >= max(3, int(total * 0.35)) and total >= 5:
+        signals.append({
+            "type": "unfinished_dialogues",
+            "severity": "medium",
+            "title": "Unfinished conversations are accumulating",
+            "value": unfinished,
+            "explain": "Several users reached a waiting state but did not complete the flow.",
+        })
+    if not signals:
+        signals.append({
+            "type": "baseline_ok",
+            "severity": "low",
+            "title": "No major risk signal yet",
+            "value": total,
+            "explain": "UMA needs more data or current metrics do not show a strong issue.",
+        })
+
+    return {
+        "tenant_id": tenant_id,
+        "window_days": days,
+        "generated_at": now_ts().isoformat(),
+        "business": {
+            "name": tenant.get("business_name") or tenant.get("name"),
+            "type": tenant.get("business_type") or "barbershop",
+            "primary_language": tenant_primary_language(tenant),
+        },
+        "summary": summary,
+        "signals": signals,
+        "top_services": top_services,
+        "channels": channels,
+        "intents": intents,
+        "statuses": statuses,
+        "memory_candidates": uma_memory_candidates(tenant_id, days=days, limit=10),
+        "recommendations": uma_recommendations(summary, top_services, channels),
+        "friction_samples": uma_recent_friction_samples(tenant_id, days=days, limit=8),
+        "dashboard_ready": True,
+    }
+
+
+@app.get("/uma/insights")
+@app.get("/dashboard/uma-insights")
+def uma_insights_endpoint(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    return uma_insights_payload(tenant_id, days=days)
+
 @app.get("/dashboard/bookings")
 @app.get("/bookings")
 def dashboard_bookings(tenant_id: str = TENANT_ID_DEFAULT, limit: int = 50):
@@ -7598,15 +7864,15 @@ async function loadAll() {{
   const ov = data.overview || {{}};
 
   try {{ renderOverview(ov); }} catch (err) {{ errors.push(`overview render: ${{err?.message || err}}`); console.error(err); }}
-  setText('m_requests', a?.total_requests ?? u?.total_requests ?? 0);
-  setText('m_bookings', a?.total_bookings ?? u?.total_bookings ?? 0);
+  setText('m_requests', a?.total_requests ?? '-');
+  setText('m_bookings', a?.total_bookings ?? '-');
   setText('m_conv', `${{a?.conversion_rate ?? 0}}%`);
-  setText('m_today', a?.today_bookings ?? 0);
-  setText('m_users', u?.unique_users ?? 0);
-  setText('m_reschedules', u?.total_reschedules ?? 0);
-  setText('m_cancelled', u?.total_cancelled ?? 0);
+  setText('m_today', a?.today_bookings ?? '-');
+  setText('m_users', u?.unique_users ?? '-');
+  setText('m_reschedules', u?.total_reschedules ?? '-');
+  setText('m_cancelled', u?.total_cancelled ?? '-');
   const topChannelObj = Array.isArray(u?.channels) && u.channels.length ? u.channels[0] : null;
-  setText('m_channel', topChannelObj?.channel || '—');
+  setText('m_channel', topChannelObj?.channel || '-');
   setText('m_channel_sub', topChannelObj ? `${{topChannelObj.count || 0}} events in selected window` : '', '');
 
   try {{ renderTrendChart(chartData?.daily || u?.daily || []); }} catch (err) {{ errors.push(`trend chart: ${{err?.message || err}}`); console.error(err); }}
@@ -7694,17 +7960,10 @@ button.secondary {{ background:#fff; color:#111827; border:1px solid #d1d5db; }}
   <div class="card">
     <h2>Services and rules</h2>
     <div class="grid">
-      <div class="full"><label>Services / Pakalpojumi</label><textarea id="service_lines" placeholder="konsultācija
-masāža
-diagnostika"></textarea><div class="small">Client-friendly mode: one service per line or comma-separated. Repliq converts this to service catalog automatically.</div></div>
-      <details class="full"><summary class="small">Advanced / Developer mode</summary>
-        <div class="grid" style="margin-top:12px;">
-          <div><label>Services LV</label><textarea id="services_lv"></textarea></div>
-          <div><label>Services RU</label><textarea id="services_ru"></textarea></div>
-          <div class="full"><label>Services EN</label><textarea id="services_en"></textarea></div>
-          <div class="full"><label>Service catalog JSON</label><textarea id="service_catalog_json" placeholder='[{{"key":"consultation","name_lv":"konsultācija","name_ru":"konsultācija","name_en":"konsultācija","duration_min":30}}]'></textarea></div>
-        </div>
-      </details>
+      <div><label>Services LV</label><textarea id="services_lv"></textarea></div>
+      <div><label>Services RU</label><textarea id="services_ru"></textarea></div>
+      <div class="full"><label>Services EN</label><textarea id="services_en"></textarea></div>
+      <div class="full"><label>Service catalog JSON</label><textarea id="service_catalog_json" placeholder='[{{"key":"mens_haircut","name_lv":"vīriešu frizūra","name_ru":"мужская стрижка","name_en":"men&#39;s haircut","duration_min":30,"aliases_lv":["matu griezums"],"aliases_ru":["стрижка"],"aliases_en":["haircut"]}}]'></textarea></div>
       <div class="full"><label>Service account JSON</label><textarea id="service_account_json" placeholder='{{"type":"service_account",...}}'></textarea></div>
       <div><label>Weekly hours JSON</label><textarea id="weekly_hours_json"></textarea></div>
       <div><label>Days off JSON</label><textarea id="days_off_json"></textarea></div>
@@ -7757,7 +8016,6 @@ async function loadConfig() {{
   document.getElementById('language').value = t.language || 'lv';
   document.getElementById('work_start').value = t.work_start || '';
   document.getElementById('work_end').value = t.work_end || '';
-  document.getElementById('service_lines').value = data.service_lines || t.services_lv || '';
   document.getElementById('services_lv').value = t.services_lv || '';
   document.getElementById('services_ru').value = t.services_ru || '';
   document.getElementById('services_en').value = t.services_en || '';
@@ -7783,7 +8041,6 @@ async function saveConfig() {{
     language: document.getElementById('language').value || null,
     work_start: document.getElementById('work_start').value || null,
     work_end: document.getElementById('work_end').value || null,
-    service_lines: document.getElementById('service_lines').value || null,
     services_lv: document.getElementById('services_lv').value || null,
     services_ru: document.getElementById('services_ru').value || null,
     services_en: document.getElementById('services_en').value || null,
@@ -7838,68 +8095,6 @@ def _safe_parse_json_text(value: Any):
     except Exception:
         return None
 
-
-
-def tenant_service_lines_text(tenant: Dict[str, Any], lang: str = "lv") -> str:
-    """Human-friendly services list for dashboard/config UI.
-
-    One service per line. This is what the client edits; backend keeps
-    service_catalog_json internally for parsing, aliases and calendar summaries.
-    """
-    tenant = tenant or {}
-    catalog = tenant_service_catalog(tenant)
-    if catalog:
-        names = [service_display_name(item, lang) for item in catalog]
-        cleaned = [str(x).strip() for x in names if str(x).strip()]
-        if cleaned:
-            return "\n".join(cleaned)
-    raw = tenant_services_for_lang(tenant, lang)
-    parts = [x.strip() for x in re.split(r"[\n,;]+", str(raw or "")) if x.strip()]
-    return "\n".join(parts)
-
-def parse_human_service_lines(value: Any) -> List[str]:
-    txt = str(value or "").strip()
-    if not txt:
-        return []
-    # Accept both formats: one per line or comma/semicolon separated.
-    # This keeps the client UI human-friendly and hides JSON.
-    raw_parts = []
-    for line in txt.splitlines():
-        raw_parts.extend(re.split(r"[,;]+", line))
-    out: List[str] = []
-    seen = set()
-    for part in raw_parts:
-        name = re.sub(r"\s+", " ", str(part or "").strip())
-        if not name:
-            continue
-        key = name.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(name)
-    return out
-
-def build_service_catalog_from_names(names: List[str], duration_min: int = APPT_MINUTES) -> List[Dict[str, Any]]:
-    catalog: List[Dict[str, Any]] = []
-    for name in names:
-        clean = re.sub(r"\s+", " ", str(name or "").strip())
-        if not clean:
-            continue
-        catalog.append({
-            "key": _slugify_service_key(clean),
-            "name_lv": clean,
-            "name_ru": clean,
-            "name_en": clean,
-            "duration_min": max(5, int(duration_min or APPT_MINUTES)),
-            "aliases_lv": [clean],
-            "aliases_ru": [clean],
-            "aliases_en": [clean],
-        })
-    return catalog
-
-def service_names_csv(names: List[str]) -> str:
-    return ", ".join([str(x).strip() for x in names if str(x).strip()])
-
 def _sync_weekly_hours_with_fallback_bounds(
     weekly_hours_value: Any,
     work_start: Optional[str],
@@ -7933,7 +8128,6 @@ class TenantConfigUpdateRequest(BaseModel):
     services_lv: Optional[str] = None
     services_ru: Optional[str] = None
     services_en: Optional[str] = None
-    service_lines: Optional[str] = None
     weekly_hours_json: Optional[str] = None
     days_off_json: Optional[str] = None
     breaks_json: Optional[str] = None
@@ -7950,6 +8144,17 @@ class TenantConfigUpdateRequest(BaseModel):
     dialogs_per_month: Optional[int] = None
     reset_override: bool = False
 
+
+
+
+class DashboardConfigUpdateRequest(BaseModel):
+    tenant_id: str
+    business: Optional[Dict[str, Any]] = None
+    booking: Optional[Dict[str, Any]] = None
+    services: Optional[Any] = None
+    memory: Optional[Dict[str, Any]] = None
+    language: Optional[Dict[str, Any]] = None
+    saas: Optional[Dict[str, Any]] = None
 
 class TenantPlanChangeRequest(BaseModel):
     tenant_id: str
@@ -8156,6 +8361,223 @@ def tenant_change_plan(payload: TenantPlanChangeRequest):
     }
 
 
+
+
+# -------------------------
+# STAGE 16 — DASHBOARD SELF-SERVICE CONFIG API
+# -------------------------
+def dashboard_config_schema_payload() -> Dict[str, Any]:
+    """Return a UI-friendly schema for the future client dashboard.
+
+    This endpoint is intentionally Latvian-first because Repliq's first market
+    is Latvia, while still keeping stable technical keys for frontend code.
+    """
+    return {
+        "language": "lv",
+        "sections": [
+            {
+                "key": "business",
+                "title": "Uzņēmuma informācija",
+                "fields": [
+                    {"key": "name", "label": "Uzņēmuma nosaukums", "type": "text", "required": True},
+                    {"key": "phone_number", "label": "Tālrunis / kanāla numurs", "type": "text"},
+                    {"key": "timezone", "label": "Laika zona", "type": "text", "default": "Europe/Riga"},
+                    {"key": "primary_language", "label": "Galvenā valoda", "type": "select", "options": ["lv", "ru", "en"]},
+                ],
+            },
+            {
+                "key": "booking",
+                "title": "Pierakstu noteikumi",
+                "fields": [
+                    {"key": "work_start", "label": "Darba sākums", "type": "time"},
+                    {"key": "work_end", "label": "Darba beigas", "type": "time"},
+                    {"key": "weekly_hours", "label": "Nedēļas grafiks", "type": "json"},
+                    {"key": "days_off", "label": "Brīvdienas", "type": "json"},
+                    {"key": "breaks", "label": "Pārtraukumi", "type": "json"},
+                    {"key": "holidays", "label": "Svētku / slēgtās dienas", "type": "json"},
+                    {"key": "min_notice_minutes", "label": "Minimālais pieraksta brīdinājums", "type": "number"},
+                    {"key": "buffer_minutes", "label": "Pauze starp pierakstiem", "type": "number"},
+                ],
+            },
+            {
+                "key": "services",
+                "title": "Pakalpojumi",
+                "fields": [
+                    {"key": "catalog", "label": "Pakalpojumu katalogs", "type": "service_catalog"},
+                    {"key": "services_lv", "label": "Pakalpojumi LV", "type": "textarea"},
+                    {"key": "services_ru", "label": "Pakalpojumi RU", "type": "textarea"},
+                    {"key": "services_en", "label": "Pakalpojumi EN", "type": "textarea"},
+                ],
+            },
+            {
+                "key": "memory",
+                "title": "FAQ / biznesa atmiņa",
+                "fields": [
+                    {"key": "lv", "label": "Atmiņa LV", "type": "textarea"},
+                    {"key": "ru", "label": "Atmiņa RU", "type": "textarea"},
+                    {"key": "en", "label": "Atmiņa EN", "type": "textarea"},
+                ],
+            },
+            {
+                "key": "saas",
+                "title": "Plāns un limits",
+                "fields": [
+                    {"key": "plan", "label": "Plāns", "type": "select", "options": ["starter", "pro", "business"]},
+                    {"key": "subscription_status", "label": "Statuss", "type": "select", "options": ["trial", "active", "past_due", "inactive", "expired"]},
+                    {"key": "dialogs_per_month", "label": "Dialogi mēnesī", "type": "number"},
+                ],
+            },
+        ],
+    }
+
+
+def _json_text_or_none(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False, indent=2)
+    except Exception:
+        return None
+
+
+def dashboard_config_payload(tenant: Dict[str, Any]) -> Dict[str, Any]:
+    tenant = normalize_tenant_saas_fields(tenant or {})
+    tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip()
+    lang = get_lang(tenant.get("language") or tenant.get("primary_language") or "lv")
+    runtime = tenant_runtime_config_public_view(tenant_runtime_config(tenant, lang, use_cache=False))
+    settings = tenant_settings(tenant, lang)
+    business_rules = settings.get("business_rules") or {}
+    return {
+        "tenant_id": tenant_id,
+        "schema": dashboard_config_schema_payload(),
+        "business": {
+            "name": tenant.get("business_name") or tenant.get("name") or settings.get("biz_name"),
+            "phone_number": tenant.get("phone_number") or "",
+            "timezone": tenant.get("timezone") or "Europe/Riga",
+            "primary_language": lang,
+            "address": tenant.get("address") or settings.get("addr") or "",
+            "business_type": tenant.get("business_type") or settings.get("business_type") or "barbershop",
+        },
+        "booking": {
+            "work_start": settings.get("work_start"),
+            "work_end": settings.get("work_end"),
+            "weekly_hours": business_rules.get("weekly_hours") or {},
+            "days_off": business_rules.get("days_off") or [],
+            "breaks": business_rules.get("breaks") or {},
+            "holidays": business_rules.get("holidays") or [],
+            "min_notice_minutes": business_rules.get("min_notice_minutes") or 0,
+            "buffer_minutes": business_rules.get("buffer_minutes") or 0,
+            "calendar_configured": bool((runtime.get("booking") or {}).get("calendar_configured")),
+            "service_account_configured": bool((runtime.get("booking") or {}).get("service_account_configured")),
+        },
+        "services": {
+            "catalog": (runtime.get("services") or {}).get("catalog") or tenant_service_catalog(tenant),
+            "summary": (runtime.get("services") or {}).get("summary") or "",
+            "services_lv": tenant.get("services_lv") or "",
+            "services_ru": tenant.get("services_ru") or "",
+            "services_en": tenant.get("services_en") or "",
+        },
+        "memory": {
+            "lv": str(tenant.get("business_memory_lv") or tenant.get("faq_lv") or "").strip(),
+            "ru": str(tenant.get("business_memory_ru") or tenant.get("faq_ru") or "").strip(),
+            "en": str(tenant.get("business_memory_en") or tenant.get("faq_en") or "").strip(),
+            "has_memory": bool((runtime.get("memory") or {}).get("has_memory")),
+        },
+        "saas": {
+            "plan": tenant_plan_meta(tenant).get("plan"),
+            "subscription_status": effective_subscription_status(tenant),
+            "dialogs_per_month": tenant_dialog_limit(tenant),
+            "usage": tenant_usage_snapshot(tenant),
+        },
+        "readiness": tenant_ready_status_payload(tenant),
+        "onboarding": onboarding_status_payload(tenant),
+        "links": onboarding_links_payload(tenant_id),
+        "runtime_config": runtime,
+    }
+
+
+def dashboard_update_to_tenant_request(payload: DashboardConfigUpdateRequest) -> TenantConfigUpdateRequest:
+    business = payload.business or {}
+    booking = payload.booking or {}
+    memory = payload.memory or {}
+    language_cfg = payload.language or {}
+    saas = payload.saas or {}
+    services_payload = payload.services
+    services_obj: Dict[str, Any] = {}
+    if isinstance(services_payload, dict):
+        services_obj = services_payload
+    elif services_payload is not None:
+        services_obj = {"catalog": services_payload}
+
+    weekly_hours = booking.get("weekly_hours") if isinstance(booking, dict) else None
+    days_off = booking.get("days_off") if isinstance(booking, dict) else None
+    breaks = booking.get("breaks") if isinstance(booking, dict) else None
+    holidays = booking.get("holidays") if isinstance(booking, dict) else None
+    catalog = services_obj.get("catalog") if isinstance(services_obj, dict) else None
+
+    return TenantConfigUpdateRequest(
+        tenant_id=(payload.tenant_id or "").strip(),
+        business_name=business.get("name") or business.get("business_name"),
+        phone_number=business.get("phone_number"),
+        timezone=business.get("timezone"),
+        language=language_cfg.get("primary") or business.get("primary_language"),
+        work_start=booking.get("work_start"),
+        work_end=booking.get("work_end"),
+        services_lv=services_obj.get("services_lv"),
+        services_ru=services_obj.get("services_ru"),
+        services_en=services_obj.get("services_en"),
+        weekly_hours_json=_json_text_or_none(weekly_hours),
+        days_off_json=_json_text_or_none(days_off),
+        breaks_json=_json_text_or_none(breaks),
+        holidays_json=_json_text_or_none(holidays),
+        min_notice_minutes=booking.get("min_notice_minutes"),
+        buffer_minutes=booking.get("buffer_minutes"),
+        service_catalog_json=_json_text_or_none(catalog),
+        business_memory_lv=memory.get("lv"),
+        business_memory_ru=memory.get("ru"),
+        business_memory_en=memory.get("en"),
+        plan=saas.get("plan"),
+        subscription_status=saas.get("subscription_status"),
+        dialogs_per_month=saas.get("dialogs_per_month"),
+        reset_override=bool(saas.get("reset_override")),
+    )
+
+
+@app.get("/dashboard/config/schema")
+def dashboard_config_schema_endpoint():
+    return dashboard_config_schema_payload()
+
+
+@app.get("/dashboard/config")
+def dashboard_config_endpoint(tenant_id: str = TENANT_ID_DEFAULT):
+    tenant = get_tenant_or_404((tenant_id or "").strip() or TENANT_ID_DEFAULT)
+    return dashboard_config_payload(tenant)
+
+
+@app.post("/dashboard/config/update")
+def dashboard_config_update_endpoint(payload: DashboardConfigUpdateRequest):
+    request_payload = dashboard_update_to_tenant_request(payload)
+    result = tenant_config_update(request_payload)
+    tenant = get_tenant_or_404(request_payload.tenant_id)
+    result["dashboard_config"] = dashboard_config_payload(tenant)
+    result["runtime_refreshed"] = True
+    return result
+
+
+@app.post("/dashboard/config/refresh")
+def dashboard_config_refresh_endpoint(tenant_id: str = TENANT_ID_DEFAULT):
+    tenant_id = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    clear_tenant_runtime_config_cache(tenant_id)
+    tenant = get_tenant_or_404(tenant_id)
+    return {
+        "status": "ok",
+        "tenant_id": tenant_id,
+        "dashboard_config": dashboard_config_payload(tenant),
+    }
+
+
 @app.get("/tenant/config")
 def tenant_config(tenant_id: str = TENANT_ID_DEFAULT):
     tenant = get_tenant((tenant_id or "").strip() or TENANT_ID_DEFAULT)
@@ -8179,8 +8601,8 @@ def tenant_config(tenant_id: str = TENANT_ID_DEFAULT):
         routes = []
     return {
         "tenant": _jsonable_tenant_view(tenant),
-        "service_lines": tenant_service_lines_text(tenant, get_lang(tenant.get("language") or "lv")),
         "resolved_settings": settings,
+        "runtime_config": tenant_runtime_config_public_view(tenant_runtime_config(tenant, get_lang(tenant.get("language") or "lv"), use_cache=False)),
         "phone_routes": routes,
         "onboarding": onboarding_status_payload(tenant),
         "readiness": tenant_ready_status_payload(tenant),
@@ -8218,17 +8640,6 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
 
     add_field("work_start", clean_work_start)
     add_field("work_end", clean_work_end)
-    service_names_from_lines = parse_human_service_lines(payload.service_lines) if payload.service_lines is not None else []
-    if service_names_from_lines:
-        services_csv_value = service_names_csv(service_names_from_lines)
-        # Human-friendly services editor is the source of truth in the client UI.
-        # It intentionally overrides stale advanced fields so the client never
-        # has to edit JSON to fix service names.
-        payload.services_lv = services_csv_value
-        payload.services_ru = services_csv_value
-        payload.services_en = services_csv_value
-        payload.service_catalog_json = json.dumps(build_service_catalog_from_names(service_names_from_lines), ensure_ascii=False, indent=2)
-
     add_field("services_lv", payload.services_lv)
     add_field("services_ru", payload.services_ru)
     add_field("services_en", payload.services_en)
@@ -8287,6 +8698,7 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
     if new_phone:
         upsert_phone_route(new_phone, tenant_id)
 
+    clear_tenant_runtime_config_cache(tenant_id)
     updated = get_tenant(tenant_id)
     return {
         "status": "ok",
@@ -8297,6 +8709,33 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
         "plan_meta": tenant_plan_meta(updated),
         "links": onboarding_links_payload(tenant_id),
     }
+
+
+@app.get("/tenant/runtime-config")
+def tenant_runtime_config_endpoint(tenant_id: str = TENANT_ID_DEFAULT, lang: str = ""):
+    tenant = get_tenant_or_404((tenant_id or "").strip() or TENANT_ID_DEFAULT)
+    effective_lang = get_lang(lang or tenant.get("language") or "lv")
+    return tenant_runtime_config_public_view(tenant_runtime_config(tenant, effective_lang, use_cache=False))
+
+
+@app.get("/tenant/runtime-config/debug")
+def tenant_runtime_config_debug_endpoint(tenant_id: str = TENANT_ID_DEFAULT, lang: str = ""):
+    tenant = get_tenant_or_404((tenant_id or "").strip() or TENANT_ID_DEFAULT)
+    effective_lang = get_lang(lang or tenant.get("language") or "lv")
+    return tenant_runtime_config(tenant, effective_lang, use_cache=False)
+
+
+@app.post("/tenant/runtime-config/refresh")
+def tenant_runtime_config_refresh(tenant_id: str = TENANT_ID_DEFAULT):
+    tenant_id = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    clear_tenant_runtime_config_cache(tenant_id)
+    tenant = get_tenant_or_404(tenant_id)
+    return {
+        "status": "ok",
+        "tenant_id": tenant_id,
+        "runtime_config": tenant_runtime_config_public_view(tenant_runtime_config(tenant, get_lang(tenant.get("language") or "lv"), use_cache=False)),
+    }
+
 
 @app.get("/tenant/routes")
 def tenant_routes(tenant_id: str = TENANT_ID_DEFAULT):
@@ -8317,7 +8756,6 @@ def tenant_routes(tenant_id: str = TENANT_ID_DEFAULT):
 
 @app.get("/dev_rules")
 def dev_rules(tenant_id: str):
-    require_dev_tools_access()
     tenant = get_tenant((tenant_id or "").strip() or TENANT_ID_DEFAULT)
     settings = tenant_settings(tenant, get_lang(tenant.get("language") or "lv"))
     return {
@@ -8332,7 +8770,6 @@ def dev_rules(tenant_id: str):
 
 @app.get("/dev_logs")
 def dev_logs(tenant_id: str, limit: int = 50):
-    require_dev_tools_access()
     limit = max(1, min(int(limit or 50), 200))
     with engine.connect() as conn:
         rows = conn.execute(
@@ -8386,7 +8823,6 @@ def _dev_raw_user(user_id: str) -> str:
 
 @app.post("/dev_chat")
 async def dev_chat(req: DevChatRequest):
-    require_dev_tools_access()
     try:
         raw_user = _dev_raw_user(req.user_id)
         result = handle_user_text_with_logging(
@@ -8442,7 +8878,6 @@ async def dev_chat(req: DevChatRequest):
 
 @app.post("/dev_reset")
 async def dev_reset(req: DevResetRequest):
-    require_dev_tools_access()
     try:
         with engine.begin() as conn:
             conn.execute(
@@ -8472,7 +8907,6 @@ class DevFocusTestRequest(BaseModel):
 
 @app.post("/dev_understand")
 async def dev_understand(req: DevChatRequest):
-    require_dev_tools_access()
     tenant = get_tenant(req.tenant_id)
     lang = get_lang(req.lang)
     settings = tenant_settings(tenant, lang)
@@ -8496,7 +8930,6 @@ async def dev_understand(req: DevChatRequest):
 
 @app.post("/dev_focus_test")
 async def dev_focus_test(req: DevFocusTestRequest):
-    require_dev_tools_access()
     tenant = get_tenant(req.tenant_id)
     lang = get_lang(req.lang)
     cases = req.cases or [
@@ -8555,7 +8988,6 @@ async def dev_focus_test(req: DevFocusTestRequest):
 
 @app.get("/dev_chat_ui", response_class=HTMLResponse)
 def dev_chat_ui():
-    require_dev_tools_access()
     html = """
 <!DOCTYPE html>
 <html lang="en">
