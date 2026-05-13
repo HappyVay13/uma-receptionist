@@ -1141,12 +1141,11 @@ def _extract_price_from_line(line: str) -> Optional[str]:
         r"(€\s*\d+(?:[\.,]\d{1,2})?)",
         r"(\d+(?:[\.,]\d{1,2})?\s*€)",
         r"(\d+(?:[\.,]\d{1,2})?\s*eur)",
-        r"(\d+(?:[\.,]\d{1,2})?\s*eiro)",
     ]
     for pat in patterns:
         m = re.search(pat, src, flags=re.IGNORECASE)
         if m:
-            return m.group(1).replace("eur", "EUR").replace("Eur", "EUR")
+            return m.group(1).replace("eur", "EUR")
     return None
 
 
@@ -1456,10 +1455,206 @@ def log_call_event(
     except Exception as e:
         log.error("call_log_write_failed tenant_id=%s user_id=%s err=%s", tenant_id, user_id, e)
 
+
+# -------------------------
+# STAGE 21 — CONVERSATIONAL AUDIT FOUNDATION
+# -------------------------
+DIALOGUE_TEST_MATRIX: List[Dict[str, Any]] = [
+    {"id": "lv_single_booking_full", "category": "single_message_booking", "lang": "lv", "message": "labdien! Es gribu pierakstīties uz konsultāciju uz 16 maiju 16:00", "expected": ["booking", "service", "date", "time"]},
+    {"id": "lv_services_faq", "category": "faq_services", "lang": "lv", "message": "kādi pakalpojumi jums ir?", "expected": ["info", "services"]},
+    {"id": "lv_price_generic", "category": "faq_price", "lang": "lv", "message": "cik maksā?", "expected": ["info", "price_clarify"]},
+    {"id": "lv_price_specific", "category": "faq_price", "lang": "lv", "message": "cik maksā konsultācija?", "expected": ["info", "price"]},
+    {"id": "lv_today_free", "category": "natural_availability", "lang": "lv", "message": "hej, jums šodien ir kas brīvs?", "expected": ["availability", "natural"]},
+    {"id": "lv_after_work", "category": "time_window", "lang": "lv", "message": "var pēc darba?", "expected": ["time_window", "evening"]},
+    {"id": "ru_single_booking", "category": "single_message_booking", "lang": "ru", "message": "Здравствуйте, можно записаться на консультацию завтра в 15:00?", "expected": ["booking", "service", "date", "time"]},
+    {"id": "ru_price", "category": "faq_price", "lang": "ru", "message": "сколько стоит консультация?", "expected": ["info", "price"]},
+    {"id": "en_single_booking", "category": "single_message_booking", "lang": "en", "message": "Hi, I want to book a consultation tomorrow at 3 pm", "expected": ["booking", "service", "date", "time"]},
+    {"id": "mixed_lang", "category": "language_switch", "lang": "lv", "message": "Labdien, можно консультацию завтра?", "expected": ["booking", "mixed_language"]},
+    {"id": "typo_booking", "category": "typo", "lang": "lv", "message": "gribetuu konsulatciju rit 15", "expected": ["booking", "typo_tolerant"]},
+    {"id": "interrupt_price", "category": "faq_during_booking", "lang": "lv", "message": "a cik tas maksā?", "expected": ["info", "preserve_flow"]},
+]
+
+
+def ensure_dialogue_audit_table() -> None:
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS dialogue_audit_events (
+                    id SERIAL PRIMARY KEY,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    tenant_id TEXT,
+                    user_id TEXT,
+                    channel TEXT,
+                    source TEXT,
+                    lang TEXT,
+                    state_before TEXT,
+                    state_after TEXT,
+                    intent TEXT,
+                    status TEXT,
+                    raw_text TEXT,
+                    ai_reply TEXT,
+                    score INTEGER,
+                    flags_json JSONB,
+                    meta_json JSONB
+                )
+            """))
+    except Exception as e:
+        log.error("ensure_dialogue_audit_table_failed err=%s", e)
+
+
+def dialogue_flags_for_turn(raw_text: str, result: Dict[str, Any], conv_before: Optional[Dict[str, Any]], conv_after: Optional[Dict[str, Any]]) -> List[str]:
+    raw = str(raw_text or "").strip()
+    low = _normalize_phrase_text(raw)
+    reply = str((result or {}).get("msg_out") or (result or {}).get("reply_voice") or "").strip()
+    reply_low = _normalize_phrase_text(reply)
+    status = str((result or {}).get("status") or "").strip().lower()
+    before_state = conversation_state(conv_before or {})
+    after_state = conversation_state(conv_after or {})
+    flags: List[str] = []
+
+    if not reply:
+        flags.append("empty_reply")
+    if status in {"booking_failed", "recovery", "blocked"}:
+        flags.append(f"status_{status}")
+    if len(reply) > 420:
+        flags.append("reply_too_long")
+    if reply_low and any(reply_low.count(p) >= 2 for p in ["uz kuru", "kurš datums", "kuru dienu", "на какую", "which service"]):
+        flags.append("possible_repetition")
+    if any(x in low for x in ["cik maksa", "cik maksā", "сколько стоит", "price", "how much"]) and after_state == STATE_AWAITING_DATE:
+        flags.append("faq_price_to_date_collision")
+    if any(x in low for x in ["pakalpojumi", "услуги", "services"]) and after_state in {STATE_AWAITING_DATE, STATE_AWAITING_TIME, STATE_AWAITING_CONFIRM}:
+        flags.append("faq_services_started_booking")
+    if before_state != STATE_NEW and after_state == STATE_NEW and status not in {"booked", "cancelled", "info", "greeting"}:
+        flags.append("unexpected_state_reset")
+    if raw and len(raw.split()) >= 7 and after_state == STATE_AWAITING_SERVICE:
+        flags.append("long_message_missing_service")
+    if has_date_reference(raw) and has_explicit_time(raw) and after_state in {STATE_AWAITING_SERVICE, STATE_AWAITING_DATE}:
+        flags.append("single_message_missing_date_or_time")
+    if str((result or {}).get("lang") or "").strip() and str((conv_after or {}).get("lang") or "").strip():
+        if get_lang((result or {}).get("lang")) != get_lang((conv_after or {}).get("lang")):
+            flags.append("language_mismatch")
+    if reply.lower().startswith(("sure", "great", "okay")) and get_lang((result or {}).get("lang")) == "lv":
+        flags.append("english_leak_in_lv")
+    return sorted(set(flags))
+
+
+def dialogue_quality_score(flags: List[str], result: Dict[str, Any]) -> int:
+    score = 100
+    penalties = {
+        "empty_reply": 40,
+        "status_booking_failed": 30,
+        "status_recovery": 20,
+        "status_blocked": 15,
+        "reply_too_long": 10,
+        "possible_repetition": 15,
+        "faq_price_to_date_collision": 35,
+        "faq_services_started_booking": 35,
+        "unexpected_state_reset": 25,
+        "long_message_missing_service": 25,
+        "single_message_missing_date_or_time": 30,
+        "language_mismatch": 20,
+        "english_leak_in_lv": 30,
+    }
+    for flag in flags:
+        score -= penalties.get(flag, 8)
+    return max(0, min(100, score))
+
+
+def record_dialogue_audit_event(
+    tenant_id: str,
+    user_id: str,
+    channel: str,
+    source: str,
+    raw_text: str,
+    result: Dict[str, Any],
+    conv_before: Optional[Dict[str, Any]],
+    conv_after: Optional[Dict[str, Any]],
+) -> None:
+    try:
+        ensure_dialogue_audit_table()
+        flags = dialogue_flags_for_turn(raw_text, result, conv_before, conv_after)
+        score = dialogue_quality_score(flags, result)
+        status = str((result or {}).get("status") or "").strip() or "unknown"
+        intent = infer_intent_label(raw_text, status, conv_after or conv_before or {})
+        payload_meta = {
+            "service": (conv_after or {}).get("service"),
+            "datetime_iso": (conv_after or {}).get("datetime_iso"),
+            "pending": (conv_after or {}).get("pending"),
+        }
+        with engine.begin() as conn:
+            conn.execute(text("""
+                INSERT INTO dialogue_audit_events
+                (tenant_id, user_id, channel, source, lang, state_before, state_after, intent, status, raw_text, ai_reply, score, flags_json, meta_json)
+                VALUES
+                (:tenant_id, :user_id, :channel, :source, :lang, :state_before, :state_after, :intent, :status, :raw_text, :ai_reply, :score, CAST(:flags_json AS JSONB), CAST(:meta_json AS JSONB))
+            """), {
+                "tenant_id": (tenant_id or "").strip() or TENANT_ID_DEFAULT,
+                "user_id": norm_user_key(user_id),
+                "channel": (channel or "").strip().lower() or "unknown",
+                "source": (source or "runtime").strip().lower() or "runtime",
+                "lang": get_lang((result or {}).get("lang") or (conv_after or {}).get("lang") or "lv"),
+                "state_before": conversation_state(conv_before or {}),
+                "state_after": conversation_state(conv_after or {}),
+                "intent": intent,
+                "status": status,
+                "raw_text": (raw_text or "").strip(),
+                "ai_reply": str((result or {}).get("msg_out") or (result or {}).get("reply_voice") or "").strip(),
+                "score": score,
+                "flags_json": json.dumps(flags, ensure_ascii=False),
+                "meta_json": json.dumps(payload_meta, ensure_ascii=False, default=str),
+            })
+    except Exception as e:
+        log.error("dialogue_audit_write_failed tenant_id=%s user_id=%s err=%s", tenant_id, user_id, e)
+
+
+def dialogue_audit_summary(tenant_id: str, limit: int = 50) -> Dict[str, Any]:
+    ensure_dialogue_audit_table()
+    tenant_id = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    limit = max(1, min(int(limit or 50), 200))
+    with engine.connect() as conn:
+        total = conn.execute(text("SELECT COUNT(*) FROM dialogue_audit_events WHERE tenant_id=:tid"), {"tid": tenant_id}).scalar() or 0
+        avg_score = conn.execute(text("SELECT COALESCE(AVG(score), 0) FROM dialogue_audit_events WHERE tenant_id=:tid"), {"tid": tenant_id}).scalar() or 0
+        bad = conn.execute(text("SELECT COUNT(*) FROM dialogue_audit_events WHERE tenant_id=:tid AND score < 70"), {"tid": tenant_id}).scalar() or 0
+        rows = conn.execute(text("""
+            SELECT created_at, channel, lang, state_before, state_after, intent, status, raw_text, ai_reply, score, flags_json
+            FROM dialogue_audit_events
+            WHERE tenant_id=:tid
+            ORDER BY created_at DESC
+            LIMIT :lim
+        """), {"tid": tenant_id, "lim": limit}).fetchall()
+    items = []
+    flag_counts: Dict[str, int] = {}
+    for r in rows:
+        flags = r[10] if isinstance(r[10], list) else []
+        if isinstance(r[10], str):
+            try: flags = json.loads(r[10])
+            except Exception: flags = []
+        for f in flags or []:
+            flag_counts[str(f)] = flag_counts.get(str(f), 0) + 1
+        items.append({
+            "created_at": r[0], "channel": r[1], "lang": r[2], "state_before": r[3], "state_after": r[4],
+            "intent": r[5], "status": r[6], "raw_text": r[7], "ai_reply": r[8], "score": r[9], "flags": flags or [],
+        })
+    return {
+        "tenant_id": tenant_id,
+        "total_events": int(total or 0),
+        "average_score": round(float(avg_score or 0), 1),
+        "low_score_events": int(bad or 0),
+        "top_flags": sorted([{"flag": k, "count": v} for k, v in flag_counts.items()], key=lambda x: x["count"], reverse=True)[:20],
+        "recent": items,
+    }
+
+
 def handle_user_text_with_logging(
     tenant_id: str, raw_phone: str, text_in: str, channel: str, lang_hint: str, source: str = "runtime"
 ) -> Dict[str, Any]:
+    try:
+        conv_before = dict(db_get_or_create_conversation(tenant_id, raw_phone, lang_hint or "lv") or {})
+    except Exception:
+        conv_before = {}
+
     result = handle_user_text(tenant_id, raw_phone, text_in, channel, lang_hint, source=source)
+
     try:
         conv = db_get_or_create_conversation(tenant_id, raw_phone, lang_hint or "lv")
     except Exception:
@@ -1467,7 +1662,7 @@ def handle_user_text_with_logging(
     try:
         tenant = get_tenant(tenant_id)
         result = humanize_result(result, conv, tenant)
-        result = apply_usage_soft_limit_warning(result, result.get("lang") or lang, tenant, channel, source=source)
+        result = apply_usage_soft_limit_warning(result, result.get("lang") or get_lang((conv or {}).get("lang") or lang_hint or "lv"), tenant, channel, source=source)
     except Exception as e:
         log.error("humanize_result_failed tenant_id=%s err=%s", tenant_id, e)
         tenant = {}
@@ -1478,6 +1673,16 @@ def handle_user_text_with_logging(
         raw_text=text_in,
         result=result,
         conv=conv,
+    )
+    record_dialogue_audit_event(
+        tenant_id=tenant_id,
+        user_id=raw_phone,
+        channel=channel,
+        source=source,
+        raw_text=text_in,
+        result=result,
+        conv_before=conv_before,
+        conv_after=conv,
     )
     record_usage_event(
         tenant_id=tenant_id,
@@ -2111,66 +2316,21 @@ def service_alias_map_from_catalog(catalog: List[Dict[str, Any]], lang: str) -> 
     return out
 
 
-def _service_text_variants(value: Optional[str]) -> List[str]:
-    raw = str(value or "").strip().lower()
-    if not raw:
-        return []
-    base = re.sub(r"\s+", " ", re.sub(r"[^\wĀ-žА-Яа-яЁё]+", " ", raw, flags=re.UNICODE)).strip()
-    variants = {raw, base}
-    replacements = {
-        "āciju": "ācija", "aciju": "acija", "ijai": "ija", "iju": "ija",
-        "ācijai": "ācija", "acijai": "acija", "ām": "a", "am": "a",
-        "ai": "a", "u": "a",
-    }
-    words = base.split()
-    if len(words) == 1:
-        w = words[0]
-        for src_suf, dst_suf in replacements.items():
-            if len(w) > len(src_suf) + 2 and w.endswith(src_suf):
-                variants.add(w[: -len(src_suf)] + dst_suf)
-    else:
-        # Add a version where each word is lightly normalized.
-        normalized_words = []
-        for w in words:
-            nw = w
-            for src_suf, dst_suf in replacements.items():
-                if len(nw) > len(src_suf) + 2 and nw.endswith(src_suf):
-                    nw = nw[: -len(src_suf)] + dst_suf
-                    break
-            normalized_words.append(nw)
-        variants.add(" ".join(normalized_words))
-    return [v for v in variants if v]
-
-
-def _service_text_contains(haystack: str, needle: str) -> bool:
-    hay_variants = _service_text_variants(haystack)
-    needle_variants = _service_text_variants(needle)
-    for hv in hay_variants:
-        for nv in needle_variants:
-            if not hv or not nv:
-                continue
-            if nv == hv or nv in hv or hv in nv:
-                return True
-    return False
-
-
-
 def canonical_service_key_from_text(text_: Optional[str], alias_map: Dict[str, str]) -> Optional[str]:
     low = (text_ or "").strip().lower()
     if not low:
         return None
     norm_low = re.sub(r"\s+", " ", re.sub(r"[^\wĀ-žА-Яа-яЁё]+", " ", low, flags=re.UNICODE)).strip()
-    for key in set(_service_text_variants(low) + _service_text_variants(norm_low)):
-        if key in alias_map:
-            return alias_map[key]
-    # Prefer longest alias first so generic words don't beat specific phrases.
+    if low in alias_map:
+        return alias_map[low]
+    if norm_low in alias_map:
+        return alias_map[norm_low]
+    # Prefer longest alias first so generic words don't beat specific phrases
     for alias in sorted(alias_map.keys(), key=len, reverse=True):
         if not alias:
             continue
         norm_alias = re.sub(r"\s+", " ", re.sub(r"[^\wĀ-žА-Яа-яЁё]+", " ", alias, flags=re.UNICODE)).strip()
         if alias in low or (norm_alias and norm_alias in norm_low):
-            return alias_map[alias]
-        if _service_text_contains(norm_low, norm_alias or alias):
             return alias_map[alias]
     return None
 
@@ -3365,6 +3525,70 @@ def remember_booking_service(c: Dict[str, Any], pending: Dict[str, Any], service
     return c, pending
 
 
+def booking_candidate_datetime_from_context(c: Dict[str, Any], pending: Dict[str, Any]) -> Optional[datetime]:
+    """Return the best partially remembered date/time from current booking context."""
+    pending = pending or {}
+    candidates = [
+        pending.get("candidate_datetime_iso"),
+        pending.get("requested_datetime_iso"),
+        pending.get("partial_datetime_iso"),
+        pending.get("datetime_iso"),
+        c.get("datetime_iso"),
+    ]
+    for value in candidates:
+        dtv = parse_dt_any_tz(str(value or "").strip())
+        if dtv:
+            # candidate must include an actual time, not just the default 09:00 date holder
+            if dtv.hour != 9 or dtv.minute != 0:
+                return dtv
+
+    # If date and explicit time were stored separately, combine them.
+    base_day = parse_dt_any_tz(str(pending.get("awaiting_time_date_iso") or "").strip())
+    time_value = pending.get("requested_time") or pending.get("partial_time") or pending.get("time_text") or c.get("time_text")
+    parts = parse_explicit_time_parts(str(time_value or ""))
+    if base_day and parts:
+        hh, mm = parts
+        return base_day.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    return None
+
+
+def remember_partial_booking_datetime_from_message(c: Dict[str, Any], pending: Dict[str, Any], msg: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Persist date/time details even if service is missing."""
+    pending = pending or {}
+    raw = msg or ""
+    natural_dt = parse_natural_datetime(raw)
+    date_only_dt = parse_date_only_text(raw)
+    time_parts = parse_explicit_time_parts(raw)
+    time_window = parse_time_window(raw)
+
+    if time_window:
+        pending["preferred_time_window"] = [time_window[0], time_window[1]]
+
+    if natural_dt and time_parts:
+        pending["candidate_datetime_iso"] = natural_dt.isoformat()
+        pending["awaiting_time_date_iso"] = natural_dt.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+        pending["time_text"] = f"{time_parts[0]:02d}:{time_parts[1]:02d}"
+        c["time_text"] = pending["time_text"]
+    elif natural_dt:
+        pending["awaiting_time_date_iso"] = natural_dt.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+    elif date_only_dt:
+        pending["awaiting_time_date_iso"] = date_only_dt.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+
+    # Critical fallback: date reference + explicit time in one message.
+    if date_only_dt and time_parts and not pending.get("candidate_datetime_iso"):
+        hh, mm = time_parts
+        candidate = date_only_dt.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        pending["candidate_datetime_iso"] = candidate.isoformat()
+        pending["awaiting_time_date_iso"] = candidate.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+        pending["time_text"] = f"{hh:02d}:{mm:02d}"
+        c["time_text"] = pending["time_text"]
+
+    pending["booking_intent"] = True
+    c["pending"] = pending
+    return c, pending
+
+
+
 def is_yes_text(text_: Optional[str], lang: str) -> bool:
     low = (text_ or "").strip().lower()
     if not low:
@@ -3598,31 +3822,7 @@ def next_weekday_date(target_weekday: int, base: Optional[date] = None) -> date:
 def parse_date_only_text(text_: Optional[str]) -> Optional[datetime]:
     src = (text_ or "").lower().strip()
     if not src:
-        month_names = {
-        "janvāris": 1, "janvaris": 1, "janvāri": 1, "janvari": 1,
-        "februāris": 2, "februaris": 2, "februāri": 2, "februari": 2,
-        "marts": 3, "martā": 3, "marta": 3,
-        "aprīlis": 4, "aprilis": 4, "aprīli": 4, "aprili": 4,
-        "maijs": 5, "maijā": 5, "maija": 5, "maiju": 5,
-        "jūnijs": 6, "junijs": 6, "jūnijā": 6, "junija": 6, "jūniju": 6, "juniju": 6,
-        "jūlijs": 7, "julijs": 7, "jūlijā": 7, "julija": 7, "jūliju": 7, "juliju": 7,
-        "augusts": 8, "augustā": 8, "augusta": 8,
-        "septembris": 9, "septembrī": 9, "septembri": 9,
-        "oktobris": 10, "oktobrī": 10, "oktobri": 10,
-        "novembris": 11, "novembrī": 11, "novembri": 11,
-        "decembris": 12, "decembrī": 12, "decembri": 12,
-    }
-    mname = re.search(r"\b(\d{1,2})\.?\s+([a-zāčēģīķļņšūž]+)\b", src, flags=re.IGNORECASE)
-    if mname:
-        dd = int(mname.group(1))
-        mo = month_names.get(mname.group(2).lower())
-        if mo:
-            try:
-                return datetime(today_local().year, mo, dd, 9, 0, tzinfo=TZ)
-            except Exception:
-                pass
-
-    return None
+        return None
 
     dm = re.search(r"\b(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?\b", src)
     if dm:
@@ -3648,30 +3848,6 @@ def parse_date_only_text(text_: Optional[str]) -> Optional[datetime]:
         return datetime.combine(base + timedelta(days=1), datetime.min.time(), tzinfo=TZ).replace(hour=9)
     if _contains_any_phrase(src, ["šodien", "sodien", "šorīt", "sorit", "šovakar", "sovakar", "сегодня", "сегодня утром", "сегодня днем", "сегодня днём", "сегодня вечером", "today", "this morning", "this afternoon", "this evening", "tonight"]):
         return datetime.combine(base, datetime.min.time(), tzinfo=TZ).replace(hour=9)
-
-    month_names = {
-        "janvāris": 1, "janvaris": 1, "janvāri": 1, "janvari": 1,
-        "februāris": 2, "februaris": 2, "februāri": 2, "februari": 2,
-        "marts": 3, "martā": 3, "marta": 3,
-        "aprīlis": 4, "aprilis": 4, "aprīli": 4, "aprili": 4,
-        "maijs": 5, "maijā": 5, "maija": 5, "maiju": 5,
-        "jūnijs": 6, "junijs": 6, "jūnijā": 6, "junija": 6, "jūniju": 6, "juniju": 6,
-        "jūlijs": 7, "julijs": 7, "jūlijā": 7, "julija": 7, "jūliju": 7, "juliju": 7,
-        "augusts": 8, "augustā": 8, "augusta": 8,
-        "septembris": 9, "septembrī": 9, "septembri": 9,
-        "oktobris": 10, "oktobrī": 10, "oktobri": 10,
-        "novembris": 11, "novembrī": 11, "novembri": 11,
-        "decembris": 12, "decembrī": 12, "decembri": 12,
-    }
-    mname = re.search(r"\b(\d{1,2})\.?\s+([a-zāčēģīķļņšūž]+)\b", src, flags=re.IGNORECASE)
-    if mname:
-        dd = int(mname.group(1))
-        mo = month_names.get(mname.group(2).lower())
-        if mo:
-            try:
-                return datetime(today_local().year, mo, dd, 9, 0, tzinfo=TZ)
-            except Exception:
-                pass
 
     return None
 
@@ -3837,14 +4013,8 @@ def extract_service_from_text(text_: Optional[str], catalog: List[Dict[str, Any]
             if cand:
                 candidates_index.append((len(cand), cand, item))
 
-    norm_low = re.sub(r"\s+", " ", re.sub(r"[^\wĀ-žА-Яа-яЁё]+", " ", low, flags=re.UNICODE)).strip()
     for _, cand, item in sorted(candidates_index, key=lambda x: x[0], reverse=True):
-        norm_cand = re.sub(r"\s+", " ", re.sub(r"[^\wĀ-žА-Яа-яЁё]+", " ", cand, flags=re.UNICODE)).strip()
         if cand == low or cand in low or low in cand:
-            return item
-        if norm_cand and (norm_cand in norm_low or norm_low in norm_cand):
-            return item
-        if _service_text_contains(norm_low, norm_cand or cand):
             return item
     return None
 
@@ -4012,54 +4182,6 @@ def finalize_post_confirm_upsell_response(
         "datetime_text": format_dt_short(dt_confirm),
         "preserve_text": True,
     }
-
-
-def remember_temporal_slots_from_message(
-    c: Dict[str, Any],
-    pending: Dict[str, Any],
-    msg: str,
-    natural_dt: Optional[datetime],
-    date_only_dt: Optional[datetime],
-    explicit_time_present: bool,
-    time_window: Optional[Tuple[int, int]],
-) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """Keep date/time preferences even when service is still unknown.
-
-    This is the core of Stage 22: the user can provide date/time before service,
-    then provide the service later. We ask only for missing information.
-    """
-    pending = pending or {}
-    if not msg:
-        c["pending"] = pending or None
-        return c, pending
-    if natural_dt or date_only_dt or time_window or explicit_time_present:
-        pending["booking_intent"] = True
-        if time_window:
-            pending["preferred_time_window"] = [time_window[0], time_window[1]]
-        if natural_dt and explicit_time_present:
-            pending["candidate_datetime_iso"] = natural_dt.isoformat()
-            pending["awaiting_time_date_iso"] = natural_dt.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
-            c["time_text"] = sanitize_conversation_time_text(msg) or c.get("time_text")
-        elif natural_dt:
-            pending["awaiting_time_date_iso"] = natural_dt.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
-            c["time_text"] = sanitize_conversation_time_text(msg) or c.get("time_text")
-        elif date_only_dt:
-            pending["awaiting_time_date_iso"] = date_only_dt.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
-        c["pending"] = pending or None
-    return c, pending
-
-
-def build_missing_service_with_known_time_prompt(lang: str, service_catalog: List[Dict[str, Any]], pending: Dict[str, Any]) -> str:
-    candidate_dt = parse_dt_any_tz(str((pending or {}).get("candidate_datetime_iso") or "").strip())
-    base_dt = parse_dt_any_tz(str((pending or {}).get("awaiting_time_date_iso") or "").strip())
-    when_text = format_dt_short(candidate_dt) if candidate_dt else format_dt_short(base_dt) if base_dt else ""
-    options = barber_service_options_text(lang, service_catalog, max_items=3)
-    if lang == "ru":
-        return f"Конечно. На какую услугу вас записать на {when_text}? Например: {options}." if when_text and options else "Конечно. На какую услугу вас записать?"
-    if lang == "en":
-        return f"Sure. Which service would you like to book for {when_text}? For example: {options}." if when_text and options else "Sure. Which service would you like to book?"
-    return f"Protams. Uz kādu pakalpojumu vēlaties pierakstīties {when_text}? Piemēram: {options}." if when_text and options else "Protams. Uz kādu pakalpojumu vēlaties pierakstīties?"
-
 
 
 def offer_slots_for_date(
@@ -4718,22 +4840,14 @@ def handle_user_text(
             c["service"] = None
             pending.pop("service", None)
             pending.pop("service_display", None)
-            # Stage 22: do NOT discard date/time when service is missing.
+            # Do NOT clear candidate date/time here: user may have already provided it.
             clear_offered_slots(pending)
-            c["datetime_iso"] = None
-            c, pending = remember_temporal_slots_from_message(
-                c,
-                pending,
-                msg,
-                natural_dt_for_msg,
-                date_only_dt_for_msg,
-                explicit_time_present,
-                time_window_for_msg,
-            )
-            c["state"] = STATE_AWAITING_SERVICE
+            c, pending = remember_partial_booking_datetime_from_message(c, pending, msg)
             c["pending"] = pending or None
+            c["datetime_iso"] = None
+            c["state"] = STATE_AWAITING_SERVICE
             db_save_conversation(tenant_id, user_key, c)
-            service_prompt = build_missing_service_with_known_time_prompt(lang, service_catalog, pending)
+            service_prompt = barber_service_prompt(lang, service_catalog)
             return {
                 "status": "need_more",
                 "reply_voice": service_prompt,
@@ -4743,17 +4857,7 @@ def handle_user_text(
             }
 
     if msg and (natural_dt_for_msg or date_only_dt_for_msg or time_window_for_msg or explicit_time_present):
-        pending["booking_intent"] = True
-        if time_window_for_msg:
-            pending["preferred_time_window"] = [time_window_for_msg[0], time_window_for_msg[1]]
-        if natural_dt_for_msg and explicit_time_present:
-            pending["candidate_datetime_iso"] = natural_dt_for_msg.isoformat()
-            pending["awaiting_time_date_iso"] = natural_dt_for_msg.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
-        elif natural_dt_for_msg:
-            pending["awaiting_time_date_iso"] = natural_dt_for_msg.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
-        elif date_only_dt_for_msg:
-            pending["awaiting_time_date_iso"] = date_only_dt_for_msg.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
-        c["pending"] = pending
+        c, pending = remember_partial_booking_datetime_from_message(c, pending, msg)
 
     override_service_item = None
     if msg and c.get("service"):
@@ -4799,9 +4903,14 @@ def handle_user_text(
         if service_item and not c.get("service"):
             c, pending = remember_booking_service(c, pending, service_item, lang)
             clear_offered_slots(pending)
-            candidate_dt = parse_dt_any_tz(str(pending.get("candidate_datetime_iso") or "").strip())
+
+            # Stage 22 hotfix: if date/time was provided before service,
+            # use it immediately after service selection.
+            candidate_dt = booking_candidate_datetime_from_context(c, pending)
             if candidate_dt:
                 pending.pop("candidate_datetime_iso", None)
+                pending.pop("requested_datetime_iso", None)
+                pending.pop("partial_datetime_iso", None)
                 c["pending"] = pending or None
                 result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, candidate_dt)
                 db_save_conversation(tenant_id, user_key, c)
@@ -5800,6 +5909,7 @@ def _startup():
     ensure_tenant_row(TENANT_ID_DEFAULT)
     ensure_call_logs_table()
     ensure_phone_routes_table()
+    ensure_dialogue_audit_table()
 
 
 @app.get("/health")
@@ -6947,221 +7057,429 @@ def dashboard_chart_data_endpoint(tenant_id: str = TENANT_ID_DEFAULT, days: int 
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
     tenant_id = (tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
-    html = """
-<!doctype html>
-<html lang="lv">
+    html = f"""
+<!DOCTYPE html>
+<html lang="en">
 <head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>Repliq Klienta kabinets</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<style>
-:root { --bg:#f5f7fb; --panel:#ffffff; --ink:#111827; --muted:#6b7280; --line:#e5e7eb; --soft:#f9fafb; --brand:#111827; --ok:#047857; --warn:#b45309; --bad:#b91c1c; }
-* { box-sizing:border-box; }
-body { margin:0; font-family: Inter, Arial, sans-serif; background:var(--bg); color:var(--ink); }
-.wrap { max-width:1380px; margin:0 auto; padding:22px; }
-.header { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; margin-bottom:18px; }
-.kicker { color:var(--muted); font-size:13px; margin-bottom:5px; }
-h1 { margin:0; font-size:28px; letter-spacing:-.03em; }
-h2 { margin:0 0 12px; font-size:18px; letter-spacing:-.02em; }
-h3 { margin:0 0 8px; font-size:15px; }
-.panel { background:var(--panel); border:1px solid var(--line); border-radius:20px; box-shadow:0 12px 30px rgba(15,23,42,.06); padding:18px; margin-bottom:16px; }
-.grid-4 { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:14px; }
-.grid-3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px; }
-.grid-2 { display:grid; grid-template-columns:1.1fr .9fr; gap:14px; }
-.card { background:var(--soft); border:1px solid var(--line); border-radius:16px; padding:14px; min-height:92px; }
-.metric { font-size:28px; font-weight:800; margin-top:7px; }
-.muted { color:var(--muted); font-size:13px; }
-.small { color:var(--muted); font-size:12px; }
-.badge { display:inline-flex; align-items:center; gap:6px; padding:7px 10px; border-radius:999px; border:1px solid var(--line); background:#fff; font-size:12px; margin:3px 5px 3px 0; }
-.badge.ok { color:var(--ok); background:#ecfdf5; border-color:#a7f3d0; }
-.badge.warn { color:var(--warn); background:#fffbeb; border-color:#fde68a; }
-.badge.bad { color:var(--bad); background:#fef2f2; border-color:#fecaca; }
-.toolbar { display:flex; align-items:end; gap:10px; flex-wrap:wrap; }
-label { display:block; font-size:12px; color:var(--muted); margin-bottom:5px; }
-input, select, textarea, button { font:inherit; }
-input, select, textarea { width:100%; border:1px solid #d1d5db; border-radius:12px; padding:10px 12px; background:#fff; color:var(--ink); }
-textarea { min-height:98px; resize:vertical; font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size:13px; }
-button { border:0; border-radius:12px; padding:10px 14px; cursor:pointer; background:var(--brand); color:#fff; font-weight:650; }
-button.secondary { background:#fff; color:var(--ink); border:1px solid #d1d5db; }
-button.good { background:#047857; }
-button:disabled { opacity:.55; cursor:not-allowed; }
-.row { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
-.row3 { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
-.statusbar { padding:12px 14px; border-radius:14px; margin-bottom:14px; display:none; }
-.statusbar.ok { display:block; color:#065f46; background:#ecfdf5; border:1px solid #a7f3d0; }
-.statusbar.warn { display:block; color:#92400e; background:#fffbeb; border:1px solid #fde68a; }
-.statusbar.bad { display:block; color:#991b1b; background:#fef2f2; border:1px solid #fecaca; }
-.tabs { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
-.tab { background:#fff; color:#374151; border:1px solid var(--line); }
-.tab.active { background:#111827; color:#fff; }
-.tab-panel { display:none; }
-.tab-panel.active { display:block; }
-.list { display:flex; flex-direction:column; gap:10px; }
-.insight { border:1px solid var(--line); border-radius:14px; padding:12px; background:#fff; }
-table { width:100%; border-collapse:collapse; font-size:14px; }
-th,td { text-align:left; padding:10px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
-th { background:#fafafa; }
-pre { white-space:pre-wrap; word-break:break-word; background:#0b1020; color:#e5e7eb; padding:14px; border-radius:14px; max-height:330px; overflow:auto; font-size:12px; }
-.chart-box { height:260px; }
-@media (max-width: 980px) { .grid-4,.grid-3,.grid-2,.row,.row3 { grid-template-columns:1fr; } .header { flex-direction:column; } }
-</style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Repliq Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body {{ font-family: Arial, sans-serif; margin: 0; background: #f6f7fb; color: #111827; }}
+    .wrap {{ max-width: 1320px; margin: 0 auto; padding: 20px; }}
+    .panel {{ background: white; border-radius: 16px; box-shadow: 0 8px 24px rgba(0,0,0,0.08); padding: 16px; margin-bottom: 16px; }}
+    .top {{ display:flex; gap:12px; align-items:center; margin-bottom:16px; flex-wrap:wrap; }}
+    input, button, select {{ font: inherit; }}
+    input, select {{ padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 10px; background:#fff; }}
+    button {{ border:none; border-radius: 10px; padding:10px 14px; background:#111827; color:white; cursor:pointer; }}
+    button.secondary {{ background:#fff; color:#111827; border:1px solid #d1d5db; }}
+    .metrics {{ display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:12px; }}
+    .card {{ background:#fafafa; border:1px solid #e5e7eb; border-radius: 12px; padding: 14px; }}
+    .card .num {{ font-size: 28px; font-weight: bold; margin-top: 6px; }}
+    .card .sub {{ font-size:12px; color:#6b7280; margin-top:6px; }}
+    table {{ width:100%; border-collapse: collapse; font-size:14px; }}
+    th, td {{ text-align:left; padding:10px 8px; border-bottom:1px solid #e5e7eb; vertical-align:top; }}
+    th {{ background:#fafafa; }}
+    .muted {{ color:#6b7280; font-size:12px; }}
+    .section-title {{ margin:0 0 12px 0; }}
+    .grid-2 {{ display:grid; grid-template-columns: 1.15fr .85fr; gap:16px; }}
+    .grid-3 {{ display:grid; grid-template-columns: 1.3fr .85fr .85fr; gap:16px; }}
+    .toolbar-label {{ font-size:12px; color:#6b7280; margin-bottom:4px; display:block; }}
+    .empty {{ color:#9ca3af; font-style:italic; padding: 8px 0; }}
+    .chart-wrap {{ height: 280px; }}
+    .mini-chart-wrap {{ height: 240px; }}
+    .badge {{ display:inline-block; font-size:12px; color:#374151; background:#f3f4f6; border:1px solid #e5e7eb; padding:6px 10px; border-radius:999px; margin-right:6px; margin-bottom:6px; }}
+    .ok {{ color:#065f46; background:#ecfdf5; border-color:#a7f3d0; }}
+    .warn {{ color:#92400e; background:#fffbeb; border-color:#fde68a; }}
+    .err {{ color:#991b1b; background:#fef2f2; border-color:#fecaca; }}
+    .status-grid {{ display:grid; grid-template-columns: 1.2fr .8fr; gap:16px; }}
+    .status-list {{ margin:8px 0 0 18px; color:#6b7280; }}
+    .nav-links a {{ margin-right:10px; }}
+    @media (max-width: 1120px) {{
+      .grid-3 {{ grid-template-columns: 1fr; }}
+      .grid-2 {{ grid-template-columns: 1fr; }}
+      .status-grid {{ grid-template-columns: 1fr; }}
+      .metrics {{ grid-template-columns: repeat(2, minmax(0,1fr)); }}
+    }}
+  </style>
 </head>
 <body>
-<div class="wrap">
-  <div class="header">
-    <div>
-      <div class="kicker">Repliq klienta kabinets · pašapkalpošanās</div>
-      <h1 id="page_title">Kabinets</h1>
-      <div class="muted" id="page_sub">Iestatījumi, gatavība un UMA ieskati vienā vietā.</div>
-    </div>
-    <div class="toolbar">
-      <div style="min-width:220px;">
-        <label>Tenant ID</label>
-        <input id="tenant_id" value="__TENANT_ID__"/>
-      </div>
-      <div style="min-width:110px;">
-        <label>Periods</label>
-        <select id="days"><option value="7">7d</option><option value="14" selected>14d</option><option value="30">30d</option></select>
-      </div>
-      <button onclick="loadAll()">Atjaunot</button>
-      <button class="secondary" onclick="openJson('/tenant/runtime-config')">Runtime</button>
-      <button class="secondary" onclick="openJson('/uma/insights')">UMA JSON</button>
-    </div>
-  </div>
-
-  <div id="banner" class="statusbar"></div>
-
-  <div class="grid-4">
-    <div class="card"><div class="muted">Dialogi</div><div class="metric" id="m_dialogs">—</div><div class="small">izvēlētajā periodā</div></div>
-    <div class="card"><div class="muted">Pieraksti</div><div class="metric" id="m_bookings">—</div><div class="small">apstiprinātie booking</div></div>
-    <div class="card"><div class="muted">Konversija</div><div class="metric" id="m_rate">—</div><div class="small">booking rate</div></div>
-    <div class="card"><div class="muted">Gatavība</div><div class="metric" id="m_ready">—</div><div class="small" id="m_ready_sub">runtime status</div></div>
-  </div>
-
-  <div class="grid-2">
+  <div class="wrap">
     <div class="panel">
-      <h2>Business Configuration</h2>
-      <div class="tabs">
-        <button class="tab active" data-tab="basic" onclick="showTab('basic')">Pamata dati</button>
-        <button class="tab" data-tab="services" onclick="showTab('services')">Pakalpojumi</button>
-        <button class="tab" data-tab="memory" onclick="showTab('memory')">FAQ / atmiņa</button>
-        <button class="tab" data-tab="rules" onclick="showTab('rules')">Darba laiks</button>
-      </div>
-
-      <div id="tab_basic" class="tab-panel active">
-        <div class="row">
-          <div><label>Business name</label><input id="business_name" placeholder="Piem. Repliq Demo Clinic"/></div>
-          <div><label>Business type</label><select id="business_type"><option value="barbershop">Barbershop</option><option value="clinic">Clinic</option><option value="salon">Salon</option><option value="restaurant">Restaurant</option></select></div>
+      <div class="top">
+        <div>
+          <label class="toolbar-label">Tenant</label>
+          <input id="tenant" value="{tenant_id}" placeholder="tenant_id" />
         </div>
-        <div class="row3" style="margin-top:12px;">
-          <div><label>Language</label><select id="language"><option value="lv">Latviešu</option><option value="ru">Русский</option><option value="en">English</option></select></div>
-          <div><label>Timezone</label><input id="timezone" placeholder="Europe/Riga"/></div>
-          <div><label>Phone / route</label><input id="phone_number" placeholder="+371..."/></div>
+        <div>
+          <label class="toolbar-label">Window</label>
+          <select id="days">
+            <option value="7">7 days</option>
+            <option value="14" selected>14 days</option>
+            <option value="30">30 days</option>
+          </select>
         </div>
-      </div>
-
-      <div id="tab_services" class="tab-panel">
-        <div class="row3">
-          <div><label>Services LV</label><textarea id="services_lv"></textarea></div>
-          <div><label>Services RU</label><textarea id="services_ru"></textarea></div>
-          <div><label>Services EN</label><textarea id="services_en"></textarea></div>
+        <div>
+          <label class="toolbar-label">Table limit</label>
+          <select id="limit">
+            <option value="10">10</option>
+            <option value="20" selected>20</option>
+            <option value="50">50</option>
+          </select>
         </div>
-        <div style="margin-top:12px;"><label>Service catalog JSON</label><textarea id="service_catalog_json" style="min-height:190px;"></textarea></div>
-        <div class="small">Ieteicams lietot JSON katalogu ar key/name_lv/name_ru/name_en/duration_min/aliases.</div>
-      </div>
-
-      <div id="tab_memory" class="tab-panel">
-        <div class="row3">
-          <div><label>FAQ / Memory LV</label><textarea id="business_memory_lv"></textarea></div>
-          <div><label>FAQ / Memory RU</label><textarea id="business_memory_ru"></textarea></div>
-          <div><label>FAQ / Memory EN</label><textarea id="business_memory_en"></textarea></div>
+        <div style="display:flex; gap:12px; align-items:end; margin-left:auto; flex-wrap:wrap;">
+          <button onclick="loadAll()">Refresh</button>
+          <button class="secondary" onclick="openPath('/tenants/ui')">Tenants</button>
+          <button class="secondary" onclick="openPath('/onboarding/ui?tenant_id='+encodeURIComponent(currentTenant()))">Onboarding</button>
+          <button class="secondary" onclick="openPath('/tenant/config/ui?tenant_id='+encodeURIComponent(currentTenant()))">Tenant config</button>
         </div>
       </div>
-
-      <div id="tab_rules" class="tab-panel">
-        <div class="row3">
-          <div><label>Work start</label><input id="work_start" placeholder="09:00"/></div>
-          <div><label>Work end</label><input id="work_end" placeholder="18:00"/></div>
-          <div><label>Min notice minutes</label><input id="min_notice_minutes" type="number" min="0"/></div>
-        </div>
-        <div class="row" style="margin-top:12px;">
-          <div><label>Buffer minutes</label><input id="buffer_minutes" type="number" min="0"/></div>
-          <div><label>Google service account JSON</label><input id="service_account_json" placeholder="optional"/></div>
-        </div>
-        <div style="margin-top:12px;"><label>Weekly hours JSON</label><textarea id="weekly_hours_json"></textarea></div>
-        <div class="row" style="margin-top:12px;"><div><label>Days off JSON</label><textarea id="days_off_json"></textarea></div><div><label>Breaks JSON</label><textarea id="breaks_json"></textarea></div></div>
-        <div style="margin-top:12px;"><label>Holidays JSON</label><textarea id="holidays_json"></textarea></div>
-      </div>
-
-      <div style="display:flex;gap:10px;align-items:center;margin-top:16px;flex-wrap:wrap;">
-        <button class="good" id="save_btn" onclick="saveConfig()">Saglabāt konfigurāciju</button>
-        <button class="secondary" onclick="loadConfig()">Atcelt izmaiņas</button>
-        <span id="save_status" class="small"></span>
+      <div class="muted nav-links">JSON endpoints:
+        <a id="lnk_analytics" href="#">analytics</a> ·
+        <a id="lnk_usage" href="#">usage</a> ·
+        <a id="lnk_activity" href="#">activity</a> ·
+        <a id="lnk_chart_data" href="#">chart data</a> ·
+        <a id="lnk_bookings" href="#">bookings</a> ·
+        <a id="lnk_conversations" href="#">conversations</a> ·
+        <a id="lnk_tenant" href="#">tenant config</a> ·
+        <a id="lnk_tenant_ui" href="#">tenant config ui</a> ·
+        <a id="lnk_status" href="#">tenant status</a> ·
+        <a id="lnk_overview" href="#">tenant overview</a> ·
+        <a id="lnk_tenants_ui" href="/tenants/ui">tenants ui</a>
       </div>
     </div>
 
-    <div>
+    <div class="status-grid">
       <div class="panel">
-        <h2>Readiness</h2>
-        <div id="readiness_badges"></div>
-        <div class="small" id="readiness_missing" style="margin-top:8px;"></div>
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:12px;">
+          <div>
+            <h3 class="section-title" id="biz_title">Business status</h3>
+            <div class="muted" id="biz_sub">Loading tenant status…</div>
+          </div>
+          <div id="ready_badges"></div>
+        </div>
+        <div class="metrics" style="margin-top:14px;">
+          <div class="card"><div>Plan</div><div id="m_plan" class="num" style="font-size:22px">-</div><div id="m_plan_sub" class="sub"></div></div>
+          <div class="card"><div>Dialogs limit</div><div id="m_limit_dialogs" class="num">-</div><div id="m_limit_source" class="sub">Monthly cap by plan</div></div>
+          <div class="card"><div>LLM mode</div><div id="m_llm_mode" class="num" style="font-size:22px">-</div><div id="m_llm_calls" class="sub"></div></div>
+          <div class="card"><div>Phone routes</div><div id="m_routes" class="num">-</div><div class="sub">Connected incoming numbers</div></div>
+        </div>
+        <div style="margin-top:14px;">
+          <div class="muted">Missing setup items</div>
+          <ul id="missing_list" class="status-list"></ul>
+        </div>
       </div>
       <div class="panel">
-        <h2>UMA Insights</h2>
-        <div id="uma_list" class="list"><div class="muted">Ielādē...</div></div>
+        <h3 class="section-title">Setup checkpoints</h3>
+        <div id="checkpoint_block"></div>
+        <div style="margin-top:14px;" class="muted">Quick actions</div>
+        <div style="margin-top:8px; display:flex; flex-wrap:wrap; gap:8px;">
+          <button class="secondary" onclick="openPath(document.getElementById('lnk_status').href)">Open status JSON</button>
+          <button class="secondary" onclick="openPath(document.getElementById('lnk_overview').href)">Open overview JSON</button>
+          <button class="secondary" onclick="openPath('/google/connect?tenant_id='+encodeURIComponent(currentTenant()))">Connect Google</button>
+          <button class="secondary" onclick="openPath('/google/calendars/ui?tenant_id='+encodeURIComponent(currentTenant()))">Select calendar</button>
+        </div>
       </div>
     </div>
-  </div>
 
-  <div class="grid-2">
     <div class="panel">
-      <h2>Conversation analytics</h2>
-      <div class="chart-box"><canvas id="intent_chart"></canvas></div>
+      <div class="metrics">
+        <div class="card"><div>Total requests</div><div id="m_requests" class="num">-</div><div class="sub">All-time requests</div></div>
+        <div class="card"><div>Total bookings</div><div id="m_bookings" class="num">-</div><div class="sub">All-time successful bookings</div></div>
+        <div class="card"><div>Conversion</div><div id="m_conv" class="num">-</div><div class="sub">All-time booking rate</div></div>
+        <div class="card"><div>Today bookings</div><div id="m_today" class="num">-</div><div class="sub">Booked today</div></div>
+      </div>
+      <div class="metrics" style="margin-top:12px;">
+        <div class="card"><div>Window unique users</div><div id="m_users" class="num">-</div><div class="sub">Distinct users in selected window</div></div>
+        <div class="card"><div>Window reschedules</div><div id="m_reschedules" class="num">-</div><div class="sub">Intent=reschedule in selected window</div></div>
+        <div class="card"><div>Window cancelled</div><div id="m_cancelled" class="num">-</div><div class="sub">Cancelled in selected window</div></div>
+        <div class="card"><div>Main channel</div><div id="m_channel" class="num" style="font-size:20px">-</div><div id="m_channel_sub" class="sub"></div></div>
+      </div>
     </div>
+
+    <div class="grid-3">
+      <div class="panel">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <h3 class="section-title">Usage trend</h3>
+          <span class="badge" id="usage_badge">Selected window</span>
+        </div>
+        <div class="chart-wrap"><canvas id="trend_chart"></canvas></div>
+      </div>
+      <div class="panel">
+        <h3 class="section-title">Channel mix</h3>
+        <div class="mini-chart-wrap"><canvas id="channel_chart"></canvas></div>
+      </div>
+      <div class="panel">
+        <h3 class="section-title">Top services</h3>
+        <div class="mini-chart-wrap"><canvas id="services_chart"></canvas></div>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="panel">
+        <h3 class="section-title">Recent bookings</h3>
+        <table id="bookings_tbl"><thead><tr><th>User</th><th>Service</th><th>Date/Time</th><th>Status</th><th>Created</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div class="panel">
+        <h3 class="section-title">Top services (table)</h3>
+        <table id="services_tbl"><thead><tr><th>Service</th><th>Bookings</th></tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="panel">
+        <h3 class="section-title">Recent activity</h3>
+        <table id="activity_tbl"><thead><tr><th>Time</th><th>Type</th><th>Channel</th><th>User</th><th>Message</th><th>Status</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div class="panel">
+        <h3 class="section-title">Daily usage (table)</h3>
+        <table id="daily_tbl"><thead><tr><th>Date</th><th>Requests</th><th>Bookings</th><th>Cancelled</th></tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+
     <div class="panel">
-      <h2>Runtime Config Preview</h2>
-      <pre id="runtime_preview">Loading...</pre>
+      <h3 class="section-title">Recent conversations</h3>
+      <table id="conv_tbl"><thead><tr><th>Time</th><th>User</th><th>Channel</th><th>User message</th><th>AI reply</th><th>Status</th></tr></thead><tbody></tbody></table>
     </div>
   </div>
-
-  <div class="panel">
-    <h2>Quick links</h2>
-    <div id="quick_links" class="muted"></div>
-  </div>
-</div>
-
 <script>
-let state = { tenant:null, runtime:null, uma:null, analytics:null, chart:null };
-function el(id){ return document.getElementById(id); }
-function esc(v){ return String(v ?? '').replace(/[&<>\"]/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[s])); }
-function tid(){ return (el('tenant_id').value || 'default').trim(); }
-function days(){ return el('days').value || '14'; }
-function showBanner(kind, msg){ const b=el('banner'); b.className='statusbar '+kind; b.textContent=msg; }
-function clearBanner(){ const b=el('banner'); b.className='statusbar'; b.textContent=''; }
-function showTab(name){ document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x.dataset.tab===name)); document.querySelectorAll('.tab-panel').forEach(x=>x.classList.toggle('active',x.id==='tab_'+name)); }
-function j(v){ if(v===null||v===undefined||v==='') return ''; if(typeof v==='string') return v; return JSON.stringify(v,null,2); }
-async function fetchJson(url, opts){ const r=await fetch(url,opts); const txt=await r.text(); let data={}; try{ data=txt?JSON.parse(txt):{}; }catch(e){ data={raw:txt}; } if(!r.ok) throw new Error(data.detail||txt||r.statusText); return data; }
-function parseMaybeJsonText(id){ const value=el(id).value.trim(); if(!value) return null; return value; }
-function setVal(id, value){ const node=el(id); if(node) node.value = value ?? ''; }
-function openJson(path){ window.open(path+'?tenant_id='+encodeURIComponent(tid())+(path.includes('uma')?'&days='+encodeURIComponent(days()):''),'_blank'); }
-function quickLinks(){ const t=encodeURIComponent(tid()); const links=[['Runtime','/tenant/runtime-config?tenant_id='+t],['Runtime debug','/tenant/runtime-config/debug?tenant_id='+t],['UMA','/uma/insights?tenant_id='+t+'&days='+encodeURIComponent(days())],['Telegram','/telegram/status'],['Tenant config UI','/tenant/config/ui?tenant_id='+t],['Tenants','/tenants/ui'],['Dev chat','/dev_chat_ui']]; el('quick_links').innerHTML=links.map(([a,u])=>`<a href="${u}" style="margin-right:12px;">${a}</a>`).join(''); }
-async function loadConfig(){ const data=await fetchJson('/tenant/config?tenant_id='+encodeURIComponent(tid())); const t=data.tenant||{}; state.tenant=t; setVal('business_name',t.business_name); setVal('business_type',t.business_type||'barbershop'); setVal('phone_number',t.phone_number); setVal('timezone',t.timezone||'Europe/Riga'); setVal('language',t.language||'lv'); setVal('work_start',t.work_start||'09:00'); setVal('work_end',t.work_end||'18:00'); setVal('services_lv',t.services_lv); setVal('services_ru',t.services_ru); setVal('services_en',t.services_en); setVal('weekly_hours_json',j(t.weekly_hours_json)); setVal('days_off_json',j(t.days_off_json)); setVal('breaks_json',j(t.breaks_json)); setVal('holidays_json',j(t.holidays_json)); setVal('min_notice_minutes',t.min_notice_minutes); setVal('buffer_minutes',t.buffer_minutes); setVal('service_catalog_json',j(t.service_catalog_json||t.service_catalog)); setVal('service_account_json',t.service_account_json||t.google_service_account_json||''); setVal('business_memory_lv',t.business_memory_lv||t.faq_lv); setVal('business_memory_ru',t.business_memory_ru||t.faq_ru); setVal('business_memory_en',t.business_memory_en||t.faq_en); }
-async function loadRuntime(){ const data=await fetchJson('/tenant/runtime-config?tenant_id='+encodeURIComponent(tid())); state.runtime=data; el('runtime_preview').textContent=JSON.stringify(data,null,2); renderReadiness(data); }
-async function loadUma(){ try{ state.uma=await fetchJson('/uma/insights?tenant_id='+encodeURIComponent(tid())+'&days='+encodeURIComponent(days())); }catch(e){ try{ state.uma=await fetchJson('/dashboard/uma-insights?tenant_id='+encodeURIComponent(tid())+'&days='+encodeURIComponent(days())); }catch(e2){ state.uma=null; } } renderUma(); }
-async function loadAnalytics(){ try{ state.analytics=await fetchJson('/dashboard/analytics?tenant_id='+encodeURIComponent(tid())); }catch(e){ state.analytics=null; } renderMetrics(); renderIntentChart(); }
-async function loadAll(){ clearBanner(); quickLinks(); try{ await loadConfig(); await Promise.allSettled([loadRuntime(),loadUma(),loadAnalytics()]); renderHeader(); showBanner('ok','Kabinets ielādēts.'); }catch(e){ showBanner('bad','Kļūda: '+e.message); } }
-function renderHeader(){ const t=state.tenant||{}; const name=t.business_name||state.runtime?.business?.name||tid(); el('page_title').textContent=name; el('page_sub').textContent=`Tenant: ${tid()} · ${t.timezone||'Europe/Riga'} · ${t.language||'lv'}`; }
-function renderMetrics(){ const s=state.uma?.summary||{}; const total=s.total_dialogs ?? state.analytics?.total_dialogs ?? '—'; const bookings=s.bookings ?? state.analytics?.bookings ?? '—'; const rate=(s.booking_rate!==undefined)?Math.round(Number(s.booking_rate)*100)+'%':(state.analytics?.booking_rate!==undefined?Math.round(Number(state.analytics.booking_rate)*100)+'%':'—'); el('m_dialogs').textContent=total; el('m_bookings').textContent=bookings; el('m_rate').textContent=rate; const ready=state.runtime?.readiness?.ready; el('m_ready').textContent=ready===true?'Ready':ready===false?'Issues':'—'; el('m_ready_sub').textContent=ready===false?'needs setup':'runtime status'; }
-function renderReadiness(cfg){ const r=cfg?.readiness||{}; const missing=r.missing||[]; const checks=[['Calendar',cfg?.booking?.calendar_configured],['Service account',cfg?.booking?.service_account_configured],['Services',(cfg?.services?.catalog||[]).length>0],['Business memory',cfg?.memory?.has_memory],['Work hours',!!cfg?.booking?.work_start&&!!cfg?.booking?.work_end]]; el('readiness_badges').innerHTML=checks.map(([name,ok])=>`<span class="badge ${ok?'ok':'warn'}">${ok?'✅':'⚠'} ${name}</span>`).join(''); el('readiness_missing').textContent=missing.length?'Missing: '+missing.join(', '):'Viss izskatās gatavs.'; renderMetrics(); }
-function renderUma(){ const box=el('uma_list'); const recs=state.uma?.recommendations||[]; const signals=state.uma?.signals||[]; const top=state.uma?.top_services||[]; const items=[]; signals.slice(0,3).forEach(x=>items.push(`<div class="insight"><strong>${esc(x.title||x.type)}</strong><div class="small">Severity: ${esc(x.severity||'info')} · Value: ${esc(x.value)}</div></div>`)); recs.slice(0,3).forEach(x=>items.push(`<div class="insight"><strong>${esc(x.title)}</strong><div class="small">${esc(x.why||'')}</div><div style="margin-top:6px;">${esc(x.action||'')}</div></div>`)); if(top[0]) items.unshift(`<div class="insight"><strong>Populārākais pakalpojums</strong><div>${esc(top[0].service)} · ${esc(top[0].count)} pieprasījumi</div></div>`); box.innerHTML=items.length?items.join(''):'<div class="muted">Nav pietiekami daudz datu.</div>'; renderMetrics(); }
-function renderIntentChart(){ const intents=state.uma?.intents||[]; const labels=intents.map(x=>x.intent); const values=intents.map(x=>x.count); const ctx=el('intent_chart'); if(!ctx||!labels.length) return; if(state.chart) state.chart.destroy(); state.chart=new Chart(ctx,{type:'bar',data:{labels,datasets:[{label:'Intents',data:values}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}}}}); }
-async function saveConfig(){ const btn=el('save_btn'); const st=el('save_status'); btn.disabled=true; st.textContent='Saglabā...'; const payload={tenant_id:tid(),business_name:el('business_name').value||null,phone_number:el('phone_number').value||null,timezone:el('timezone').value||'Europe/Riga',language:el('language').value||'lv',work_start:el('work_start').value||null,work_end:el('work_end').value||null,services_lv:el('services_lv').value||null,services_ru:el('services_ru').value||null,services_en:el('services_en').value||null,weekly_hours_json:parseMaybeJsonText('weekly_hours_json'),days_off_json:parseMaybeJsonText('days_off_json'),breaks_json:parseMaybeJsonText('breaks_json'),holidays_json:parseMaybeJsonText('holidays_json'),min_notice_minutes:el('min_notice_minutes').value?Number(el('min_notice_minutes').value):null,buffer_minutes:el('buffer_minutes').value?Number(el('buffer_minutes').value):null,service_catalog_json:parseMaybeJsonText('service_catalog_json'),service_account_json:el('service_account_json').value||null,business_memory_lv:el('business_memory_lv').value||null,business_memory_ru:el('business_memory_ru').value||null,business_memory_en:el('business_memory_en').value||null}; try{ await fetchJson('/tenant/config/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}); await fetchJson('/tenant/runtime-config/refresh?tenant_id='+encodeURIComponent(tid()),{method:'POST'}); st.textContent='Saglabāts'; showBanner('ok','Konfigurācija saglabāta un runtime cache atjaunots.'); await loadAll(); }catch(e){ st.textContent='Kļūda'; showBanner('bad','Saglabāšanas kļūda: '+e.message); }finally{ btn.disabled=false; } }
-document.addEventListener('DOMContentLoaded',loadAll);
+let trendChart = null;
+let channelChart = null;
+let servicesChart = null;
+function currentTenant() {{ return document.getElementById('tenant').value.trim() || 'default'; }}
+function openPath(url) {{ if (url) window.location = url; }}
+function esc(v) {{ if (v === null || v === undefined) return ''; return String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'", '&#39;'); }}
+function setEmpty(tbody, colSpan, label='No data yet') {{ tbody.innerHTML = `<tr><td colspan="${{colSpan}}" class="empty">${{esc(label)}}</td></tr>`; }}
+async function fetchJson(url) {{ const r = await fetch(url); if (!r.ok) {{ const text = await r.text(); throw new Error(text || `HTTP ${{r.status}}`); }} return r.json(); }}
+function destroyIf(chartObj) {{ if (chartObj) chartObj.destroy(); }}
+function statusBadge(label, cls) {{ return `<span class="badge ${{cls||''}}">${{esc(label)}}</span>`; }}
+function el(id) {{ return document.getElementById(id); }}
+function setText(id, value, fallback='-') {{ const node = el(id); if (!node) return; node.textContent = (value === null || value === undefined || value === '') ? fallback : String(value); }}
+function safeArray(value) {{ return Array.isArray(value) ? value : []; }}
+function normalizeDailyPayload(value) {{
+  if (Array.isArray(value)) return value;
+  if (Array.isArray(value?.daily)) return value.daily;
+  if (Array.isArray(value?.items)) return value.items;
+  return [];
+}}
+function normalizeChannelPayload(value) {{
+  if (Array.isArray(value)) return value;
+  if (Array.isArray(value?.channels)) return value.channels;
+  return [];
+}}
+function normalizeServicePayload(value) {{
+  if (Array.isArray(value)) return value;
+  if (Array.isArray(value?.top_services)) return value.top_services;
+  if (Array.isArray(value?.items)) return value.items;
+  return [];
+}}
+function normalizeOverview(value) {{
+  return (value && typeof value === 'object') ? value : {{}};
+}}
+function renderTrendChart(rawDaily) {{
+  const canvas = el('trend_chart');
+  if (!canvas || typeof Chart === 'undefined') return;
+  const daily = normalizeDailyPayload(rawDaily);
+  const ctx = canvas.getContext('2d');
+  destroyIf(trendChart);
+  trendChart = new Chart(ctx, {{
+    type:'line',
+    data:{{
+      labels: daily.map(x=>x?.date||''),
+      datasets:[
+        {{label:'Requests', data: daily.map(x=>x?.requests||0), borderWidth:2, tension:0.3}},
+        {{label:'Bookings', data: daily.map(x=>x?.bookings||0), borderWidth:2, tension:0.3}},
+        {{label:'Cancelled', data: daily.map(x=>x?.cancelled||0), borderWidth:2, tension:0.3}}
+      ]
+    }},
+    options:{{responsive:true, maintainAspectRatio:false, interaction:{{mode:'index', intersect:false}}, plugins:{{legend:{{position:'bottom'}}}}, scales:{{y:{{beginAtZero:true, ticks:{{precision:0}}}}}}}}
+  }});
+}}
+function renderChannelChart(rawChannels) {{
+  const canvas = el('channel_chart');
+  if (!canvas || typeof Chart === 'undefined') return;
+  const channels = normalizeChannelPayload(rawChannels);
+  const ctx = canvas.getContext('2d');
+  destroyIf(channelChart);
+  channelChart = new Chart(ctx, {{
+    type:'doughnut',
+    data:{{labels: channels.map(x=>x?.channel||'unknown'), datasets:[{{data: channels.map(x=>x?.count||0), borderWidth:1}}]}},
+    options:{{responsive:true, maintainAspectRatio:false, plugins:{{legend:{{position:'bottom'}}}}}}
+  }});
+}}
+function renderServicesChart(rawItems) {{
+  const canvas = el('services_chart');
+  if (!canvas || typeof Chart === 'undefined') return;
+  const items = normalizeServicePayload(rawItems);
+  const ctx = canvas.getContext('2d');
+  destroyIf(servicesChart);
+  servicesChart = new Chart(ctx, {{
+    type:'bar',
+    data:{{labels: items.map(x=>x?.service||'unknown'), datasets:[{{label:'Bookings', data: items.map(x=>x?.count||0), borderWidth:1}}]}},
+    options:{{responsive:true, maintainAspectRatio:false, indexAxis:'y', plugins:{{legend:{{display:false}}}}, scales:{{x:{{beginAtZero:true, ticks:{{precision:0}}}}}}}}
+  }});
+}}
+function renderOverview(rawOverview) {{
+  const ov = normalizeOverview(rawOverview);
+  const tenant = ov?.tenant || {{}};
+  const readiness = ov?.readiness || {{}};
+  const onboarding = ov?.onboarding || {{}};
+  const planMeta = ov?.plan_meta || {{}};
+  const limits = planMeta?.limits || {{}};
+  setText('biz_title', tenant.business_name || tenant._id || currentTenant());
+  setText('biz_sub', `Tenant ${{tenant._id || currentTenant()}} · timezone ${{tenant.timezone || '—'}} · language ${{tenant.language || '—'}}`, '');
+  setText('m_plan', planMeta.plan || 'starter');
+  setText('m_plan_sub', planMeta.subscription_status || 'trial', 'trial');
+  setText('m_limit_dialogs', limits.dialogs_per_month ?? '-');
+  const limitSource = planMeta?.limits_source || 'plan_default';
+  const limitSourceText = limitSource === 'tenant_override' ? 'Custom limit override' : 'Monthly cap by plan';
+  setText('m_limit_source', limitSourceText, 'Monthly cap by plan');
+  setText('m_llm_mode', limits.llm_mode || '-');
+  setText('m_llm_calls', `LLM calls/month: ${{limits.llm_calls_per_month ?? 0}}`, 'LLM calls/month: 0');
+  setText('m_routes', ov?.phone_routes_count ?? tenant?.phone_routes_count ?? 0, '0');
+  const badges = [];
+  badges.push(readiness.ready ? statusBadge('Ready','ok') : statusBadge('Setup incomplete','warn'));
+  badges.push(onboarding.google_connected ? statusBadge('Google connected','ok') : statusBadge('Google pending','warn'));
+  badges.push(onboarding.calendar_selected ? statusBadge('Calendar selected','ok') : statusBadge('Calendar missing','warn'));
+  const readyBadges = el('ready_badges');
+  if (readyBadges) readyBadges.innerHTML = badges.join(' ');
+  const ml = el('missing_list');
+  if (ml) {{
+    ml.innerHTML = '';
+    const missing = Array.isArray(readiness.missing) ? readiness.missing : [];
+    if (!missing.length) {{
+      ml.innerHTML = '<li>No blocking setup issues</li>';
+    }} else {{
+      missing.forEach(x => {{
+        const li = document.createElement('li');
+        li.textContent = x;
+        ml.appendChild(li);
+      }});
+    }}
+  }}
+  const checkpoints = [];
+  checkpoints.push(`<div>${{statusBadge(onboarding.google_connected ? 'Google connected' : 'Google not connected', onboarding.google_connected ? 'ok' : 'warn')}}</div>`);
+  checkpoints.push(`<div>${{statusBadge(onboarding.calendar_selected ? 'Calendar selected' : 'Calendar not selected', onboarding.calendar_selected ? 'ok' : 'warn')}}</div>`);
+  checkpoints.push(`<div>${{statusBadge(onboarding.onboarding_completed ? 'Onboarding completed' : 'Onboarding in progress', onboarding.onboarding_completed ? 'ok' : 'warn')}}</div>`);
+  checkpoints.push(`<div class="muted" style="margin-top:8px;">Next step: ${{esc(onboarding.next_step || readiness.next_step || 'done')}}</div>`);
+  checkpoints.push(`<div class="muted">Owner: ${{esc(tenant.owner_email || onboarding.owner_email || '—')}} · Phone: ${{esc(tenant.phone_number || onboarding.phone_number || '—')}}</div>`);
+  const checkpointBlock = el('checkpoint_block');
+  if (checkpointBlock) checkpointBlock.innerHTML = checkpoints.join('');
+}}
+function renderTableRows(selector, rows, colSpan, emptyLabel, rowRenderer) {{
+  const tbody = document.querySelector(selector);
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  const safeRows = safeArray(rows);
+  if (!safeRows.length) {{
+    setEmpty(tbody, colSpan, emptyLabel);
+    return;
+  }}
+  safeRows.forEach(item => {{
+    const tr = document.createElement('tr');
+    tr.innerHTML = rowRenderer(item || {{}});
+    tbody.appendChild(tr);
+  }});
+}}
+function clearDashboardBanner() {{
+  const existingBanner = el('dash_error_banner');
+  if (existingBanner) existingBanner.remove();
+}}
+function showDashboardBanner(message, kind='warn') {{
+  clearDashboardBanner();
+  const banner = document.createElement('div');
+  banner.id = 'dash_error_banner';
+  const styleMap = {{
+    warn: 'background:#fef3c7;color:#92400e;',
+    err: 'background:#fee2e2;color:#991b1b;',
+    ok: 'background:#dcfce7;color:#166534;'
+  }};
+  banner.style = `${{styleMap[kind] || styleMap.warn}}padding:12px 16px;font-size:14px;margin-bottom:12px;border-radius:12px;`;
+  banner.textContent = message;
+  const wrap = document.querySelector('.wrap');
+  if (wrap) wrap.prepend(banner);
+}}
+async function loadAll() {{
+  const tenant = currentTenant();
+  const days = el('days')?.value || '14';
+  const limit = el('limit')?.value || '20';
+  setText('usage_badge', `${{days}} day window`, 'Selected window');
+  el('lnk_analytics').href = `/dashboard/analytics?tenant_id=${{encodeURIComponent(tenant)}}`;
+  el('lnk_usage').href = `/dashboard/usage?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
+  el('lnk_activity').href = `/dashboard/activity?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
+  el('lnk_chart_data').href = `/dashboard/chart-data?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
+  el('lnk_bookings').href = `/dashboard/bookings?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
+  el('lnk_conversations').href = `/dashboard/conversations?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
+  el('lnk_tenant').href = `/tenant/config?tenant_id=${{encodeURIComponent(tenant)}}`;
+  el('lnk_tenant_ui').href = `/tenant/config/ui?tenant_id=${{encodeURIComponent(tenant)}}`;
+  el('lnk_status').href = `/tenant/status?tenant_id=${{encodeURIComponent(tenant)}}`;
+  el('lnk_overview').href = `/tenant/overview?tenant_id=${{encodeURIComponent(tenant)}}`;
+  clearDashboardBanner();
+
+  const requests = [
+    ['analytics', `/dashboard/analytics?tenant_id=${{encodeURIComponent(tenant)}}`],
+    ['usage', `/dashboard/usage?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`],
+    ['activity', `/dashboard/activity?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`],
+    ['bookings', `/dashboard/bookings?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`],
+    ['conversations', `/dashboard/conversations?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`],
+    ['chartData', `/dashboard/chart-data?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`],
+    ['overview', `/tenant/overview?tenant_id=${{encodeURIComponent(tenant)}}`]
+  ];
+
+  const settled = await Promise.allSettled(requests.map(([_, url]) => fetchJson(url)));
+  const data = {{}};
+  const errors = [];
+  settled.forEach((result, idx) => {{
+    const key = requests[idx][0];
+    if (result.status === 'fulfilled') {{
+      data[key] = result.value;
+    }} else {{
+      data[key] = null;
+      errors.push(`${{key}}: ${{result.reason?.message || result.reason || 'load failed'}}`);
+      console.error('dashboard_block_failed', key, result.reason);
+    }}
+  }});
+
+  const a = data.analytics || {{}};
+  const u = data.usage || {{}};
+  const act = data.activity || {{}};
+  const b = data.bookings || {{}};
+  const c = data.conversations || {{}};
+  const chartData = data.chartData || {{}};
+  const ov = data.overview || {{}};
+
+  try {{ renderOverview(ov); }} catch (err) {{ errors.push(`overview render: ${{err?.message || err}}`); console.error(err); }}
+  setText('m_requests', a?.total_requests ?? '-');
+  setText('m_bookings', a?.total_bookings ?? '-');
+  setText('m_conv', `${{a?.conversion_rate ?? 0}}%`);
+  setText('m_today', a?.today_bookings ?? '-');
+  setText('m_users', u?.unique_users ?? '-');
+  setText('m_reschedules', u?.total_reschedules ?? '-');
+  setText('m_cancelled', u?.total_cancelled ?? '-');
+  const topChannelObj = Array.isArray(u?.channels) && u.channels.length ? u.channels[0] : null;
+  setText('m_channel', topChannelObj?.channel || '-');
+  setText('m_channel_sub', topChannelObj ? `${{topChannelObj.count || 0}} events in selected window` : '', '');
+
+  try {{ renderTrendChart(chartData?.daily || u?.daily || []); }} catch (err) {{ errors.push(`trend chart: ${{err?.message || err}}`); console.error(err); }}
+  try {{ renderChannelChart(chartData?.channels || u?.channels || []); }} catch (err) {{ errors.push(`channel chart: ${{err?.message || err}}`); console.error(err); }}
+  try {{ renderServicesChart(chartData?.top_services || u?.top_services || []); }} catch (err) {{ errors.push(`services chart: ${{err?.message || err}}`); console.error(err); }}
+
+  renderTableRows('#bookings_tbl tbody', b?.items, 5, 'No bookings yet', item => `<td>${{esc(item?.client_name || item?.user_id || '')}}</td><td>${{esc(item?.service || 'unknown')}}</td><td>${{esc(item?.datetime_iso || '')}}</td><td>${{esc(item?.status || '')}}</td><td><span class="muted">${{esc(item?.created_at || '')}}</span></td>`);
+  renderTableRows('#services_tbl tbody', u?.top_services, 2, 'No booked services in selected window', item => `<td>${{esc(item?.service || 'unknown')}}</td><td>${{esc(item?.count ?? 0)}}</td>`);
+  renderTableRows('#activity_tbl tbody', act?.items, 6, 'No activity yet', item => `<td><span class="muted">${{esc(item?.created_at || '')}}</span></td><td>${{esc(item?.type || '')}}</td><td>${{esc(item?.channel || '')}}</td><td>${{esc(item?.user_id || '')}}</td><td>${{esc(item?.message || '')}}</td><td>${{esc(item?.status || '')}}</td>`);
+  renderTableRows('#daily_tbl tbody', u?.daily, 4, 'No daily usage yet', item => `<td>${{esc(item?.date || '')}}</td><td>${{esc(item?.requests ?? 0)}}</td><td>${{esc(item?.bookings ?? 0)}}</td><td>${{esc(item?.cancelled ?? 0)}}</td>`);
+  renderTableRows('#conv_tbl tbody', c?.items, 6, 'No conversations yet', item => `<td><span class="muted">${{esc(item?.created_at || '')}}</span></td><td>${{esc(item?.user_id || '')}}</td><td>${{esc(item?.channel || '')}}</td><td>${{esc(item?.user_message || '')}}</td><td>${{esc(item?.ai_reply || '')}}</td><td>${{esc(item?.status || '')}}</td>`);
+
+  if (errors.length) {{
+    showDashboardBanner(`Dashboard loaded with partial issues: ${{errors.join(' | ')}}`, 'warn');
+  }}
+}}
+document.addEventListener('DOMContentLoaded', loadAll);
 </script>
 </body>
 </html>
-    """.replace("__TENANT_ID__", tenant_id)
+    """
     return HTMLResponse(content=html)
 
 
@@ -7737,7 +8055,6 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
     if new_phone:
         upsert_phone_route(new_phone, tenant_id)
 
-    clear_tenant_runtime_config_cache(tenant_id)
     updated = get_tenant(tenant_id)
     return {
         "status": "ok",
@@ -7748,152 +8065,6 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
         "plan_meta": tenant_plan_meta(updated),
         "links": onboarding_links_payload(tenant_id),
     }
-
-
-
-# -------------------------
-# STAGE 17 HOTFIX: Tenant Runtime Config endpoints
-# -------------------------
-_TENANT_RUNTIME_CONFIG_CACHE: Dict[str, Dict[str, Any]] = {}
-
-
-def _runtime_config_cache_key(tenant: Dict[str, Any], lang: str) -> str:
-    tenant_id = str((tenant or {}).get("_id") or (tenant or {}).get("id") or "").strip()
-    return f"{tenant_id}:{get_lang(lang)}"
-
-
-def clear_tenant_runtime_config_cache(tenant_id: str = "") -> None:
-    tenant_id = str(tenant_id or "").strip()
-    if not tenant_id:
-        _TENANT_RUNTIME_CONFIG_CACHE.clear()
-        return
-    prefix = f"{tenant_id}:"
-    for key in list(_TENANT_RUNTIME_CONFIG_CACHE.keys()):
-        if key.startswith(prefix):
-            _TENANT_RUNTIME_CONFIG_CACHE.pop(key, None)
-
-
-def _runtime_config_cache_set(tenant: Dict[str, Any], lang: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    key = _runtime_config_cache_key(tenant, lang)
-    if key and not key.startswith(":"):
-        _TENANT_RUNTIME_CONFIG_CACHE[key] = payload
-    return payload
-
-
-def tenant_language_config(tenant: Dict[str, Any]) -> Dict[str, Any]:
-    primary = get_lang((tenant or {}).get("language") or "lv")
-    enabled = ["lv", "ru", "en"]
-    return {
-        "primary": primary,
-        "enabled": enabled,
-        "fallback": "en" if primary != "en" else "lv",
-    }
-
-
-def tenant_runtime_config(tenant: Dict[str, Any], lang: str = "", use_cache: bool = True) -> Dict[str, Any]:
-    tenant = normalize_tenant_saas_fields(tenant or {})
-    effective_lang = get_lang(lang or tenant.get("language") or "lv")
-    cache_key = _runtime_config_cache_key(tenant, effective_lang)
-    if use_cache and cache_key in _TENANT_RUNTIME_CONFIG_CACHE:
-        return _TENANT_RUNTIME_CONFIG_CACHE[cache_key]
-
-    settings = tenant_settings(tenant, effective_lang)
-    catalog = tenant_service_catalog(tenant)
-    aliases = ensure_default_barbershop_aliases(
-        catalog,
-        merged_service_alias_map(catalog, tenant, effective_lang),
-        effective_lang,
-    )
-    business_memory = tenant_business_memory(tenant, effective_lang)
-    tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip()
-    payload = {
-        "tenant_id": tenant_id,
-        "lang": effective_lang,
-        "language": tenant_language_config(tenant),
-        "business": {
-            "name": settings.get("biz_name"),
-            "address": settings.get("addr"),
-            "type": settings.get("business_type"),
-            "timezone": tenant.get("timezone") or "Europe/Riga",
-            "phone_number": tenant.get("phone_number") or tenant.get("phone") or "",
-        },
-        "booking": {
-            "calendar_id": settings.get("calendar_id"),
-            "calendar_configured": calendar_is_configured(settings.get("calendar_id")),
-            "service_account_configured": tenant_has_service_account_json(tenant),
-            "work_start": settings.get("work_start"),
-            "work_end": settings.get("work_end"),
-            "rules": settings.get("business_rules") or {},
-        },
-        "services": {
-            "catalog": catalog,
-            "summary": service_catalog_summary(catalog, effective_lang),
-            "aliases": aliases,
-            "hint": settings.get("services_hint"),
-            "by_lang": {
-                "lv": str(tenant.get("services_lv") or "").strip(),
-                "ru": str(tenant.get("services_ru") or "").strip(),
-                "en": str(tenant.get("services_en") or "").strip(),
-            },
-        },
-        "memory": {
-            "text": business_memory,
-            "has_memory": bool(str(business_memory or "").strip()),
-            "by_lang": {
-                "lv": str(tenant.get("business_memory_lv") or tenant.get("faq_lv") or "").strip(),
-                "ru": str(tenant.get("business_memory_ru") or tenant.get("faq_ru") or "").strip(),
-                "en": str(tenant.get("business_memory_en") or tenant.get("faq_en") or "").strip(),
-            },
-        },
-        "saas": {
-            "plan": tenant_plan_meta(tenant).get("plan"),
-            "subscription_status": tenant.get("subscription_status"),
-            "effective_status": effective_subscription_status(tenant),
-            "usage": tenant_usage_snapshot(tenant),
-        },
-        "readiness": tenant_ready_status_payload(tenant),
-        "links": onboarding_links_payload(tenant_id) if tenant_id else {},
-    }
-    return _runtime_config_cache_set(tenant, effective_lang, payload) if use_cache else payload
-
-
-def tenant_runtime_config_public_view(config: Dict[str, Any]) -> Dict[str, Any]:
-    cfg = dict(config or {})
-    services = dict(cfg.get("services") or {})
-    services.pop("aliases", None)
-    cfg["services"] = services
-    booking = dict(cfg.get("booking") or {})
-    booking.pop("calendar_id", None)
-    cfg["booking"] = booking
-    return cfg
-
-
-@app.get("/tenant/runtime-config")
-def tenant_runtime_config_endpoint(tenant_id: str = TENANT_ID_DEFAULT, lang: str = ""):
-    tenant = get_tenant_or_404((tenant_id or "").strip() or TENANT_ID_DEFAULT)
-    effective_lang = get_lang(lang or tenant.get("language") or "lv")
-    return tenant_runtime_config_public_view(tenant_runtime_config(tenant, effective_lang, use_cache=False))
-
-
-@app.get("/tenant/runtime-config/debug")
-def tenant_runtime_config_debug_endpoint(tenant_id: str = TENANT_ID_DEFAULT, lang: str = ""):
-    tenant = get_tenant_or_404((tenant_id or "").strip() or TENANT_ID_DEFAULT)
-    effective_lang = get_lang(lang or tenant.get("language") or "lv")
-    return tenant_runtime_config(tenant, effective_lang, use_cache=False)
-
-
-@app.post("/tenant/runtime-config/refresh")
-def tenant_runtime_config_refresh(tenant_id: str = TENANT_ID_DEFAULT):
-    tenant_id = (tenant_id or "").strip() or TENANT_ID_DEFAULT
-    clear_tenant_runtime_config_cache(tenant_id)
-    tenant = get_tenant_or_404(tenant_id)
-    effective_lang = get_lang(tenant.get("language") or "lv")
-    return {
-        "status": "ok",
-        "tenant_id": tenant_id,
-        "runtime_config": tenant_runtime_config_public_view(tenant_runtime_config(tenant, effective_lang, use_cache=False)),
-    }
-
 
 @app.get("/tenant/routes")
 def tenant_routes(tenant_id: str = TENANT_ID_DEFAULT):
@@ -8143,6 +8314,41 @@ async def dev_focus_test(req: DevFocusTestRequest):
             "success": bool(result.get("status") not in {"blocked", "booking_failed"}),
         })
     return {"tenant_id": req.tenant_id, "lang": lang, "items": items}
+
+
+
+@app.get("/dialogue/audit")
+def dialogue_audit(tenant_id: str = TENANT_ID_DEFAULT, limit: int = 50):
+    return dialogue_audit_summary(tenant_id, limit)
+
+
+@app.get("/dev/dialogue-test-matrix")
+def dev_dialogue_test_matrix():
+    return {
+        "count": len(DIALOGUE_TEST_MATRIX),
+        "categories": sorted(set(str(x.get("category")) for x in DIALOGUE_TEST_MATRIX)),
+        "scenarios": DIALOGUE_TEST_MATRIX,
+    }
+
+
+@app.get("/dev/dialogue-trace")
+def dev_dialogue_trace(tenant_id: str = TENANT_ID_DEFAULT, limit: int = 30):
+    return dialogue_audit_summary(tenant_id, limit)
+
+
+@app.post("/dev/dialogue-simulate")
+def dev_dialogue_simulate(payload: dict = Body(...)):
+    tenant_id = str(payload.get("tenant_id") or TENANT_ID_DEFAULT).strip()
+    user_id = str(payload.get("user_id") or f"sim_{uuid.uuid4().hex[:8]}").strip()
+    lang = get_lang(payload.get("lang") or "lv")
+    messages = payload.get("messages") or []
+    if isinstance(messages, str):
+        messages = [messages]
+    out = []
+    for msg in messages[:20]:
+        result = handle_user_text_with_logging(tenant_id, user_id, str(msg), "dev", lang, source="dialogue_simulate")
+        out.append({"user": str(msg), "assistant": result.get("msg_out") or result.get("reply_voice"), "status": result.get("status"), "lang": result.get("lang")})
+    return {"tenant_id": tenant_id, "user_id": user_id, "turns": out, "audit": dialogue_audit_summary(tenant_id, 20)}
 
 @app.get("/dev_chat_ui", response_class=HTMLResponse)
 def dev_chat_ui():
