@@ -473,6 +473,148 @@ def ai_response_composer(
 
 
 # -------------------------
+# STAGE 25.5 — CONVERSATIONAL CLOSURE LAYER
+# -------------------------
+def _closure_normalized_text(text_: Optional[str]) -> str:
+    low = _normalize_phrase_text(text_)
+    low = low.replace("🙏", "").replace("🙂", "").replace("😊", "").strip()
+    return re.sub(r"\s+", " ", low).strip()
+
+
+def is_thank_you_text(text_: Optional[str], lang: str) -> bool:
+    low = _closure_normalized_text(text_)
+    if not low:
+        return False
+    phrases = {
+        "lv": {"paldies", "liels paldies", "paldies jums", "paldies tev", "super paldies", "ok paldies", "labi paldies"},
+        "ru": {"спасибо", "спасибо вам", "большое спасибо", "спс", "благодарю", "ок спасибо", "хорошо спасибо"},
+        "en": {"thanks", "thank you", "thank you very much", "many thanks", "ok thanks", "great thanks"},
+    }
+    allowed = set().union(*phrases.values())
+    allowed.update(phrases.get(get_lang(lang), set()))
+    if low in allowed:
+        return True
+    return any(low.startswith(p + " ") or low.endswith(" " + p) for p in allowed if p)
+
+
+def is_goodbye_text(text_: Optional[str], lang: str) -> bool:
+    low = _closure_normalized_text(text_)
+    if not low:
+        return False
+    phrases = {
+        "lv": {"atā", "ata", "uz redzēšanos", "uz redzesanos", "visu labu", "līdz vēlākam", "lidz velakam"},
+        "ru": {"пока", "до свидания", "до встречи", "всего доброго", "хорошего дня"},
+        "en": {"bye", "goodbye", "see you", "see you soon", "have a nice day"},
+    }
+    allowed = set().union(*phrases.values())
+    allowed.update(phrases.get(get_lang(lang), set()))
+    return low in allowed or any(low.startswith(p + " ") for p in allowed if p)
+
+
+def is_positive_closure_ack_text(text_: Optional[str], lang: str) -> bool:
+    low = _closure_normalized_text(text_)
+    if not low:
+        return False
+    phrases = {
+        "lv": {"labi", "super", "skaidrs", "forši", "forsi", "ok", "okej", "ideāli", "ideali"},
+        "ru": {"ок", "хорошо", "супер", "понял", "поняла", "отлично", "ладно"},
+        "en": {"ok", "okay", "great", "perfect", "sounds good", "got it", "alright"},
+    }
+    allowed = set().union(*phrases.values())
+    allowed.update(phrases.get(get_lang(lang), set()))
+    return low in allowed
+
+
+def closure_reply_text(lang: str, closure_type: str, conv: Optional[Dict[str, Any]] = None, tenant: Optional[Dict[str, Any]] = None) -> str:
+    lang = get_lang(lang)
+    conv = conv or {}
+    tenant = tenant or {}
+    dtv = parse_dt_any_tz(str(conv.get("datetime_iso") or "").strip())
+    when_text = format_dt_short(dtv) if dtv else ""
+    state = conversation_state(conv)
+
+    if state == STATE_BOOKED and when_text:
+        if lang == "ru":
+            if closure_type == "goodbye":
+                return f"До встречи! Ждём вас {when_text}."
+            return f"Пожалуйста! Ждём вас {when_text}."
+        if lang == "en":
+            if closure_type == "goodbye":
+                return f"See you then! We’ll be expecting you on {when_text}."
+            return f"You’re welcome! We’ll be expecting you on {when_text}."
+        if closure_type == "goodbye":
+            return f"Uz tikšanos! Gaidīsim jūs {when_text}."
+        return f"Lūdzu! Gaidīsim jūs {when_text}."
+
+    if state == STATE_CANCELLED:
+        if lang == "ru":
+            return "Пожалуйста! Если понадобится новая запись, напишите — помогу подобрать время."
+        if lang == "en":
+            return "You’re welcome! If you need a new appointment, just message me and I’ll help."
+        return "Lūdzu! Ja vajadzēs jaunu pierakstu, uzrakstiet — palīdzēšu atrast laiku."
+
+    if closure_type == "goodbye":
+        if lang == "ru":
+            return "До свидания! Хорошего дня."
+        if lang == "en":
+            return "Goodbye! Have a nice day."
+        return "Uz redzēšanos! Lai jauka diena."
+
+    if lang == "ru":
+        return "Пожалуйста! Рад помочь."
+    if lang == "en":
+        return "You’re welcome! Happy to help."
+    return "Lūdzu! Prieks palīdzēt."
+
+
+def maybe_conversational_closure_result(
+    tenant_id: str,
+    user_key: str,
+    msg: str,
+    lang: str,
+    conv: Dict[str, Any],
+    tenant: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    if not (msg or "").strip():
+        return None
+
+    state = conversation_state(conv or {})
+    pending = (conv or {}).get("pending") or {}
+
+    # Never steal confirmations or active slot/service selection. In active booking
+    # states, words like "ok" and "labi" may be real confirmation signals.
+    if state in ACTIVE_BOOKING_STATES or state == STATE_POST_BOOKING_UPSELL:
+        return None
+
+    closure_type = None
+    if is_thank_you_text(msg, lang):
+        closure_type = "thanks"
+    elif is_goodbye_text(msg, lang):
+        closure_type = "goodbye"
+    elif state in {STATE_BOOKED, STATE_CANCELLED} and is_positive_closure_ack_text(msg, lang):
+        closure_type = "ack"
+
+    if not closure_type:
+        return None
+
+    # After booking/cancellation, clear stale pending flags so the next polite
+    # message does not accidentally re-open the booking state machine.
+    if state in {STATE_BOOKED, STATE_CANCELLED} and pending:
+        conv["pending"] = None
+        db_save_conversation(tenant_id, user_key, conv)
+
+    reply = closure_reply_text(lang, closure_type, conv, tenant)
+    return {
+        "status": "info",
+        "reply_voice": reply,
+        "msg_out": reply,
+        "lang": lang,
+        "preserve_text": True,
+        "closure_type": closure_type,
+    }
+
+
+# -------------------------
 # NEW: MULTI-TENANT DB HELPERS
 # -------------------------
 
@@ -5146,6 +5288,12 @@ def handle_user_text(
     )
     business_memory = tenant_business_memory(tenant, lang)
     calendar_ready = calendar_is_configured(settings["calendar_id"])
+
+    # Stage 25.5: handle post-booking thanks/goodbye before normalizing state,
+    # so stale pending booking flags cannot reopen a completed flow.
+    closure_result = maybe_conversational_closure_result(tenant_id, user_key, msg, lang, c, tenant)
+    if closure_result:
+        return closure_result
 
     c["state"] = conversation_state(c)
     c = normalize_booking_state(c)
