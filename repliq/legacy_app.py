@@ -3202,6 +3202,141 @@ def remember_stage26_datetime_hint(c: Dict[str, Any], pending: Dict[str, Any], s
     return c, pending
 
 
+# -------------------------
+# STAGE 27 — ENTITY PERSISTENCE LAYER
+# -------------------------
+def _stage27_service_candidates_for_item(item: Dict[str, Any], lang: str) -> List[str]:
+    values: List[str] = []
+    if not item:
+        return values
+    for key in ("key", "name_lv", "name_ru", "name_en"):
+        if item.get(key):
+            values.append(str(item.get(key)))
+    for key in (f"aliases_{get_lang(lang)}", "aliases_lv", "aliases_ru", "aliases_en"):
+        for alias in item.get(key) or []:
+            if alias:
+                values.append(str(alias))
+    return [v.strip() for v in values if v and v.strip()]
+
+
+def stage27_extract_service_item_from_turn(
+    msg: str,
+    llm_hint: Optional[Dict[str, Any]],
+    service_catalog: List[Dict[str, Any]],
+    service_aliases: Dict[str, str],
+    lang: str,
+) -> Optional[Dict[str, Any]]:
+    """Find a service from the current turn with tolerant matching.
+
+    This layer is intentionally deterministic. It fixes cases where the LLM/router
+    understands booking intent but a Latvian inflected service form such as
+    "konsultāciju" is not persisted as "konsultācija".
+    """
+    raw = str(msg or "").strip()
+    if raw:
+        direct_key = canonical_service_key_from_text(raw, service_aliases)
+        item = get_service_item_by_key(service_catalog, direct_key) if direct_key else None
+        if item:
+            return item
+        item = extract_service_from_text(raw, service_catalog, lang)
+        if item:
+            return item
+
+    llm_hint = llm_hint or {}
+    for value in (llm_hint.get("service"), (llm_hint.get("stage26_semantic") or {}).get("service")):
+        if not value:
+            continue
+        key = apply_service_aliases(value, service_aliases) or canonical_service_key_from_text(value, service_aliases)
+        item = get_service_item_by_key(service_catalog, key) if key else None
+        if item:
+            return item
+        item = extract_service_from_text(value, service_catalog, lang)
+        if item:
+            return item
+
+    folded_raw = _fold_match_text(raw)
+    if not folded_raw:
+        return None
+    raw_words = set(folded_raw.split())
+    for item in service_catalog:
+        for candidate in _stage27_service_candidates_for_item(item, lang):
+            folded_candidate = _fold_match_text(candidate)
+            if not folded_candidate:
+                continue
+            if folded_candidate in folded_raw or folded_raw in folded_candidate:
+                return item
+            # Latvian/Russian inflections: compare a stable prefix stem.
+            compact = folded_candidate.replace(" ", "")
+            if len(compact) >= 7:
+                stem = compact[:8]
+                if stem and stem in folded_raw.replace(" ", ""):
+                    return item
+            for word in raw_words:
+                if len(word) >= 7 and len(compact) >= 7 and word[:7] == compact[:7]:
+                    return item
+    return None
+
+
+def stage27_persist_entities_from_turn(
+    c: Dict[str, Any],
+    pending: Dict[str, Any],
+    msg: str,
+    lang: str,
+    llm_hint: Optional[Dict[str, Any]],
+    service_catalog: List[Dict[str, Any]],
+    service_aliases: Dict[str, str],
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Persist service/date/time entities before state routing.
+
+    Safety contract:
+    - does not create bookings;
+    - does not check calendar;
+    - only stores clearly extracted entities and advances missing-field state.
+    """
+    pending = pending or {}
+    llm_hint = llm_hint or {}
+    semantic = llm_hint.get("stage26_semantic") or {}
+    booking_like = (
+        _normalize_llm_intent(llm_hint.get("intent")) == "booking"
+        or semantic.get("intent") == "booking"
+        or llm_hint.get("stage26_action_hint") in {"start_booking", "continue_booking"}
+        or is_booking_opener(msg)
+        or is_active_booking_flow(c)
+    )
+
+    service_item = stage27_extract_service_item_from_turn(msg, llm_hint, service_catalog, service_aliases, lang)
+    if service_item and not str(c.get("service") or pending.get("service") or "").strip():
+        c, pending = remember_booking_service(c, pending, service_item, lang)
+        pending["booking_intent"] = True
+
+    if booking_like or service_item or str(c.get("service") or pending.get("service") or "").strip():
+        c, pending = remember_partial_booking_datetime_from_message(c, pending, msg)
+        if semantic:
+            c, pending = remember_stage26_datetime_hint(c, pending, semantic)
+        pending["booking_intent"] = True
+
+    if (llm_hint.get("name") or semantic.get("name")) and not c.get("name"):
+        c["name"] = normalize_name(llm_hint.get("name") or semantic.get("name"))
+
+    has_service = bool(str(c.get("service") or pending.get("service") or "").strip())
+    has_date = bool(parse_dt_any_tz(str(pending.get("awaiting_time_date_iso") or "").strip()))
+    has_candidate_time = bool(booking_candidate_datetime_from_context(c, pending))
+
+    if booking_like or has_service or has_date or has_candidate_time:
+        if has_service and has_candidate_time:
+            # Existing booking flow will check availability / ask confirmation.
+            c["state"] = STATE_AWAITING_TIME
+        elif has_service and has_date:
+            c["state"] = STATE_AWAITING_TIME
+        elif has_service:
+            c["state"] = STATE_AWAITING_DATE
+        else:
+            c["state"] = STATE_AWAITING_SERVICE
+
+    c["pending"] = pending or None
+    return c, pending
+
+
 
 ORCH_ACTION_CONTINUE = "continue_legacy"
 ORCH_ACTION_FAQ = "faq"
@@ -5645,6 +5780,20 @@ def handle_user_text(
         llm_hint = merge_stage26_into_llm_hint(llm_hint, stage26_hint)
         c, pending = remember_stage26_datetime_hint(c, pending, stage26_hint)
 
+    # Stage 27: persist extracted service/date/time before orchestration decides
+    # which missing field to ask next. This prevents asking for service/date again
+    # when the user already provided them in one natural sentence.
+    if msg:
+        c, pending = stage27_persist_entities_from_turn(
+            c=c,
+            pending=pending,
+            msg=msg,
+            lang=lang,
+            llm_hint=llm_hint,
+            service_catalog=service_catalog,
+            service_aliases=service_aliases,
+        )
+
     understanding = build_understanding_result(
         msg=msg,
         lang=lang,
@@ -5866,6 +6015,19 @@ def handle_user_text(
     if fresh_booking_start:
         c = reset_booking_context(c, keep_name=True)
         pending = c.get("pending") or {}
+        # Stage 27: reset_booking_context intentionally clears old flow data,
+        # but for a fresh one-message booking we must immediately re-persist
+        # entities from the current user message.
+        if msg:
+            c, pending = stage27_persist_entities_from_turn(
+                c=c,
+                pending=pending,
+                msg=msg,
+                lang=lang,
+                llm_hint=llm_hint,
+                service_catalog=service_catalog,
+                service_aliases=service_aliases,
+            )
         active_flow = True
 
     pending = c.get("pending") or {}
@@ -5899,6 +6061,14 @@ def handle_user_text(
 
     if msg and (natural_dt_for_msg or date_only_dt_for_msg or time_window_for_msg or explicit_time_present):
         c, pending = remember_partial_booking_datetime_from_message(c, pending, msg)
+
+    # Stage 27: if one message already contains service + date but no exact time,
+    # do not ask service again. Move directly to slot offering / time choice.
+    if (fresh_booking_start or orchestration.get("action") == ORCH_ACTION_START_BOOKING) and c.get("service"):
+        base_day_stage27 = parse_dt_any_tz(str((pending or {}).get("awaiting_time_date_iso") or "").strip())
+        candidate_stage27 = booking_candidate_datetime_from_context(c, pending or {})
+        if base_day_stage27 and not candidate_stage27:
+            return offer_slots_for_date(tenant_id, user_key, lang, c, pending, settings, service_catalog, base_day_stage27)
 
     # Stage 24: free-form router gets first chance inside active booking flow.
     free_router_result = free_router_handle_turn(
