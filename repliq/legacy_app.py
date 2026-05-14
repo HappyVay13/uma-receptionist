@@ -5208,6 +5208,58 @@ def handle_user_text(
     explicit_cancel_request = orchestration.get("action") == ORCH_ACTION_CANCEL
     explicit_reschedule_request = orchestration.get("action") == ORCH_ACTION_RESCHEDULE
 
+    # Stage 25 Hotfix: hard-confirm handler must run before generic booking flow.
+    # In AWAITING_CONFIRM, clear yes/no answers must execute or exit confirmation,
+    # not be reinterpreted by later generic state handlers as another confirmation prompt.
+    if msg and conversation_state(c) == STATE_AWAITING_CONFIRM:
+        pending = c.get("pending") or {}
+        confirm_iso = str(pending.get("confirm_slot_iso") or c.get("datetime_iso") or "").strip()
+        dt_confirm = parse_dt_any_tz(confirm_iso)
+        llm_confirmation = (llm_hint or {}).get("confirmation")
+
+        if is_yes_text(msg, lang) or llm_confirmation == "yes" or orchestration.get("action") == ORCH_ACTION_CONFIRM_YES:
+            if not dt_confirm:
+                c["state"] = STATE_AWAITING_TIME
+                db_save_conversation(tenant_id, user_key, c)
+                reply_text = prompt_for_state(lang, c, pending, service_catalog)
+                return {"status": "need_more", "reply_voice": reply_text, "msg_out": reply_text, "lang": lang}
+
+            primary_service_item = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
+            if should_offer_post_confirm_upsell(service_catalog, primary_service_item, pending):
+                result = move_to_post_confirm_upsell(lang, c, pending, service_catalog, dt_confirm)
+                db_save_conversation(tenant_id, user_key, c)
+                return result
+
+            result = book_appointment_for_datetime(
+                tenant_id, raw_phone, channel, lang, c, settings, service_catalog, dt_confirm, require_confirmation=False
+            )
+            db_save_conversation(tenant_id, user_key, c)
+            return result
+
+        if is_no_text(msg, lang) or llm_confirmation == "no" or orchestration.get("action") == ORCH_ACTION_CONFIRM_NO:
+            pending.pop("confirm_slot_iso", None)
+            pending.pop("pending_confirm_upsell", None)
+            pending.pop("confirm_upsell_done", None)
+            pending.pop("upsell_offer_active", None)
+            pending.pop("addon_service", None)
+            pending.pop("candidate_datetime_iso", None)
+            pending.pop("requested_datetime_iso", None)
+            pending.pop("partial_datetime_iso", None)
+            clear_offered_slots(pending)
+            pending["booking_intent"] = True
+            c["pending"] = pending or {"booking_intent": True}
+            c["datetime_iso"] = None
+            c["time_text"] = None
+            c["state"] = STATE_AWAITING_TIME
+            db_save_conversation(tenant_id, user_key, c)
+            if lang == "ru":
+                reply_text = "Понял. Какое другое время вам было бы удобно?"
+            elif lang == "en":
+                reply_text = "Understood. What other time would work for you?"
+            else:
+                reply_text = "Skaidrs. Kādu citu laiku vēlaties?"
+            return {"status": "need_more", "reply_voice": reply_text, "msg_out": reply_text, "lang": lang, "preserve_text": True}
+
     if explicit_cancel_request:
         if not calendar_ready:
             return blocked_result_for_lang(lang)
