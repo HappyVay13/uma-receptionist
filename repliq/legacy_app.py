@@ -3257,6 +3257,15 @@ def stage27_extract_service_item_from_turn(
     folded_raw = _fold_match_text(raw)
     if not folded_raw:
         return None
+
+    # Stage 27.1 hotfix: common consultation stems across Latvian inflections
+    # and missing diacritics: konsultācija / konsultāciju / konsultaciju.
+    if any(stem in folded_raw for stem in ("konsultac", "konsultacij", "consultation", "консультац")):
+        for item in service_catalog:
+            hay = _fold_match_text(" ".join(_stage27_service_candidates_for_item(item, lang)))
+            if any(stem in hay for stem in ("konsultac", "konsultacij", "consultation", "консультац")):
+                return item
+
     raw_words = set(folded_raw.split())
     for item in service_catalog:
         for candidate in _stage27_service_candidates_for_item(item, lang):
@@ -6032,7 +6041,11 @@ def handle_user_text(
 
     pending = c.get("pending") or {}
 
-    if fresh_booking_start and msg:
+    # Stage 27.1 hotfix: do not re-run the old fresh-booking service prompt
+    # branch if Stage 27 has already persisted a service from this same turn.
+    # Otherwise phrases like "uz konsultāciju" can be recognized by Stage 27,
+    # then overwritten by the older exact matcher and incorrectly ask service again.
+    if fresh_booking_start and msg and not str(c.get("service") or (pending or {}).get("service") or "").strip():
         direct_service_key_open = canonical_service_key_from_text(msg, service_aliases)
         service_item_open = get_service_item_by_key(service_catalog, direct_service_key_open) if direct_service_key_open else None
         if not service_item_open:
