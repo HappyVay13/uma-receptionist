@@ -6,6 +6,7 @@ import base64
 import uuid
 import logging
 import random
+import unicodedata
 from datetime import datetime, timedelta, date
 from typing import Dict, Any, Optional, Tuple, List
 
@@ -2602,10 +2603,23 @@ def canonical_service_key_from_text(text_: Optional[str], alias_map: Dict[str, s
     if not low:
         return None
     norm_low = re.sub(r"\s+", " ", re.sub(r"[^\wĀ-žА-Яа-яЁё]+", " ", low, flags=re.UNICODE)).strip()
+    folded_low = _fold_match_text(low)
     if low in alias_map:
         return alias_map[low]
     if norm_low in alias_map:
         return alias_map[norm_low]
+
+    # Stage 25.6 hotfix: tolerate missing diacritics and inflected endings.
+    # Example: "konsultaciju" should match "konsultācija" / "konsultāciju".
+    folded_aliases: List[Tuple[int, str, str]] = []
+    for alias, key in alias_map.items():
+        folded_alias = _fold_match_text(alias)
+        if folded_alias:
+            folded_aliases.append((len(folded_alias), folded_alias, key))
+    for _, folded_alias, key in sorted(folded_aliases, key=lambda x: x[0], reverse=True):
+        if folded_alias == folded_low or folded_alias in folded_low or folded_low in folded_alias:
+            return key
+
     # Prefer longest alias first so generic words don't beat specific phrases
     for alias in sorted(alias_map.keys(), key=len, reverse=True):
         if not alias:
@@ -2614,7 +2628,6 @@ def canonical_service_key_from_text(text_: Optional[str], alias_map: Dict[str, s
         if alias in low or (norm_alias and norm_alias in norm_low):
             return alias_map[alias]
     return None
-
 
 def merged_service_alias_map(catalog: List[Dict[str, Any]], tenant: Dict[str, Any], lang: str) -> Dict[str, str]:
     merged = service_alias_map_from_catalog(catalog, lang)
@@ -3940,6 +3953,19 @@ def _normalize_phrase_text(text_: Optional[str]) -> str:
     low = re.sub(r"\s+", " ", low).strip()
     return low
 
+def _fold_match_text(text_: Optional[str]) -> str:
+    """Lowercase + remove accents/diacritics for tolerant LV/RU/EN matching."""
+    src = str(text_ or "").strip().lower()
+    if not src:
+        return ""
+    try:
+        src = "".join(ch for ch in unicodedata.normalize("NFKD", src) if not unicodedata.combining(ch))
+    except Exception:
+        pass
+    src = src.replace("ё", "е")
+    src = re.sub(r"[^\wА-Яа-я]+", " ", src, flags=re.UNICODE)
+    return re.sub(r"\s+", " ", src).strip()
+
 
 def is_hesitation_text(text_: Optional[str], lang: str) -> bool:
     low = _normalize_phrase_text(text_)
@@ -4148,6 +4174,32 @@ def parse_date_only_text(text_: Optional[str]) -> Optional[datetime]:
         except Exception:
             pass
 
+    month_names = {
+        "jan": 1, "january": 1, "janvaris": 1, "janvāris": 1, "janvari": 1, "janvārī": 1, "января": 1,
+        "feb": 2, "february": 2, "februaris": 2, "februāris": 2, "februari": 2, "februārī": 2, "февраля": 2,
+        "mar": 3, "march": 3, "marts": 3, "marta": 3, "martā": 3, "марта": 3,
+        "apr": 4, "april": 4, "aprīlis": 4, "aprilis": 4, "aprili": 4, "aprīlī": 4, "апреля": 4,
+        "may": 5, "maijs": 5, "maija": 5, "maijā": 5, "мая": 5,
+        "jun": 6, "june": 6, "jūnijs": 6, "junijs": 6, "junija": 6, "jūnijā": 6, "июня": 6,
+        "jul": 7, "july": 7, "jūlijs": 7, "julijs": 7, "julija": 7, "jūlijā": 7, "июля": 7,
+        "aug": 8, "august": 8, "augusts": 8, "augusta": 8, "augustā": 8, "августа": 8,
+        "sep": 9, "september": 9, "septembris": 9, "septembri": 9, "septembrī": 9, "сентября": 9,
+        "oct": 10, "october": 10, "oktobris": 10, "oktobri": 10, "oktobrī": 10, "октября": 10,
+        "nov": 11, "november": 11, "novembris": 11, "novembri": 11, "novembrī": 11, "ноября": 11,
+        "dec": 12, "december": 12, "decembris": 12, "decembri": 12, "decembrī": 12, "декабря": 12,
+    }
+    folded_src = _fold_match_text(src)
+    md = re.search(r"\b(\d{1,2})\s+([a-zа-я]+)\b", folded_src, flags=re.IGNORECASE)
+    if md:
+        dd = int(md.group(1))
+        month_word = md.group(2).strip().lower()
+        mo = month_names.get(month_word)
+        if mo:
+            try:
+                return datetime(today_local().year, mo, dd, 9, 0, tzinfo=TZ)
+            except Exception:
+                pass
+
     base = today_local()
 
     # Weekdays must win over relative substrings like "rīt" inside "rīta".
@@ -4315,7 +4367,9 @@ def extract_service_from_text(text_: Optional[str], catalog: List[Dict[str, Any]
     if not low:
         return None
 
+    folded_low = _fold_match_text(low)
     candidates_index: List[Tuple[int, str, Dict[str, Any]]] = []
+    folded_candidates_index: List[Tuple[int, str, Dict[str, Any]]] = []
     for item in catalog:
         display = service_display_name(item, lang).lower()
         candidates = {display, str(item.get("key") or "").strip().lower()}
@@ -4326,12 +4380,19 @@ def extract_service_from_text(text_: Optional[str], catalog: List[Dict[str, Any]
         for cand in candidates:
             if cand:
                 candidates_index.append((len(cand), cand, item))
+                folded = _fold_match_text(cand)
+                if folded:
+                    folded_candidates_index.append((len(folded), folded, item))
 
     for _, cand, item in sorted(candidates_index, key=lambda x: x[0], reverse=True):
         if cand == low or cand in low or low in cand:
             return item
-    return None
 
+    # Stage 25.6 hotfix: diacritic-insensitive service matching for natural Latvian input.
+    for _, cand, item in sorted(folded_candidates_index, key=lambda x: x[0], reverse=True):
+        if cand == folded_low or cand in folded_low or folded_low in cand:
+            return item
+    return None
 
 def extract_slot_choice(msg: Optional[str], pending: Dict[str, Any]) -> Optional[str]:
     low = (msg or "").strip().lower()
@@ -5183,6 +5244,13 @@ def free_router_handle_turn(
         return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "preserve_text": True}
 
     c, pending, service_item, candidate_dt = free_router_merge_message_slots(msg, c, pending, service_catalog, service_aliases, lang)
+
+    # Stage 25.6 hotfix: when we are waiting for a date and the user gives only a date
+    # ("16 maijs", "16.05"), do not treat it as missing datetime and repeat the same
+    # question. Move to time selection by offering available slots for that day.
+    date_only_for_router = parse_date_only_text(msg)
+    if conversation_state(c) == STATE_AWAITING_DATE and date_only_for_router and (c.get("service") or pending.get("service")):
+        return offer_slots_for_date(tenant_id, user_key, lang, c, pending, settings, service_catalog, date_only_for_router)
 
     if free_router_is_services_request(msg, lang):
         pending["booking_intent"] = True
