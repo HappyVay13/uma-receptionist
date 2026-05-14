@@ -335,6 +335,144 @@ def humanize_result(result: Dict[str, Any], conv: Optional[Dict[str, Any]], tena
 
 
 # -------------------------
+# STAGE 25 — AI RESPONSE COMPOSER
+# -------------------------
+def ai_response_composer_enabled(channel: str = "", source: str = "runtime") -> bool:
+    flag = os.getenv("AI_RESPONSE_COMPOSER_ENABLED", "").strip().lower()
+    if flag in {"0", "false", "no", "off", "disabled"}:
+        return False
+    if flag in {"1", "true", "yes", "on", "enabled"}:
+        return bool(OPENAI_API_KEY)
+    # Default: follow the existing LLM intelligence switch.
+    return bool(LLM_INTELLIGENCE_ENABLED and OPENAI_API_KEY)
+
+
+def _safe_compose_text(value: Any, max_len: int = 900) -> str:
+    txt = str(value or "").strip()
+    if not txt:
+        return ""
+    txt = re.sub(r"\s+", " ", txt).strip()
+    return txt[:max_len]
+
+
+def _composer_allowed_for_result(result: Dict[str, Any]) -> bool:
+    status = str((result or {}).get("status") or "").strip().lower()
+    if not status:
+        return False
+    # Do not rewrite account/system blocking or deliberately preserved technical recovery text.
+    if status in {"blocked"}:
+        return False
+    if (result or {}).get("preserve_text") or (result or {}).get("flow_preserved"):
+        return False
+    base_text = str((result or {}).get("msg_out") or (result or {}).get("reply_voice") or "").strip()
+    if not base_text:
+        return False
+    return status in {
+        "greeting",
+        "identity",
+        "info",
+        "need_more",
+        "busy",
+        "holiday_closed",
+        "min_notice",
+        "reschedule_wait",
+        "booked",
+        "booking_failed",
+        "recovery",
+    }
+
+
+def _composer_style_for_lang(lang: str) -> str:
+    lang = get_lang(lang)
+    if lang == "ru":
+        return "Пиши на русском. Тон: живой, спокойный, как администратор салона. Без канцелярита."
+    if lang == "en":
+        return "Write in English. Tone: warm, concise, and receptionist-like. No corporate wording."
+    return "Raksti latviski. Tonis: dzīvs, mierīgs un pieklājīgs kā salona administratoram. Bez formālas, robotiskas valodas."
+
+
+def ai_response_composer(
+    result: Dict[str, Any],
+    conv: Optional[Dict[str, Any]],
+    tenant: Dict[str, Any],
+    channel: str = "",
+    source: str = "runtime",
+) -> Dict[str, Any]:
+    """Rewrite only the final customer-facing text.
+
+    Safety contract:
+    - never changes status, state, service, datetime, offered slots, or booking actions;
+    - falls back to the current rule-based text on any error;
+    - usage warnings are added after this layer, so AI cannot rewrite billing/limit notices.
+    """
+    result = dict(result or {})
+    if not ai_response_composer_enabled(channel, source):
+        return result
+    if not _composer_allowed_for_result(result):
+        return result
+
+    conv = conv or {}
+    tenant = tenant or {}
+    lang = get_lang(result.get("lang") or conv.get("lang") or tenant.get("language") or "lv")
+    state = conversation_state(conv)
+    pending = conv.get("pending") or {}
+    base_text = str(result.get("msg_out") or result.get("reply_voice") or "").strip()
+    if not base_text:
+        return result
+
+    offered_slots = _slot_labels_from_pending(pending)
+    settings = tenant_settings(tenant, lang)
+    memory = tenant_business_memory(tenant, lang)
+
+    composer_payload = {
+        "language": lang,
+        "channel": str(channel or "").strip().lower() or "unknown",
+        "status": str(result.get("status") or "").strip(),
+        "state": state,
+        "business_name": _safe_compose_text(settings.get("biz_name"), 120),
+        "business_type": _safe_compose_text(settings.get("business_type"), 80),
+        "current_reply": _safe_compose_text(base_text, 900),
+        "service": _safe_compose_text(result.get("service") or result.get("service_display") or pending.get("service_display") or conv.get("service"), 160),
+        "when": _safe_compose_text(result.get("when") or result.get("datetime_text") or conv.get("datetime_iso"), 160),
+        "offered_slots": offered_slots[:3],
+        "pending_keys": sorted([str(k) for k in pending.keys()])[:30] if isinstance(pending, dict) else [],
+        "business_memory": _safe_compose_text(memory, 700),
+    }
+
+    system_prompt = (
+        "You are the Stage 25 AI Response Composer for Repliq, an AI receptionist SaaS. "
+        "Your only job is to rewrite the already-decided customer-facing reply so it sounds natural and human. "
+        "Never change facts, dates, times, services, prices, offered slots, booking status, or the question being asked. "
+        "Do not add new times, do not invent availability, do not promise actions that are not in current_reply. "
+        "Keep the reply concise: usually 1 sentence, maximum 2 short sentences. "
+        "Return strict JSON only with this key: msg_out. "
+        + _composer_style_for_lang(lang)
+    )
+    user_prompt = json.dumps(composer_payload, ensure_ascii=False, default=str)
+
+    try:
+        raw = openai_chat_json(system_prompt, user_prompt)
+        composed = str((raw or {}).get("msg_out") or "").strip()
+        composed = re.sub(r"\s+\n", "\n", composed).strip()
+        if not composed:
+            return result
+        if len(composed) > 500:
+            return result
+        # Guardrail: if the original answer contained concrete offered slots, the composed answer must preserve them.
+        for slot_label in offered_slots[:3]:
+            if slot_label and slot_label not in composed and slot_label in base_text:
+                return result
+        result["msg_out"] = composed
+        result["reply_voice"] = composed
+        result["ai_composed"] = True
+        result["ai_composer_stage"] = "stage_25"
+        return result
+    except Exception as e:
+        log.error("ai_response_composer_failed err=%s", e)
+        return result
+
+
+# -------------------------
 # NEW: MULTI-TENANT DB HELPERS
 # -------------------------
 
@@ -1662,6 +1800,7 @@ def handle_user_text_with_logging(
     try:
         tenant = get_tenant(tenant_id)
         result = humanize_result(result, conv, tenant)
+        result = ai_response_composer(result, conv, tenant, channel=channel, source=source)
         result = apply_usage_soft_limit_warning(result, result.get("lang") or get_lang((conv or {}).get("lang") or lang_hint or "lv"), tenant, channel, source=source)
     except Exception as e:
         log.error("humanize_result_failed tenant_id=%s err=%s", tenant_id, e)
