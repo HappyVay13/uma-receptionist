@@ -4732,6 +4732,144 @@ def apply_inflow_service_override(
     }
 
 
+def handle_remembered_candidate_after_service_selection(
+    tenant_id: str,
+    raw_phone: str,
+    channel: str,
+    lang: str,
+    c: Dict[str, Any],
+    pending: Dict[str, Any],
+    settings: Dict[str, Any],
+    service_catalog: List[Dict[str, Any]],
+    candidate_dt: datetime,
+) -> Dict[str, Any]:
+    """Handle remembered date/time after service is selected.
+
+    This is stricter than falling through generic state logic:
+    - if the remembered slot is free, go to confirmation;
+    - if it is busy/unavailable, say that clearly and offer alternatives;
+    - never ask for the date again when date/time was already given.
+    """
+    pending = pending or {}
+    service_item = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
+    duration_min = service_duration_min(service_item)
+    calendar_ready = calendar_is_configured(settings["calendar_id"])
+    if not calendar_ready:
+        return blocked_result_for_lang(lang)
+
+    # Keep known context.
+    pending["booking_intent"] = True
+    pending["awaiting_time_date_iso"] = candidate_dt.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+    pending["time_text"] = candidate_dt.strftime("%H:%M")
+    c["time_text"] = pending["time_text"]
+    c["pending"] = pending
+
+    if (
+        in_business_hours(candidate_dt, duration_min, settings["work_start"], settings["work_end"], settings.get("business_rules"))
+        and not is_slot_busy(
+            settings["calendar_id"],
+            candidate_dt,
+            candidate_dt + timedelta(minutes=duration_min),
+            _safe_int((settings.get("business_rules") or {}).get("buffer_minutes"), 0),
+            service_account_json=settings.get("service_account_json"),
+        )
+    ):
+        return book_appointment_for_datetime(
+            tenant_id=tenant_id,
+            raw_phone=raw_phone,
+            channel=channel,
+            lang=lang,
+            c=c,
+            settings=settings,
+            service_catalog=service_catalog,
+            dt_start=candidate_dt,
+        )
+
+    # Slot is busy or outside business rules: offer alternatives on the same day first.
+    alternatives = []
+    if in_business_hours(candidate_dt, duration_min, settings["work_start"], settings["work_end"], settings.get("business_rules")):
+        alternatives = find_first_n_slots_for_day(
+            calendar_id=settings["calendar_id"],
+            day_dt=candidate_dt,
+            duration_min=duration_min,
+            work_start=settings["work_start"],
+            work_end=settings["work_end"],
+            limit=3,
+            business_rules=settings.get("business_rules"),
+            service_account_json=settings.get("service_account_json"),
+        )
+        alternatives = [s for s in alternatives if s != candidate_dt]
+    if not alternatives:
+        opts = find_next_two_slots(
+            settings["calendar_id"],
+            candidate_dt,
+            duration_min,
+            settings["work_start"],
+            settings["work_end"],
+            settings.get("business_rules"),
+            settings.get("service_account_json"),
+        )
+        if opts:
+            alternatives = [opts[0], opts[1]]
+
+    if alternatives:
+        pending.pop("candidate_datetime_iso", None)
+        pending.pop("confirm_slot_iso", None)
+        pending = set_offered_slots(pending, alternatives[:3])
+        c["pending"] = pending
+        c["state"] = STATE_AWAITING_TIME
+        c["datetime_iso"] = None
+
+        offered = [format_dt_short(x) for x in alternatives[:3]]
+        if lang == "ru":
+            if len(offered) >= 3:
+                reply = f"На {format_dt_short(candidate_dt)} уже занято. Могу предложить: {offered[0]}, {offered[1]} или {offered[2]}. Что вам удобнее?"
+            elif len(offered) >= 2:
+                reply = f"На {format_dt_short(candidate_dt)} уже занято. Могу предложить: {offered[0]} или {offered[1]}. Что вам удобнее?"
+            else:
+                reply = f"На {format_dt_short(candidate_dt)} уже занято. Могу предложить {offered[0]}. Подойдёт?"
+        elif lang == "en":
+            if len(offered) >= 3:
+                reply = f"{format_dt_short(candidate_dt)} is already taken. I can offer {offered[0]}, {offered[1]} or {offered[2]}. Which one works best?"
+            elif len(offered) >= 2:
+                reply = f"{format_dt_short(candidate_dt)} is already taken. I can offer {offered[0]} or {offered[1]}. Which one works best?"
+            else:
+                reply = f"{format_dt_short(candidate_dt)} is already taken. I can offer {offered[0]}. Would that work?"
+        else:
+            if len(offered) >= 3:
+                reply = f"Diemžēl {format_dt_short(candidate_dt)} jau ir aizņemts. Varu piedāvāt {offered[0]}, {offered[1]} vai {offered[2]}. Kurš laiks jums der?"
+            elif len(offered) >= 2:
+                reply = f"Diemžēl {format_dt_short(candidate_dt)} jau ir aizņemts. Varu piedāvāt {offered[0]} vai {offered[1]}. Kurš laiks jums der?"
+            else:
+                reply = f"Diemžēl {format_dt_short(candidate_dt)} jau ir aizņemts. Varu piedāvāt {offered[0]}. Vai šis laiks der?"
+
+        return {
+            "status": "need_more",
+            "reply_voice": reply,
+            "msg_out": reply,
+            "lang": lang,
+            "preserve_text": True,
+        }
+
+    c["state"] = STATE_AWAITING_TIME
+    c["pending"] = pending
+    c["datetime_iso"] = None
+    if lang == "ru":
+        reply = f"На {format_dt_short(candidate_dt)} уже занято. Какое другое время вам было бы удобно?"
+    elif lang == "en":
+        reply = f"{format_dt_short(candidate_dt)} is already taken. What other time would work for you?"
+    else:
+        reply = f"Diemžēl {format_dt_short(candidate_dt)} jau ir aizņemts. Kāds cits laiks jums būtu ērts?"
+    return {
+        "status": "need_more",
+        "reply_voice": reply,
+        "msg_out": reply,
+        "lang": lang,
+        "preserve_text": True,
+    }
+
+
+
 def book_appointment_for_datetime(
     tenant_id: str,
     raw_phone: str,
@@ -5395,8 +5533,20 @@ def handle_user_text(
             candidate_dt = parse_dt_any_tz(str(pending.get("candidate_datetime_iso") or "").strip())
             if candidate_dt:
                 pending.pop("candidate_datetime_iso", None)
+                pending.pop("requested_datetime_iso", None)
+                pending.pop("partial_datetime_iso", None)
                 c["pending"] = pending or None
-                result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, candidate_dt)
+                result = handle_remembered_candidate_after_service_selection(
+                    tenant_id=tenant_id,
+                    raw_phone=raw_phone,
+                    channel=channel,
+                    lang=lang,
+                    c=c,
+                    pending=pending,
+                    settings=settings,
+                    service_catalog=service_catalog,
+                    candidate_dt=candidate_dt,
+                )
                 db_save_conversation(tenant_id, user_key, c)
                 return result
 
