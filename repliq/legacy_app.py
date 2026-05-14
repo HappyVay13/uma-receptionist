@@ -4031,6 +4031,55 @@ def is_other_day_text(text_: Optional[str], lang: str) -> bool:
     return any(phrase in low for phrase in allowed if phrase)
 
 
+def is_variants_request_text(text_: Optional[str], lang: str) -> bool:
+    low = _normalize_phrase_text(text_)
+    if not low:
+        return False
+    phrases = {
+        "lv": {
+            "kadi ir varianti", "kādi ir varianti", "kadi varianti", "kādi varianti",
+            "kadi laiki", "kādi laiki", "kas pieejams", "kas ir pieejams",
+            "ko varat piedavat", "ko varat piedāvāt", "ir kas brivs", "ir kas brīvs",
+            "brivie laiki", "brīvie laiki", "citi varianti", "kaut kas cits"
+        },
+        "ru": {
+            "какие варианты", "что есть", "какое время есть", "есть варианты",
+            "что свободно", "свободное время", "какие свободные окна"
+        },
+        "en": {
+            "what options", "what times", "what is available", "anything available",
+            "available times", "other options", "any options"
+        },
+    }
+    allowed = set().union(*phrases.values())
+    allowed.update(phrases.get(get_lang(lang), set()))
+    return any(p in low for p in allowed if p)
+
+
+def variants_request_without_service_response(lang: str, pending: Dict[str, Any], service_catalog: List[Dict[str, Any]]) -> str:
+    options = barber_service_options_text(lang, service_catalog, max_items=4)
+    remembered = booking_candidate_datetime_from_context({}, pending or {})
+    remembered_day = parse_dt_any_tz(str((pending or {}).get("awaiting_time_date_iso") or "").strip())
+    when_hint = ""
+    if remembered:
+        when_hint = format_dt_short(remembered)
+    elif remembered_day:
+        when_hint = format_dt_short(remembered_day).split()[0]
+
+    if lang == "ru":
+        if when_hint:
+            return f"Сначала выберем услугу, и тогда проверю варианты на {when_hint}. Доступные услуги: {options}."
+        return f"Сначала выберем услугу, и тогда проверю свободные варианты. Доступные услуги: {options}."
+    if lang == "en":
+        if when_hint:
+            return f"Let’s choose the service first, then I’ll check the available options for {when_hint}. Available services: {options}."
+        return f"Let’s choose the service first, then I’ll check the available options. Available services: {options}."
+    if when_hint:
+        return f"Vispirms izvēlamies pakalpojumu, un tad pārbaudīšu variantus uz {when_hint}. Pieejamie pakalpojumi: {options}."
+    return f"Vispirms izvēlamies pakalpojumu, un tad pārbaudīšu brīvos laikus. Pieejamie pakalpojumi: {options}."
+
+
+
 def detect_time_shift_direction(text_: Optional[str], lang: str) -> Optional[str]:
     low = _normalize_phrase_text(text_)
     if not low:
@@ -5498,6 +5547,28 @@ def handle_user_text(
                 override_service_item = detected_service_item
     if override_service_item and conversation_state(c) in ACTIVE_BOOKING_STATES:
         return apply_inflow_service_override(tenant_id, user_key, lang, c, pending, settings, service_catalog, override_service_item)
+
+    # Stage 23 hotfix: service answer after partial date/time must immediately use remembered datetime.
+    if msg and conversation_state(c) == STATE_AWAITING_SERVICE and not c.get("service"):
+        svc_key_now = canonical_service_key_from_text(msg, service_aliases)
+        svc_item_now = get_service_item_by_key(service_catalog, svc_key_now) if svc_key_now else extract_service_from_text(msg, service_catalog, lang)
+        if svc_item_now:
+            c, pending = remember_booking_service(c, pending, svc_item_now, lang)
+            candidate_now = booking_candidate_datetime_from_context(c, pending)
+            if candidate_now:
+                result = handle_remembered_candidate_after_service_selection(
+                    tenant_id=tenant_id,
+                    raw_phone=raw_phone,
+                    channel=channel,
+                    lang=lang,
+                    c=c,
+                    pending=pending,
+                    settings=settings,
+                    service_catalog=service_catalog,
+                    candidate_dt=candidate_now,
+                )
+                db_save_conversation(tenant_id, user_key, c)
+                return result
 
     selected_iso = extract_slot_choice(msg, pending)
     if selected_iso:
