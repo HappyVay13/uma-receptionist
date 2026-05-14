@@ -3477,6 +3477,28 @@ HESITATION_WORDS = {
     "en": {"not sure", "i am not sure", "i'm not sure", "maybe later", "dont know", "don't know", "not certain"},
 }
 
+# Stage 24 Hotfix: protect explicit time parsing from date tokens like "15.05".
+# The original parser is kept, but date-looking DD.MM / DD/MM / DD-MM tokens
+# are stripped before time extraction so "15.05 10:00" resolves to 10:00,
+# while a bare date does not become accidental 15:05.
+_core_parse_explicit_time_parts = parse_explicit_time_parts
+
+def parse_explicit_time_parts(text_: Optional[str]) -> Optional[Tuple[int, int]]:
+    src = str(text_ or "").strip()
+    if not src:
+        return None
+
+    date_token_pattern = r"(?<!\d)(?:[0-2]?\d|3[01])[./-](?:0?[1-9]|1[0-2])(?:[./-]\d{2,4})?(?!\d)"
+    without_dates = re.sub(date_token_pattern, " ", src)
+    if without_dates.strip() != src.strip():
+        parsed_after_date_strip = _core_parse_explicit_time_parts(without_dates)
+        if parsed_after_date_strip:
+            return parsed_after_date_strip
+        return None
+
+    return _core_parse_explicit_time_parts(src)
+
+
 def conversation_state(c: Dict[str, Any]) -> str:
     state = str(c.get("state") or STATE_NEW).strip().upper()
     if state not in {STATE_NEW, STATE_AWAITING_SERVICE, STATE_AWAITING_DATE, STATE_AWAITING_TIME, STATE_AWAITING_CONFIRM, STATE_POST_BOOKING_UPSELL, STATE_BOOKED, STATE_CANCELLED}:
@@ -3570,6 +3592,15 @@ def remember_partial_booking_datetime_from_message(c: Dict[str, Any], pending: D
         pending["candidate_datetime_iso"] = natural_dt.isoformat()
         pending["awaiting_time_date_iso"] = natural_dt.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
         pending["time_text"] = f"{time_parts[0]:02d}:{time_parts[1]:02d}"
+        c["time_text"] = pending["time_text"]
+    elif time_parts and parse_dt_any_tz(str(pending.get("awaiting_time_date_iso") or "").strip()):
+        # Stage 24 Hotfix: user can answer with time-only after date was already remembered.
+        # This also prevents stale pending["time_text"] from the rejected slot being reused.
+        base_day = parse_dt_any_tz(str(pending.get("awaiting_time_date_iso") or "").strip())
+        hh, mm = time_parts
+        candidate = base_day.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        pending["candidate_datetime_iso"] = candidate.isoformat()
+        pending["time_text"] = f"{hh:02d}:{mm:02d}"
         c["time_text"] = pending["time_text"]
     elif natural_dt:
         pending["awaiting_time_date_iso"] = natural_dt.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
@@ -4822,6 +4853,54 @@ def free_router_handle_turn(
         return None
 
     pending = pending or {}
+
+    # Stage 24 Hotfix: offered slot choice must win before generic date/time merge.
+    # Example: after offering 09:00 / 09:30 / 10:00, user says "10:00".
+    # Do not reuse the old rejected requested time from pending["time_text"].
+    selected_offered_iso = extract_slot_choice(msg, pending)
+    if selected_offered_iso:
+        dt_selected = parse_dt_any_tz(selected_offered_iso)
+        if dt_selected:
+            pending.pop("candidate_datetime_iso", None)
+            pending.pop("requested_datetime_iso", None)
+            pending.pop("partial_datetime_iso", None)
+            pending.pop("confirm_slot_iso", None)
+            pending["awaiting_time_date_iso"] = dt_selected.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+            pending["time_text"] = dt_selected.strftime("%H:%M")
+            clear_offered_slots(pending)
+            c["pending"] = pending or {"booking_intent": True}
+            c["datetime_iso"] = None
+            c["state"] = STATE_AWAITING_TIME
+            result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, dt_selected)
+            db_save_conversation(tenant_id, user_key, c)
+            return result
+
+    # Stage 24 Hotfix: a clear "no" in confirmation state means exit the
+    # confirmation loop and ask for another time instead of re-confirming.
+    if state == STATE_AWAITING_CONFIRM and is_no_text(msg, lang):
+        pending.pop("confirm_slot_iso", None)
+        pending.pop("pending_confirm_upsell", None)
+        pending.pop("confirm_upsell_done", None)
+        pending.pop("upsell_offer_active", None)
+        pending.pop("addon_service", None)
+        pending.pop("candidate_datetime_iso", None)
+        pending.pop("requested_datetime_iso", None)
+        pending.pop("partial_datetime_iso", None)
+        clear_offered_slots(pending)
+        pending["booking_intent"] = True
+        c["pending"] = pending or {"booking_intent": True}
+        c["datetime_iso"] = None
+        c["time_text"] = None
+        c["state"] = STATE_AWAITING_TIME
+        db_save_conversation(tenant_id, user_key, c)
+        if lang == "ru":
+            reply = "Понял. Какое другое время вам было бы удобно?"
+        elif lang == "en":
+            reply = "Understood. What other time would work for you?"
+        else:
+            reply = "Skaidrs. Kādu citu laiku vēlaties?"
+        return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "preserve_text": True}
+
     c, pending, service_item, candidate_dt = free_router_merge_message_slots(msg, c, pending, service_catalog, service_aliases, lang)
 
     if free_router_is_services_request(msg, lang):
