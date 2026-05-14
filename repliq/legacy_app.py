@@ -2999,6 +2999,209 @@ def llm_message_understanding(
     return understood
 
 
+# -------------------------
+# STAGE 26 — CONVERSATIONAL SEMANTIC ROUTER
+# -------------------------
+def stage26_semantic_router_enabled(channel: str = "", source: str = "runtime") -> bool:
+    flag = os.getenv("STAGE26_SEMANTIC_ROUTER_ENABLED", "").strip().lower()
+    if flag in {"0", "false", "no", "off", "disabled"}:
+        return False
+    if flag in {"1", "true", "yes", "on", "enabled"}:
+        return bool(OPENAI_API_KEY and LLM_INTELLIGENCE_ENABLED)
+    # Default: enabled together with the existing LLM intelligence switch.
+    return bool(OPENAI_API_KEY and LLM_INTELLIGENCE_ENABLED)
+
+
+def _stage26_safe_list(value: Any, limit: int = 8) -> List[str]:
+    if not value:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [str(x).strip() for x in list(value)[:limit] if str(x).strip()]
+    txt = str(value).strip()
+    return [txt] if txt else []
+
+
+def _stage26_action_hint(value: Any) -> Optional[str]:
+    low = str(value or "").strip().lower()
+    allowed = {
+        "start_booking",
+        "continue_booking",
+        "answer_faq",
+        "ask_service",
+        "ask_date",
+        "ask_time",
+        "ask_confirm",
+        "choose_slot",
+        "confirm_yes",
+        "confirm_no",
+        "cancel",
+        "reschedule",
+        "greeting",
+        "closure",
+        "other",
+    }
+    return low if low in allowed else None
+
+
+def stage26_semantic_route_message(
+    msg: str,
+    lang: str,
+    c: Dict[str, Any],
+    pending: Dict[str, Any],
+    tenant: Dict[str, Any],
+    settings: Dict[str, Any],
+    service_catalog: List[Dict[str, Any]],
+    service_aliases: Dict[str, str],
+    business_memory: str,
+    llm_hint: Optional[Dict[str, Any]] = None,
+    channel: str = "",
+    source: str = "runtime",
+) -> Dict[str, Any]:
+    """Semantic interpretation layer for free conversational input.
+
+    Safety contract:
+    - this layer never performs calendar actions;
+    - it only enriches understanding hints used by deterministic orchestration;
+    - backend state machine and calendar guards remain authoritative.
+    """
+    if not stage26_semantic_router_enabled(channel, source):
+        return {}
+    raw_msg = str(msg or "").strip()
+    if not raw_msg:
+        return {}
+
+    state = conversation_state(c or {})
+    pending = pending or {}
+    llm_hint = llm_hint or {}
+    offered_slots = _slot_labels_from_pending(pending)
+    alias_hint = ", ".join([f"{k} => {v}" for k, v in list(service_aliases.items())[:80]])
+    current_context = {
+        "language": get_lang(lang),
+        "state": state,
+        "active_booking_flow": is_active_booking_flow(c or {}),
+        "known_service_key": (c or {}).get("service") or pending.get("service"),
+        "known_service_display": pending.get("service_display"),
+        "known_datetime_iso": (c or {}).get("datetime_iso") or pending.get("candidate_datetime_iso") or pending.get("awaiting_time_date_iso"),
+        "offered_slots": offered_slots[:3],
+        "existing_llm_hint": llm_hint,
+    }
+
+    system_prompt = (
+        "You are Stage 26 Conversational Semantic Router for Repliq, an AI receptionist SaaS. "
+        "Your job is to understand the user's conversational meaning and return structured JSON. "
+        "Do not make bookings, do not invent availability, do not invent services. "
+        "The backend orchestrator will decide all actions. "
+        "Return strict JSON only with keys: intent, confidence, service, time_text, datetime_iso, confirmation, "
+        "action_hint, missing_fields, user_goal, notes. "
+        "intent must be one of booking, reschedule, cancel, info, greeting, closure, other. "
+        "confirmation must be yes, no, or null. "
+        "action_hint must be one of start_booking, continue_booking, answer_faq, ask_service, ask_date, ask_time, "
+        "ask_confirm, choose_slot, confirm_yes, confirm_no, cancel, reschedule, greeting, closure, other. "
+        "service must be a canonical service key from the alias map when clearly recognized, otherwise null. "
+        "datetime_iso should only be present if the user clearly gave a date/time; otherwise null. "
+        "time_text may contain natural time phrases like tomorrow afternoon / rīt pēcpusdienā / после работы. "
+        "missing_fields must be a list using only service, date, time, confirmation. "
+    )
+    user_payload = {
+        "today": str(now_ts().date()),
+        "user_language": get_lang(lang),
+        "business_name": settings.get("biz_name"),
+        "business_hours": f"{settings.get('work_start')}-{settings.get('work_end')}",
+        "known_services": service_catalog_summary(service_catalog, lang),
+        "service_alias_map": alias_hint or "none",
+        "business_memory": business_memory or "none",
+        "context": current_context,
+        "user_message": raw_msg,
+    }
+
+    try:
+        raw = openai_chat_json(system_prompt, json.dumps(user_payload, ensure_ascii=False, default=str))
+        if not isinstance(raw, dict):
+            return {}
+        intent = _normalize_llm_intent(raw.get("intent"))
+        if str(raw.get("intent") or "").strip().lower() == "greeting":
+            intent = "other"
+        if str(raw.get("intent") or "").strip().lower() == "closure":
+            intent = "other"
+        try:
+            confidence = max(0.0, min(1.0, float(raw.get("confidence") or 0.0)))
+        except Exception:
+            confidence = 0.0
+        service_value = apply_service_aliases(raw.get("service"), service_aliases) or canonical_service_key_from_text(raw.get("service"), service_aliases)
+        if service_value and not get_service_item_by_key(service_catalog, service_value):
+            service_item = extract_service_from_text(service_value, service_catalog, lang)
+            service_value = str((service_item or {}).get("key") or "").strip() or None
+        out = {
+            "intent": intent,
+            "confidence": confidence,
+            "service": service_value,
+            "time_text": sanitize_conversation_time_text(raw.get("time_text")) or normalize_service(raw.get("time_text")),
+            "datetime_iso": str(raw.get("datetime_iso") or "").strip() or None,
+            "name": normalize_name(raw.get("name")),
+            "confirmation": _normalize_llm_confirmation(raw.get("confirmation")),
+            "action_hint": _stage26_action_hint(raw.get("action_hint")),
+            "missing_fields": [x for x in _stage26_safe_list(raw.get("missing_fields"), 4) if x in {"service", "date", "time", "confirmation"}],
+            "user_goal": _safe_compose_text(raw.get("user_goal"), 180),
+            "notes": _safe_compose_text(raw.get("notes"), 220),
+            "stage26": True,
+        }
+        return out
+    except Exception as e:
+        log.error("stage26_semantic_router_failed err=%s", e)
+        return {}
+
+
+def merge_stage26_into_llm_hint(base_hint: Optional[Dict[str, Any]], semantic: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    merged = dict(base_hint or {})
+    semantic = semantic or {}
+    if not semantic:
+        return merged
+    sem_conf = float(semantic.get("confidence") or 0.0)
+    base_conf = float(merged.get("confidence") or 0.0)
+
+    if semantic.get("intent") and sem_conf >= max(0.45, base_conf - 0.1):
+        merged["intent"] = semantic.get("intent")
+        merged["confidence"] = max(base_conf, sem_conf)
+    for key in ("service", "time_text", "datetime_iso", "name", "confirmation"):
+        if semantic.get(key) and not merged.get(key):
+            merged[key] = semantic.get(key)
+    # confirmation/action hints are often the most valuable for short replies.
+    if semantic.get("confirmation"):
+        merged["confirmation"] = semantic.get("confirmation")
+    if semantic.get("action_hint"):
+        merged["stage26_action_hint"] = semantic.get("action_hint")
+    if semantic.get("missing_fields"):
+        merged["stage26_missing_fields"] = semantic.get("missing_fields")
+    if semantic.get("user_goal"):
+        merged["stage26_user_goal"] = semantic.get("user_goal")
+    merged["stage26_semantic"] = semantic
+    return merged
+
+
+def remember_stage26_datetime_hint(c: Dict[str, Any], pending: Dict[str, Any], semantic_hint: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    pending = pending or {}
+    if not semantic_hint:
+        return c, pending
+    dt_iso = str(semantic_hint.get("datetime_iso") or "").strip()
+    dtv = parse_dt_any_tz(dt_iso)
+    if dtv:
+        if dtv.hour != 9 or dtv.minute != 0:
+            pending["candidate_datetime_iso"] = dtv.isoformat()
+            pending["awaiting_time_date_iso"] = dtv.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+            pending["time_text"] = f"{dtv.hour:02d}:{dtv.minute:02d}"
+            c["time_text"] = pending["time_text"]
+        else:
+            pending["awaiting_time_date_iso"] = dtv.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+    time_text = sanitize_conversation_time_text(semantic_hint.get("time_text"))
+    if time_text and not pending.get("time_text"):
+        pending["time_text"] = time_text
+        c["time_text"] = time_text
+    if semantic_hint.get("intent") == "booking" or semantic_hint.get("action_hint") in {"start_booking", "continue_booking"}:
+        pending["booking_intent"] = True
+    c["pending"] = pending or None
+    return c, pending
+
+
 
 ORCH_ACTION_CONTINUE = "continue_legacy"
 ORCH_ACTION_FAQ = "faq"
@@ -3109,6 +3312,9 @@ def build_understanding_result(
         "intent": llm_intent,
         "confidence": max(0.0, min(1.0, confidence)),
         "confirmation": _normalize_llm_confirmation(llm_hint.get("confirmation")),
+        "stage26_action_hint": llm_hint.get("stage26_action_hint"),
+        "stage26_missing_fields": llm_hint.get("stage26_missing_fields") or [],
+        "stage26_user_goal": llm_hint.get("stage26_user_goal"),
         "signals": signals,
         "entities": {
             "service_key": str((service_item or {}).get("key") or "").strip() or None,
@@ -3148,6 +3354,21 @@ def orchestrate_turn(
     intent = understanding.get("intent")
     confidence = float(understanding.get("confidence") or 0.0)
     selected_slot_iso = ((understanding.get("entities") or {}).get("selected_slot_iso"))
+    stage26_action_hint = str(understanding.get("stage26_action_hint") or "").strip().lower()
+
+    if stage26_action_hint == "answer_faq" and understanding.get("faq_result"):
+        decision.update({
+            "action": ORCH_ACTION_FAQ,
+            "needs_tool": True,
+            "tool_name": "get_business_info",
+            "reason": "stage26_faq_detected",
+            "reply_mode": "direct",
+        })
+        return decision
+
+    if not active_flow and stage26_action_hint == "greeting":
+        decision.update({"action": ORCH_ACTION_GREET, "reason": "stage26_greeting", "reply_mode": "direct"})
+        return decision
 
     if understanding.get("faq_result"):
         decision.update({
@@ -3169,7 +3390,7 @@ def orchestrate_turn(
         decision.update({"action": ORCH_ACTION_HOURS, "reason": "hours_question_detected", "reply_mode": "direct"})
         return decision
 
-    if "cancel_request" in signals or (not active_flow and intent == "cancel" and confidence >= LLM_INTENT_MIN_CONFIDENCE):
+    if stage26_action_hint == "cancel" or "cancel_request" in signals or (not active_flow and intent == "cancel" and confidence >= LLM_INTENT_MIN_CONFIDENCE):
         decision.update({
             "action": ORCH_ACTION_CANCEL,
             "needs_tool": True,
@@ -3178,7 +3399,7 @@ def orchestrate_turn(
         })
         return decision
 
-    if "reschedule_request" in signals or (not active_flow and intent == "reschedule" and confidence >= LLM_INTENT_MIN_CONFIDENCE):
+    if stage26_action_hint == "reschedule" or "reschedule_request" in signals or (not active_flow and intent == "reschedule" and confidence >= LLM_INTENT_MIN_CONFIDENCE):
         decision.update({
             "action": ORCH_ACTION_RESCHEDULE,
             "needs_tool": True,
@@ -3187,7 +3408,7 @@ def orchestrate_turn(
         })
         return decision
 
-    if "booking_opener" in signals or (not active_flow and intent == "booking" and confidence >= LLM_INTENT_MIN_CONFIDENCE):
+    if stage26_action_hint in {"start_booking", "continue_booking"} or "booking_opener" in signals or (not active_flow and intent == "booking" and confidence >= LLM_INTENT_MIN_CONFIDENCE):
         decision.update({
             "action": ORCH_ACTION_START_BOOKING,
             "next_state": STATE_AWAITING_SERVICE,
@@ -3216,10 +3437,10 @@ def orchestrate_turn(
         if "hesitation" in signals:
             decision.update({"action": ORCH_ACTION_CLARIFY_CONFIRM, "next_state": STATE_AWAITING_CONFIRM, "reason": "hesitation_in_confirm", "reply_mode": "direct"})
             return decision
-        if "yes" in signals or understanding.get("confirmation") == "yes":
+        if stage26_action_hint == "confirm_yes" or "yes" in signals or understanding.get("confirmation") == "yes":
             decision.update({"action": ORCH_ACTION_CONFIRM_YES, "needs_tool": True, "tool_name": "create_booking", "reason": "confirm_yes_detected"})
             return decision
-        if "no" in signals or understanding.get("confirmation") == "no":
+        if stage26_action_hint == "confirm_no" or "no" in signals or understanding.get("confirmation") == "no":
             decision.update({"action": ORCH_ACTION_CONFIRM_NO, "reason": "confirm_no_detected"})
             return decision
 
@@ -5406,6 +5627,24 @@ def handle_user_text(
         return ai_data
 
     llm_hint = get_llm_data() if msg else {}
+    stage26_hint = stage26_semantic_route_message(
+        msg=msg,
+        lang=lang,
+        c=c,
+        pending=pending,
+        tenant=tenant,
+        settings=settings,
+        service_catalog=service_catalog,
+        service_aliases=service_aliases,
+        business_memory=business_memory,
+        llm_hint=llm_hint,
+        channel=channel,
+        source=source,
+    ) if msg else {}
+    if stage26_hint:
+        llm_hint = merge_stage26_into_llm_hint(llm_hint, stage26_hint)
+        c, pending = remember_stage26_datetime_hint(c, pending, stage26_hint)
+
     understanding = build_understanding_result(
         msg=msg,
         lang=lang,
@@ -5591,7 +5830,10 @@ def handle_user_text(
             "lang": lang,
         }
 
-    llm_hint = get_llm_data() if msg else {}
+    # Keep the Stage 26 enriched understanding for the rest of this turn.
+    # get_llm_data() returns the raw classifier output, so do not overwrite
+    # the merged semantic hint that was used by the orchestrator above.
+    llm_hint = llm_hint if msg else {}
 
     fresh_booking_start = orchestration.get("action") == ORCH_ACTION_START_BOOKING
     llm_intent = _normalize_llm_intent((llm_hint or {}).get("intent"))
