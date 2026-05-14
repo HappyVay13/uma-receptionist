@@ -5733,6 +5733,59 @@ def handle_user_text(
     pending = c.get("pending") or {}
     t_low = msg.lower()
 
+    # Stage 27.2 — Confirmation Execution Router
+    # A clear confirmation/decline in AWAITING_CONFIRM must be executed before
+    # semantic/entity persistence layers. Otherwise a short reply like "jā" or
+    # "ok" can be reinterpreted as generic active-flow input and the bot loops
+    # back to the same confirmation prompt.
+    if msg and conversation_state(c) == STATE_AWAITING_CONFIRM and (is_yes_text(msg, lang) or is_no_text(msg, lang)):
+        confirm_pending = c.get("pending") or {}
+        confirm_iso = str(confirm_pending.get("confirm_slot_iso") or c.get("datetime_iso") or "").strip()
+        dt_confirm = parse_dt_any_tz(confirm_iso)
+
+        if is_no_text(msg, lang):
+            confirm_pending.pop("confirm_slot_iso", None)
+            confirm_pending.pop("pending_confirm_upsell", None)
+            confirm_pending.pop("confirm_upsell_done", None)
+            confirm_pending.pop("upsell_offer_active", None)
+            confirm_pending.pop("addon_service", None)
+            confirm_pending.pop("candidate_datetime_iso", None)
+            confirm_pending.pop("requested_datetime_iso", None)
+            confirm_pending.pop("partial_datetime_iso", None)
+            clear_offered_slots(confirm_pending)
+            confirm_pending["booking_intent"] = True
+            c["pending"] = confirm_pending or {"booking_intent": True}
+            c["datetime_iso"] = None
+            c["time_text"] = None
+            c["state"] = STATE_AWAITING_TIME
+            db_save_conversation(tenant_id, user_key, c)
+            if lang == "ru":
+                reply_text = "Понял. Какое другое время вам было бы удобно?"
+            elif lang == "en":
+                reply_text = "Understood. What other time would work for you?"
+            else:
+                reply_text = "Skaidrs. Kādu citu laiku vēlaties?"
+            return {"status": "need_more", "reply_voice": reply_text, "msg_out": reply_text, "lang": lang, "preserve_text": True}
+
+        if is_yes_text(msg, lang):
+            if not dt_confirm:
+                c["state"] = STATE_AWAITING_TIME
+                db_save_conversation(tenant_id, user_key, c)
+                reply_text = prompt_for_state(lang, c, confirm_pending, service_catalog)
+                return {"status": "need_more", "reply_voice": reply_text, "msg_out": reply_text, "lang": lang}
+
+            primary_service_item = get_service_item_by_key(service_catalog, c.get("service") or confirm_pending.get("service"))
+            if should_offer_post_confirm_upsell(service_catalog, primary_service_item, confirm_pending):
+                result = move_to_post_confirm_upsell(lang, c, confirm_pending, service_catalog, dt_confirm)
+                db_save_conversation(tenant_id, user_key, c)
+                return result
+
+            result = book_appointment_for_datetime(
+                tenant_id, raw_phone, channel, lang, c, settings, service_catalog, dt_confirm, require_confirmation=False
+            )
+            db_save_conversation(tenant_id, user_key, c)
+            return result
+
     ai_data: Optional[Dict[str, Any]] = None
     llm_data: Optional[Dict[str, Any]] = None
 
