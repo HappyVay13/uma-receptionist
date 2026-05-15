@@ -2288,11 +2288,51 @@ def get_service_item_by_key(catalog: List[Dict[str, Any]], service_key: Optional
     return None
 
 
+# -------------------------
+# STAGE 28.2 — SERVICE CATALOG LOCALIZATION FALLBACK
+# -------------------------
+def _localized_service_fallback_name(service_item: Optional[Dict[str, Any]], lang: str) -> str:
+    if not service_item:
+        return ""
+    lang = get_lang(lang)
+    key = _fold_match_text(str(service_item.get("key") or ""))
+    hay = _fold_match_text(" ".join([
+        str(service_item.get("key") or ""),
+        str(service_item.get("name_lv") or ""),
+        str(service_item.get("name_ru") or ""),
+        str(service_item.get("name_en") or ""),
+        " ".join(service_item.get("aliases_lv") or []),
+        " ".join(service_item.get("aliases_ru") or []),
+        " ".join(service_item.get("aliases_en") or []),
+    ]))
+
+    if any(x in hay or x in key for x in ("konsultac", "konsultacij", "consultation", "консультац")):
+        return {"lv": "konsultācija", "ru": "консультация", "en": "consultation"}.get(lang, "konsultācija")
+    if any(x in hay or x in key for x in ("atbalst", "support", "помощ", "podderzh")):
+        return {"lv": "Atbalsts", "ru": "помощь", "en": "support"}.get(lang, "Atbalsts")
+    if any(x in hay or x in key for x in ("serviss", "service", "сервис")):
+        return {"lv": "Serviss", "ru": "сервис", "en": "service"}.get(lang, "Serviss")
+    return ""
+
 def service_display_name(service_item: Optional[Dict[str, Any]], lang: str) -> str:
     if not service_item:
         return ""
     lang = get_lang(lang)
-    return str(service_item.get(f"name_{lang}") or service_item.get("name_lv") or service_item.get("key") or "").strip()
+    requested = str(service_item.get(f"name_{lang}") or "").strip()
+    lv_name = str(service_item.get("name_lv") or "").strip()
+
+    # If the dashboard/catalog contains Latvian placeholders in RU/EN fields,
+    # prefer a safe localized fallback for known service types. This keeps the
+    # receptionist replying in the user's language even before the tenant has
+    # fully translated the service catalog.
+    if lang in {"ru", "en"}:
+        folded_requested = _fold_match_text(requested)
+        folded_lv = _fold_match_text(lv_name)
+        fallback = _localized_service_fallback_name(service_item, lang)
+        if fallback and (not requested or folded_requested == folded_lv or folded_requested in {"konsultacija", "serviss", "atbalsts"}):
+            return fallback
+
+    return str(requested or lv_name or service_item.get("key") or "").strip()
 
 
 def service_duration_min(service_item: Optional[Dict[str, Any]]) -> int:
