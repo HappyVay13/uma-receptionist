@@ -6,7 +6,6 @@ import base64
 import uuid
 import logging
 import random
-import unicodedata
 from datetime import datetime, timedelta, date
 from typing import Dict, Any, Optional, Tuple, List
 
@@ -333,286 +332,6 @@ def humanize_result(result: Dict[str, Any], conv: Optional[Dict[str, Any]], tena
         return result
 
     return result
-
-
-# -------------------------
-# STAGE 25 — AI RESPONSE COMPOSER
-# -------------------------
-def ai_response_composer_enabled(channel: str = "", source: str = "runtime") -> bool:
-    flag = os.getenv("AI_RESPONSE_COMPOSER_ENABLED", "").strip().lower()
-    if flag in {"0", "false", "no", "off", "disabled"}:
-        return False
-    if flag in {"1", "true", "yes", "on", "enabled"}:
-        return bool(OPENAI_API_KEY)
-    # Default: follow the existing LLM intelligence switch.
-    return bool(LLM_INTELLIGENCE_ENABLED and OPENAI_API_KEY)
-
-
-def _safe_compose_text(value: Any, max_len: int = 900) -> str:
-    txt = str(value or "").strip()
-    if not txt:
-        return ""
-    txt = re.sub(r"\s+", " ", txt).strip()
-    return txt[:max_len]
-
-
-def _composer_allowed_for_result(result: Dict[str, Any]) -> bool:
-    status = str((result or {}).get("status") or "").strip().lower()
-    if not status:
-        return False
-    # Do not rewrite account/system blocking or deliberately preserved technical recovery text.
-    if status in {"blocked"}:
-        return False
-    if (result or {}).get("preserve_text") or (result or {}).get("flow_preserved"):
-        return False
-    base_text = str((result or {}).get("msg_out") or (result or {}).get("reply_voice") or "").strip()
-    if not base_text:
-        return False
-    return status in {
-        "greeting",
-        "identity",
-        "info",
-        "need_more",
-        "busy",
-        "holiday_closed",
-        "min_notice",
-        "reschedule_wait",
-        "booked",
-        "booking_failed",
-        "recovery",
-    }
-
-
-def _composer_style_for_lang(lang: str) -> str:
-    lang = get_lang(lang)
-    if lang == "ru":
-        return "Пиши на русском. Тон: живой, спокойный, как администратор салона. Без канцелярита."
-    if lang == "en":
-        return "Write in English. Tone: warm, concise, and receptionist-like. No corporate wording."
-    return "Raksti latviski. Tonis: dzīvs, mierīgs un pieklājīgs kā salona administratoram. Bez formālas, robotiskas valodas."
-
-
-def ai_response_composer(
-    result: Dict[str, Any],
-    conv: Optional[Dict[str, Any]],
-    tenant: Dict[str, Any],
-    channel: str = "",
-    source: str = "runtime",
-) -> Dict[str, Any]:
-    """Rewrite only the final customer-facing text.
-
-    Safety contract:
-    - never changes status, state, service, datetime, offered slots, or booking actions;
-    - falls back to the current rule-based text on any error;
-    - usage warnings are added after this layer, so AI cannot rewrite billing/limit notices.
-    """
-    result = dict(result or {})
-    if not ai_response_composer_enabled(channel, source):
-        return result
-    if not _composer_allowed_for_result(result):
-        return result
-
-    conv = conv or {}
-    tenant = tenant or {}
-    lang = get_lang(result.get("lang") or conv.get("lang") or tenant.get("language") or "lv")
-    state = conversation_state(conv)
-    pending = conv.get("pending") or {}
-    base_text = str(result.get("msg_out") or result.get("reply_voice") or "").strip()
-    if not base_text:
-        return result
-
-    offered_slots = _slot_labels_from_pending(pending)
-    settings = tenant_settings(tenant, lang)
-    memory = tenant_business_memory(tenant, lang)
-
-    composer_payload = {
-        "language": lang,
-        "channel": str(channel or "").strip().lower() or "unknown",
-        "status": str(result.get("status") or "").strip(),
-        "state": state,
-        "business_name": _safe_compose_text(settings.get("biz_name"), 120),
-        "business_type": _safe_compose_text(settings.get("business_type"), 80),
-        "current_reply": _safe_compose_text(base_text, 900),
-        "service": _safe_compose_text(result.get("service") or result.get("service_display") or pending.get("service_display") or conv.get("service"), 160),
-        "when": _safe_compose_text(result.get("when") or result.get("datetime_text") or conv.get("datetime_iso"), 160),
-        "offered_slots": offered_slots[:3],
-        "pending_keys": sorted([str(k) for k in pending.keys()])[:30] if isinstance(pending, dict) else [],
-        "business_memory": _safe_compose_text(memory, 700),
-    }
-
-    system_prompt = (
-        "You are the Stage 25 AI Response Composer for Repliq, an AI receptionist SaaS. "
-        "Your only job is to rewrite the already-decided customer-facing reply so it sounds natural and human. "
-        "Never change facts, dates, times, services, prices, offered slots, booking status, or the question being asked. "
-        "Do not add new times, do not invent availability, do not promise actions that are not in current_reply. "
-        "Keep the reply concise: usually 1 sentence, maximum 2 short sentences. "
-        "Return strict JSON only with this key: msg_out. "
-        + _composer_style_for_lang(lang)
-    )
-    user_prompt = json.dumps(composer_payload, ensure_ascii=False, default=str)
-
-    try:
-        raw = openai_chat_json(system_prompt, user_prompt)
-        composed = str((raw or {}).get("msg_out") or "").strip()
-        composed = re.sub(r"\s+\n", "\n", composed).strip()
-        if not composed:
-            return result
-        if len(composed) > 500:
-            return result
-        # Guardrail: if the original answer contained concrete offered slots, the composed answer must preserve them.
-        for slot_label in offered_slots[:3]:
-            if slot_label and slot_label not in composed and slot_label in base_text:
-                return result
-        result["msg_out"] = composed
-        result["reply_voice"] = composed
-        result["ai_composed"] = True
-        result["ai_composer_stage"] = "stage_25"
-        return result
-    except Exception as e:
-        log.error("ai_response_composer_failed err=%s", e)
-        return result
-
-
-# -------------------------
-# STAGE 25.5 — CONVERSATIONAL CLOSURE LAYER
-# -------------------------
-def _closure_normalized_text(text_: Optional[str]) -> str:
-    low = _normalize_phrase_text(text_)
-    low = low.replace("🙏", "").replace("🙂", "").replace("😊", "").strip()
-    return re.sub(r"\s+", " ", low).strip()
-
-
-def is_thank_you_text(text_: Optional[str], lang: str) -> bool:
-    low = _closure_normalized_text(text_)
-    if not low:
-        return False
-    phrases = {
-        "lv": {"paldies", "liels paldies", "paldies jums", "paldies tev", "super paldies", "ok paldies", "labi paldies"},
-        "ru": {"спасибо", "спасибо вам", "большое спасибо", "спс", "благодарю", "ок спасибо", "хорошо спасибо"},
-        "en": {"thanks", "thank you", "thank you very much", "many thanks", "ok thanks", "great thanks"},
-    }
-    allowed = set().union(*phrases.values())
-    allowed.update(phrases.get(get_lang(lang), set()))
-    if low in allowed:
-        return True
-    return any(low.startswith(p + " ") or low.endswith(" " + p) for p in allowed if p)
-
-
-def is_goodbye_text(text_: Optional[str], lang: str) -> bool:
-    low = _closure_normalized_text(text_)
-    if not low:
-        return False
-    phrases = {
-        "lv": {"atā", "ata", "uz redzēšanos", "uz redzesanos", "visu labu", "līdz vēlākam", "lidz velakam"},
-        "ru": {"пока", "до свидания", "до встречи", "всего доброго", "хорошего дня"},
-        "en": {"bye", "goodbye", "see you", "see you soon", "have a nice day"},
-    }
-    allowed = set().union(*phrases.values())
-    allowed.update(phrases.get(get_lang(lang), set()))
-    return low in allowed or any(low.startswith(p + " ") for p in allowed if p)
-
-
-def is_positive_closure_ack_text(text_: Optional[str], lang: str) -> bool:
-    low = _closure_normalized_text(text_)
-    if not low:
-        return False
-    phrases = {
-        "lv": {"labi", "super", "skaidrs", "forši", "forsi", "ok", "okej", "ideāli", "ideali"},
-        "ru": {"ок", "хорошо", "супер", "понял", "поняла", "отлично", "ладно"},
-        "en": {"ok", "okay", "great", "perfect", "sounds good", "got it", "alright"},
-    }
-    allowed = set().union(*phrases.values())
-    allowed.update(phrases.get(get_lang(lang), set()))
-    return low in allowed
-
-
-def closure_reply_text(lang: str, closure_type: str, conv: Optional[Dict[str, Any]] = None, tenant: Optional[Dict[str, Any]] = None) -> str:
-    lang = get_lang(lang)
-    conv = conv or {}
-    tenant = tenant or {}
-    dtv = parse_dt_any_tz(str(conv.get("datetime_iso") or "").strip())
-    when_text = format_dt_short(dtv) if dtv else ""
-    state = conversation_state(conv)
-
-    if state == STATE_BOOKED and when_text:
-        if lang == "ru":
-            if closure_type == "goodbye":
-                return f"До встречи! Ждём вас {when_text}."
-            return f"Пожалуйста! Ждём вас {when_text}."
-        if lang == "en":
-            if closure_type == "goodbye":
-                return f"See you then! We’ll be expecting you on {when_text}."
-            return f"You’re welcome! We’ll be expecting you on {when_text}."
-        if closure_type == "goodbye":
-            return f"Uz tikšanos! Gaidīsim jūs {when_text}."
-        return f"Lūdzu! Gaidīsim jūs {when_text}."
-
-    if state == STATE_CANCELLED:
-        if lang == "ru":
-            return "Пожалуйста! Если понадобится новая запись, напишите — помогу подобрать время."
-        if lang == "en":
-            return "You’re welcome! If you need a new appointment, just message me and I’ll help."
-        return "Lūdzu! Ja vajadzēs jaunu pierakstu, uzrakstiet — palīdzēšu atrast laiku."
-
-    if closure_type == "goodbye":
-        if lang == "ru":
-            return "До свидания! Хорошего дня."
-        if lang == "en":
-            return "Goodbye! Have a nice day."
-        return "Uz redzēšanos! Lai jauka diena."
-
-    if lang == "ru":
-        return "Пожалуйста! Рад помочь."
-    if lang == "en":
-        return "You’re welcome! Happy to help."
-    return "Lūdzu! Prieks palīdzēt."
-
-
-def maybe_conversational_closure_result(
-    tenant_id: str,
-    user_key: str,
-    msg: str,
-    lang: str,
-    conv: Dict[str, Any],
-    tenant: Dict[str, Any],
-) -> Optional[Dict[str, Any]]:
-    if not (msg or "").strip():
-        return None
-
-    state = conversation_state(conv or {})
-    pending = (conv or {}).get("pending") or {}
-
-    # Never steal confirmations or active slot/service selection. In active booking
-    # states, words like "ok" and "labi" may be real confirmation signals.
-    if state in ACTIVE_BOOKING_STATES or state == STATE_POST_BOOKING_UPSELL:
-        return None
-
-    closure_type = None
-    if is_thank_you_text(msg, lang):
-        closure_type = "thanks"
-    elif is_goodbye_text(msg, lang):
-        closure_type = "goodbye"
-    elif state in {STATE_BOOKED, STATE_CANCELLED} and is_positive_closure_ack_text(msg, lang):
-        closure_type = "ack"
-
-    if not closure_type:
-        return None
-
-    # After booking/cancellation, clear stale pending flags so the next polite
-    # message does not accidentally re-open the booking state machine.
-    if state in {STATE_BOOKED, STATE_CANCELLED} and pending:
-        conv["pending"] = None
-        db_save_conversation(tenant_id, user_key, conv)
-
-    reply = closure_reply_text(lang, closure_type, conv, tenant)
-    return {
-        "status": "info",
-        "reply_voice": reply,
-        "msg_out": reply,
-        "lang": lang,
-        "preserve_text": True,
-        "closure_type": closure_type,
-    }
 
 
 # -------------------------
@@ -1598,13 +1317,17 @@ def ensure_lang_update(tenant_id: str, user_key: str, c: Dict[str, Any], lang: s
     return c
 
 
-
-
 # -------------------------
 # STAGE 28.1 — REPLY LANGUAGE CONSISTENCY FIX
 # -------------------------
 def stage28_lang_hint_is_locking(channel: str = "", source: str = "runtime") -> bool:
-    """Treat dev_chat dropdown language as fallback, not a hard language lock."""
+    """Return True only when lang_hint should force the reply language.
+
+    In dev_chat/dev_ui the dropdown is a fallback/testing hint, not a hard lock.
+    This lets QA send RU/EN messages while the UI dropdown is still set to LV.
+    Runtime SMS/WhatsApp/voice paths can still pass an explicit detected language
+    as a stronger hint.
+    """
     ch = str(channel or "").strip().lower()
     src = str(source or "runtime").strip().lower()
     if ch in {"dev", "test", "debug"}:
@@ -1615,32 +1338,43 @@ def stage28_lang_hint_is_locking(channel: str = "", source: str = "runtime") -> 
 
 
 def stage28_detect_turn_language(msg: str, fallback_lang: str = "lv") -> str:
+    """Detect the language of the current user turn with safe heuristics.
+
+    The built-in resolver is good for normal flows, but short dev-chat QA cases
+    can get stuck in the previous/dropdown language. This helper strongly detects
+    Cyrillic Russian and clear English phrasing, while preserving fallback for
+    ambiguous short acknowledgements like "ok".
+    """
     raw = str(msg or "").strip()
     fallback = get_lang(fallback_lang or "lv")
     if not raw:
         return fallback
 
     low = raw.lower()
-    padded = f" {low} "
 
     if re.search(r"[А-Яа-яЁё]", raw):
         return "ru"
+
     if re.search(r"[āčēģīķļņšūž]", low):
         return "lv"
 
+    # Clear English signals. Keep this conservative so Latvian/Russian latinized
+    # fragments do not accidentally switch to English.
     english_markers = {
-        " i ", " i'", " want ", " book ", " booking ", " appointment ",
-        " consultation ", " tomorrow", " today", " friday", " monday", " tuesday",
-        " wednesday", " thursday", " saturday", " sunday", " around ", " after ",
-        " before ", " can i ", " could i ", " would like ", " thank you", " thanks",
+        " i ", " i'", " want ", " book ", " booking ", " appointment ", " consultation ",
+        " tomorrow", " today", " friday", " monday", " tuesday", " wednesday",
+        " thursday", " saturday", " sunday", " around ", " after ", " before ",
+        " can i ", " could i ", " would like ", " thank you", " thanks"
     }
+    padded = f" {low} "
     if any(marker in padded for marker in english_markers):
         return "en"
 
+    # Latvian latin markers, including common booking words without diacritics.
     latvian_markers = {
         " labdien", " sveiki", " gribu", " gribetu", " gribētu", " pierakst",
-        " konsultac", " konsultāc", " rit", " rīt", " sodien", " šodien", " maij",
-        " paldies", " ludzu", " lūdzu", " pecpusdien", " pēcpusdien",
+        " konsultac", " konsultāc", " rit", " rīt", " sodien", " šodien",
+        " maij", " paldies", " ludzu", " lūdzu", " pecpusdien", " pēcpusdien"
     }
     if any(marker in padded for marker in latvian_markers):
         return "lv"
@@ -1650,6 +1384,11 @@ def stage28_detect_turn_language(msg: str, fallback_lang: str = "lv") -> str:
 
 
 def stage28_resolve_reply_language(msg: str, previous_lang: str = "lv") -> str:
+    """Resolve reply language for the current turn.
+
+    Strong user-message detection wins for RU/EN/LV. Ambiguous turns keep the
+    previous conversation language through the existing resolver.
+    """
     fallback = get_lang(previous_lang or "lv")
     detected = stage28_detect_turn_language(msg, fallback)
     if detected != fallback:
@@ -2002,7 +1741,6 @@ def handle_user_text_with_logging(
     try:
         tenant = get_tenant(tenant_id)
         result = humanize_result(result, conv, tenant)
-        result = ai_response_composer(result, conv, tenant, channel=channel, source=source)
         result = apply_usage_soft_limit_warning(result, result.get("lang") or get_lang((conv or {}).get("lang") or lang_hint or "lv"), tenant, channel, source=source)
     except Exception as e:
         log.error("humanize_result_failed tenant_id=%s err=%s", tenant_id, e)
@@ -2550,24 +2288,6 @@ def get_service_item_by_key(catalog: List[Dict[str, Any]], service_key: Optional
     return None
 
 
-
-
-def _fold_match_text(text_: Optional[str]) -> str:
-    """Lowercase + remove accents/diacritics for tolerant LV/RU/EN matching."""
-    src = str(text_ or "").strip().lower()
-    if not src:
-        return ""
-    try:
-        src = "".join(
-            ch for ch in unicodedata.normalize("NFKD", src)
-            if not unicodedata.combining(ch)
-        )
-    except Exception:
-        pass
-    src = src.replace("ё", "е")
-    src = re.sub(r"[^\wА-Яа-я]+", " ", src, flags=re.UNICODE)
-    return re.sub(r"\s+", " ", src).strip()
-
 # -------------------------
 # STAGE 28.2 — SERVICE CATALOG LOCALIZATION FALLBACK
 # -------------------------
@@ -2594,7 +2314,6 @@ def _localized_service_fallback_name(service_item: Optional[Dict[str, Any]], lan
         return {"lv": "Serviss", "ru": "сервис", "en": "service"}.get(lang, "Serviss")
     return ""
 
-
 def service_display_name(service_item: Optional[Dict[str, Any]], lang: str) -> str:
     if not service_item:
         return ""
@@ -2602,15 +2321,15 @@ def service_display_name(service_item: Optional[Dict[str, Any]], lang: str) -> s
     requested = str(service_item.get(f"name_{lang}") or "").strip()
     lv_name = str(service_item.get("name_lv") or "").strip()
 
+    # If the dashboard/catalog contains Latvian placeholders in RU/EN fields,
+    # prefer a safe localized fallback for known service types. This keeps the
+    # receptionist replying in the user's language even before the tenant has
+    # fully translated the service catalog.
     if lang in {"ru", "en"}:
         folded_requested = _fold_match_text(requested)
         folded_lv = _fold_match_text(lv_name)
         fallback = _localized_service_fallback_name(service_item, lang)
-        if fallback and (
-            not requested
-            or folded_requested == folded_lv
-            or folded_requested in {"konsultacija", "serviss", "atbalsts"}
-        ):
+        if fallback and (not requested or folded_requested == folded_lv or folded_requested in {"konsultacija", "serviss", "atbalsts"}):
             return fallback
 
     return str(requested or lv_name or service_item.get("key") or "").strip()
@@ -2721,23 +2440,10 @@ def canonical_service_key_from_text(text_: Optional[str], alias_map: Dict[str, s
     if not low:
         return None
     norm_low = re.sub(r"\s+", " ", re.sub(r"[^\wĀ-žА-Яа-яЁё]+", " ", low, flags=re.UNICODE)).strip()
-    folded_low = _fold_match_text(low)
     if low in alias_map:
         return alias_map[low]
     if norm_low in alias_map:
         return alias_map[norm_low]
-
-    # Stage 25.6 hotfix: tolerate missing diacritics and inflected endings.
-    # Example: "konsultaciju" should match "konsultācija" / "konsultāciju".
-    folded_aliases: List[Tuple[int, str, str]] = []
-    for alias, key in alias_map.items():
-        folded_alias = _fold_match_text(alias)
-        if folded_alias:
-            folded_aliases.append((len(folded_alias), folded_alias, key))
-    for _, folded_alias, key in sorted(folded_aliases, key=lambda x: x[0], reverse=True):
-        if folded_alias == folded_low or folded_alias in folded_low or folded_low in folded_alias:
-            return key
-
     # Prefer longest alias first so generic words don't beat specific phrases
     for alias in sorted(alias_map.keys(), key=len, reverse=True):
         if not alias:
@@ -2746,6 +2452,7 @@ def canonical_service_key_from_text(text_: Optional[str], alias_map: Dict[str, s
         if alias in low or (norm_alias and norm_alias in norm_low):
             return alias_map[alias]
     return None
+
 
 def merged_service_alias_map(catalog: List[Dict[str, Any]], tenant: Dict[str, Any], lang: str) -> Dict[str, str]:
     merged = service_alias_map_from_catalog(catalog, lang)
@@ -3117,209 +2824,6 @@ def llm_message_understanding(
     return understood
 
 
-# -------------------------
-# STAGE 26 — CONVERSATIONAL SEMANTIC ROUTER
-# -------------------------
-def stage26_semantic_router_enabled(channel: str = "", source: str = "runtime") -> bool:
-    flag = os.getenv("STAGE26_SEMANTIC_ROUTER_ENABLED", "").strip().lower()
-    if flag in {"0", "false", "no", "off", "disabled"}:
-        return False
-    if flag in {"1", "true", "yes", "on", "enabled"}:
-        return bool(OPENAI_API_KEY and LLM_INTELLIGENCE_ENABLED)
-    # Default: enabled together with the existing LLM intelligence switch.
-    return bool(OPENAI_API_KEY and LLM_INTELLIGENCE_ENABLED)
-
-
-def _stage26_safe_list(value: Any, limit: int = 8) -> List[str]:
-    if not value:
-        return []
-    if isinstance(value, (list, tuple, set)):
-        return [str(x).strip() for x in list(value)[:limit] if str(x).strip()]
-    txt = str(value).strip()
-    return [txt] if txt else []
-
-
-def _stage26_action_hint(value: Any) -> Optional[str]:
-    low = str(value or "").strip().lower()
-    allowed = {
-        "start_booking",
-        "continue_booking",
-        "answer_faq",
-        "ask_service",
-        "ask_date",
-        "ask_time",
-        "ask_confirm",
-        "choose_slot",
-        "confirm_yes",
-        "confirm_no",
-        "cancel",
-        "reschedule",
-        "greeting",
-        "closure",
-        "other",
-    }
-    return low if low in allowed else None
-
-
-def stage26_semantic_route_message(
-    msg: str,
-    lang: str,
-    c: Dict[str, Any],
-    pending: Dict[str, Any],
-    tenant: Dict[str, Any],
-    settings: Dict[str, Any],
-    service_catalog: List[Dict[str, Any]],
-    service_aliases: Dict[str, str],
-    business_memory: str,
-    llm_hint: Optional[Dict[str, Any]] = None,
-    channel: str = "",
-    source: str = "runtime",
-) -> Dict[str, Any]:
-    """Semantic interpretation layer for free conversational input.
-
-    Safety contract:
-    - this layer never performs calendar actions;
-    - it only enriches understanding hints used by deterministic orchestration;
-    - backend state machine and calendar guards remain authoritative.
-    """
-    if not stage26_semantic_router_enabled(channel, source):
-        return {}
-    raw_msg = str(msg or "").strip()
-    if not raw_msg:
-        return {}
-
-    state = conversation_state(c or {})
-    pending = pending or {}
-    llm_hint = llm_hint or {}
-    offered_slots = _slot_labels_from_pending(pending)
-    alias_hint = ", ".join([f"{k} => {v}" for k, v in list(service_aliases.items())[:80]])
-    current_context = {
-        "language": get_lang(lang),
-        "state": state,
-        "active_booking_flow": is_active_booking_flow(c or {}),
-        "known_service_key": (c or {}).get("service") or pending.get("service"),
-        "known_service_display": pending.get("service_display"),
-        "known_datetime_iso": (c or {}).get("datetime_iso") or pending.get("candidate_datetime_iso") or pending.get("awaiting_time_date_iso"),
-        "offered_slots": offered_slots[:3],
-        "existing_llm_hint": llm_hint,
-    }
-
-    system_prompt = (
-        "You are Stage 26 Conversational Semantic Router for Repliq, an AI receptionist SaaS. "
-        "Your job is to understand the user's conversational meaning and return structured JSON. "
-        "Do not make bookings, do not invent availability, do not invent services. "
-        "The backend orchestrator will decide all actions. "
-        "Return strict JSON only with keys: intent, confidence, service, time_text, datetime_iso, confirmation, "
-        "action_hint, missing_fields, user_goal, notes. "
-        "intent must be one of booking, reschedule, cancel, info, greeting, closure, other. "
-        "confirmation must be yes, no, or null. "
-        "action_hint must be one of start_booking, continue_booking, answer_faq, ask_service, ask_date, ask_time, "
-        "ask_confirm, choose_slot, confirm_yes, confirm_no, cancel, reschedule, greeting, closure, other. "
-        "service must be a canonical service key from the alias map when clearly recognized, otherwise null. "
-        "datetime_iso should only be present if the user clearly gave a date/time; otherwise null. "
-        "time_text may contain natural time phrases like tomorrow afternoon / rīt pēcpusdienā / после работы. "
-        "missing_fields must be a list using only service, date, time, confirmation. "
-    )
-    user_payload = {
-        "today": str(now_ts().date()),
-        "user_language": get_lang(lang),
-        "business_name": settings.get("biz_name"),
-        "business_hours": f"{settings.get('work_start')}-{settings.get('work_end')}",
-        "known_services": service_catalog_summary(service_catalog, lang),
-        "service_alias_map": alias_hint or "none",
-        "business_memory": business_memory or "none",
-        "context": current_context,
-        "user_message": raw_msg,
-    }
-
-    try:
-        raw = openai_chat_json(system_prompt, json.dumps(user_payload, ensure_ascii=False, default=str))
-        if not isinstance(raw, dict):
-            return {}
-        intent = _normalize_llm_intent(raw.get("intent"))
-        if str(raw.get("intent") or "").strip().lower() == "greeting":
-            intent = "other"
-        if str(raw.get("intent") or "").strip().lower() == "closure":
-            intent = "other"
-        try:
-            confidence = max(0.0, min(1.0, float(raw.get("confidence") or 0.0)))
-        except Exception:
-            confidence = 0.0
-        service_value = apply_service_aliases(raw.get("service"), service_aliases) or canonical_service_key_from_text(raw.get("service"), service_aliases)
-        if service_value and not get_service_item_by_key(service_catalog, service_value):
-            service_item = extract_service_from_text(service_value, service_catalog, lang)
-            service_value = str((service_item or {}).get("key") or "").strip() or None
-        out = {
-            "intent": intent,
-            "confidence": confidence,
-            "service": service_value,
-            "time_text": sanitize_conversation_time_text(raw.get("time_text")) or normalize_service(raw.get("time_text")),
-            "datetime_iso": str(raw.get("datetime_iso") or "").strip() or None,
-            "name": normalize_name(raw.get("name")),
-            "confirmation": _normalize_llm_confirmation(raw.get("confirmation")),
-            "action_hint": _stage26_action_hint(raw.get("action_hint")),
-            "missing_fields": [x for x in _stage26_safe_list(raw.get("missing_fields"), 4) if x in {"service", "date", "time", "confirmation"}],
-            "user_goal": _safe_compose_text(raw.get("user_goal"), 180),
-            "notes": _safe_compose_text(raw.get("notes"), 220),
-            "stage26": True,
-        }
-        return out
-    except Exception as e:
-        log.error("stage26_semantic_router_failed err=%s", e)
-        return {}
-
-
-def merge_stage26_into_llm_hint(base_hint: Optional[Dict[str, Any]], semantic: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    merged = dict(base_hint or {})
-    semantic = semantic or {}
-    if not semantic:
-        return merged
-    sem_conf = float(semantic.get("confidence") or 0.0)
-    base_conf = float(merged.get("confidence") or 0.0)
-
-    if semantic.get("intent") and sem_conf >= max(0.45, base_conf - 0.1):
-        merged["intent"] = semantic.get("intent")
-        merged["confidence"] = max(base_conf, sem_conf)
-    for key in ("service", "time_text", "datetime_iso", "name", "confirmation"):
-        if semantic.get(key) and not merged.get(key):
-            merged[key] = semantic.get(key)
-    # confirmation/action hints are often the most valuable for short replies.
-    if semantic.get("confirmation"):
-        merged["confirmation"] = semantic.get("confirmation")
-    if semantic.get("action_hint"):
-        merged["stage26_action_hint"] = semantic.get("action_hint")
-    if semantic.get("missing_fields"):
-        merged["stage26_missing_fields"] = semantic.get("missing_fields")
-    if semantic.get("user_goal"):
-        merged["stage26_user_goal"] = semantic.get("user_goal")
-    merged["stage26_semantic"] = semantic
-    return merged
-
-
-def remember_stage26_datetime_hint(c: Dict[str, Any], pending: Dict[str, Any], semantic_hint: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    pending = pending or {}
-    if not semantic_hint:
-        return c, pending
-    dt_iso = str(semantic_hint.get("datetime_iso") or "").strip()
-    dtv = parse_dt_any_tz(dt_iso)
-    if dtv:
-        if dtv.hour != 9 or dtv.minute != 0:
-            pending["candidate_datetime_iso"] = dtv.isoformat()
-            pending["awaiting_time_date_iso"] = dtv.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
-            pending["time_text"] = f"{dtv.hour:02d}:{dtv.minute:02d}"
-            c["time_text"] = pending["time_text"]
-        else:
-            pending["awaiting_time_date_iso"] = dtv.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
-    time_text = sanitize_conversation_time_text(semantic_hint.get("time_text"))
-    if time_text and not pending.get("time_text"):
-        pending["time_text"] = time_text
-        c["time_text"] = time_text
-    if semantic_hint.get("intent") == "booking" or semantic_hint.get("action_hint") in {"start_booking", "continue_booking"}:
-        pending["booking_intent"] = True
-    c["pending"] = pending or None
-    return c, pending
-
-
 
 ORCH_ACTION_CONTINUE = "continue_legacy"
 ORCH_ACTION_FAQ = "faq"
@@ -3430,9 +2934,6 @@ def build_understanding_result(
         "intent": llm_intent,
         "confidence": max(0.0, min(1.0, confidence)),
         "confirmation": _normalize_llm_confirmation(llm_hint.get("confirmation")),
-        "stage26_action_hint": llm_hint.get("stage26_action_hint"),
-        "stage26_missing_fields": llm_hint.get("stage26_missing_fields") or [],
-        "stage26_user_goal": llm_hint.get("stage26_user_goal"),
         "signals": signals,
         "entities": {
             "service_key": str((service_item or {}).get("key") or "").strip() or None,
@@ -3472,21 +2973,6 @@ def orchestrate_turn(
     intent = understanding.get("intent")
     confidence = float(understanding.get("confidence") or 0.0)
     selected_slot_iso = ((understanding.get("entities") or {}).get("selected_slot_iso"))
-    stage26_action_hint = str(understanding.get("stage26_action_hint") or "").strip().lower()
-
-    if stage26_action_hint == "answer_faq" and understanding.get("faq_result"):
-        decision.update({
-            "action": ORCH_ACTION_FAQ,
-            "needs_tool": True,
-            "tool_name": "get_business_info",
-            "reason": "stage26_faq_detected",
-            "reply_mode": "direct",
-        })
-        return decision
-
-    if not active_flow and stage26_action_hint == "greeting":
-        decision.update({"action": ORCH_ACTION_GREET, "reason": "stage26_greeting", "reply_mode": "direct"})
-        return decision
 
     if understanding.get("faq_result"):
         decision.update({
@@ -3508,7 +2994,7 @@ def orchestrate_turn(
         decision.update({"action": ORCH_ACTION_HOURS, "reason": "hours_question_detected", "reply_mode": "direct"})
         return decision
 
-    if stage26_action_hint == "cancel" or "cancel_request" in signals or (not active_flow and intent == "cancel" and confidence >= LLM_INTENT_MIN_CONFIDENCE):
+    if "cancel_request" in signals or (not active_flow and intent == "cancel" and confidence >= LLM_INTENT_MIN_CONFIDENCE):
         decision.update({
             "action": ORCH_ACTION_CANCEL,
             "needs_tool": True,
@@ -3517,7 +3003,7 @@ def orchestrate_turn(
         })
         return decision
 
-    if stage26_action_hint == "reschedule" or "reschedule_request" in signals or (not active_flow and intent == "reschedule" and confidence >= LLM_INTENT_MIN_CONFIDENCE):
+    if "reschedule_request" in signals or (not active_flow and intent == "reschedule" and confidence >= LLM_INTENT_MIN_CONFIDENCE):
         decision.update({
             "action": ORCH_ACTION_RESCHEDULE,
             "needs_tool": True,
@@ -3526,7 +3012,7 @@ def orchestrate_turn(
         })
         return decision
 
-    if stage26_action_hint in {"start_booking", "continue_booking"} or "booking_opener" in signals or (not active_flow and intent == "booking" and confidence >= LLM_INTENT_MIN_CONFIDENCE):
+    if "booking_opener" in signals or (not active_flow and intent == "booking" and confidence >= LLM_INTENT_MIN_CONFIDENCE):
         decision.update({
             "action": ORCH_ACTION_START_BOOKING,
             "next_state": STATE_AWAITING_SERVICE,
@@ -3555,10 +3041,10 @@ def orchestrate_turn(
         if "hesitation" in signals:
             decision.update({"action": ORCH_ACTION_CLARIFY_CONFIRM, "next_state": STATE_AWAITING_CONFIRM, "reason": "hesitation_in_confirm", "reply_mode": "direct"})
             return decision
-        if stage26_action_hint == "confirm_yes" or "yes" in signals or understanding.get("confirmation") == "yes":
+        if "yes" in signals or understanding.get("confirmation") == "yes":
             decision.update({"action": ORCH_ACTION_CONFIRM_YES, "needs_tool": True, "tool_name": "create_booking", "reason": "confirm_yes_detected"})
             return decision
-        if stage26_action_hint == "confirm_no" or "no" in signals or understanding.get("confirmation") == "no":
+        if "no" in signals or understanding.get("confirmation") == "no":
             decision.update({"action": ORCH_ACTION_CONFIRM_NO, "reason": "confirm_no_detected"})
             return decision
 
@@ -4292,19 +3778,6 @@ def _normalize_phrase_text(text_: Optional[str]) -> str:
     low = re.sub(r"\s+", " ", low).strip()
     return low
 
-def _fold_match_text(text_: Optional[str]) -> str:
-    """Lowercase + remove accents/diacritics for tolerant LV/RU/EN matching."""
-    src = str(text_ or "").strip().lower()
-    if not src:
-        return ""
-    try:
-        src = "".join(ch for ch in unicodedata.normalize("NFKD", src) if not unicodedata.combining(ch))
-    except Exception:
-        pass
-    src = src.replace("ё", "е")
-    src = re.sub(r"[^\wА-Яа-я]+", " ", src, flags=re.UNICODE)
-    return re.sub(r"\s+", " ", src).strip()
-
 
 def is_hesitation_text(text_: Optional[str], lang: str) -> bool:
     low = _normalize_phrase_text(text_)
@@ -4513,32 +3986,6 @@ def parse_date_only_text(text_: Optional[str]) -> Optional[datetime]:
         except Exception:
             pass
 
-    month_names = {
-        "jan": 1, "january": 1, "janvaris": 1, "janvāris": 1, "janvari": 1, "janvārī": 1, "января": 1,
-        "feb": 2, "february": 2, "februaris": 2, "februāris": 2, "februari": 2, "februārī": 2, "февраля": 2,
-        "mar": 3, "march": 3, "marts": 3, "marta": 3, "martā": 3, "марта": 3,
-        "apr": 4, "april": 4, "aprīlis": 4, "aprilis": 4, "aprili": 4, "aprīlī": 4, "апреля": 4,
-        "may": 5, "maijs": 5, "maija": 5, "maijā": 5, "мая": 5,
-        "jun": 6, "june": 6, "jūnijs": 6, "junijs": 6, "junija": 6, "jūnijā": 6, "июня": 6,
-        "jul": 7, "july": 7, "jūlijs": 7, "julijs": 7, "julija": 7, "jūlijā": 7, "июля": 7,
-        "aug": 8, "august": 8, "augusts": 8, "augusta": 8, "augustā": 8, "августа": 8,
-        "sep": 9, "september": 9, "septembris": 9, "septembri": 9, "septembrī": 9, "сентября": 9,
-        "oct": 10, "october": 10, "oktobris": 10, "oktobri": 10, "oktobrī": 10, "октября": 10,
-        "nov": 11, "november": 11, "novembris": 11, "novembri": 11, "novembrī": 11, "ноября": 11,
-        "dec": 12, "december": 12, "decembris": 12, "decembri": 12, "decembrī": 12, "декабря": 12,
-    }
-    folded_src = _fold_match_text(src)
-    md = re.search(r"\b(\d{1,2})\s+([a-zа-я]+)\b", folded_src, flags=re.IGNORECASE)
-    if md:
-        dd = int(md.group(1))
-        month_word = md.group(2).strip().lower()
-        mo = month_names.get(month_word)
-        if mo:
-            try:
-                return datetime(today_local().year, mo, dd, 9, 0, tzinfo=TZ)
-            except Exception:
-                pass
-
     base = today_local()
 
     # Weekdays must win over relative substrings like "rīt" inside "rīta".
@@ -4706,9 +4153,7 @@ def extract_service_from_text(text_: Optional[str], catalog: List[Dict[str, Any]
     if not low:
         return None
 
-    folded_low = _fold_match_text(low)
     candidates_index: List[Tuple[int, str, Dict[str, Any]]] = []
-    folded_candidates_index: List[Tuple[int, str, Dict[str, Any]]] = []
     for item in catalog:
         display = service_display_name(item, lang).lower()
         candidates = {display, str(item.get("key") or "").strip().lower()}
@@ -4719,19 +4164,12 @@ def extract_service_from_text(text_: Optional[str], catalog: List[Dict[str, Any]
         for cand in candidates:
             if cand:
                 candidates_index.append((len(cand), cand, item))
-                folded = _fold_match_text(cand)
-                if folded:
-                    folded_candidates_index.append((len(folded), folded, item))
 
     for _, cand, item in sorted(candidates_index, key=lambda x: x[0], reverse=True):
         if cand == low or cand in low or low in cand:
             return item
-
-    # Stage 25.6 hotfix: diacritic-insensitive service matching for natural Latvian input.
-    for _, cand, item in sorted(folded_candidates_index, key=lambda x: x[0], reverse=True):
-        if cand == folded_low or cand in folded_low or folded_low in cand:
-            return item
     return None
+
 
 def extract_slot_choice(msg: Optional[str], pending: Dict[str, Any]) -> Optional[str]:
     low = (msg or "").strip().lower()
@@ -5584,13 +5022,6 @@ def free_router_handle_turn(
 
     c, pending, service_item, candidate_dt = free_router_merge_message_slots(msg, c, pending, service_catalog, service_aliases, lang)
 
-    # Stage 25.6 hotfix: when we are waiting for a date and the user gives only a date
-    # ("16 maijs", "16.05"), do not treat it as missing datetime and repeat the same
-    # question. Move to time selection by offering available slots for that day.
-    date_only_for_router = parse_date_only_text(msg)
-    if conversation_state(c) == STATE_AWAITING_DATE and date_only_for_router and (c.get("service") or pending.get("service")):
-        return offer_slots_for_date(tenant_id, user_key, lang, c, pending, settings, service_catalog, date_only_for_router)
-
     if free_router_is_services_request(msg, lang):
         pending["booking_intent"] = True
         c["pending"] = pending
@@ -5658,9 +5089,9 @@ def handle_user_text(
     tenant = load_runtime_tenant(tenant_id)
 
     explicit_lang_hint = (lang_hint or "").strip().lower()
-    lang_hint_should_lock = stage28_lang_hint_is_locking(channel, source)
-    lang_locked = explicit_lang_hint if lang_hint_should_lock and explicit_lang_hint in ("lv", "ru", "en") else None
-    detected_lang = get_lang(lang_locked or stage28_resolve_reply_language(msg, explicit_lang_hint or "lv") or detect_language(msg))
+    hint_lang = explicit_lang_hint if explicit_lang_hint in ("lv", "ru", "en") else None
+    lang_locked = hint_lang if (hint_lang and stage28_lang_hint_is_locking(channel, source)) else None
+    detected_lang = get_lang(lang_locked or stage28_detect_turn_language(msg, hint_lang or "lv"))
     lang = detected_lang
 
     if not tenant.get("_id"):
@@ -5696,12 +5127,6 @@ def handle_user_text(
     )
     business_memory = tenant_business_memory(tenant, lang)
     calendar_ready = calendar_is_configured(settings["calendar_id"])
-
-    # Stage 25.5: handle post-booking thanks/goodbye before normalizing state,
-    # so stale pending booking flags cannot reopen a completed flow.
-    closure_result = maybe_conversational_closure_result(tenant_id, user_key, msg, lang, c, tenant)
-    if closure_result:
-        return closure_result
 
     c["state"] = conversation_state(c)
     c = normalize_booking_state(c)
@@ -5746,24 +5171,6 @@ def handle_user_text(
         return ai_data
 
     llm_hint = get_llm_data() if msg else {}
-    stage26_hint = stage26_semantic_route_message(
-        msg=msg,
-        lang=lang,
-        c=c,
-        pending=pending,
-        tenant=tenant,
-        settings=settings,
-        service_catalog=service_catalog,
-        service_aliases=service_aliases,
-        business_memory=business_memory,
-        llm_hint=llm_hint,
-        channel=channel,
-        source=source,
-    ) if msg else {}
-    if stage26_hint:
-        llm_hint = merge_stage26_into_llm_hint(llm_hint, stage26_hint)
-        c, pending = remember_stage26_datetime_hint(c, pending, stage26_hint)
-
     understanding = build_understanding_result(
         msg=msg,
         lang=lang,
@@ -5781,58 +5188,6 @@ def handle_user_text(
 
     explicit_cancel_request = orchestration.get("action") == ORCH_ACTION_CANCEL
     explicit_reschedule_request = orchestration.get("action") == ORCH_ACTION_RESCHEDULE
-
-    # Stage 25 Hotfix: hard-confirm handler must run before generic booking flow.
-    # In AWAITING_CONFIRM, clear yes/no answers must execute or exit confirmation,
-    # not be reinterpreted by later generic state handlers as another confirmation prompt.
-    if msg and conversation_state(c) == STATE_AWAITING_CONFIRM:
-        pending = c.get("pending") or {}
-        confirm_iso = str(pending.get("confirm_slot_iso") or c.get("datetime_iso") or "").strip()
-        dt_confirm = parse_dt_any_tz(confirm_iso)
-        llm_confirmation = (llm_hint or {}).get("confirmation")
-
-        if is_yes_text(msg, lang) or llm_confirmation == "yes" or orchestration.get("action") == ORCH_ACTION_CONFIRM_YES:
-            if not dt_confirm:
-                c["state"] = STATE_AWAITING_TIME
-                db_save_conversation(tenant_id, user_key, c)
-                reply_text = prompt_for_state(lang, c, pending, service_catalog)
-                return {"status": "need_more", "reply_voice": reply_text, "msg_out": reply_text, "lang": lang}
-
-            primary_service_item = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
-            if should_offer_post_confirm_upsell(service_catalog, primary_service_item, pending):
-                result = move_to_post_confirm_upsell(lang, c, pending, service_catalog, dt_confirm)
-                db_save_conversation(tenant_id, user_key, c)
-                return result
-
-            result = book_appointment_for_datetime(
-                tenant_id, raw_phone, channel, lang, c, settings, service_catalog, dt_confirm, require_confirmation=False
-            )
-            db_save_conversation(tenant_id, user_key, c)
-            return result
-
-        if is_no_text(msg, lang) or llm_confirmation == "no" or orchestration.get("action") == ORCH_ACTION_CONFIRM_NO:
-            pending.pop("confirm_slot_iso", None)
-            pending.pop("pending_confirm_upsell", None)
-            pending.pop("confirm_upsell_done", None)
-            pending.pop("upsell_offer_active", None)
-            pending.pop("addon_service", None)
-            pending.pop("candidate_datetime_iso", None)
-            pending.pop("requested_datetime_iso", None)
-            pending.pop("partial_datetime_iso", None)
-            clear_offered_slots(pending)
-            pending["booking_intent"] = True
-            c["pending"] = pending or {"booking_intent": True}
-            c["datetime_iso"] = None
-            c["time_text"] = None
-            c["state"] = STATE_AWAITING_TIME
-            db_save_conversation(tenant_id, user_key, c)
-            if lang == "ru":
-                reply_text = "Понял. Какое другое время вам было бы удобно?"
-            elif lang == "en":
-                reply_text = "Understood. What other time would work for you?"
-            else:
-                reply_text = "Skaidrs. Kādu citu laiku vēlaties?"
-            return {"status": "need_more", "reply_voice": reply_text, "msg_out": reply_text, "lang": lang, "preserve_text": True}
 
     if explicit_cancel_request:
         if not calendar_ready:
@@ -5949,10 +5304,7 @@ def handle_user_text(
             "lang": lang,
         }
 
-    # Keep the Stage 26 enriched understanding for the rest of this turn.
-    # get_llm_data() returns the raw classifier output, so do not overwrite
-    # the merged semantic hint that was used by the orchestrator above.
-    llm_hint = llm_hint if msg else {}
+    llm_hint = get_llm_data() if msg else {}
 
     fresh_booking_start = orchestration.get("action") == ORCH_ACTION_START_BOOKING
     llm_intent = _normalize_llm_intent((llm_hint or {}).get("intent"))
