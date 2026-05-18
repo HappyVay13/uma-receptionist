@@ -5441,6 +5441,122 @@ def free_router_ask_missing_datetime(lang: str, c: Dict[str, Any], pending: Dict
         return f"Okay, {service_name}. What day and time would work for you?" if service_name else "What day and time would work for you?"
     return f"Labi, {service_name}. Uz kuru dienu un laiku vēlaties pierakstīties?" if service_name else "Uz kuru dienu un laiku vēlaties pierakstīties?"
 
+# -------------------------
+# STAGE 29 — AFTER-TIME WINDOW ROUTER HOTFIX
+# -------------------------
+def detect_after_time_anchor(text_: Optional[str], lang: str = "") -> Optional[Tuple[int, int]]:
+    """Detect phrases meaning strictly after a time, not exactly at that time.
+
+    Examples:
+    - "после 14:00" / "после 14"
+    - "pēc 14:00" / "pec 14"
+    - "after 14:00" / "after 2 pm"
+    """
+    src = str(text_ or "").strip().lower()
+    if not src:
+        return None
+    folded = _fold_match_text(src)
+    patterns = [
+        r"\bпосле\s+([01]?\d|2[0-3])(?:[:\.](\d{2}))?\b",
+        r"\bпозже\s+([01]?\d|2[0-3])(?:[:\.](\d{2}))?\b",
+        r"\bpec\s+([01]?\d|2[0-3])(?:[:\.](\d{2}))?\b",
+        r"\bpeec\s+([01]?\d|2[0-3])(?:[:\.](\d{2}))?\b",
+        r"\bafter\s+([01]?\d|2[0-3])(?:[:\.](\d{2}))?\b",
+        r"\blater\s+than\s+([01]?\d|2[0-3])(?:[:\.](\d{2}))?\b",
+    ]
+    for pat in patterns:
+        m = re.search(pat, folded, flags=re.IGNORECASE)
+        if m:
+            hh = int(m.group(1))
+            mm = int(m.group(2) or 0)
+            return hh, mm
+    return None
+
+
+def after_time_window_reply(lang: str, anchor_dt: datetime, slots: List[datetime]) -> str:
+    offered = [format_dt_short(x) for x in slots[:3]]
+    joined_ru = " или ".join(offered)
+    joined_en = " or ".join(offered)
+    joined_lv = " vai ".join(offered)
+    after_text = anchor_dt.strftime("%H:%M")
+    if lang == "ru":
+        return f"После {after_text} могу предложить: {joined_ru}. Какое время вам удобнее?"
+    if lang == "en":
+        return f"After {after_text}, I can offer: {joined_en}. Which time works best?"
+    return f"Pēc {after_text} varu piedāvāt: {joined_lv}. Kurš laiks jums der?"
+
+
+def no_after_time_slots_reply(lang: str, anchor_dt: datetime) -> str:
+    after_text = anchor_dt.strftime("%H:%M")
+    if lang == "ru":
+        return f"После {after_text} на этот день свободных вариантов не вижу. Могу посмотреть другой день или более раннее время."
+    if lang == "en":
+        return f"I don’t see available times after {after_text} on that day. I can check another day or an earlier time."
+    return f"Pēc {after_text} šajā dienā brīvus laikus neredzu. Varu paskatīties citu dienu vai agrāku laiku."
+
+
+def offer_slots_after_time_anchor(
+    tenant_id: str,
+    user_key: str,
+    lang: str,
+    c: Dict[str, Any],
+    pending: Dict[str, Any],
+    settings: Dict[str, Any],
+    service_catalog: List[Dict[str, Any]],
+    base_date: datetime,
+    anchor_parts: Tuple[int, int],
+) -> Dict[str, Any]:
+    pending = pending or {}
+    service_item_for_slots = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
+    if not service_item_for_slots:
+        c["pending"] = pending or None
+        c["state"] = STATE_AWAITING_SERVICE
+        db_save_conversation(tenant_id, user_key, c)
+        prompt = barber_service_prompt(lang, service_catalog)
+        return {"status": "need_more", "reply_voice": prompt, "msg_out": prompt, "lang": lang, "preserve_text": True}
+
+    if not calendar_is_configured(settings["calendar_id"]):
+        return blocked_result_for_lang(lang)
+
+    hh, mm = anchor_parts
+    anchor_dt = base_date.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    pending["booking_intent"] = True
+    pending["awaiting_time_date_iso"] = base_date.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+    pending["preferred_time_window"] = [hh, 21]
+    pending.pop("candidate_datetime_iso", None)
+    pending.pop("confirm_slot_iso", None)
+    clear_offered_slots(pending)
+
+    all_slots = find_first_n_slots_for_day(
+        calendar_id=settings["calendar_id"],
+        day_dt=base_date,
+        duration_min=service_duration_min(service_item_for_slots),
+        work_start=settings["work_start"],
+        work_end=settings["work_end"],
+        limit=32,
+        business_rules=settings.get("business_rules"),
+        service_account_json=settings.get("service_account_json"),
+    )
+    filtered = [s for s in all_slots if s > anchor_dt]
+
+    if filtered:
+        pending = set_offered_slots(pending, filtered[:3])
+        c["pending"] = pending
+        c["state"] = STATE_AWAITING_TIME
+        c["datetime_iso"] = None
+        c["time_text"] = None
+        db_save_conversation(tenant_id, user_key, c)
+        reply = after_time_window_reply(lang, anchor_dt, filtered[:3])
+        return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "preserve_text": True}
+
+    c["pending"] = pending
+    c["state"] = STATE_AWAITING_TIME
+    c["datetime_iso"] = None
+    c["time_text"] = None
+    db_save_conversation(tenant_id, user_key, c)
+    reply = no_after_time_slots_reply(lang, anchor_dt)
+    return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "preserve_text": True}
+
 
 def free_router_handle_candidate_datetime(
     tenant_id: str,
@@ -5572,6 +5688,33 @@ def free_router_handle_turn(
             result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, dt_selected)
             db_save_conversation(tenant_id, user_key, c)
             return result
+
+    # Stage 29 Hotfix: in confirm-state, phrases like "можно позже?" /
+    # "var vēlāk?" / "later?" mean negotiate a later slot, not repeat
+    # the same confirmation.
+    if state == STATE_AWAITING_CONFIRM and detect_time_shift_direction(msg, lang):
+        shift_direction = detect_time_shift_direction(msg, lang)
+        anchor_iso = str(pending.get("confirm_slot_iso") or c.get("datetime_iso") or "").strip()
+        anchor_dt = parse_dt_any_tz(anchor_iso)
+        service_item_shift = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
+        if anchor_dt and service_item_shift and calendar_is_configured(settings["calendar_id"]):
+            slots = find_negotiation_slots_for_direction(
+                calendar_id=settings["calendar_id"],
+                base_day=anchor_dt,
+                anchor_dt=anchor_dt,
+                direction=shift_direction,
+                duration_min=service_duration_min(service_item_shift),
+                work_start=settings["work_start"],
+                work_end=settings["work_end"],
+                limit=3,
+                business_rules=settings.get("business_rules"),
+                service_account_json=settings.get("service_account_json"),
+            )
+            pending.pop("confirm_slot_iso", None)
+            pending.pop("candidate_datetime_iso", None)
+            pending["booking_intent"] = True
+            c["datetime_iso"] = None
+            return negotiation_slots_response(tenant_id, user_key, lang, c, pending, slots)
 
     # Stage 24 Hotfix: a clear "no" in confirmation state means exit the
     # confirmation loop and ask for another time instead of re-confirming.
@@ -6121,6 +6264,25 @@ def handle_user_text(
 
     if msg and (natural_dt_for_msg or date_only_dt_for_msg or time_window_for_msg or explicit_time_present):
         c, pending = remember_partial_booking_datetime_from_message(c, pending, msg)
+
+    # Stage 29 Hotfix: "после 14:00" / "pēc 14:00" / "after 14:00" is a
+    # strict time window request, not an exact 14:00 booking. Offer several
+    # available slots after the anchor instead of asking to confirm 14:00.
+    after_anchor_stage29 = detect_after_time_anchor(msg, lang)
+    if after_anchor_stage29 and str(c.get("service") or (pending or {}).get("service") or "").strip():
+        base_day_stage29 = parse_dt_any_tz(str((pending or {}).get("awaiting_time_date_iso") or "").strip()) or date_only_dt_for_msg
+        if base_day_stage29:
+            return offer_slots_after_time_anchor(
+                tenant_id=tenant_id,
+                user_key=user_key,
+                lang=lang,
+                c=c,
+                pending=pending,
+                settings=settings,
+                service_catalog=service_catalog,
+                base_date=base_day_stage29,
+                anchor_parts=after_anchor_stage29,
+            )
 
     # Stage 27: if one message already contains service + date but no exact time,
     # do not ask service again. Move directly to slot offering / time choice.
