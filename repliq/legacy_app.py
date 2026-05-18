@@ -4241,8 +4241,9 @@ def remember_partial_booking_datetime_from_message(c: Dict[str, Any], pending: D
     raw = msg or ""
     natural_dt = parse_natural_datetime(raw)
     date_only_dt = parse_date_only_text(raw)
-    time_parts = parse_explicit_time_parts(raw)
     time_window = parse_time_window(raw)
+    relative_time_window = has_explicit_relative_time_window(raw)
+    time_parts = None if relative_time_window else parse_explicit_time_parts(raw)
 
     if time_window:
         pending["preferred_time_window"] = [time_window[0], time_window[1]]
@@ -4623,6 +4624,10 @@ def parse_time_window(text_: Optional[str]) -> Optional[Tuple[int, int]]:
     if not src:
         return None
 
+    explicit_window = explicit_relative_time_window(src)
+    if explicit_window:
+        return explicit_window
+
     if _contains_any_phrase(src, ["pēc darba", "pec darba", "после работы", "after work"]):
         return (17, 21)
     if _contains_any_phrase(src, [
@@ -4678,6 +4683,41 @@ def pending_time_window_tuple(pending: Dict[str, Any]) -> Optional[Tuple[int, in
             return None
     return None
 
+
+def explicit_relative_time_window(text_: Optional[str]) -> Optional[Tuple[int, int]]:
+    """Detect phrases like 'after 14:00' as a window, not an exact slot."""
+    src = str(text_ or "").strip().lower()
+    if not src:
+        return None
+    date_token_pattern = r"(?<!\d)(?:[0-2]?\d|3[01])[./-](?:0?[1-9]|1[0-2])(?:[./-]\d{2,4})?(?!\d)"
+    src_wo_dates = re.sub(date_token_pattern, " ", src)
+    patterns_after = [
+        r"\b(?:pēc|pec)\s+([01]?\d|2[0-3])(?::([0-5]\d))?\b",
+        r"\b(?:после|позже)\s+([01]?\d|2[0-3])(?::([0-5]\d))?\b",
+        r"\b(?:after|later than)\s+([01]?\d|2[0-3])(?::([0-5]\d))?\b",
+    ]
+    patterns_before = [
+        r"\b(?:pirms|līdz|lidz)\s+([01]?\d|2[0-3])(?::([0-5]\d))?\b",
+        r"\b(?:до|раньше)\s+([01]?\d|2[0-3])(?::([0-5]\d))?\b",
+        r"\b(?:before|until)\s+([01]?\d|2[0-3])(?::([0-5]\d))?\b",
+    ]
+    for pat in patterns_after:
+        m = re.search(pat, src_wo_dates, flags=re.IGNORECASE)
+        if m:
+            hh = int(m.group(1)); mm = int(m.group(2) or 0)
+            start_hour = hh + (1 if mm > 0 else 0)
+            return (max(0, min(23, start_hour)), 21)
+    for pat in patterns_before:
+        m = re.search(pat, src_wo_dates, flags=re.IGNORECASE)
+        if m:
+            hh = int(m.group(1))
+            return (9, max(10, min(23, hh)))
+    return None
+
+
+def has_explicit_relative_time_window(text_: Optional[str]) -> bool:
+    return explicit_relative_time_window(text_) is not None
+
 def parse_natural_datetime(text_: Optional[str], base_iso: Optional[str] = None) -> Optional[datetime]:
     src = (text_ or "").lower().strip()
     if not src:
@@ -4688,7 +4728,7 @@ def parse_natural_datetime(text_: Optional[str], base_iso: Optional[str] = None)
     if not date_dt and base_dt:
         date_dt = base_dt
 
-    time_parts = parse_explicit_time_parts(src)
+    time_parts = None if has_explicit_relative_time_window(src) else parse_explicit_time_parts(src)
 
     if not time_parts:
         approx_patterns = [
@@ -5674,6 +5714,35 @@ def free_router_handle_turn(
 
     return None
 
+
+def strong_message_language_override(text_: Optional[str], locked_lang: Optional[str], detected_lang: Optional[str]) -> Optional[str]:
+    """Let the customer's actual message language win over a dev/UI dropdown.
+
+    The dev_chat language selector is useful as a default, but in production-like
+    tests a Russian/English user message should not be answered in Latvian just
+    because the dropdown is set to lv.
+    """
+    raw = str(text_ or "").strip()
+    if not raw or not locked_lang or not detected_lang:
+        return None
+    locked = get_lang(locked_lang)
+    detected = get_lang(detected_lang)
+    if detected == locked:
+        return None
+    if re.search(r"[А-Яа-яЁё]", raw):
+        return "ru"
+    folded = _fold_match_text(raw)
+    ru_markers = {"хочу", "запис", "консультац", "завтра", "послезавтра", "после", "сегодня", "перенести", "отменить"}
+    en_markers = {"book", "appointment", "tomorrow", "after", "before", "consultation", "reschedule", "cancel"}
+    lv_markers = {"gribu", "pierakst", "rit", "parit", "pec", "konsult", "sodien", "rīt", "parīt", "pēc"}
+    if any(m in folded for m in ru_markers):
+        return "ru"
+    if detected == "en" and any(m in folded for m in en_markers):
+        return "en"
+    if detected == "lv" and any(m in folded for m in lv_markers):
+        return "lv"
+    return None
+
 # -------------------------
 # CORE LOGIC: handle_user_text
 # -------------------------
@@ -5685,7 +5754,9 @@ def handle_user_text(
 
     explicit_lang_hint = (lang_hint or "").strip().lower()
     lang_locked = explicit_lang_hint if explicit_lang_hint in ("lv", "ru", "en") else None
-    detected_lang = get_lang(lang_locked or detect_language(msg))
+    detected_from_msg = get_lang(detect_language(msg)) if msg else None
+    lang_override = strong_message_language_override(msg, lang_locked, detected_from_msg)
+    detected_lang = get_lang(lang_override or lang_locked or detected_from_msg or "lv")
     lang = detected_lang
 
     if not tenant.get("_id"):
@@ -5703,7 +5774,9 @@ def handle_user_text(
     user_key = norm_user_key(raw_phone)
     c = db_get_or_create_conversation(tenant_id, user_key, detected_lang)
 
-    if lang_locked:
+    if lang_override:
+        c["lang"] = lang_override
+    elif lang_locked:
         c["lang"] = lang_locked
     elif msg:
         c["lang"] = resolve_reply_language(msg, c.get("lang") or detected_lang)
