@@ -1,4 +1,3 @@
-# STAGE_28_3_FIRST_TURN_MULTILINGUAL_SERVICE_EXTRACTION
 import os
 import json
 import re
@@ -1319,6 +1318,85 @@ def ensure_lang_update(tenant_id: str, user_key: str, c: Dict[str, Any], lang: s
 
 
 # -------------------------
+# STAGE 28.1 — REPLY LANGUAGE CONSISTENCY FIX
+# -------------------------
+def stage28_lang_hint_is_locking(channel: str = "", source: str = "runtime") -> bool:
+    """Return True only when lang_hint should force the reply language.
+
+    In dev_chat/dev_ui the dropdown is a fallback/testing hint, not a hard lock.
+    This lets QA send RU/EN messages while the UI dropdown is still set to LV.
+    Runtime SMS/WhatsApp/voice paths can still pass an explicit detected language
+    as a stronger hint.
+    """
+    ch = str(channel or "").strip().lower()
+    src = str(source or "runtime").strip().lower()
+    if ch in {"dev", "test", "debug"}:
+        return False
+    if src in {"dev", "dev_ui", "test", "debug"}:
+        return False
+    return True
+
+
+def stage28_detect_turn_language(msg: str, fallback_lang: str = "lv") -> str:
+    """Detect the language of the current user turn with safe heuristics.
+
+    The built-in resolver is good for normal flows, but short dev-chat QA cases
+    can get stuck in the previous/dropdown language. This helper strongly detects
+    Cyrillic Russian and clear English phrasing, while preserving fallback for
+    ambiguous short acknowledgements like "ok".
+    """
+    raw = str(msg or "").strip()
+    fallback = get_lang(fallback_lang or "lv")
+    if not raw:
+        return fallback
+
+    low = raw.lower()
+
+    if re.search(r"[А-Яа-яЁё]", raw):
+        return "ru"
+
+    if re.search(r"[āčēģīķļņšūž]", low):
+        return "lv"
+
+    # Clear English signals. Keep this conservative so Latvian/Russian latinized
+    # fragments do not accidentally switch to English.
+    english_markers = {
+        " i ", " i'", " want ", " book ", " booking ", " appointment ", " consultation ",
+        " tomorrow", " today", " friday", " monday", " tuesday", " wednesday",
+        " thursday", " saturday", " sunday", " around ", " after ", " before ",
+        " can i ", " could i ", " would like ", " thank you", " thanks"
+    }
+    padded = f" {low} "
+    if any(marker in padded for marker in english_markers):
+        return "en"
+
+    # Latvian latin markers, including common booking words without diacritics.
+    latvian_markers = {
+        " labdien", " sveiki", " gribu", " gribetu", " gribētu", " pierakst",
+        " konsultac", " konsultāc", " rit", " rīt", " sodien", " šodien",
+        " maij", " paldies", " ludzu", " lūdzu", " pecpusdien", " pēcpusdien"
+    }
+    if any(marker in padded for marker in latvian_markers):
+        return "lv"
+
+    detected = get_lang(detect_language(raw) or fallback)
+    return detected or fallback
+
+
+def stage28_resolve_reply_language(msg: str, previous_lang: str = "lv") -> str:
+    """Resolve reply language for the current turn.
+
+    Strong user-message detection wins for RU/EN/LV. Ambiguous turns keep the
+    previous conversation language through the existing resolver.
+    """
+    fallback = get_lang(previous_lang or "lv")
+    detected = stage28_detect_turn_language(msg, fallback)
+    if detected != fallback:
+        return detected
+    return get_lang(resolve_reply_language(msg, fallback) or detected or fallback)
+
+
+# -------------------------
 # DB helpers moved to db/conversations.py
 # -------------------------
 
@@ -2210,11 +2288,51 @@ def get_service_item_by_key(catalog: List[Dict[str, Any]], service_key: Optional
     return None
 
 
+# -------------------------
+# STAGE 28.2 — SERVICE CATALOG LOCALIZATION FALLBACK
+# -------------------------
+def _localized_service_fallback_name(service_item: Optional[Dict[str, Any]], lang: str) -> str:
+    if not service_item:
+        return ""
+    lang = get_lang(lang)
+    key = _fold_match_text(str(service_item.get("key") or ""))
+    hay = _fold_match_text(" ".join([
+        str(service_item.get("key") or ""),
+        str(service_item.get("name_lv") or ""),
+        str(service_item.get("name_ru") or ""),
+        str(service_item.get("name_en") or ""),
+        " ".join(service_item.get("aliases_lv") or []),
+        " ".join(service_item.get("aliases_ru") or []),
+        " ".join(service_item.get("aliases_en") or []),
+    ]))
+
+    if any(x in hay or x in key for x in ("konsultac", "konsultacij", "consultation", "консультац")):
+        return {"lv": "konsultācija", "ru": "консультация", "en": "consultation"}.get(lang, "konsultācija")
+    if any(x in hay or x in key for x in ("atbalst", "support", "помощ", "podderzh")):
+        return {"lv": "Atbalsts", "ru": "помощь", "en": "support"}.get(lang, "Atbalsts")
+    if any(x in hay or x in key for x in ("serviss", "service", "сервис")):
+        return {"lv": "Serviss", "ru": "сервис", "en": "service"}.get(lang, "Serviss")
+    return ""
+
 def service_display_name(service_item: Optional[Dict[str, Any]], lang: str) -> str:
     if not service_item:
         return ""
     lang = get_lang(lang)
-    return str(service_item.get(f"name_{lang}") or service_item.get("name_lv") or service_item.get("key") or "").strip()
+    requested = str(service_item.get(f"name_{lang}") or "").strip()
+    lv_name = str(service_item.get("name_lv") or "").strip()
+
+    # If the dashboard/catalog contains Latvian placeholders in RU/EN fields,
+    # prefer a safe localized fallback for known service types. This keeps the
+    # receptionist replying in the user's language even before the tenant has
+    # fully translated the service catalog.
+    if lang in {"ru", "en"}:
+        folded_requested = _fold_match_text(requested)
+        folded_lv = _fold_match_text(lv_name)
+        fallback = _localized_service_fallback_name(service_item, lang)
+        if fallback and (not requested or folded_requested == folded_lv or folded_requested in {"konsultacija", "serviss", "atbalsts"}):
+            return fallback
+
+    return str(requested or lv_name or service_item.get("key") or "").strip()
 
 
 def service_duration_min(service_item: Optional[Dict[str, Any]]) -> int:
@@ -2317,25 +2435,6 @@ def service_alias_map_from_catalog(catalog: List[Dict[str, Any]], lang: str) -> 
     return out
 
 
-def _service_stem_match(user_text: Optional[str], candidate_text: Optional[str]) -> bool:
-    """Stage 28.3: tolerate multilingual service inflections in first-turn booking."""
-    user_folded = _fold_match_text(user_text)
-    candidate_folded = _fold_match_text(candidate_text)
-    if not user_folded or not candidate_folded:
-        return False
-
-    stem_groups = [
-        ("konsultac", "konsultacij", "консультац", "consult"),
-        ("serviss", "service", "сервис"),
-        ("atbalst", "support", "помощ", "podderzh"),
-    ]
-
-    for stems in stem_groups:
-        if any(stem in user_folded for stem in stems) and any(stem in candidate_folded for stem in stems):
-            return True
-    return False
-
-
 def canonical_service_key_from_text(text_: Optional[str], alias_map: Dict[str, str]) -> Optional[str]:
     low = (text_ or "").strip().lower()
     if not low:
@@ -2345,13 +2444,6 @@ def canonical_service_key_from_text(text_: Optional[str], alias_map: Dict[str, s
         return alias_map[low]
     if norm_low in alias_map:
         return alias_map[norm_low]
-
-    # Stage 28.3: tolerate multilingual inflections.
-    # Example: RU "консультацию" should match catalog alias "консультация".
-    for alias in sorted(alias_map.keys(), key=len, reverse=True):
-        if alias and _service_stem_match(low, alias):
-            return alias_map[alias]
-
     # Prefer longest alias first so generic words don't beat specific phrases
     for alias in sorted(alias_map.keys(), key=len, reverse=True):
         if not alias:
@@ -3504,6 +3596,28 @@ HESITATION_WORDS = {
     "en": {"not sure", "i am not sure", "i'm not sure", "maybe later", "dont know", "don't know", "not certain"},
 }
 
+# Stage 24 Hotfix: protect explicit time parsing from date tokens like "15.05".
+# The original parser is kept, but date-looking DD.MM / DD/MM / DD-MM tokens
+# are stripped before time extraction so "15.05 10:00" resolves to 10:00,
+# while a bare date does not become accidental 15:05.
+_core_parse_explicit_time_parts = parse_explicit_time_parts
+
+def parse_explicit_time_parts(text_: Optional[str]) -> Optional[Tuple[int, int]]:
+    src = str(text_ or "").strip()
+    if not src:
+        return None
+
+    date_token_pattern = r"(?<!\d)(?:[0-2]?\d|3[01])[./-](?:0?[1-9]|1[0-2])(?:[./-]\d{2,4})?(?!\d)"
+    without_dates = re.sub(date_token_pattern, " ", src)
+    if without_dates.strip() != src.strip():
+        parsed_after_date_strip = _core_parse_explicit_time_parts(without_dates)
+        if parsed_after_date_strip:
+            return parsed_after_date_strip
+        return None
+
+    return _core_parse_explicit_time_parts(src)
+
+
 def conversation_state(c: Dict[str, Any]) -> str:
     state = str(c.get("state") or STATE_NEW).strip().upper()
     if state not in {STATE_NEW, STATE_AWAITING_SERVICE, STATE_AWAITING_DATE, STATE_AWAITING_TIME, STATE_AWAITING_CONFIRM, STATE_POST_BOOKING_UPSELL, STATE_BOOKED, STATE_CANCELLED}:
@@ -3597,6 +3711,15 @@ def remember_partial_booking_datetime_from_message(c: Dict[str, Any], pending: D
         pending["candidate_datetime_iso"] = natural_dt.isoformat()
         pending["awaiting_time_date_iso"] = natural_dt.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
         pending["time_text"] = f"{time_parts[0]:02d}:{time_parts[1]:02d}"
+        c["time_text"] = pending["time_text"]
+    elif time_parts and parse_dt_any_tz(str(pending.get("awaiting_time_date_iso") or "").strip()):
+        # Stage 24 Hotfix: user can answer with time-only after date was already remembered.
+        # This also prevents stale pending["time_text"] from the rejected slot being reused.
+        base_day = parse_dt_any_tz(str(pending.get("awaiting_time_date_iso") or "").strip())
+        hh, mm = time_parts
+        candidate = base_day.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        pending["candidate_datetime_iso"] = candidate.isoformat()
+        pending["time_text"] = f"{hh:02d}:{mm:02d}"
         c["time_text"] = pending["time_text"]
     elif natural_dt:
         pending["awaiting_time_date_iso"] = natural_dt.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
@@ -4044,11 +4167,6 @@ def extract_service_from_text(text_: Optional[str], catalog: List[Dict[str, Any]
 
     for _, cand, item in sorted(candidates_index, key=lambda x: x[0], reverse=True):
         if cand == low or cand in low or low in cand:
-            return item
-
-    # Stage 28.3: multilingual inflection fallback for first-turn service extraction.
-    for _, cand, item in sorted(candidates_index, key=lambda x: x[0], reverse=True):
-        if _service_stem_match(low, cand):
             return item
     return None
 
@@ -4854,6 +4972,54 @@ def free_router_handle_turn(
         return None
 
     pending = pending or {}
+
+    # Stage 24 Hotfix: offered slot choice must win before generic date/time merge.
+    # Example: after offering 09:00 / 09:30 / 10:00, user says "10:00".
+    # Do not reuse the old rejected requested time from pending["time_text"].
+    selected_offered_iso = extract_slot_choice(msg, pending)
+    if selected_offered_iso:
+        dt_selected = parse_dt_any_tz(selected_offered_iso)
+        if dt_selected:
+            pending.pop("candidate_datetime_iso", None)
+            pending.pop("requested_datetime_iso", None)
+            pending.pop("partial_datetime_iso", None)
+            pending.pop("confirm_slot_iso", None)
+            pending["awaiting_time_date_iso"] = dt_selected.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+            pending["time_text"] = dt_selected.strftime("%H:%M")
+            clear_offered_slots(pending)
+            c["pending"] = pending or {"booking_intent": True}
+            c["datetime_iso"] = None
+            c["state"] = STATE_AWAITING_TIME
+            result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, dt_selected)
+            db_save_conversation(tenant_id, user_key, c)
+            return result
+
+    # Stage 24 Hotfix: a clear "no" in confirmation state means exit the
+    # confirmation loop and ask for another time instead of re-confirming.
+    if state == STATE_AWAITING_CONFIRM and is_no_text(msg, lang):
+        pending.pop("confirm_slot_iso", None)
+        pending.pop("pending_confirm_upsell", None)
+        pending.pop("confirm_upsell_done", None)
+        pending.pop("upsell_offer_active", None)
+        pending.pop("addon_service", None)
+        pending.pop("candidate_datetime_iso", None)
+        pending.pop("requested_datetime_iso", None)
+        pending.pop("partial_datetime_iso", None)
+        clear_offered_slots(pending)
+        pending["booking_intent"] = True
+        c["pending"] = pending or {"booking_intent": True}
+        c["datetime_iso"] = None
+        c["time_text"] = None
+        c["state"] = STATE_AWAITING_TIME
+        db_save_conversation(tenant_id, user_key, c)
+        if lang == "ru":
+            reply = "Понял. Какое другое время вам было бы удобно?"
+        elif lang == "en":
+            reply = "Understood. What other time would work for you?"
+        else:
+            reply = "Skaidrs. Kādu citu laiku vēlaties?"
+        return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "preserve_text": True}
+
     c, pending, service_item, candidate_dt = free_router_merge_message_slots(msg, c, pending, service_catalog, service_aliases, lang)
 
     if free_router_is_services_request(msg, lang):
@@ -4923,8 +5089,9 @@ def handle_user_text(
     tenant = load_runtime_tenant(tenant_id)
 
     explicit_lang_hint = (lang_hint or "").strip().lower()
-    lang_locked = explicit_lang_hint if explicit_lang_hint in ("lv", "ru", "en") else None
-    detected_lang = get_lang(lang_locked or detect_language(msg))
+    hint_lang = explicit_lang_hint if explicit_lang_hint in ("lv", "ru", "en") else None
+    lang_locked = hint_lang if (hint_lang and stage28_lang_hint_is_locking(channel, source)) else None
+    detected_lang = get_lang(lang_locked or stage28_detect_turn_language(msg, hint_lang or "lv"))
     lang = detected_lang
 
     if not tenant.get("_id"):
@@ -4945,7 +5112,7 @@ def handle_user_text(
     if lang_locked:
         c["lang"] = lang_locked
     elif msg:
-        c["lang"] = resolve_reply_language(msg, c.get("lang") or detected_lang)
+        c["lang"] = stage28_resolve_reply_language(msg, c.get("lang") or detected_lang)
 
     lang = get_lang(c.get("lang") or detected_lang)
     if not tenant_runtime_ready(tenant):
