@@ -1,4 +1,3 @@
-#It's just for deploy
 import os
 import json
 import re
