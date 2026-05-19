@@ -1,31 +1,36 @@
 # PROJECT_STATE — Repliq
 
-Current stage: Stage 33 — Soft Conversational UX Layer
+Current stage: Stage 34 — Production Regression Test Matrix
 
-Completed stages relevant to current runtime:
-- Stage 24: Free Conversational Slot Router
+Completed milestones:
+- Stage 24: Free Conversational Slot Router hotfixes
 - Stage 25: AI Response Composer
 - Stage 25.5: Conversational Closure Layer
 - Stage 26: Conversational Semantic Router
-- Stage 27: Entity Persistence Layer
-- Stage 27.1: Service/entity hotfixes
+- Stage 27 / 27.1: Entity Persistence + LV service matching hotfixes
+- Stage 28: Confirmation Finalization & State Exit Hardening
 - Stage 29: After-time Window Router
 - Stage 30: Conversational Negotiation Engine
 - Stage 31: Human Scheduling Intelligence
-- Stage 32: Conversational Context Persistence
-- Stage 33: Soft Conversational UX Layer
+- Stage 32: Contextual Slot Refinement Memory
+- Stage 33: Deterministic Soft Conversational UX
+- Stage 34: Production Regression Test Matrix
 
 Active focus:
-- Production-grade conversational receptionist UX.
-- Keep orchestration deterministic; LLM remains understanding layer only.
-- Improve customer-facing wording without changing booking/calendar decisions.
+Protect working conversational behavior before further feature expansion.
 
-Stage 33 changes:
-- Added deterministic soft UX wording layer after humanize/composer and before usage warnings.
-- Softens booking confirmations, slot offers, date/service prompts, booked responses.
-- Preserves all concrete slot labels and does not change state, status, service, datetime or calendar actions.
+Stage 34 additions:
+- Centralized regression matrix in `repliq/legacy_app.py`
+- Read-only endpoint: `/dialogue/regression_matrix`
+- Regression coverage for RU/LV booking, after-time windows, fuzzy time windows, refinement memory, confirmation finalization, and parser protections.
 
-Known constraints:
-- Avoid destructive refactors.
-- Preserve Stage 30–32 negotiation and context memory behavior.
-- Keep multilingual LV/RU/EN consistency.
+Known protected behaviors:
+- `после 14:00` / `pēc 14:00` must mean a window after 14:00, not exact 14:00.
+- `вечером` / `vakarā` must route into an evening window.
+- `не так поздно`, `чуть раньше`, `можно позже` must refine the current flow, not reset it.
+- Offered slot choices like `10:00` must select an offered slot.
+- Date tokens like `15.05` must not be parsed as time `15:05`.
+- Confirmation must finalize booking and exit confirm-loop.
+
+Next recommended stage:
+Stage 35 — Regression Runner / Dev QA Dashboard

@@ -1957,6 +1957,120 @@ DIALOGUE_TEST_MATRIX: List[Dict[str, Any]] = [
 ]
 
 
+
+
+# -------------------------
+# STAGE 34 — PRODUCTION REGRESSION TEST MATRIX
+# -------------------------
+STAGE34_REGRESSION_TEST_MATRIX: List[Dict[str, Any]] = [
+    {
+        "id": "stage30_ru_after_1400_window",
+        "stage": 30,
+        "lang": "ru",
+        "category": "after_time_window",
+        "message_sequence": ["хочу записаться на консультацию на послезавтра после 14:00"],
+        "expected": ["booking_flow", "time_window_after_14", "multiple_slot_options", "no_exact_14_confirmation"],
+        "forbidden": ["confirm_exact_14_00", "ask_service_again", "language_switch_to_lv"],
+    },
+    {
+        "id": "stage30_lv_after_1400_window",
+        "stage": 30,
+        "lang": "lv",
+        "category": "after_time_window",
+        "message_sequence": ["gribu pierakstīties uz konsultāciju parīt pēc 14:00"],
+        "expected": ["booking_flow", "time_window_after_14", "multiple_slot_options"],
+        "forbidden": ["confirm_exact_14_00", "ask_service_again", "language_switch_to_ru"],
+    },
+    {
+        "id": "stage31_ru_evening_fuzzy",
+        "stage": 31,
+        "lang": "ru",
+        "category": "fuzzy_time_window",
+        "message_sequence": ["хочу записаться на консультацию завтра вечером"],
+        "expected": ["evening_window", "multiple_slot_options", "no_exact_default_time"],
+        "forbidden": ["ask_date_again", "ask_service_again", "morning_slots_only"],
+    },
+    {
+        "id": "stage31_lv_evening_fuzzy",
+        "stage": 31,
+        "lang": "lv",
+        "category": "fuzzy_time_window",
+        "message_sequence": ["gribu pierakstīties uz konsultāciju rīt vakarā"],
+        "expected": ["evening_window", "multiple_slot_options", "lv_reply"],
+        "forbidden": ["ask_date_again", "ask_service_again", "ru_reply"],
+    },
+    {
+        "id": "stage32_ru_not_so_late_refinement",
+        "stage": 32,
+        "lang": "ru",
+        "category": "contextual_refinement",
+        "message_sequence": ["хочу записаться на консультацию послезавтра после 14:00", "не так поздно"],
+        "expected": ["same_booking_flow", "earlier_refinement", "avoid_repeating_same_slots"],
+        "forbidden": ["reset_to_new", "ask_service_again", "repeat_same_three_slots"],
+    },
+    {
+        "id": "stage32_lv_slightly_earlier_refinement",
+        "stage": 32,
+        "lang": "lv",
+        "category": "contextual_refinement",
+        "message_sequence": ["gribu pierakstīties uz konsultāciju rīt vakarā", "var mazliet agrāk?"],
+        "expected": ["same_booking_flow", "earlier_refinement", "lv_reply"],
+        "forbidden": ["reset_to_new", "ask_service_again", "language_switch_to_ru"],
+    },
+    {
+        "id": "stage33_ru_soft_confirm",
+        "stage": 33,
+        "lang": "ru",
+        "category": "soft_ux_confirmation",
+        "message_sequence": ["хочу записаться на консультацию завтра вечером", "да, подходит"],
+        "expected": ["confirm_yes_detected", "booking_finalized", "soft_human_reply"],
+        "forbidden": ["confirm_loop", "ask_same_confirmation_again", "duplicate_booking"],
+    },
+    {
+        "id": "stage33_lv_soft_confirm",
+        "stage": 33,
+        "lang": "lv",
+        "category": "soft_ux_confirmation",
+        "message_sequence": ["gribu pierakstīties uz konsultāciju rīt vakarā", "jā, der"],
+        "expected": ["confirm_yes_detected", "booking_finalized", "soft_human_reply", "lv_reply"],
+        "forbidden": ["confirm_loop", "ask_same_confirmation_again", "duplicate_booking"],
+    },
+    {
+        "id": "parser_date_time_protection",
+        "stage": 24,
+        "lang": "lv",
+        "category": "parser_regression",
+        "message_sequence": ["gribu pierakstīties uz konsultāciju 15.05 10:00"],
+        "expected": ["date_15_05", "time_10_00"],
+        "forbidden": ["time_15_05", "accidental_date_as_time"],
+    },
+    {
+        "id": "offered_slot_choice_protection",
+        "stage": 24,
+        "lang": "lv",
+        "category": "slot_choice_regression",
+        "message_sequence": ["gribu pierakstīties rīt 14:00", "konsultācija", "10:00"],
+        "expected": ["select_offered_slot", "move_to_confirmation_or_booking"],
+        "forbidden": ["repeat_14_busy", "ignore_offered_choice"],
+    },
+]
+
+
+def stage34_regression_test_matrix() -> Dict[str, Any]:
+    return {
+        "stage": 34,
+        "name": "Production Regression Test Matrix",
+        "purpose": "Protect Stage 24 and Stage 30-33 conversational booking behavior from regressions.",
+        "total": len(STAGE34_REGRESSION_TEST_MATRIX),
+        "items": STAGE34_REGRESSION_TEST_MATRIX,
+    }
+
+
+@app.get("/dialogue/regression_matrix")
+def dialogue_regression_matrix_endpoint():
+    return stage34_regression_test_matrix()
+
+
 def ensure_dialogue_audit_table() -> None:
     try:
         with engine.begin() as conn:
