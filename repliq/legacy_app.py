@@ -9,6 +9,7 @@ import random
 import unicodedata
 from datetime import datetime, timedelta, date
 from typing import Dict, Any, Optional, Tuple, List
+from contextvars import ContextVar
 
 import requests
 from fastapi import FastAPI, Request, HTTPException
@@ -2184,6 +2185,12 @@ def stage35_detect_regression_observations(scenario: Dict[str, Any], turns: List
 
 
 STAGE35_QA_TENANT_ID = os.getenv("STAGE35_QA_TENANT_ID", "clinic_demo").strip() or "clinic_demo"
+STAGE35_CALENDAR_SAFE_MODE_ENABLED = os.getenv("STAGE35_CALENDAR_SAFE_MODE", "1").strip().lower() not in {"0", "false", "no", "off", "disabled"}
+_STAGE35_CALENDAR_SAFE_MODE: ContextVar[bool] = ContextVar("stage35_calendar_safe_mode", default=False)
+
+
+def stage35_calendar_safe_mode_active() -> bool:
+    return bool(STAGE35_CALENDAR_SAFE_MODE_ENABLED and _STAGE35_CALENDAR_SAFE_MODE.get(False))
 
 
 def stage35_resolve_qa_tenant_id(tenant_id: Optional[str] = None) -> str:
@@ -2202,25 +2209,30 @@ def stage35_run_regression_scenario(scenario_id: str, tenant_id: Optional[str] =
     lang = get_lang(scenario.get("lang") or "lv")
     messages = scenario.get("message_sequence") or []
     turns: List[Dict[str, Any]] = []
-    for msg in messages[:10]:
-        result = handle_user_text_with_logging(tenant_id, user_id, str(msg), "dev", lang, source="regression_runner")
-        try:
-            conv = db_get_or_create_conversation(tenant_id, user_id, lang)
-        except Exception:
-            conv = {}
-        turns.append({
-            "user": str(msg),
-            "assistant": result.get("msg_out") or result.get("reply_voice"),
-            "status": result.get("status"),
-            "lang": result.get("lang"),
-            "state": (conv or {}).get("state"),
-            "pending": (conv or {}).get("pending"),
-        })
+    token = _STAGE35_CALENDAR_SAFE_MODE.set(True)
+    try:
+        for msg in messages[:10]:
+            result = handle_user_text_with_logging(tenant_id, user_id, str(msg), "dev", lang, source="regression_runner")
+            try:
+                conv = db_get_or_create_conversation(tenant_id, user_id, lang)
+            except Exception:
+                conv = {}
+            turns.append({
+                "user": str(msg),
+                "assistant": result.get("msg_out") or result.get("reply_voice"),
+                "status": result.get("status"),
+                "lang": result.get("lang"),
+                "state": (conv or {}).get("state"),
+                "pending": (conv or {}).get("pending"),
+            })
+    finally:
+        _STAGE35_CALENDAR_SAFE_MODE.reset(token)
     evaluation = stage35_detect_regression_observations(scenario, turns)
     return {
         "stage": 35,
         "runner": "Regression Runner / QA Dashboard",
         "tenant_id": tenant_id,
+        "calendar_safe_mode": STAGE35_CALENDAR_SAFE_MODE_ENABLED,
         "user_id": user_id,
         "scenario": scenario,
         "turns": turns,
@@ -2244,6 +2256,7 @@ def stage35_run_regression_suite(tenant_id: Optional[str] = None, limit: int = 1
         "stage": 35,
         "name": "Regression Runner / QA Dashboard",
         "tenant_id": tenant_id,
+        "calendar_safe_mode": STAGE35_CALENDAR_SAFE_MODE_ENABLED,
         "total": len(results),
         "passed": passed,
         "warnings": warnings,
@@ -4240,6 +4253,9 @@ def get_gcal(service_account_json: Optional[str] = None):
 
 
 def is_slot_busy(calendar_id: str, dt_start: datetime, dt_end: datetime, buffer_minutes: int = 0, service_account_json: Optional[str] = None) -> bool:
+    if stage35_calendar_safe_mode_active():
+        log.info("stage35_calendar_safe_mode freebusy_skipped calendar_id=%s start=%s end=%s", calendar_id, dt_start, dt_end)
+        return False
     svc = get_gcal(service_account_json)
     if not svc or not calendar_id:
         return False
@@ -4277,6 +4293,9 @@ def create_calendar_event(
     description: str,
     service_account_json: Optional[str] = None,
 ):
+    if stage35_calendar_safe_mode_active():
+        log.info("stage35_calendar_safe_mode create_event_skipped calendar_id=%s start=%s summary=%s", calendar_id, dt_start, summary)
+        return "stage35://calendar-safe-mode/dummy-event"
     svc = get_gcal(service_account_json)
     if not svc or not calendar_id:
         return None
@@ -4307,6 +4326,9 @@ def update_calendar_event(
     description: str,
     service_account_json: Optional[str] = None,
 ):
+    if stage35_calendar_safe_mode_active():
+        log.info("stage35_calendar_safe_mode update_event_skipped calendar_id=%s event_id=%s start=%s", calendar_id, event_id, dt_start)
+        return "stage35://calendar-safe-mode/dummy-updated-event"
     svc = get_gcal(service_account_json)
     if not svc or not calendar_id or not event_id:
         return None
@@ -4627,6 +4649,9 @@ def find_first_n_slots_for_day_window(
     return filtered
 
 def find_next_event_by_phone(calendar_id: str, phone: str, tenant_id: Optional[str] = None, service_account_json: Optional[str] = None):
+    if stage35_calendar_safe_mode_active():
+        log.info("stage35_calendar_safe_mode find_next_event_skipped calendar_id=%s phone=%s", calendar_id, phone)
+        return None
     svc = get_gcal(service_account_json)
     if not svc or not calendar_id:
         return None
@@ -4660,6 +4685,9 @@ def find_next_event_by_phone(calendar_id: str, phone: str, tenant_id: Optional[s
 
 
 def delete_calendar_event(calendar_id: str, event_id: str, service_account_json: Optional[str] = None):
+    if stage35_calendar_safe_mode_active():
+        log.info("stage35_calendar_safe_mode delete_event_skipped calendar_id=%s event_id=%s", calendar_id, event_id)
+        return True
     svc = get_gcal(service_account_json)
     if svc and calendar_id:
         try:
