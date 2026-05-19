@@ -616,6 +616,207 @@ def maybe_conversational_closure_result(
 
 
 # -------------------------
+# STAGE 33 — SOFT CONVERSATIONAL UX LAYER
+# -------------------------
+def stage33_soft_ux_enabled(channel: str = "", source: str = "runtime") -> bool:
+    flag = os.getenv("STAGE33_SOFT_UX_ENABLED", "").strip().lower()
+    if flag in {"0", "false", "no", "off", "disabled"}:
+        return False
+    return True
+
+
+def _stage33_join_options(lang: str, items: List[str]) -> str:
+    cleaned = [str(x).strip() for x in items if str(x).strip()]
+    if not cleaned:
+        return ""
+    if len(cleaned) == 1:
+        return cleaned[0]
+    sep = " или " if get_lang(lang) == "ru" else " or " if get_lang(lang) == "en" else " vai "
+    return ", ".join(cleaned[:-1]) + sep + cleaned[-1]
+
+
+def _stage33_when_text(result: Dict[str, Any], conv: Dict[str, Any], pending: Dict[str, Any]) -> str:
+    explicit = str((result or {}).get("when") or (result or {}).get("datetime_text") or "").strip()
+    if explicit:
+        return explicit
+    for value in [
+        (pending or {}).get("confirm_slot_iso"),
+        (pending or {}).get("candidate_datetime_iso"),
+        (conv or {}).get("datetime_iso"),
+    ]:
+        dtv = parse_dt_any_tz(str(value or "").strip())
+        if dtv:
+            return format_dt_short(dtv)
+    return ""
+
+
+def _stage33_requested_busy_hint(text_: str, lang: str) -> bool:
+    low = _normalize_phrase_text(text_)
+    folded = _fold_match_text(text_)
+    markers = [
+        "занято", "занят", "уже занято", "aiznemts", "aizņemts", "nav pieejams",
+        "taken", "already taken", "not available", "busy",
+    ]
+    return any(m in low or m in folded for m in markers)
+
+
+def stage33_soft_conversational_ux(
+    result: Dict[str, Any],
+    conv: Optional[Dict[str, Any]],
+    tenant: Dict[str, Any],
+    channel: str = "",
+    source: str = "runtime",
+) -> Dict[str, Any]:
+    """Final deterministic wording layer for Stage 33.
+
+    Safety contract:
+    - only rewrites msg_out/reply_voice;
+    - never changes status, state, calendar actions, service, datetime or offered slots;
+    - keeps all concrete offered slot labels in the customer-facing reply.
+    """
+    result = dict(result or {})
+    if not stage33_soft_ux_enabled(channel, source):
+        return result
+
+    status = str(result.get("status") or "").strip().lower()
+    if status in {"blocked", "booking_failed", "recovery"}:
+        return result
+
+    conv = conv or {}
+    tenant = tenant or {}
+    pending = conv.get("pending") or {}
+    lang = get_lang(result.get("lang") or conv.get("lang") or tenant.get("language") or "lv")
+    state = conversation_state(conv)
+    base_text = str(result.get("msg_out") or result.get("reply_voice") or "").strip()
+    slots = _slot_labels_from_pending(pending)
+    when_text = _stage33_when_text(result, conv, pending)
+    service_text = str(result.get("service") or result.get("service_display") or pending.get("service_display") or "").strip()
+
+    def apply(text_value: str) -> Dict[str, Any]:
+        text_value = str(text_value or "").strip()
+        if not text_value:
+            return result
+        for slot_label in slots[:4]:
+            if slot_label and slot_label not in text_value:
+                return result
+        result["msg_out"] = text_value
+        result["reply_voice"] = text_value
+        result["stage33_soft_ux"] = True
+        return result
+
+    if status == "booked" and when_text:
+        if lang == "ru":
+            return apply(_pick_variant([
+                f"Готово, записал вас на {when_text}. Будем ждать вас!",
+                f"Отлично, запись подтверждена на {when_text}. До встречи!",
+                f"Супер, закрепил за вами время {when_text}.",
+            ], base_text or f"Запись подтверждена на {when_text}."))
+        if lang == "en":
+            return apply(_pick_variant([
+                f"Done — you’re booked for {when_text}. See you then!",
+                f"Great, your appointment is confirmed for {when_text}.",
+                f"Perfect, I’ve reserved {when_text} for you.",
+            ], base_text or f"Your appointment is confirmed for {when_text}."))
+        return apply(_pick_variant([
+            f"Gatavs, pierakstīju jūs uz {when_text}. Gaidīsim jūs!",
+            f"Lieliski, pieraksts apstiprināts uz {when_text}. Uz tikšanos!",
+            f"Super, rezervēju jums laiku {when_text}.",
+        ], base_text or f"Pieraksts apstiprināts uz {when_text}."))
+
+    if status in {"need_more", "busy", "min_notice", "holiday_closed"} and state == STATE_AWAITING_TIME and slots:
+        joined = _stage33_join_options(lang, slots[:4])
+        busy_hint = _stage33_requested_busy_hint(base_text, lang) or status in {"busy", "min_notice", "holiday_closed"}
+        if lang == "ru":
+            text_value = (
+                f"На запрошенное время не получается, но могу предложить: {joined}. Какой вариант вам удобнее?"
+                if busy_hint else
+                f"Нашёл такие варианты: {joined}. Какой вам больше подходит?"
+            )
+        elif lang == "en":
+            text_value = (
+                f"That requested time doesn’t work, but I can offer: {joined}. Which one suits you best?"
+                if busy_hint else
+                f"I found these options: {joined}. Which one works best for you?"
+            )
+        else:
+            text_value = (
+                f"Uz prasīto laiku nesanāk, bet varu piedāvāt: {joined}. Kurš variants jums der?"
+                if busy_hint else
+                f"Atradu šādus variantus: {joined}. Kurš jums būtu ērtāks?"
+            )
+        return apply(text_value)
+
+    if status == "need_more" and state == STATE_AWAITING_CONFIRM and when_text:
+        if lang == "ru":
+            service_part = f" на {service_text}" if service_text else ""
+            return apply(_pick_variant([
+                f"Это время свободно — записываем вас{service_part} на {when_text}?",
+                f"Можем поставить запись на {when_text}. Подтверждаем?",
+                f"{when_text} подходит — закрепить это время за вами?",
+            ], base_text or f"Подтвердить запись на {when_text}?"))
+        if lang == "en":
+            service_part = f" for {service_text}" if service_text else ""
+            return apply(_pick_variant([
+                f"That time is available — shall I book you{service_part} for {when_text}?",
+                f"We can do {when_text}. Should I confirm it?",
+                f"{when_text} works — would you like me to reserve it?",
+            ], base_text or f"Confirm the booking for {when_text}?"))
+        service_part = f" uz {service_text}" if service_text else ""
+        return apply(_pick_variant([
+            f"Šis laiks ir pieejams — pierakstām jūs{service_part} uz {when_text}?",
+            f"Varam jūs pierakstīt uz {when_text}. Apstiprinām?",
+            f"{when_text} der — rezervēt šo laiku jums?",
+        ], base_text or f"Apstiprināt pierakstu uz {when_text}?"))
+
+    if status in {"need_more", "busy"} and state == STATE_AWAITING_SERVICE:
+        if lang == "ru":
+            return apply(_pick_variant([
+                "Конечно. Подскажите, какую услугу хотите выбрать?",
+                "Хорошо, помогу с записью. Какая услуга нужна?",
+                "Давайте подберём время. Сначала уточню услугу — что хотите сделать?",
+            ], base_text or "На какую услугу вас записать?"))
+        if lang == "en":
+            return apply(_pick_variant([
+                "Of course. Which service would you like to book?",
+                "Sure, I can help with that. What service do you need?",
+                "Let’s find a time for you. Which service should I book?",
+            ], base_text or "Which service would you like to book?"))
+        return apply(_pick_variant([
+            "Protams. Kuru pakalpojumu vēlaties izvēlēties?",
+            "Labi, palīdzēšu ar pierakstu. Kāds pakalpojums nepieciešams?",
+            "Atradīsim jums piemērotu laiku. Vispirms — kuru pakalpojumu vēlaties?",
+        ], base_text or "Uz kādu pakalpojumu vēlaties pierakstīties?"))
+
+    if status in {"need_more", "busy"} and state == STATE_AWAITING_DATE:
+        if lang == "ru":
+            return apply(_pick_variant([
+                "Хорошо. На какой день посмотрим запись?",
+                "Понял. Какая дата вам была бы удобна?",
+                "Давайте подберём день. Когда вам удобнее?",
+            ], base_text or "На какой день вас записать?"))
+        if lang == "en":
+            return apply(_pick_variant([
+                "Sure. Which day should I check?",
+                "Got it. What date would work for you?",
+                "Let’s pick a day first. When would be convenient?",
+            ], base_text or "Which day would work for you?"))
+        return apply(_pick_variant([
+            "Labi. Uz kuru dienu skatāmies pierakstu?",
+            "Sapratu. Kurš datums jums būtu ērts?",
+            "Vispirms izvēlēsimies dienu. Kad jums būtu ērtāk?",
+        ], base_text or "Uz kuru dienu vēlaties pierakstīties?"))
+
+    if status == "reschedule_wait" and when_text:
+        if lang == "ru":
+            return apply(f"Понял. Сейчас запись стоит на {when_text}. На какое новое время хотите перенести?")
+        if lang == "en":
+            return apply(f"Understood. Your current appointment is at {when_text}. What new time would work better?")
+        return apply(f"Sapratu. Pašlaik pieraksts ir {when_text}. Uz kuru jauno laiku vēlaties pārcelt?")
+
+    return result
+
+
+# -------------------------
 # NEW: MULTI-TENANT DB HELPERS
 # -------------------------
 
@@ -1944,6 +2145,7 @@ def handle_user_text_with_logging(
         tenant = get_tenant(tenant_id)
         result = humanize_result(result, conv, tenant)
         result = ai_response_composer(result, conv, tenant, channel=channel, source=source)
+        result = stage33_soft_conversational_ux(result, conv, tenant, channel=channel, source=source)
         result = apply_usage_soft_limit_warning(result, result.get("lang") or get_lang((conv or {}).get("lang") or lang_hint or "lv"), tenant, channel, source=source)
     except Exception as e:
         log.error("humanize_result_failed tenant_id=%s err=%s", tenant_id, e)
