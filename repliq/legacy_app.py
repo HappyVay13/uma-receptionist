@@ -5698,6 +5698,227 @@ def stage30_negotiate_from_confirm_if_needed(
     return negotiation_slots_response(tenant_id, user_key, lang, c, pending, slots)
 
 
+# -------------------------
+# STAGE 31 — HUMAN SCHEDULING INTELLIGENCE HOTFIX
+# -------------------------
+def stage31_detect_time_window_preference(text_: Optional[str], lang: str = "") -> Optional[Tuple[int, int, str]]:
+    """Detect fuzzy scheduling windows that must not become exact timestamps.
+
+    Examples:
+    - "завтра вечером" / "rīt vakarā" / "tomorrow evening" -> evening window
+    - "после обеда" / "pēcpusdienā" / "after lunch" -> afternoon window
+    - "утром" / "no rīta" / "morning" -> morning window
+    Exact phrases like "в 14:00" are intentionally left to the exact-time flow.
+    "после 14:00" is handled by Stage 30 before this layer.
+    """
+    src = str(text_ or "").strip().lower()
+    if not src:
+        return None
+    if detect_after_time_anchor(src, lang):
+        return None
+
+    folded = _fold_match_text(src)
+    patterns: List[Tuple[str, Tuple[int, int], str]] = [
+        (r"\b(no rita|rita|sorit|morning|in the morning|this morning|утром|с утра|на утро)\b", (9, 12), "morning"),
+        (r"\b(pusdienlaika|ap pusdienlaiku|no pusdienam|pecpusdiena|after lunch|afternoon|in the afternoon|после обеда|днем|днем|днём|на день)\b", (12, 17), "afternoon"),
+        (r"\b(vakara|vakar|sovakar|vakarpuse|uz vakaru|evening|tonight|in the evening|this evening|вечером|на вечер|к вечеру|ближе к вечеру)\b", (16, 21), "evening"),
+        (r"\b(pec darba|after work|после работы)\b", (17, 21), "after_work"),
+    ]
+    for pat, window, label in patterns:
+        if re.search(pat, folded, flags=re.IGNORECASE):
+            return window[0], window[1], label
+
+    parsed = parse_time_window(src)
+    if parsed:
+        start_h, end_h = parsed
+        bucket = detect_time_bucket(src) or "window"
+        return start_h, end_h, bucket
+    return None
+
+
+def stage31_window_label(lang: str, label: str, start_h: int, end_h: int) -> str:
+    lang = get_lang(lang)
+    if label == "morning":
+        return "утром" if lang == "ru" else "in the morning" if lang == "en" else "no rīta"
+    if label == "afternoon":
+        return "после обеда" if lang == "ru" else "in the afternoon" if lang == "en" else "pēcpusdienā"
+    if label == "evening":
+        return "вечером" if lang == "ru" else "in the evening" if lang == "en" else "vakarā"
+    if label == "after_work":
+        return "после работы" if lang == "ru" else "after work" if lang == "en" else "pēc darba"
+    if lang == "ru":
+        return f"с {start_h:02d}:00 до {end_h:02d}:00"
+    if lang == "en":
+        return f"between {start_h:02d}:00 and {end_h:02d}:00"
+    return f"no {start_h:02d}:00 līdz {end_h:02d}:00"
+
+
+def stage31_window_slots_reply(lang: str, label_text: str, slots: List[datetime]) -> str:
+    offered = [format_dt_short(x) for x in slots[:4]]
+    if lang == "ru":
+        return f"На {label_text} могу предложить: " + " или ".join(offered) + ". Какое время вам удобнее?"
+    if lang == "en":
+        return f"For {label_text}, I can offer: " + " or ".join(offered) + ". Which time works best?"
+    return f"Uz {label_text} varu piedāvāt: " + " vai ".join(offered) + ". Kurš laiks jums der?"
+
+
+def stage31_no_window_slots_reply(lang: str, label_text: str, fallback_slots: List[datetime]) -> str:
+    if fallback_slots:
+        offered = [format_dt_short(x) for x in fallback_slots[:3]]
+        if lang == "ru":
+            return f"На {label_text} свободных вариантов не вижу. Ближайшие свободные времена: " + " или ".join(offered) + ". Подойдёт что-то из этого?"
+        if lang == "en":
+            return f"I don’t see free times for {label_text}. The nearest available options are: " + " or ".join(offered) + ". Would any of these work?"
+        return f"Uz {label_text} brīvus laikus neredzu. Tuvākie pieejamie laiki: " + " vai ".join(offered) + ". Vai kāds no tiem der?"
+    if lang == "ru":
+        return f"На {label_text} свободных вариантов не вижу. Могу посмотреть другой день или другое время."
+    if lang == "en":
+        return f"I don’t see free times for {label_text}. I can check another day or a different time."
+    return f"Uz {label_text} brīvus laikus neredzu. Varu paskatīties citu dienu vai citu laiku."
+
+
+def offer_slots_for_time_window(
+    tenant_id: str,
+    user_key: str,
+    lang: str,
+    c: Dict[str, Any],
+    pending: Dict[str, Any],
+    settings: Dict[str, Any],
+    service_catalog: List[Dict[str, Any]],
+    base_date: datetime,
+    window_start_hour: int,
+    window_end_hour: int,
+    window_label: str,
+) -> Dict[str, Any]:
+    pending = pending or {}
+    service_item_for_slots = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
+    if not service_item_for_slots:
+        c["pending"] = pending or None
+        c["state"] = STATE_AWAITING_SERVICE
+        db_save_conversation(tenant_id, user_key, c)
+        prompt = barber_service_prompt(lang, service_catalog)
+        return {"status": "need_more", "reply_voice": prompt, "msg_out": prompt, "lang": lang, "preserve_text": True}
+
+    if not calendar_is_configured(settings["calendar_id"]):
+        return blocked_result_for_lang(lang)
+
+    pending["booking_intent"] = True
+    pending["awaiting_time_date_iso"] = base_date.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+    pending["preferred_time_window"] = [int(window_start_hour), int(window_end_hour)]
+    pending.pop("candidate_datetime_iso", None)
+    pending.pop("requested_datetime_iso", None)
+    pending.pop("partial_datetime_iso", None)
+    pending.pop("confirm_slot_iso", None)
+    pending.pop("time_text", None)
+    clear_offered_slots(pending)
+
+    all_slots = find_first_n_slots_for_day(
+        calendar_id=settings["calendar_id"],
+        day_dt=base_date,
+        duration_min=service_duration_min(service_item_for_slots),
+        work_start=settings["work_start"],
+        work_end=settings["work_end"],
+        limit=40,
+        business_rules=settings.get("business_rules"),
+        service_account_json=settings.get("service_account_json"),
+    )
+    filtered = [s for s in all_slots if int(window_start_hour) <= s.hour < int(window_end_hour)]
+    label_text = stage31_window_label(lang, window_label, int(window_start_hour), int(window_end_hour))
+
+    c["datetime_iso"] = None
+    c["time_text"] = None
+    c["state"] = STATE_AWAITING_TIME
+    c["pending"] = pending
+
+    if filtered:
+        pending = set_offered_slots(pending, filtered[:4])
+        c["pending"] = pending
+        db_save_conversation(tenant_id, user_key, c)
+        reply = stage31_window_slots_reply(lang, label_text, filtered[:4])
+        return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "preserve_text": True}
+
+    fallback = all_slots[:3]
+    if fallback:
+        pending = set_offered_slots(pending, fallback[:3])
+    c["pending"] = pending
+    db_save_conversation(tenant_id, user_key, c)
+    reply = stage31_no_window_slots_reply(lang, label_text, fallback[:3])
+    return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "preserve_text": True}
+
+
+def stage31_offer_time_window_if_needed(
+    tenant_id: str,
+    user_key: str,
+    msg: str,
+    lang: str,
+    c: Dict[str, Any],
+    pending: Dict[str, Any],
+    settings: Dict[str, Any],
+    service_catalog: List[Dict[str, Any]],
+    service_aliases: Dict[str, str],
+) -> Optional[Dict[str, Any]]:
+    window = stage31_detect_time_window_preference(msg, lang)
+    if not window:
+        return None
+    start_h, end_h, label = window
+    pending = pending or {}
+
+    service_key = str(c.get("service") or pending.get("service") or "").strip()
+    if not service_key:
+        service_item = stage27_extract_service_item_from_turn(msg, {}, service_catalog, service_aliases, lang)
+        if service_item:
+            c, pending = remember_booking_service(c, pending, service_item, lang)
+            service_key = str(c.get("service") or pending.get("service") or "").strip()
+
+    date_dt = parse_date_only_text(msg)
+    if date_dt:
+        pending["awaiting_time_date_iso"] = date_dt.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+
+    # In confirmation, "можно утром/вечером?" means negotiate another window
+    # on the same day as the currently proposed slot.
+    if conversation_state(c) == STATE_AWAITING_CONFIRM and not date_dt:
+        confirm_dt = parse_dt_any_tz(str(pending.get("confirm_slot_iso") or c.get("datetime_iso") or "").strip())
+        if confirm_dt:
+            date_dt = confirm_dt.replace(hour=9, minute=0, second=0, microsecond=0)
+            pending["awaiting_time_date_iso"] = date_dt.isoformat()
+
+    base_day = parse_dt_any_tz(str(pending.get("awaiting_time_date_iso") or "").strip()) or date_dt
+
+    pending["booking_intent"] = True
+    pending.pop("candidate_datetime_iso", None)
+    pending.pop("confirm_slot_iso", None)
+    pending.pop("time_text", None)
+    clear_offered_slots(pending)
+    c["datetime_iso"] = None
+    c["time_text"] = None
+    c["pending"] = pending
+
+    if not service_key:
+        c["state"] = STATE_AWAITING_SERVICE
+        db_save_conversation(tenant_id, user_key, c)
+        prompt = barber_service_prompt(lang, service_catalog)
+        return {"status": "need_more", "reply_voice": prompt, "msg_out": prompt, "lang": lang, "preserve_text": True}
+
+    if not base_day:
+        c["state"] = STATE_AWAITING_DATE
+        db_save_conversation(tenant_id, user_key, c)
+        return {"status": "need_more", "reply_voice": t(lang, "ask_booking_date"), "msg_out": t(lang, "ask_booking_date"), "lang": lang, "preserve_text": True}
+
+    return offer_slots_for_time_window(
+        tenant_id=tenant_id,
+        user_key=user_key,
+        lang=lang,
+        c=c,
+        pending=pending,
+        settings=settings,
+        service_catalog=service_catalog,
+        base_date=base_day,
+        window_start_hour=start_h,
+        window_end_hour=end_h,
+        window_label=label,
+    )
+
+
 def free_router_handle_candidate_datetime(
     tenant_id: str,
     user_key: str,
@@ -5855,6 +6076,22 @@ def free_router_handle_turn(
             pending["booking_intent"] = True
             c["datetime_iso"] = None
             return negotiation_slots_response(tenant_id, user_key, lang, c, pending, slots)
+
+    # Stage 31 Hotfix: fuzzy windows such as "вечером" / "vakarā" /
+    # "after lunch" should offer a set of slots, not become one exact confirmation.
+    stage31_time_window = stage31_offer_time_window_if_needed(
+        tenant_id=tenant_id,
+        user_key=user_key,
+        msg=msg,
+        lang=lang,
+        c=c,
+        pending=pending,
+        settings=settings,
+        service_catalog=service_catalog,
+        service_aliases=service_aliases,
+    )
+    if stage31_time_window:
+        return stage31_time_window
 
     # Stage 24 Hotfix: a clear "no" in confirmation state means exit the
     # confirmation loop and ask for another time instead of re-confirming.
@@ -6159,6 +6396,20 @@ def handle_user_text(
     ) if msg else None
     if stage30_after_window:
         return stage30_after_window
+
+    stage31_time_window = stage31_offer_time_window_if_needed(
+        tenant_id=tenant_id,
+        user_key=user_key,
+        msg=msg,
+        lang=lang,
+        c=c,
+        pending=pending,
+        settings=settings,
+        service_catalog=service_catalog,
+        service_aliases=service_aliases,
+    ) if msg else None
+    if stage31_time_window:
+        return stage31_time_window
 
     understanding = build_understanding_result(
         msg=msg,
