@@ -13,7 +13,12 @@ from typing import Dict, Any, Optional, Tuple, List
 import requests
 from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel
-from fastapi.responses import Response, StreamingResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import (
+    Response,
+    StreamingResponse,
+    HTMLResponse,
+    RedirectResponse,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from twilio.twiml.voice_response import VoiceResponse, Gather
 from twilio.jwt.access_token import AccessToken
@@ -118,7 +123,11 @@ from core.parsing_time import (
 )
 from db.database import engine  # expects engine in db/database.py
 from db.conversations import db_get_or_create_conversation, db_save_conversation
-from db.runtime_tables import ensure_call_logs_table, ensure_phone_routes_table, ensure_usage_events_table
+from db.runtime_tables import (
+    ensure_call_logs_table,
+    ensure_phone_routes_table,
+    ensure_usage_events_table,
+)
 from integrations.twilio_client import send_message
 from integrations.twilio_validation import install_twilio_signature_middleware
 from channels.telegram import (
@@ -147,12 +156,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 # -------------------------
 # HUMAN RESPONSE LAYER (2.6)
 # -------------------------
 def _pick_variant(options: List[str], fallback: str) -> str:
     cleaned = [str(x).strip() for x in options if str(x).strip()]
     return random.choice(cleaned) if cleaned else fallback
+
 
 def _slot_labels_from_pending(pending: Dict[str, Any]) -> List[str]:
     labels: List[str] = []
@@ -162,15 +173,22 @@ def _slot_labels_from_pending(pending: Dict[str, Any]) -> List[str]:
             labels.append(format_dt_short(dtv))
     return labels
 
-def humanize_result(result: Dict[str, Any], conv: Optional[Dict[str, Any]], tenant: Dict[str, Any]) -> Dict[str, Any]:
+
+def humanize_result(
+    result: Dict[str, Any], conv: Optional[Dict[str, Any]], tenant: Dict[str, Any]
+) -> Dict[str, Any]:
     result = dict(result or {})
     conv = conv or {}
     tenant = tenant or {}
-    lang = get_lang(result.get("lang") or conv.get("lang") or tenant.get("language") or "lv")
+    lang = get_lang(
+        result.get("lang") or conv.get("lang") or tenant.get("language") or "lv"
+    )
     state = conversation_state(conv)
     pending = conv.get("pending") or {}
     settings = tenant_settings(tenant, lang)
-    service_text = str(result.get("service") or pending.get("service_display") or "").strip()
+    service_text = str(
+        result.get("service") or pending.get("service_display") or ""
+    ).strip()
     when_text = str(result.get("when") or result.get("datetime_text") or "").strip()
     slots = _slot_labels_from_pending(pending)
 
@@ -183,153 +201,283 @@ def humanize_result(result: Dict[str, Any], conv: Optional[Dict[str, Any]], tena
 
     if result.get("status") == "greeting":
         if lang == "ru":
-            apply(_pick_variant([
-                "Здравствуйте! Чем могу помочь?",
-                "Добрый день! Чем могу помочь?",
-            ], result.get("msg_out") or "Здравствуйте! Чем могу помочь?"))
+            apply(
+                _pick_variant(
+                    [
+                        "Здравствуйте! Чем могу помочь?",
+                        "Добрый день! Чем могу помочь?",
+                    ],
+                    result.get("msg_out") or "Здравствуйте! Чем могу помочь?",
+                )
+            )
         elif lang == "en":
-            apply(_pick_variant([
-                "Hello! How can I help you today?",
-                "Hi! How can I help?",
-            ], result.get("msg_out") or "Hello! How can I help?"))
+            apply(
+                _pick_variant(
+                    [
+                        "Hello! How can I help you today?",
+                        "Hi! How can I help?",
+                    ],
+                    result.get("msg_out") or "Hello! How can I help?",
+                )
+            )
         else:
-            apply(_pick_variant([
-                "Labdien! Kā varu palīdzēt?",
-                "Sveiki! Kā varu palīdzēt?",
-            ], result.get("msg_out") or "Labdien! Kā varu palīdzēt?"))
+            apply(
+                _pick_variant(
+                    [
+                        "Labdien! Kā varu palīdzēt?",
+                        "Sveiki! Kā varu palīdzēt?",
+                    ],
+                    result.get("msg_out") or "Labdien! Kā varu palīdzēt?",
+                )
+            )
         return result
 
     if result.get("status") == "booked" and when_text:
         if lang == "ru":
-            apply(_pick_variant([
-                f"Отлично, записал вас на {when_text}.",
-                f"Готово, запись подтверждена на {when_text}.",
-                f"Хорошо, подтверждаю запись на {when_text}.",
-            ], result.get("msg_out") or f"Запись подтверждена на {when_text}."))
+            apply(
+                _pick_variant(
+                    [
+                        f"Отлично, записал вас на {when_text}.",
+                        f"Готово, запись подтверждена на {when_text}.",
+                        f"Хорошо, подтверждаю запись на {when_text}.",
+                    ],
+                    result.get("msg_out") or f"Запись подтверждена на {when_text}.",
+                )
+            )
         elif lang == "en":
-            apply(_pick_variant([
-                f"Great, you are booked for {when_text}.",
-                f"Done, your appointment is confirmed for {when_text}.",
-            ], result.get("msg_out") or f"Your appointment is confirmed for {when_text}."))
+            apply(
+                _pick_variant(
+                    [
+                        f"Great, you are booked for {when_text}.",
+                        f"Done, your appointment is confirmed for {when_text}.",
+                    ],
+                    result.get("msg_out")
+                    or f"Your appointment is confirmed for {when_text}.",
+                )
+            )
         else:
-            apply(_pick_variant([
-                f"Lieliski, pierakstīju jūs uz {when_text}.",
-                f"Gatavs, jūsu pieraksts ir apstiprināts uz {when_text}.",
-                f"Labi, apstiprinu pierakstu uz {when_text}.",
-            ], result.get("msg_out") or f"Pieraksts apstiprināts uz {when_text}."))
+            apply(
+                _pick_variant(
+                    [
+                        f"Lieliski, pierakstīju jūs uz {when_text}.",
+                        f"Gatavs, jūsu pieraksts ir apstiprināts uz {when_text}.",
+                        f"Labi, apstiprinu pierakstu uz {when_text}.",
+                    ],
+                    result.get("msg_out") or f"Pieraksts apstiprināts uz {when_text}.",
+                )
+            )
         return result
 
     if result.get("status") == "reschedule_wait" and when_text:
         if lang == "ru":
-            apply(_pick_variant([
-                f"Понял. Сейчас у вас запись на {when_text}. На какое время хотите перенести?",
-                f"Хорошо, текущая запись стоит на {when_text}. Какое новое время вам удобно?",
-            ], result.get("msg_out") or f"Текущая запись на {when_text}. На какое время перенести?"))
+            apply(
+                _pick_variant(
+                    [
+                        f"Понял. Сейчас у вас запись на {when_text}. На какое время хотите перенести?",
+                        f"Хорошо, текущая запись стоит на {when_text}. Какое новое время вам удобно?",
+                    ],
+                    result.get("msg_out")
+                    or f"Текущая запись на {when_text}. На какое время перенести?",
+                )
+            )
         elif lang == "en":
-            apply(_pick_variant([
-                f"Understood. Your current appointment is at {when_text}. What time would you like instead?",
-                f"Okay, you are currently booked for {when_text}. What new time works for you?",
-            ], result.get("msg_out") or f"Your appointment is at {when_text}. What time would you like instead?"))
+            apply(
+                _pick_variant(
+                    [
+                        f"Understood. Your current appointment is at {when_text}. What time would you like instead?",
+                        f"Okay, you are currently booked for {when_text}. What new time works for you?",
+                    ],
+                    result.get("msg_out")
+                    or f"Your appointment is at {when_text}. What time would you like instead?",
+                )
+            )
         else:
-            apply(_pick_variant([
-                f"Sapratu. Pašlaik jums pieraksts ir {when_text}. Uz kuru laiku vēlaties pārcelt?",
-                f"Labi, šobrīd jūsu pieraksts ir {when_text}. Kāds jaunais laiks jums derētu?",
-            ], result.get("msg_out") or f"Pieraksts ir {when_text}. Uz kuru laiku pārcelt?"))
+            apply(
+                _pick_variant(
+                    [
+                        f"Sapratu. Pašlaik jums pieraksts ir {when_text}. Uz kuru laiku vēlaties pārcelt?",
+                        f"Labi, šobrīd jūsu pieraksts ir {when_text}. Kāds jaunais laiks jums derētu?",
+                    ],
+                    result.get("msg_out")
+                    or f"Pieraksts ir {when_text}. Uz kuru laiku pārcelt?",
+                )
+            )
         return result
 
     if result.get("status") in {"holiday_closed", "min_notice"}:
         # keep clearer existing text but make it a little warmer
         if lang == "ru":
-            apply(result.get("msg_out") or "К сожалению, на это время записать нельзя. Давайте подберём другой вариант.")
+            apply(
+                result.get("msg_out")
+                or "К сожалению, на это время записать нельзя. Давайте подберём другой вариант."
+            )
         elif lang == "en":
-            apply(result.get("msg_out") or "Unfortunately, that time is not available. Let me suggest another option.")
+            apply(
+                result.get("msg_out")
+                or "Unfortunately, that time is not available. Let me suggest another option."
+            )
         else:
-            apply(result.get("msg_out") or "Diemžēl šis laiks nav pieejams. Atradīsim citu variantu.")
+            apply(
+                result.get("msg_out")
+                or "Diemžēl šis laiks nav pieejams. Atradīsim citu variantu."
+            )
         return result
 
-    if result.get("status") in {"busy", "need_more"} and state == STATE_AWAITING_SERVICE:
+    if (
+        result.get("status") in {"busy", "need_more"}
+        and state == STATE_AWAITING_SERVICE
+    ):
         if lang == "ru":
-            apply(_pick_variant([
-                "Конечно. На какую услугу вас записать?",
-                "Хорошо. Что именно хотите сделать?",
-                "Подскажите, на какую услугу хотите записаться?",
-            ], result.get("msg_out") or "На какую услугу вас записать?"))
+            apply(
+                _pick_variant(
+                    [
+                        "Конечно. На какую услугу вас записать?",
+                        "Хорошо. Что именно хотите сделать?",
+                        "Подскажите, на какую услугу хотите записаться?",
+                    ],
+                    result.get("msg_out") or "На какую услугу вас записать?",
+                )
+            )
         elif lang == "en":
-            apply(_pick_variant([
-                "Of course. Which service would you like to book?",
-                "Sure — what would you like to book?",
-            ], result.get("msg_out") or "Which service would you like to book?"))
+            apply(
+                _pick_variant(
+                    [
+                        "Of course. Which service would you like to book?",
+                        "Sure — what would you like to book?",
+                    ],
+                    result.get("msg_out") or "Which service would you like to book?",
+                )
+            )
         else:
-            apply(_pick_variant([
-                "Protams. Uz kādu pakalpojumu vēlaties pierakstīties?",
-                "Labi. Pasakiet, lūdzu, kuru pakalpojumu vēlaties.",
-                "Uz kuru pakalpojumu jūs pierakstīt?",
-            ], result.get("msg_out") or "Uz kādu pakalpojumu vēlaties pierakstīties?"))
+            apply(
+                _pick_variant(
+                    [
+                        "Protams. Uz kādu pakalpojumu vēlaties pierakstīties?",
+                        "Labi. Pasakiet, lūdzu, kuru pakalpojumu vēlaties.",
+                        "Uz kuru pakalpojumu jūs pierakstīt?",
+                    ],
+                    result.get("msg_out")
+                    or "Uz kādu pakalpojumu vēlaties pierakstīties?",
+                )
+            )
         return result
 
     if result.get("status") in {"busy", "need_more"} and state == STATE_AWAITING_DATE:
         if lang == "ru":
-            apply(_pick_variant([
-                "Хорошо. На какой день вас записать?",
-                "Отлично. Какая дата вам удобна?",
-                "Подскажите, на какой день хотите запись?",
-            ], result.get("msg_out") or "На какой день вас записать?"))
+            apply(
+                _pick_variant(
+                    [
+                        "Хорошо. На какой день вас записать?",
+                        "Отлично. Какая дата вам удобна?",
+                        "Подскажите, на какой день хотите запись?",
+                    ],
+                    result.get("msg_out") or "На какой день вас записать?",
+                )
+            )
         elif lang == "en":
-            apply(_pick_variant([
-                "Sure. Which day would work for you?",
-                "Okay. What date would you prefer?",
-            ], result.get("msg_out") or "Which day would work for you?"))
+            apply(
+                _pick_variant(
+                    [
+                        "Sure. Which day would work for you?",
+                        "Okay. What date would you prefer?",
+                    ],
+                    result.get("msg_out") or "Which day would work for you?",
+                )
+            )
         else:
-            apply(_pick_variant([
-                "Labi. Uz kuru dienu vēlaties pierakstīties?",
-                "Skaidrs. Kurš datums jums būtu ērts?",
-                "Pasakiet, lūdzu, kuru dienu vēlaties.",
-            ], result.get("msg_out") or "Uz kuru dienu vēlaties pierakstīties?"))
+            apply(
+                _pick_variant(
+                    [
+                        "Labi. Uz kuru dienu vēlaties pierakstīties?",
+                        "Skaidrs. Kurš datums jums būtu ērts?",
+                        "Pasakiet, lūdzu, kuru dienu vēlaties.",
+                    ],
+                    result.get("msg_out") or "Uz kuru dienu vēlaties pierakstīties?",
+                )
+            )
         return result
 
-    if result.get("status") in {"busy", "need_more"} and state == STATE_AWAITING_TIME and slots:
+    if (
+        result.get("status") in {"busy", "need_more"}
+        and state == STATE_AWAITING_TIME
+        and slots
+    ):
         if len(slots) >= 3:
             joined = ", ".join(slots[:3])
         else:
             joined = ", ".join(slots[:2])
         if lang == "ru":
-            apply(_pick_variant([
-                f"Могу предложить такие варианты: {joined}. Что вам удобнее?",
-                f"Есть несколько свободных вариантов: {joined}. Какое время подойдёт?",
-                f"Свободно вот так: {joined}. Что выбираем?",
-            ], result.get("msg_out") or f"Доступны варианты: {joined}."))
+            apply(
+                _pick_variant(
+                    [
+                        f"Могу предложить такие варианты: {joined}. Что вам удобнее?",
+                        f"Есть несколько свободных вариантов: {joined}. Какое время подойдёт?",
+                        f"Свободно вот так: {joined}. Что выбираем?",
+                    ],
+                    result.get("msg_out") or f"Доступны варианты: {joined}.",
+                )
+            )
         elif lang == "en":
-            apply(_pick_variant([
-                f"I can offer these times: {joined}. What works best for you?",
-                f"There are a few available options: {joined}. Which one suits you?",
-            ], result.get("msg_out") or f"Available times: {joined}."))
+            apply(
+                _pick_variant(
+                    [
+                        f"I can offer these times: {joined}. What works best for you?",
+                        f"There are a few available options: {joined}. Which one suits you?",
+                    ],
+                    result.get("msg_out") or f"Available times: {joined}.",
+                )
+            )
         else:
-            apply(_pick_variant([
-                f"Varu piedāvāt šādus laikus: {joined}. Kurš jums der?",
-                f"Ir pieejami vairāki varianti: {joined}. Ko izvēlamies?",
-                f"Brīvie laiki ir šādi: {joined}. Kurš jums būtu ērtāks?",
-            ], result.get("msg_out") or f"Pieejamie laiki: {joined}."))
+            apply(
+                _pick_variant(
+                    [
+                        f"Varu piedāvāt šādus laikus: {joined}. Kurš jums der?",
+                        f"Ir pieejami vairāki varianti: {joined}. Ko izvēlamies?",
+                        f"Brīvie laiki ir šādi: {joined}. Kurš jums būtu ērtāks?",
+                    ],
+                    result.get("msg_out") or f"Pieejamie laiki: {joined}.",
+                )
+            )
         return result
 
-    if result.get("status") == "need_more" and state == STATE_AWAITING_CONFIRM and (when_text or str(conv.get("datetime_iso") or "").strip()):
+    if (
+        result.get("status") == "need_more"
+        and state == STATE_AWAITING_CONFIRM
+        and (when_text or str(conv.get("datetime_iso") or "").strip())
+    ):
         if not when_text:
             _dtc = parse_dt_any_tz(str(conv.get("datetime_iso") or "").strip())
             when_text = format_dt_short(_dtc) if _dtc else when_text
         if lang == "ru":
-            apply(_pick_variant([
-                f"Тогда подтверждаем запись на {when_text}?",
-                f"Подтверждаем время {when_text}?",
-            ], result.get("msg_out") or f"Подтвердить запись на {when_text}?"))
+            apply(
+                _pick_variant(
+                    [
+                        f"Тогда подтверждаем запись на {when_text}?",
+                        f"Подтверждаем время {when_text}?",
+                    ],
+                    result.get("msg_out") or f"Подтвердить запись на {when_text}?",
+                )
+            )
         elif lang == "en":
-            apply(_pick_variant([
-                f"Shall I confirm the booking for {when_text}?",
-                f"Would you like me to confirm {when_text}?",
-            ], result.get("msg_out") or f"Confirm the booking for {when_text}?"))
+            apply(
+                _pick_variant(
+                    [
+                        f"Shall I confirm the booking for {when_text}?",
+                        f"Would you like me to confirm {when_text}?",
+                    ],
+                    result.get("msg_out") or f"Confirm the booking for {when_text}?",
+                )
+            )
         else:
-            apply(_pick_variant([
-                f"Tad apstiprinām pierakstu uz {when_text}?",
-                f"Vai apstiprināt laiku {when_text}?",
-            ], result.get("msg_out") or f"Apstiprināt pierakstu uz {when_text}?"))
+            apply(
+                _pick_variant(
+                    [
+                        f"Tad apstiprinām pierakstu uz {when_text}?",
+                        f"Vai apstiprināt laiku {when_text}?",
+                    ],
+                    result.get("msg_out") or f"Apstiprināt pierakstu uz {when_text}?",
+                )
+            )
         return result
 
     return result
@@ -365,7 +513,9 @@ def _composer_allowed_for_result(result: Dict[str, Any]) -> bool:
         return False
     if (result or {}).get("preserve_text") or (result or {}).get("flow_preserved"):
         return False
-    base_text = str((result or {}).get("msg_out") or (result or {}).get("reply_voice") or "").strip()
+    base_text = str(
+        (result or {}).get("msg_out") or (result or {}).get("reply_voice") or ""
+    ).strip()
     if not base_text:
         return False
     return status in {
@@ -414,7 +564,9 @@ def ai_response_composer(
 
     conv = conv or {}
     tenant = tenant or {}
-    lang = get_lang(result.get("lang") or conv.get("lang") or tenant.get("language") or "lv")
+    lang = get_lang(
+        result.get("lang") or conv.get("lang") or tenant.get("language") or "lv"
+    )
     state = conversation_state(conv)
     pending = conv.get("pending") or {}
     base_text = str(result.get("msg_out") or result.get("reply_voice") or "").strip()
@@ -433,10 +585,25 @@ def ai_response_composer(
         "business_name": _safe_compose_text(settings.get("biz_name"), 120),
         "business_type": _safe_compose_text(settings.get("business_type"), 80),
         "current_reply": _safe_compose_text(base_text, 900),
-        "service": _safe_compose_text(result.get("service") or result.get("service_display") or pending.get("service_display") or conv.get("service"), 160),
-        "when": _safe_compose_text(result.get("when") or result.get("datetime_text") or conv.get("datetime_iso"), 160),
+        "service": _safe_compose_text(
+            result.get("service")
+            or result.get("service_display")
+            or pending.get("service_display")
+            or conv.get("service"),
+            160,
+        ),
+        "when": _safe_compose_text(
+            result.get("when")
+            or result.get("datetime_text")
+            or conv.get("datetime_iso"),
+            160,
+        ),
         "offered_slots": offered_slots[:3],
-        "pending_keys": sorted([str(k) for k in pending.keys()])[:30] if isinstance(pending, dict) else [],
+        "pending_keys": (
+            sorted([str(k) for k in pending.keys()])[:30]
+            if isinstance(pending, dict)
+            else []
+        ),
         "business_memory": _safe_compose_text(memory, 700),
     }
 
@@ -487,9 +654,32 @@ def is_thank_you_text(text_: Optional[str], lang: str) -> bool:
     if not low:
         return False
     phrases = {
-        "lv": {"paldies", "liels paldies", "paldies jums", "paldies tev", "super paldies", "ok paldies", "labi paldies"},
-        "ru": {"спасибо", "спасибо вам", "большое спасибо", "спс", "благодарю", "ок спасибо", "хорошо спасибо"},
-        "en": {"thanks", "thank you", "thank you very much", "many thanks", "ok thanks", "great thanks"},
+        "lv": {
+            "paldies",
+            "liels paldies",
+            "paldies jums",
+            "paldies tev",
+            "super paldies",
+            "ok paldies",
+            "labi paldies",
+        },
+        "ru": {
+            "спасибо",
+            "спасибо вам",
+            "большое спасибо",
+            "спс",
+            "благодарю",
+            "ок спасибо",
+            "хорошо спасибо",
+        },
+        "en": {
+            "thanks",
+            "thank you",
+            "thank you very much",
+            "many thanks",
+            "ok thanks",
+            "great thanks",
+        },
     }
     allowed = set().union(*phrases.values())
     allowed.update(phrases.get(get_lang(lang), set()))
@@ -503,7 +693,15 @@ def is_goodbye_text(text_: Optional[str], lang: str) -> bool:
     if not low:
         return False
     phrases = {
-        "lv": {"atā", "ata", "uz redzēšanos", "uz redzesanos", "visu labu", "līdz vēlākam", "lidz velakam"},
+        "lv": {
+            "atā",
+            "ata",
+            "uz redzēšanos",
+            "uz redzesanos",
+            "visu labu",
+            "līdz vēlākam",
+            "lidz velakam",
+        },
         "ru": {"пока", "до свидания", "до встречи", "всего доброго", "хорошего дня"},
         "en": {"bye", "goodbye", "see you", "see you soon", "have a nice day"},
     }
@@ -517,7 +715,17 @@ def is_positive_closure_ack_text(text_: Optional[str], lang: str) -> bool:
     if not low:
         return False
     phrases = {
-        "lv": {"labi", "super", "skaidrs", "forši", "forsi", "ok", "okej", "ideāli", "ideali"},
+        "lv": {
+            "labi",
+            "super",
+            "skaidrs",
+            "forši",
+            "forsi",
+            "ok",
+            "okej",
+            "ideāli",
+            "ideali",
+        },
         "ru": {"ок", "хорошо", "супер", "понял", "поняла", "отлично", "ладно"},
         "en": {"ok", "okay", "great", "perfect", "sounds good", "got it", "alright"},
     }
@@ -526,7 +734,12 @@ def is_positive_closure_ack_text(text_: Optional[str], lang: str) -> bool:
     return low in allowed
 
 
-def closure_reply_text(lang: str, closure_type: str, conv: Optional[Dict[str, Any]] = None, tenant: Optional[Dict[str, Any]] = None) -> str:
+def closure_reply_text(
+    lang: str,
+    closure_type: str,
+    conv: Optional[Dict[str, Any]] = None,
+    tenant: Optional[Dict[str, Any]] = None,
+) -> str:
     lang = get_lang(lang)
     conv = conv or {}
     tenant = tenant or {}
@@ -552,7 +765,9 @@ def closure_reply_text(lang: str, closure_type: str, conv: Optional[Dict[str, An
             return "Пожалуйста! Если понадобится новая запись, напишите — помогу подобрать время."
         if lang == "en":
             return "You’re welcome! If you need a new appointment, just message me and I’ll help."
-        return "Lūdzu! Ja vajadzēs jaunu pierakstu, uzrakstiet — palīdzēšu atrast laiku."
+        return (
+            "Lūdzu! Ja vajadzēs jaunu pierakstu, uzrakstiet — palīdzēšu atrast laiku."
+        )
 
     if closure_type == "goodbye":
         if lang == "ru":
@@ -592,7 +807,9 @@ def maybe_conversational_closure_result(
         closure_type = "thanks"
     elif is_goodbye_text(msg, lang):
         closure_type = "goodbye"
-    elif state in {STATE_BOOKED, STATE_CANCELLED} and is_positive_closure_ack_text(msg, lang):
+    elif state in {STATE_BOOKED, STATE_CANCELLED} and is_positive_closure_ack_text(
+        msg, lang
+    ):
         closure_type = "ack"
 
     if not closure_type:
@@ -631,12 +848,20 @@ def _stage33_join_options(lang: str, items: List[str]) -> str:
         return ""
     if len(cleaned) == 1:
         return cleaned[0]
-    sep = " или " if get_lang(lang) == "ru" else " or " if get_lang(lang) == "en" else " vai "
+    sep = (
+        " или "
+        if get_lang(lang) == "ru"
+        else " or " if get_lang(lang) == "en" else " vai "
+    )
     return ", ".join(cleaned[:-1]) + sep + cleaned[-1]
 
 
-def _stage33_when_text(result: Dict[str, Any], conv: Dict[str, Any], pending: Dict[str, Any]) -> str:
-    explicit = str((result or {}).get("when") or (result or {}).get("datetime_text") or "").strip()
+def _stage33_when_text(
+    result: Dict[str, Any], conv: Dict[str, Any], pending: Dict[str, Any]
+) -> str:
+    explicit = str(
+        (result or {}).get("when") or (result or {}).get("datetime_text") or ""
+    ).strip()
     if explicit:
         return explicit
     for value in [
@@ -654,8 +879,16 @@ def _stage33_requested_busy_hint(text_: str, lang: str) -> bool:
     low = _normalize_phrase_text(text_)
     folded = _fold_match_text(text_)
     markers = [
-        "занято", "занят", "уже занято", "aiznemts", "aizņemts", "nav pieejams",
-        "taken", "already taken", "not available", "busy",
+        "занято",
+        "занят",
+        "уже занято",
+        "aiznemts",
+        "aizņemts",
+        "nav pieejams",
+        "taken",
+        "already taken",
+        "not available",
+        "busy",
     ]
     return any(m in low or m in folded for m in markers)
 
@@ -685,12 +918,19 @@ def stage33_soft_conversational_ux(
     conv = conv or {}
     tenant = tenant or {}
     pending = conv.get("pending") or {}
-    lang = get_lang(result.get("lang") or conv.get("lang") or tenant.get("language") or "lv")
+    lang = get_lang(
+        result.get("lang") or conv.get("lang") or tenant.get("language") or "lv"
+    )
     state = conversation_state(conv)
     base_text = str(result.get("msg_out") or result.get("reply_voice") or "").strip()
     slots = _slot_labels_from_pending(pending)
     when_text = _stage33_when_text(result, conv, pending)
-    service_text = str(result.get("service") or result.get("service_display") or pending.get("service_display") or "").strip()
+    service_text = str(
+        result.get("service")
+        or result.get("service_display")
+        or pending.get("service_display")
+        or ""
+    ).strip()
 
     def apply(text_value: str) -> Dict[str, Any]:
         text_value = str(text_value or "").strip()
@@ -706,112 +946,186 @@ def stage33_soft_conversational_ux(
 
     if status == "booked" and when_text:
         if lang == "ru":
-            return apply(_pick_variant([
-                f"Готово, записал вас на {when_text}. Будем ждать вас!",
-                f"Отлично, запись подтверждена на {when_text}. До встречи!",
-                f"Супер, закрепил за вами время {when_text}.",
-            ], base_text or f"Запись подтверждена на {when_text}."))
+            return apply(
+                _pick_variant(
+                    [
+                        f"Готово, записал вас на {when_text}. Будем ждать вас!",
+                        f"Отлично, запись подтверждена на {when_text}. До встречи!",
+                        f"Супер, закрепил за вами время {when_text}.",
+                    ],
+                    base_text or f"Запись подтверждена на {when_text}.",
+                )
+            )
         if lang == "en":
-            return apply(_pick_variant([
-                f"Done — you’re booked for {when_text}. See you then!",
-                f"Great, your appointment is confirmed for {when_text}.",
-                f"Perfect, I’ve reserved {when_text} for you.",
-            ], base_text or f"Your appointment is confirmed for {when_text}."))
-        return apply(_pick_variant([
-            f"Gatavs, pierakstīju jūs uz {when_text}. Gaidīsim jūs!",
-            f"Lieliski, pieraksts apstiprināts uz {when_text}. Uz tikšanos!",
-            f"Super, rezervēju jums laiku {when_text}.",
-        ], base_text or f"Pieraksts apstiprināts uz {when_text}."))
+            return apply(
+                _pick_variant(
+                    [
+                        f"Done — you’re booked for {when_text}. See you then!",
+                        f"Great, your appointment is confirmed for {when_text}.",
+                        f"Perfect, I’ve reserved {when_text} for you.",
+                    ],
+                    base_text or f"Your appointment is confirmed for {when_text}.",
+                )
+            )
+        return apply(
+            _pick_variant(
+                [
+                    f"Gatavs, pierakstīju jūs uz {when_text}. Gaidīsim jūs!",
+                    f"Lieliski, pieraksts apstiprināts uz {when_text}. Uz tikšanos!",
+                    f"Super, rezervēju jums laiku {when_text}.",
+                ],
+                base_text or f"Pieraksts apstiprināts uz {when_text}.",
+            )
+        )
 
-    if status in {"need_more", "busy", "min_notice", "holiday_closed"} and state == STATE_AWAITING_TIME and slots:
+    if (
+        status in {"need_more", "busy", "min_notice", "holiday_closed"}
+        and state == STATE_AWAITING_TIME
+        and slots
+    ):
         joined = _stage33_join_options(lang, slots[:4])
-        busy_hint = _stage33_requested_busy_hint(base_text, lang) or status in {"busy", "min_notice", "holiday_closed"}
+        busy_hint = _stage33_requested_busy_hint(base_text, lang) or status in {
+            "busy",
+            "min_notice",
+            "holiday_closed",
+        }
         if lang == "ru":
             text_value = (
                 f"На запрошенное время не получается, но могу предложить: {joined}. Какой вариант вам удобнее?"
-                if busy_hint else
-                f"Нашёл такие варианты: {joined}. Какой вам больше подходит?"
+                if busy_hint
+                else f"Нашёл такие варианты: {joined}. Какой вам больше подходит?"
             )
         elif lang == "en":
             text_value = (
                 f"That requested time doesn’t work, but I can offer: {joined}. Which one suits you best?"
-                if busy_hint else
-                f"I found these options: {joined}. Which one works best for you?"
+                if busy_hint
+                else f"I found these options: {joined}. Which one works best for you?"
             )
         else:
             text_value = (
                 f"Uz prasīto laiku nesanāk, bet varu piedāvāt: {joined}. Kurš variants jums der?"
-                if busy_hint else
-                f"Atradu šādus variantus: {joined}. Kurš jums būtu ērtāks?"
+                if busy_hint
+                else f"Atradu šādus variantus: {joined}. Kurš jums būtu ērtāks?"
             )
         return apply(text_value)
 
     if status == "need_more" and state == STATE_AWAITING_CONFIRM and when_text:
         if lang == "ru":
             service_part = f" на {service_text}" if service_text else ""
-            return apply(_pick_variant([
-                f"Это время свободно — записываем вас{service_part} на {when_text}?",
-                f"Можем поставить запись на {when_text}. Подтверждаем?",
-                f"{when_text} подходит — закрепить это время за вами?",
-            ], base_text or f"Подтвердить запись на {when_text}?"))
+            return apply(
+                _pick_variant(
+                    [
+                        f"Это время свободно — записываем вас{service_part} на {when_text}?",
+                        f"Можем поставить запись на {when_text}. Подтверждаем?",
+                        f"{when_text} подходит — закрепить это время за вами?",
+                    ],
+                    base_text or f"Подтвердить запись на {when_text}?",
+                )
+            )
         if lang == "en":
             service_part = f" for {service_text}" if service_text else ""
-            return apply(_pick_variant([
-                f"That time is available — shall I book you{service_part} for {when_text}?",
-                f"We can do {when_text}. Should I confirm it?",
-                f"{when_text} works — would you like me to reserve it?",
-            ], base_text or f"Confirm the booking for {when_text}?"))
+            return apply(
+                _pick_variant(
+                    [
+                        f"That time is available — shall I book you{service_part} for {when_text}?",
+                        f"We can do {when_text}. Should I confirm it?",
+                        f"{when_text} works — would you like me to reserve it?",
+                    ],
+                    base_text or f"Confirm the booking for {when_text}?",
+                )
+            )
         service_part = f" uz {service_text}" if service_text else ""
-        return apply(_pick_variant([
-            f"Šis laiks ir pieejams — pierakstām jūs{service_part} uz {when_text}?",
-            f"Varam jūs pierakstīt uz {when_text}. Apstiprinām?",
-            f"{when_text} der — rezervēt šo laiku jums?",
-        ], base_text or f"Apstiprināt pierakstu uz {when_text}?"))
+        return apply(
+            _pick_variant(
+                [
+                    f"Šis laiks ir pieejams — pierakstām jūs{service_part} uz {when_text}?",
+                    f"Varam jūs pierakstīt uz {when_text}. Apstiprinām?",
+                    f"{when_text} der — rezervēt šo laiku jums?",
+                ],
+                base_text or f"Apstiprināt pierakstu uz {when_text}?",
+            )
+        )
 
     if status in {"need_more", "busy"} and state == STATE_AWAITING_SERVICE:
         if lang == "ru":
-            return apply(_pick_variant([
-                "Конечно. Подскажите, какую услугу хотите выбрать?",
-                "Хорошо, помогу с записью. Какая услуга нужна?",
-                "Давайте подберём время. Сначала уточню услугу — что хотите сделать?",
-            ], base_text or "На какую услугу вас записать?"))
+            return apply(
+                _pick_variant(
+                    [
+                        "Конечно. Подскажите, какую услугу хотите выбрать?",
+                        "Хорошо, помогу с записью. Какая услуга нужна?",
+                        "Давайте подберём время. Сначала уточню услугу — что хотите сделать?",
+                    ],
+                    base_text or "На какую услугу вас записать?",
+                )
+            )
         if lang == "en":
-            return apply(_pick_variant([
-                "Of course. Which service would you like to book?",
-                "Sure, I can help with that. What service do you need?",
-                "Let’s find a time for you. Which service should I book?",
-            ], base_text or "Which service would you like to book?"))
-        return apply(_pick_variant([
-            "Protams. Kuru pakalpojumu vēlaties izvēlēties?",
-            "Labi, palīdzēšu ar pierakstu. Kāds pakalpojums nepieciešams?",
-            "Atradīsim jums piemērotu laiku. Vispirms — kuru pakalpojumu vēlaties?",
-        ], base_text or "Uz kādu pakalpojumu vēlaties pierakstīties?"))
+            return apply(
+                _pick_variant(
+                    [
+                        "Of course. Which service would you like to book?",
+                        "Sure, I can help with that. What service do you need?",
+                        "Let’s find a time for you. Which service should I book?",
+                    ],
+                    base_text or "Which service would you like to book?",
+                )
+            )
+        return apply(
+            _pick_variant(
+                [
+                    "Protams. Kuru pakalpojumu vēlaties izvēlēties?",
+                    "Labi, palīdzēšu ar pierakstu. Kāds pakalpojums nepieciešams?",
+                    "Atradīsim jums piemērotu laiku. Vispirms — kuru pakalpojumu vēlaties?",
+                ],
+                base_text or "Uz kādu pakalpojumu vēlaties pierakstīties?",
+            )
+        )
 
     if status in {"need_more", "busy"} and state == STATE_AWAITING_DATE:
         if lang == "ru":
-            return apply(_pick_variant([
-                "Хорошо. На какой день посмотрим запись?",
-                "Понял. Какая дата вам была бы удобна?",
-                "Давайте подберём день. Когда вам удобнее?",
-            ], base_text or "На какой день вас записать?"))
+            return apply(
+                _pick_variant(
+                    [
+                        "Хорошо. На какой день посмотрим запись?",
+                        "Понял. Какая дата вам была бы удобна?",
+                        "Давайте подберём день. Когда вам удобнее?",
+                    ],
+                    base_text or "На какой день вас записать?",
+                )
+            )
         if lang == "en":
-            return apply(_pick_variant([
-                "Sure. Which day should I check?",
-                "Got it. What date would work for you?",
-                "Let’s pick a day first. When would be convenient?",
-            ], base_text or "Which day would work for you?"))
-        return apply(_pick_variant([
-            "Labi. Uz kuru dienu skatāmies pierakstu?",
-            "Sapratu. Kurš datums jums būtu ērts?",
-            "Vispirms izvēlēsimies dienu. Kad jums būtu ērtāk?",
-        ], base_text or "Uz kuru dienu vēlaties pierakstīties?"))
+            return apply(
+                _pick_variant(
+                    [
+                        "Sure. Which day should I check?",
+                        "Got it. What date would work for you?",
+                        "Let’s pick a day first. When would be convenient?",
+                    ],
+                    base_text or "Which day would work for you?",
+                )
+            )
+        return apply(
+            _pick_variant(
+                [
+                    "Labi. Uz kuru dienu skatāmies pierakstu?",
+                    "Sapratu. Kurš datums jums būtu ērts?",
+                    "Vispirms izvēlēsimies dienu. Kad jums būtu ērtāk?",
+                ],
+                base_text or "Uz kuru dienu vēlaties pierakstīties?",
+            )
+        )
 
     if status == "reschedule_wait" and when_text:
         if lang == "ru":
-            return apply(f"Понял. Сейчас запись стоит на {when_text}. На какое новое время хотите перенести?")
+            return apply(
+                f"Понял. Сейчас запись стоит на {when_text}. На какое новое время хотите перенести?"
+            )
         if lang == "en":
-            return apply(f"Understood. Your current appointment is at {when_text}. What new time would work better?")
-        return apply(f"Sapratu. Pašlaik pieraksts ir {when_text}. Uz kuru jauno laiku vēlaties pārcelt?")
+            return apply(
+                f"Understood. Your current appointment is at {when_text}. What new time would work better?"
+            )
+        return apply(
+            f"Sapratu. Pašlaik pieraksts ir {when_text}. Uz kuru jauno laiku vēlaties pārcelt?"
+        )
 
     return result
 
@@ -824,25 +1138,35 @@ def stage33_soft_conversational_ux(
 def ensure_tenants_lifecycle_columns() -> None:
     try:
         with engine.begin() as conn:
-            conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS subscription_status TEXT"))
+            conn.execute(
+                text(
+                    "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS subscription_status TEXT"
+                )
+            )
             conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS plan TEXT"))
-            conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS dialogs_per_month INTEGER"))
-            conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS trial_end TIMESTAMPTZ"))
+            conn.execute(
+                text(
+                    "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS dialogs_per_month INTEGER"
+                )
+            )
+            conn.execute(
+                text(
+                    "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS trial_end TIMESTAMPTZ"
+                )
+            )
     except Exception as e:
         log.error("ensure_tenants_lifecycle_columns_failed err=%s", e)
+
+
 def tenants_columns() -> List[Dict[str, Any]]:
     ensure_tenants_lifecycle_columns()
     with engine.connect() as conn:
-        rows = conn.execute(
-            text(
-                """
+        rows = conn.execute(text("""
             SELECT column_name, is_nullable, column_default, data_type
             FROM information_schema.columns
             WHERE table_schema='public' AND table_name='tenants'
             ORDER BY ordinal_position
-        """
-            )
-        ).fetchall()
+        """)).fetchall()
     return [
         {"name": r[0], "nullable": (r[1] == "YES"), "default": r[2], "type": r[3]}
         for r in rows
@@ -858,24 +1182,25 @@ def tenants_pk(cols: List[Dict[str, Any]]) -> str:
     return "id"
 
 
-
 def normalize_incoming_to_number(raw_value: str) -> str:
     v = (raw_value or "").strip()
     if v.startswith("whatsapp:"):
-        v = v[len("whatsapp:"):]
+        v = v[len("whatsapp:") :]
     if v.startswith("sip:"):
-        v = v[len("sip:"):]
+        v = v[len("sip:") :]
     if v.startswith("client:"):
-        v = v[len("client:"):]
+        v = v[len("client:") :]
     v = re.sub(r"[^\d+]", "", v)
     if v and not v.startswith("+") and v.isdigit():
         v = "+" + v
     return v
 
+
 def looks_like_phone_number(raw_value: str) -> bool:
     v = normalize_incoming_to_number(raw_value)
     digits = re.sub(r"\D", "", v)
     return len(digits) >= 7
+
 
 def parse_voice_client_tenant_map() -> Dict[str, str]:
     txt = (VOICE_CLIENT_TENANT_MAP or "").strip()
@@ -904,10 +1229,11 @@ def parse_voice_client_tenant_map() -> Dict[str, str]:
             out[left] = right
     return out
 
+
 def tenant_id_from_client_identity(client_identity: str) -> Optional[str]:
     ident = (client_identity or "").strip()
     if ident.startswith("client:"):
-        ident = ident[len("client:"):]
+        ident = ident[len("client:") :]
 
     m = re.match(r"^tenant__([^_]+(?:_[^_]+)*)__.+$", ident)
     if m:
@@ -926,7 +1252,10 @@ def tenant_id_from_client_identity(client_identity: str) -> Optional[str]:
 
     return None
 
-def resolve_voice_tenant_for_incoming(to_number: str, raw_from: str = "") -> Dict[str, Any]:
+
+def resolve_voice_tenant_for_incoming(
+    to_number: str, raw_from: str = ""
+) -> Dict[str, Any]:
     test_tenant_id = (TEST_TENANT_ID or "").strip()
     if test_tenant_id:
         tenant = get_tenant(test_tenant_id)
@@ -958,6 +1287,7 @@ def resolve_voice_tenant_for_incoming(to_number: str, raw_from: str = "") -> Dic
         "phone_number": normalize_incoming_to_number(to_number),
     }
 
+
 def upsert_phone_route(phone_number: str, tenant_id: str) -> None:
     phone_number = normalize_incoming_to_number(phone_number)
     tenant_id = (tenant_id or "").strip()
@@ -965,16 +1295,15 @@ def upsert_phone_route(phone_number: str, tenant_id: str) -> None:
         return
     with engine.begin() as conn:
         conn.execute(
-            text(
-                """
+            text("""
                 INSERT INTO phone_routes (phone_number, tenant_id)
                 VALUES (:phone_number, :tenant_id)
                 ON CONFLICT (phone_number)
                 DO UPDATE SET tenant_id = EXCLUDED.tenant_id
-                """
-            ),
+                """),
             {"phone_number": phone_number, "tenant_id": tenant_id},
         )
+
 
 def get_tenant_by_phone(to_number: str) -> Dict[str, Any]:
     to_number = normalize_incoming_to_number(to_number)
@@ -1009,6 +1338,7 @@ def get_tenant_by_phone(to_number: str) -> Dict[str, Any]:
         out[name] = row[i]
     out["_id"] = out.get(pk)
     return out
+
 
 def tenant_is_resolved(tenant: Dict[str, Any]) -> bool:
     return bool(tenant and tenant.get("_id") and not tenant.get("_unconfigured"))
@@ -1175,12 +1505,16 @@ def load_runtime_tenant(tenant_id: str) -> Dict[str, Any]:
     return normalize_tenant_saas_fields(tenant)
 
 
-
 # -------------------------
 # GOOGLE OAUTH HELPERS (Phase 3 Foundation)
 # -------------------------
 def oauth_ready() -> bool:
-    return bool(GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET and GOOGLE_OAUTH_REDIRECT_URI)
+    return bool(
+        GOOGLE_OAUTH_CLIENT_ID
+        and GOOGLE_OAUTH_CLIENT_SECRET
+        and GOOGLE_OAUTH_REDIRECT_URI
+    )
+
 
 def upsert_tenant_google_account(
     tenant_id: str,
@@ -1194,16 +1528,17 @@ def upsert_tenant_google_account(
     if not tenant_id:
         return
     with engine.begin() as conn:
-        conn.execute(text("DELETE FROM tenant_google_accounts WHERE tenant_id=:tid"), {"tid": tenant_id})
         conn.execute(
-            text(
-                """
+            text("DELETE FROM tenant_google_accounts WHERE tenant_id=:tid"),
+            {"tid": tenant_id},
+        )
+        conn.execute(
+            text("""
                 INSERT INTO tenant_google_accounts
                 (tenant_id, google_email, access_token, refresh_token, token_expiry, scope, created_at, updated_at)
                 VALUES
                 (:tid, :google_email, :access_token, :refresh_token, :token_expiry, :scope, NOW(), NOW())
-                """
-            ),
+                """),
             {
                 "tid": tenant_id,
                 "google_email": google_email,
@@ -1214,6 +1549,7 @@ def upsert_tenant_google_account(
             },
         )
 
+
 def get_tenant_google_account(tenant_id: str) -> Dict[str, Any]:
     tenant_id = (tenant_id or "").strip()
     if not tenant_id:
@@ -1221,26 +1557,36 @@ def get_tenant_google_account(tenant_id: str) -> Dict[str, Any]:
     try:
         with engine.connect() as conn:
             row = conn.execute(
-                text(
-                    """
+                text("""
                     SELECT tenant_id, google_email, access_token, refresh_token, token_expiry, scope, created_at, updated_at
                     FROM tenant_google_accounts
                     WHERE tenant_id=:tid
                     ORDER BY id DESC
                     LIMIT 1
-                    """
-                ),
+                    """),
                 {"tid": tenant_id},
             ).fetchone()
         if not row:
             return {}
-        keys = ["tenant_id", "google_email", "access_token", "refresh_token", "token_expiry", "scope", "created_at", "updated_at"]
+        keys = [
+            "tenant_id",
+            "google_email",
+            "access_token",
+            "refresh_token",
+            "token_expiry",
+            "scope",
+            "created_at",
+            "updated_at",
+        ]
         return {k: row[i] for i, k in enumerate(keys)}
     except Exception as e:
         log.error("get_tenant_google_account failed tenant_id=%s err=%s", tenant_id, e)
         return {}
 
-def mark_tenant_google_connected(tenant_id: str, is_connected: bool, owner_email: Optional[str] = None) -> None:
+
+def mark_tenant_google_connected(
+    tenant_id: str, is_connected: bool, owner_email: Optional[str] = None
+) -> None:
     tenant_id = (tenant_id or "").strip()
     if not tenant_id:
         return
@@ -1261,13 +1607,15 @@ def mark_tenant_google_connected(tenant_id: str, is_connected: bool, owner_email
     if not sets:
         return
     with engine.begin() as conn:
-        conn.execute(text(f"UPDATE tenants SET {', '.join(sets)} WHERE {pk}=:tid"), params)
-
+        conn.execute(
+            text(f"UPDATE tenants SET {', '.join(sets)} WHERE {pk}=:tid"), params
+        )
 
 
 def tenant_has_google_account(tenant_id: str) -> bool:
     acct = get_tenant_google_account(tenant_id)
     return bool(str(acct.get("access_token") or "").strip())
+
 
 def tenant_google_connected_effective(tenant: Dict[str, Any]) -> bool:
     tenant = normalize_tenant_saas_fields(tenant or {})
@@ -1278,9 +1626,11 @@ def tenant_google_connected_effective(tenant: Dict[str, Any]) -> bool:
         return False
     return tenant_has_google_account(tenant_id)
 
+
 def build_google_oauth_state(tenant_id: str) -> str:
     payload = {"tenant_id": tenant_id, "ts": now_ts().isoformat()}
     return base64.urlsafe_b64encode(json.dumps(payload).encode("utf-8")).decode("utf-8")
+
 
 def parse_google_oauth_state(state: str) -> Dict[str, Any]:
     try:
@@ -1289,6 +1639,7 @@ def parse_google_oauth_state(state: str) -> Dict[str, Any]:
         return obj if isinstance(obj, dict) else {}
     except Exception:
         return {}
+
 
 def build_google_oauth_url(tenant_id: str) -> str:
     params = {
@@ -1303,6 +1654,7 @@ def build_google_oauth_url(tenant_id: str) -> str:
     }
     return "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
 
+
 def exchange_google_code_for_tokens(code_value: str) -> Dict[str, Any]:
     data = {
         "code": code_value,
@@ -1315,10 +1667,15 @@ def exchange_google_code_for_tokens(code_value: str) -> Dict[str, Any]:
         r = requests.post("https://oauth2.googleapis.com/token", data=data, timeout=30)
         if r.status_code == 200:
             return r.json()
-        log.error("google_token_exchange_failed status=%s body=%s", r.status_code, r.text[:500])
+        log.error(
+            "google_token_exchange_failed status=%s body=%s",
+            r.status_code,
+            r.text[:500],
+        )
     except Exception as e:
         log.error("google_token_exchange_exception err=%s", e)
     return {}
+
 
 def fetch_google_userinfo(access_token: str) -> Dict[str, Any]:
     if not access_token:
@@ -1331,10 +1688,13 @@ def fetch_google_userinfo(access_token: str) -> Dict[str, Any]:
         )
         if r.status_code == 200:
             return r.json()
-        log.error("google_userinfo_failed status=%s body=%s", r.status_code, r.text[:300])
+        log.error(
+            "google_userinfo_failed status=%s body=%s", r.status_code, r.text[:300]
+        )
     except Exception as e:
         log.error("google_userinfo_exception err=%s", e)
     return {}
+
 
 def fetch_google_calendar_list(access_token: str) -> List[Dict[str, Any]]:
     if not access_token:
@@ -1348,10 +1708,13 @@ def fetch_google_calendar_list(access_token: str) -> List[Dict[str, Any]]:
         if r.status_code == 200:
             data = r.json()
             return data.get("items", []) if isinstance(data, dict) else []
-        log.error("google_calendar_list_failed status=%s body=%s", r.status_code, r.text[:300])
+        log.error(
+            "google_calendar_list_failed status=%s body=%s", r.status_code, r.text[:300]
+        )
     except Exception as e:
         log.error("google_calendar_list_exception err=%s", e)
     return []
+
 
 def select_tenant_calendar_id(tenant_id: str, calendar_id: str) -> None:
     tenant_id = (tenant_id or "").strip()
@@ -1364,7 +1727,10 @@ def select_tenant_calendar_id(tenant_id: str, calendar_id: str) -> None:
     if "calendar_id" not in col_names:
         return
     with engine.begin() as conn:
-        conn.execute(text(f"UPDATE tenants SET calendar_id=:cid WHERE {pk}=:tid"), {"cid": calendar_id, "tid": tenant_id})
+        conn.execute(
+            text(f"UPDATE tenants SET calendar_id=:cid WHERE {pk}=:tid"),
+            {"cid": calendar_id, "tid": tenant_id},
+        )
 
 
 def token_expiry_from_google(expires_in: Any) -> Optional[datetime]:
@@ -1410,11 +1776,11 @@ def sync_tenant_onboarding_state(tenant_id: str) -> Dict[str, Any]:
 
     if sets:
         with engine.begin() as conn:
-            conn.execute(text(f"UPDATE tenants SET {', '.join(sets)} WHERE {pk}=:tid"), params)
+            conn.execute(
+                text(f"UPDATE tenants SET {', '.join(sets)} WHERE {pk}=:tid"), params
+            )
 
     return get_tenant_or_404(tenant_id)
-
-
 
 
 def norm_user_key(phone: str) -> str:
@@ -1458,7 +1824,7 @@ def normalize_service(value: Any) -> Optional[str]:
     if not txt:
         return None
 
-    if txt[0] in '[{(' and txt[-1] in ']})':
+    if txt[0] in "[{(" and txt[-1] in "]})":
         try:
             parsed = ast.literal_eval(txt)
             joined = _join_service_parts(parsed)
@@ -1468,7 +1834,7 @@ def normalize_service(value: Any) -> Optional[str]:
             pass
         inner = txt[1:-1].strip()
         if inner:
-            parts = [p.strip().strip("'\"") for p in inner.split(',') if p.strip()]
+            parts = [p.strip().strip("'\"") for p in inner.split(",") if p.strip()]
             if parts:
                 return ", ".join(parts)
 
@@ -1540,12 +1906,14 @@ def tenant_service_aliases(tenant: Dict[str, Any], lang: str) -> Dict[str, str]:
     elif lang == "en":
         candidates.extend([tenant.get("service_aliases_en"), tenant.get("aliases_en")])
 
-    candidates.extend([
-        tenant.get("service_aliases"),
-        tenant.get("aliases"),
-        os.getenv(f"BIZ_SERVICE_ALIASES_{lang.upper()}", "").strip(),
-        os.getenv("BIZ_SERVICE_ALIASES", "").strip(),
-    ])
+    candidates.extend(
+        [
+            tenant.get("service_aliases"),
+            tenant.get("aliases"),
+            os.getenv(f"BIZ_SERVICE_ALIASES_{lang.upper()}", "").strip(),
+            os.getenv("BIZ_SERVICE_ALIASES", "").strip(),
+        ]
+    )
 
     merged: Dict[str, str] = {}
     for candidate in candidates:
@@ -1553,7 +1921,9 @@ def tenant_service_aliases(tenant: Dict[str, Any], lang: str) -> Dict[str, str]:
     return merged
 
 
-def apply_service_aliases(value: Optional[str], aliases: Dict[str, str]) -> Optional[str]:
+def apply_service_aliases(
+    value: Optional[str], aliases: Dict[str, str]
+) -> Optional[str]:
     service = normalize_service(value)
     if not service:
         return None
@@ -1585,14 +1955,19 @@ def tenant_business_memory(tenant: Dict[str, Any], lang: str) -> str:
             if txt:
                 parts.append(f"{key}: {txt}")
 
-    env_memory = os.getenv(f"BIZ_BUSINESS_MEMORY_{lang.upper()}", "").strip() or os.getenv("BIZ_BUSINESS_MEMORY", "").strip()
+    env_memory = (
+        os.getenv(f"BIZ_BUSINESS_MEMORY_{lang.upper()}", "").strip()
+        or os.getenv("BIZ_BUSINESS_MEMORY", "").strip()
+    )
     if env_memory:
         parts.append(f"env_memory: {env_memory}")
 
     return "\n".join(parts)
 
 
-def default_business_memory_payload(business_type: str = "barbershop") -> Dict[str, str]:
+def default_business_memory_payload(
+    business_type: str = "barbershop",
+) -> Dict[str, str]:
     business_type = (business_type or "barbershop").strip().lower()
     if business_type == "clinic":
         return {
@@ -1614,7 +1989,9 @@ def default_business_memory_payload(business_type: str = "barbershop") -> Dict[s
 
 
 def _line_candidates_from_memory(memory: str) -> List[str]:
-    return [line.strip(" -•\t") for line in str(memory or "").splitlines() if line.strip()]
+    return [
+        line.strip(" -•\t") for line in str(memory or "").splitlines() if line.strip()
+    ]
 
 
 def _extract_price_from_line(line: str) -> Optional[str]:
@@ -1631,18 +2008,22 @@ def _extract_price_from_line(line: str) -> Optional[str]:
     return None
 
 
-def _memory_line_for_service(memory: str, service_item: Optional[Dict[str, Any]]) -> Optional[str]:
+def _memory_line_for_service(
+    memory: str, service_item: Optional[Dict[str, Any]]
+) -> Optional[str]:
     if not memory or not service_item:
         return None
-    hay = " ".join([
-        str(service_item.get("key") or ""),
-        str(service_item.get("name_lv") or ""),
-        str(service_item.get("name_ru") or ""),
-        str(service_item.get("name_en") or ""),
-        " ".join(service_item.get("aliases_lv") or []),
-        " ".join(service_item.get("aliases_ru") or []),
-        " ".join(service_item.get("aliases_en") or []),
-    ]).lower()
+    hay = " ".join(
+        [
+            str(service_item.get("key") or ""),
+            str(service_item.get("name_lv") or ""),
+            str(service_item.get("name_ru") or ""),
+            str(service_item.get("name_en") or ""),
+            " ".join(service_item.get("aliases_lv") or []),
+            " ".join(service_item.get("aliases_ru") or []),
+            " ".join(service_item.get("aliases_en") or []),
+        ]
+    ).lower()
     for line in _line_candidates_from_memory(memory):
         low = line.lower()
         if any(part and part in low for part in hay.split()):
@@ -1650,7 +2031,9 @@ def _memory_line_for_service(memory: str, service_item: Optional[Dict[str, Any]]
     return None
 
 
-def barber_service_options_text(lang: str, catalog: List[Dict[str, Any]], max_items: int = 3) -> str:
+def barber_service_options_text(
+    lang: str, catalog: List[Dict[str, Any]], max_items: int = 3
+) -> str:
     lang = get_lang(lang)
     names = []
     for item in catalog[:max_items]:
@@ -1660,19 +2043,35 @@ def barber_service_options_text(lang: str, catalog: List[Dict[str, Any]], max_it
     if not names:
         return ""
     if lang == "ru":
-        return ", ".join(names[:-1]) + (" или " + names[-1] if len(names) > 1 else names[0])
+        return ", ".join(names[:-1]) + (
+            " или " + names[-1] if len(names) > 1 else names[0]
+        )
     if lang == "en":
-        return ", ".join(names[:-1]) + (" or " + names[-1] if len(names) > 1 else names[0])
+        return ", ".join(names[:-1]) + (
+            " or " + names[-1] if len(names) > 1 else names[0]
+        )
     return ", ".join(names[:-1]) + (" vai " + names[-1] if len(names) > 1 else names[0])
 
 
 def barber_service_prompt(lang: str, catalog: List[Dict[str, Any]]) -> str:
     options = barber_service_options_text(lang, catalog)
     if lang == "ru":
-        return f"На какую услугу вас записать? Например: {options}." if options else "На какую услугу вас записать?"
+        return (
+            f"На какую услугу вас записать? Например: {options}."
+            if options
+            else "На какую услугу вас записать?"
+        )
     if lang == "en":
-        return f"Which service would you like to book? For example: {options}." if options else "Which service would you like to book?"
-    return f"Uz kādu pakalpojumu vēlaties pierakstīties? Piemēram: {options}." if options else "Uz kādu pakalpojumu vēlaties pierakstīties?"
+        return (
+            f"Which service would you like to book? For example: {options}."
+            if options
+            else "Which service would you like to book?"
+        )
+    return (
+        f"Uz kādu pakalpojumu vēlaties pierakstīties? Piemēram: {options}."
+        if options
+        else "Uz kādu pakalpojumu vēlaties pierakstīties?"
+    )
 
 
 def try_barbershop_faq(
@@ -1692,10 +2091,42 @@ def try_barbershop_faq(
     if not low:
         return None
 
-    price_markers = ["цена", "сколько стоит", "price", "how much", "cena", "cik maksā", "cik maksa"]
-    location_markers = ["where", "address", "адрес", "где вы", "где находитесь", "kur jūs", "adrese", "kur atrodaties"]
-    services_markers = ["какие услуги", "что делаете", "services", "what services", "pakalpojumi", "ko jūs darāt", "ko jus darat"]
-    duration_markers = ["сколько по времени", "сколько длится", "how long", "duration", "cik ilgi", "ilgums"]
+    price_markers = [
+        "цена",
+        "сколько стоит",
+        "price",
+        "how much",
+        "cena",
+        "cik maksā",
+        "cik maksa",
+    ]
+    location_markers = [
+        "where",
+        "address",
+        "адрес",
+        "где вы",
+        "где находитесь",
+        "kur jūs",
+        "adrese",
+        "kur atrodaties",
+    ]
+    services_markers = [
+        "какие услуги",
+        "что делаете",
+        "services",
+        "what services",
+        "pakalpojumi",
+        "ko jūs darāt",
+        "ko jus darat",
+    ]
+    duration_markers = [
+        "сколько по времени",
+        "сколько длится",
+        "how long",
+        "duration",
+        "cik ilgi",
+        "ilgums",
+    ]
 
     if any(x in low for x in location_markers):
         addr = str(settings.get("addr") or tenant.get("address") or "").strip()
@@ -1721,7 +2152,11 @@ def try_barbershop_faq(
 
     if any(x in low for x in duration_markers):
         service_key = canonical_service_key_from_text(low, service_aliases)
-        service_item = get_service_item_by_key(service_catalog, service_key) if service_key else extract_service_from_text(low, service_catalog, lang)
+        service_item = (
+            get_service_item_by_key(service_catalog, service_key)
+            if service_key
+            else extract_service_from_text(low, service_catalog, lang)
+        )
         if service_item:
             duration = service_duration_min(service_item)
             display = service_display_name(service_item, lang)
@@ -1731,11 +2166,20 @@ def try_barbershop_faq(
                 text = f"{display} usually takes about {duration} minutes."
             else:
                 text = f"{display} parasti aizņem apmēram {duration} minūtes."
-            return {"status": "info", "reply_voice": text, "msg_out": text, "lang": lang}
+            return {
+                "status": "info",
+                "reply_voice": text,
+                "msg_out": text,
+                "lang": lang,
+            }
 
     if any(x in low for x in price_markers):
         service_key = canonical_service_key_from_text(low, service_aliases)
-        service_item = get_service_item_by_key(service_catalog, service_key) if service_key else extract_service_from_text(low, service_catalog, lang)
+        service_item = (
+            get_service_item_by_key(service_catalog, service_key)
+            if service_key
+            else extract_service_from_text(low, service_catalog, lang)
+        )
         if service_item:
             line = _memory_line_for_service(business_memory, service_item)
             price = _extract_price_from_line(line or "")
@@ -1755,7 +2199,12 @@ def try_barbershop_faq(
                     text = f"For {display}, it is best to confirm the price with the barber. It usually takes about {duration} minutes."
                 else:
                     text = f"Par pakalpojumu {display} cenu vislabāk precizēt pie meistara. Parasti tas aizņem apmēram {duration} minūtes."
-            return {"status": "info", "reply_voice": text, "msg_out": text, "lang": lang}
+            return {
+                "status": "info",
+                "reply_voice": text,
+                "msg_out": text,
+                "lang": lang,
+            }
 
     return None
 
@@ -1787,11 +2236,9 @@ def faq_with_flow_followup(
     return result
 
 
-
-
-
-
-def ensure_lang_update(tenant_id: str, user_key: str, c: Dict[str, Any], lang: str) -> Dict[str, Any]:
+def ensure_lang_update(
+    tenant_id: str, user_key: str, c: Dict[str, Any], lang: str
+) -> Dict[str, Any]:
     lang = get_lang(lang)
     if get_lang(c.get("lang")) != lang:
         c["lang"] = lang
@@ -1809,8 +2256,12 @@ def ensure_lang_update(tenant_id: str, user_key: str, c: Dict[str, Any], lang: s
 # -------------------------
 
 
-def usage_type_from_event(raw_text: str, result: Dict[str, Any], conv: Optional[Dict[str, Any]] = None) -> str:
-    intent = infer_intent_label(raw_text, str((result or {}).get("status") or "").strip(), conv)
+def usage_type_from_event(
+    raw_text: str, result: Dict[str, Any], conv: Optional[Dict[str, Any]] = None
+) -> str:
+    intent = infer_intent_label(
+        raw_text, str((result or {}).get("status") or "").strip(), conv
+    )
     status = str((result or {}).get("status") or "").strip().lower()
     if status == "booked":
         return "booking"
@@ -1853,14 +2304,12 @@ def record_usage_event(
         status = str((result or {}).get("status") or "").strip() or None
         with engine.begin() as conn:
             conn.execute(
-                text(
-                    """
+                text("""
                     INSERT INTO usage_events
                     (tenant_id, user_id, channel, usage_type, usage_units, billable, source, status)
                     VALUES
                     (:tenant_id, :user_id, :channel, :usage_type, :usage_units, :billable, :source, :status)
-                    """
-                ),
+                    """),
                 {
                     "tenant_id": (tenant_id or "").strip() or TENANT_ID_DEFAULT,
                     "user_id": norm_user_key(user_id),
@@ -1872,12 +2321,27 @@ def record_usage_event(
                     "status": status,
                 },
             )
-        log.info("usage_event_written tenant_id=%s user_id=%s channel=%s usage_type=%s billable=%s status=%s", (tenant_id or "").strip() or TENANT_ID_DEFAULT, norm_user_key(user_id), (channel or "").strip().lower() or "unknown", usage_type, billable, status or "")
+        log.info(
+            "usage_event_written tenant_id=%s user_id=%s channel=%s usage_type=%s billable=%s status=%s",
+            (tenant_id or "").strip() or TENANT_ID_DEFAULT,
+            norm_user_key(user_id),
+            (channel or "").strip().lower() or "unknown",
+            usage_type,
+            billable,
+            status or "",
+        )
     except Exception as e:
-        log.error("usage_event_write_failed tenant_id=%s user_id=%s err=%s", tenant_id, user_id, e)
+        log.error(
+            "usage_event_write_failed tenant_id=%s user_id=%s err=%s",
+            tenant_id,
+            user_id,
+            e,
+        )
 
 
-def infer_intent_label(raw_text: str, result_status: str, conv: Optional[Dict[str, Any]] = None) -> str:
+def infer_intent_label(
+    raw_text: str, result_status: str, conv: Optional[Dict[str, Any]] = None
+) -> str:
     low = (raw_text or "").strip().lower()
     if any(w in low for w in ["atcelt", "отменить", "cancel"]):
         return "cancel"
@@ -1887,7 +2351,13 @@ def infer_intent_label(raw_text: str, result_status: str, conv: Optional[Dict[st
         return "booking"
     if any(w in low for w in ["pierakst", "запис", "appointment", "book"]):
         return "booking"
-    if result_status in ("booked", "busy", "booking_failed", "reschedule_wait", "no_booking"):
+    if result_status in (
+        "booked",
+        "busy",
+        "booking_failed",
+        "reschedule_wait",
+        "no_booking",
+    ):
         return "booking"
     if result_status == "greeting":
         return "greeting"
@@ -1896,6 +2366,7 @@ def infer_intent_label(raw_text: str, result_status: str, conv: Optional[Dict[st
     if result_status == "info":
         return "info"
     return "unknown"
+
 
 def log_call_event(
     tenant_id: str,
@@ -1907,21 +2378,24 @@ def log_call_event(
 ) -> None:
     try:
         conv = conv or {}
-        intent = infer_intent_label(raw_text, str(result.get("status") or "").strip(), conv)
+        intent = infer_intent_label(
+            raw_text, str(result.get("status") or "").strip(), conv
+        )
         service = str(conv.get("service") or "").strip() or None
         datetime_iso = str(conv.get("datetime_iso") or "").strip() or None
         status = str(result.get("status") or "").strip() or "unknown"
-        ai_reply = str(result.get("msg_out") or result.get("reply_voice") or "").strip() or None
+        ai_reply = (
+            str(result.get("msg_out") or result.get("reply_voice") or "").strip()
+            or None
+        )
         with engine.begin() as conn:
             conn.execute(
-                text(
-                    """
+                text("""
                     INSERT INTO call_logs
                     (tenant_id, user_id, channel, intent, service, datetime_iso, status, raw_text, ai_reply)
                     VALUES
                     (:tenant_id, :user_id, :channel, :intent, :service, :datetime_iso, :status, :raw_text, :ai_reply)
-                    """
-                ),
+                    """),
                 {
                     "tenant_id": (tenant_id or "").strip() or TENANT_ID_DEFAULT,
                     "user_id": norm_user_key(user_id),
@@ -1935,28 +2409,103 @@ def log_call_event(
                 },
             )
     except Exception as e:
-        log.error("call_log_write_failed tenant_id=%s user_id=%s err=%s", tenant_id, user_id, e)
+        log.error(
+            "call_log_write_failed tenant_id=%s user_id=%s err=%s",
+            tenant_id,
+            user_id,
+            e,
+        )
 
 
 # -------------------------
 # STAGE 21 — CONVERSATIONAL AUDIT FOUNDATION
 # -------------------------
 DIALOGUE_TEST_MATRIX: List[Dict[str, Any]] = [
-    {"id": "lv_single_booking_full", "category": "single_message_booking", "lang": "lv", "message": "labdien! Es gribu pierakstīties uz konsultāciju uz 16 maiju 16:00", "expected": ["booking", "service", "date", "time"]},
-    {"id": "lv_services_faq", "category": "faq_services", "lang": "lv", "message": "kādi pakalpojumi jums ir?", "expected": ["info", "services"]},
-    {"id": "lv_price_generic", "category": "faq_price", "lang": "lv", "message": "cik maksā?", "expected": ["info", "price_clarify"]},
-    {"id": "lv_price_specific", "category": "faq_price", "lang": "lv", "message": "cik maksā konsultācija?", "expected": ["info", "price"]},
-    {"id": "lv_today_free", "category": "natural_availability", "lang": "lv", "message": "hej, jums šodien ir kas brīvs?", "expected": ["availability", "natural"]},
-    {"id": "lv_after_work", "category": "time_window", "lang": "lv", "message": "var pēc darba?", "expected": ["time_window", "evening"]},
-    {"id": "ru_single_booking", "category": "single_message_booking", "lang": "ru", "message": "Здравствуйте, можно записаться на консультацию завтра в 15:00?", "expected": ["booking", "service", "date", "time"]},
-    {"id": "ru_price", "category": "faq_price", "lang": "ru", "message": "сколько стоит консультация?", "expected": ["info", "price"]},
-    {"id": "en_single_booking", "category": "single_message_booking", "lang": "en", "message": "Hi, I want to book a consultation tomorrow at 3 pm", "expected": ["booking", "service", "date", "time"]},
-    {"id": "mixed_lang", "category": "language_switch", "lang": "lv", "message": "Labdien, можно консультацию завтра?", "expected": ["booking", "mixed_language"]},
-    {"id": "typo_booking", "category": "typo", "lang": "lv", "message": "gribetuu konsulatciju rit 15", "expected": ["booking", "typo_tolerant"]},
-    {"id": "interrupt_price", "category": "faq_during_booking", "lang": "lv", "message": "a cik tas maksā?", "expected": ["info", "preserve_flow"]},
+    {
+        "id": "lv_single_booking_full",
+        "category": "single_message_booking",
+        "lang": "lv",
+        "message": "labdien! Es gribu pierakstīties uz konsultāciju uz 16 maiju 16:00",
+        "expected": ["booking", "service", "date", "time"],
+    },
+    {
+        "id": "lv_services_faq",
+        "category": "faq_services",
+        "lang": "lv",
+        "message": "kādi pakalpojumi jums ir?",
+        "expected": ["info", "services"],
+    },
+    {
+        "id": "lv_price_generic",
+        "category": "faq_price",
+        "lang": "lv",
+        "message": "cik maksā?",
+        "expected": ["info", "price_clarify"],
+    },
+    {
+        "id": "lv_price_specific",
+        "category": "faq_price",
+        "lang": "lv",
+        "message": "cik maksā konsultācija?",
+        "expected": ["info", "price"],
+    },
+    {
+        "id": "lv_today_free",
+        "category": "natural_availability",
+        "lang": "lv",
+        "message": "hej, jums šodien ir kas brīvs?",
+        "expected": ["availability", "natural"],
+    },
+    {
+        "id": "lv_after_work",
+        "category": "time_window",
+        "lang": "lv",
+        "message": "var pēc darba?",
+        "expected": ["time_window", "evening"],
+    },
+    {
+        "id": "ru_single_booking",
+        "category": "single_message_booking",
+        "lang": "ru",
+        "message": "Здравствуйте, можно записаться на консультацию завтра в 15:00?",
+        "expected": ["booking", "service", "date", "time"],
+    },
+    {
+        "id": "ru_price",
+        "category": "faq_price",
+        "lang": "ru",
+        "message": "сколько стоит консультация?",
+        "expected": ["info", "price"],
+    },
+    {
+        "id": "en_single_booking",
+        "category": "single_message_booking",
+        "lang": "en",
+        "message": "Hi, I want to book a consultation tomorrow at 3 pm",
+        "expected": ["booking", "service", "date", "time"],
+    },
+    {
+        "id": "mixed_lang",
+        "category": "language_switch",
+        "lang": "lv",
+        "message": "Labdien, можно консультацию завтра?",
+        "expected": ["booking", "mixed_language"],
+    },
+    {
+        "id": "typo_booking",
+        "category": "typo",
+        "lang": "lv",
+        "message": "gribetuu konsulatciju rit 15",
+        "expected": ["booking", "typo_tolerant"],
+    },
+    {
+        "id": "interrupt_price",
+        "category": "faq_during_booking",
+        "lang": "lv",
+        "message": "a cik tas maksā?",
+        "expected": ["info", "preserve_flow"],
+    },
 ]
-
-
 
 
 # -------------------------
@@ -1968,9 +2517,20 @@ STAGE34_REGRESSION_TEST_MATRIX: List[Dict[str, Any]] = [
         "stage": 30,
         "lang": "ru",
         "category": "after_time_window",
-        "message_sequence": ["хочу записаться на консультацию на послезавтра после 14:00"],
-        "expected": ["booking_flow", "time_window_after_14", "multiple_slot_options", "no_exact_14_confirmation"],
-        "forbidden": ["confirm_exact_14_00", "ask_service_again", "language_switch_to_lv"],
+        "message_sequence": [
+            "хочу записаться на консультацию на послезавтра после 14:00"
+        ],
+        "expected": [
+            "booking_flow",
+            "time_window_after_14",
+            "multiple_slot_options",
+            "no_exact_14_confirmation",
+        ],
+        "forbidden": [
+            "confirm_exact_14_00",
+            "ask_service_again",
+            "language_switch_to_lv",
+        ],
     },
     {
         "id": "stage30_lv_after_1400_window",
@@ -1979,7 +2539,11 @@ STAGE34_REGRESSION_TEST_MATRIX: List[Dict[str, Any]] = [
         "category": "after_time_window",
         "message_sequence": ["gribu pierakstīties uz konsultāciju parīt pēc 14:00"],
         "expected": ["booking_flow", "time_window_after_14", "multiple_slot_options"],
-        "forbidden": ["confirm_exact_14_00", "ask_service_again", "language_switch_to_ru"],
+        "forbidden": [
+            "confirm_exact_14_00",
+            "ask_service_again",
+            "language_switch_to_ru",
+        ],
     },
     {
         "id": "stage31_ru_evening_fuzzy",
@@ -1987,7 +2551,11 @@ STAGE34_REGRESSION_TEST_MATRIX: List[Dict[str, Any]] = [
         "lang": "ru",
         "category": "fuzzy_time_window",
         "message_sequence": ["хочу записаться на консультацию завтра вечером"],
-        "expected": ["evening_window", "multiple_slot_options", "no_exact_default_time"],
+        "expected": [
+            "evening_window",
+            "multiple_slot_options",
+            "no_exact_default_time",
+        ],
         "forbidden": ["ask_date_again", "ask_service_again", "morning_slots_only"],
     },
     {
@@ -2004,8 +2572,15 @@ STAGE34_REGRESSION_TEST_MATRIX: List[Dict[str, Any]] = [
         "stage": 32,
         "lang": "ru",
         "category": "contextual_refinement",
-        "message_sequence": ["хочу записаться на консультацию послезавтра после 14:00", "не так поздно"],
-        "expected": ["same_booking_flow", "earlier_refinement", "avoid_repeating_same_slots"],
+        "message_sequence": [
+            "хочу записаться на консультацию послезавтра после 14:00",
+            "не так поздно",
+        ],
+        "expected": [
+            "same_booking_flow",
+            "earlier_refinement",
+            "avoid_repeating_same_slots",
+        ],
         "forbidden": ["reset_to_new", "ask_service_again", "repeat_same_three_slots"],
     },
     {
@@ -2013,7 +2588,10 @@ STAGE34_REGRESSION_TEST_MATRIX: List[Dict[str, Any]] = [
         "stage": 32,
         "lang": "lv",
         "category": "contextual_refinement",
-        "message_sequence": ["gribu pierakstīties uz konsultāciju rīt vakarā", "var mazliet agrāk?"],
+        "message_sequence": [
+            "gribu pierakstīties uz konsultāciju rīt vakarā",
+            "var mazliet agrāk?",
+        ],
         "expected": ["same_booking_flow", "earlier_refinement", "lv_reply"],
         "forbidden": ["reset_to_new", "ask_service_again", "language_switch_to_ru"],
     },
@@ -2022,18 +2600,37 @@ STAGE34_REGRESSION_TEST_MATRIX: List[Dict[str, Any]] = [
         "stage": 33,
         "lang": "ru",
         "category": "soft_ux_confirmation",
-        "message_sequence": ["хочу записаться на консультацию завтра вечером", "да, подходит"],
+        "message_sequence": [
+            "хочу записаться на консультацию завтра вечером",
+            "да, подходит",
+        ],
         "expected": ["confirm_yes_detected", "booking_finalized", "soft_human_reply"],
-        "forbidden": ["confirm_loop", "ask_same_confirmation_again", "duplicate_booking"],
+        "forbidden": [
+            "confirm_loop",
+            "ask_same_confirmation_again",
+            "duplicate_booking",
+        ],
     },
     {
         "id": "stage33_lv_soft_confirm",
         "stage": 33,
         "lang": "lv",
         "category": "soft_ux_confirmation",
-        "message_sequence": ["gribu pierakstīties uz konsultāciju rīt vakarā", "jā, der"],
-        "expected": ["confirm_yes_detected", "booking_finalized", "soft_human_reply", "lv_reply"],
-        "forbidden": ["confirm_loop", "ask_same_confirmation_again", "duplicate_booking"],
+        "message_sequence": [
+            "gribu pierakstīties uz konsultāciju rīt vakarā",
+            "jā, der",
+        ],
+        "expected": [
+            "confirm_yes_detected",
+            "booking_finalized",
+            "soft_human_reply",
+            "lv_reply",
+        ],
+        "forbidden": [
+            "confirm_loop",
+            "ask_same_confirmation_again",
+            "duplicate_booking",
+        ],
     },
     {
         "id": "parser_date_time_protection",
@@ -2084,7 +2681,9 @@ def _stage35_time_labels(text_value: str) -> List[str]:
     return re.findall(r"\b(?:[01]?\d|2[0-3]):[0-5]\d\b", str(text_value or ""))
 
 
-def stage35_detect_regression_observations(scenario: Dict[str, Any], turns: List[Dict[str, Any]]) -> Dict[str, Any]:
+def stage35_detect_regression_observations(
+    scenario: Dict[str, Any], turns: List[Dict[str, Any]]
+) -> Dict[str, Any]:
     scenario = scenario or {}
     expected = [str(x) for x in scenario.get("expected") or []]
     forbidden = [str(x) for x in scenario.get("forbidden") or []]
@@ -2102,7 +2701,10 @@ def stage35_detect_regression_observations(scenario: Dict[str, Any], turns: List
     observed = set()
     forbidden_hits = []
 
-    if any(st in {"need_more", "busy", "booked", "min_notice", "holiday_closed"} for st in statuses) or any(st.startswith("AWAITING_") for st in states):
+    if any(
+        st in {"need_more", "busy", "booked", "min_notice", "holiday_closed"}
+        for st in statuses
+    ) or any(st.startswith("AWAITING_") for st in states):
         observed.add("booking_flow")
         observed.add("same_booking_flow")
     if len(last_times or times) >= 2:
@@ -2116,7 +2718,10 @@ def stage35_detect_regression_observations(scenario: Dict[str, Any], turns: List
     if "booked" in statuses:
         observed.add("booking_finalized")
         observed.add("confirm_yes_detected")
-    if any(x in all_low for x in ["agr", "раньше", "earlier", "ne tik vēlu", "не так поздно"]):
+    if any(
+        x in all_low
+        for x in ["agr", "раньше", "earlier", "ne tik vēlu", "не так поздно"]
+    ):
         observed.add("earlier_refinement")
     if lang == "lv" and result_langs and all(x == "lv" for x in result_langs):
         observed.add("lv_reply")
@@ -2124,22 +2729,36 @@ def stage35_detect_regression_observations(scenario: Dict[str, Any], turns: List
         observed.add("ru_reply")
     if "14:00" not in last_reply or len(last_times) >= 2:
         observed.add("no_exact_14_confirmation")
-    if "15.05" in " ".join(scenario.get("message_sequence") or []) and ("10:00" in all_reply or any(t == "10:00" for t in times)):
+    if "15.05" in " ".join(scenario.get("message_sequence") or []) and (
+        "10:00" in all_reply or any(t == "10:00" for t in times)
+    ):
         observed.add("date_15_05")
         observed.add("time_10_00")
     if any(st in {"need_more", "booked"} for st in statuses):
         observed.add("move_to_confirmation_or_booking")
         observed.add("select_offered_slot")
-    if any(x in all_low for x in ["lieliski", "отлично", "great", "der", "подходит", "jā", "да"]):
+    if any(
+        x in all_low
+        for x in ["lieliski", "отлично", "great", "der", "подходит", "jā", "да"]
+    ):
         observed.add("soft_human_reply")
 
     def hit_forbidden(token: str) -> bool:
         if token == "confirm_exact_14_00":
-            return "14:00" in last_reply and any(w in last_low for w in ["подтверд", "apstip", "confirm", "pierakstīt", "записать"])
+            return "14:00" in last_reply and any(
+                w in last_low
+                for w in ["подтверд", "apstip", "confirm", "pierakstīt", "записать"]
+            )
         if token == "ask_service_again":
-            return any(x in last_low for x in ["какую услугу", "kādu pakalpojumu", "which service"])
+            return any(
+                x in last_low
+                for x in ["какую услугу", "kādu pakalpojumu", "which service"]
+            )
         if token == "ask_date_again":
-            return any(x in last_low for x in ["какой день", "kuru dienu", "which day", "what date"])
+            return any(
+                x in last_low
+                for x in ["какой день", "kuru dienu", "which day", "what date"]
+            )
         if token == "language_switch_to_lv":
             return lang != "lv" and any(x == "lv" for x in result_langs)
         if token == "language_switch_to_ru":
@@ -2147,15 +2766,23 @@ def stage35_detect_regression_observations(scenario: Dict[str, Any], turns: List
         if token == "ru_reply":
             return any(x == "ru" for x in result_langs)
         if token == "confirm_loop" or token == "ask_same_confirmation_again":
-            return (statuses[-1] == "need_more" if statuses else False) and any(x in last_low for x in ["подтверд", "apstip", "confirm"])
+            return (statuses[-1] == "need_more" if statuses else False) and any(
+                x in last_low for x in ["подтверд", "apstip", "confirm"]
+            )
         if token == "repeat_14_busy":
-            return "14:00" in all_reply and any(x in all_low for x in ["занят", "aizņem", "busy", "taken"])
+            return "14:00" in all_reply and any(
+                x in all_low for x in ["занят", "aizņem", "busy", "taken"]
+            )
         if token == "ignore_offered_choice":
-            return "10:00" in " ".join(scenario.get("message_sequence") or []) and "10:00" not in all_reply and statuses[-1:] == ["busy"]
+            return (
+                "10:00" in " ".join(scenario.get("message_sequence") or [])
+                and "10:00" not in all_reply
+                and statuses[-1:] == ["busy"]
+            )
         if token == "time_15_05" or token == "accidental_date_as_time":
             return "15:05" in all_reply
         if token == "morning_slots_only":
-            return bool(times) and all(int(t.split(":",1)[0]) < 12 for t in times)
+            return bool(times) and all(int(t.split(":", 1)[0]) < 12 for t in times)
         if token == "reset_to_new":
             return "NEW" in states[1:]
         if token == "repeat_same_three_slots":
@@ -2169,7 +2796,15 @@ def stage35_detect_regression_observations(scenario: Dict[str, Any], turns: List
     expected_missing = [token for token in expected if token not in observed]
     passed = not forbidden_hits and len(expected_missing) == 0
     # Keep the runner useful during early QA: mark as warning rather than hard fail when only soft_human_reply is missing.
-    severity = "pass" if passed else "warning" if (not forbidden_hits and expected_missing == ["soft_human_reply"]) else "fail"
+    severity = (
+        "pass"
+        if passed
+        else (
+            "warning"
+            if (not forbidden_hits and expected_missing == ["soft_human_reply"])
+            else "fail"
+        )
+    )
     return {
         "passed": passed,
         "severity": severity,
@@ -2183,8 +2818,17 @@ def stage35_detect_regression_observations(scenario: Dict[str, Any], turns: List
     }
 
 
-def stage35_run_regression_scenario(scenario_id: str, tenant_id: str = TENANT_ID_DEFAULT, user_id: Optional[str] = None) -> Dict[str, Any]:
-    scenario = next((x for x in STAGE34_REGRESSION_TEST_MATRIX if str(x.get("id")) == str(scenario_id)), None)
+def stage35_run_regression_scenario(
+    scenario_id: str, tenant_id: str = TENANT_ID_DEFAULT, user_id: Optional[str] = None
+) -> Dict[str, Any]:
+    scenario = next(
+        (
+            x
+            for x in STAGE34_REGRESSION_TEST_MATRIX
+            if str(x.get("id")) == str(scenario_id)
+        ),
+        None,
+    )
     if not scenario:
         raise HTTPException(status_code=404, detail="Regression scenario not found")
     tenant_id = (tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
@@ -2193,19 +2837,23 @@ def stage35_run_regression_scenario(scenario_id: str, tenant_id: str = TENANT_ID
     messages = scenario.get("message_sequence") or []
     turns: List[Dict[str, Any]] = []
     for msg in messages[:10]:
-        result = handle_user_text_with_logging(tenant_id, user_id, str(msg), "dev", lang, source="regression_runner")
+        result = handle_user_text_with_logging(
+            tenant_id, user_id, str(msg), "dev", lang, source="regression_runner"
+        )
         try:
             conv = db_get_or_create_conversation(tenant_id, user_id, lang)
         except Exception:
             conv = {}
-        turns.append({
-            "user": str(msg),
-            "assistant": result.get("msg_out") or result.get("reply_voice"),
-            "status": result.get("status"),
-            "lang": result.get("lang"),
-            "state": (conv or {}).get("state"),
-            "pending": (conv or {}).get("pending"),
-        })
+        turns.append(
+            {
+                "user": str(msg),
+                "assistant": result.get("msg_out") or result.get("reply_voice"),
+                "status": result.get("status"),
+                "lang": result.get("lang"),
+                "state": (conv or {}).get("state"),
+                "pending": (conv or {}).get("pending"),
+            }
+        )
     evaluation = stage35_detect_regression_observations(scenario, turns)
     return {
         "stage": 35,
@@ -2218,17 +2866,35 @@ def stage35_run_regression_scenario(scenario_id: str, tenant_id: str = TENANT_ID
     }
 
 
-def stage35_run_regression_suite(tenant_id: str = TENANT_ID_DEFAULT, limit: int = 10) -> Dict[str, Any]:
+def stage35_run_regression_suite(
+    tenant_id: str = TENANT_ID_DEFAULT, limit: int = 10
+) -> Dict[str, Any]:
     limit = max(1, min(int(limit or 10), len(STAGE34_REGRESSION_TEST_MATRIX)))
     results = []
     for scenario in STAGE34_REGRESSION_TEST_MATRIX[:limit]:
         try:
-            results.append(stage35_run_regression_scenario(str(scenario.get("id")), tenant_id=tenant_id))
+            results.append(
+                stage35_run_regression_scenario(
+                    str(scenario.get("id")), tenant_id=tenant_id
+                )
+            )
         except Exception as e:
-            results.append({"scenario_id": scenario.get("id"), "error": str(e), "evaluation": {"severity": "fail", "passed": False}})
-    passed = sum(1 for r in results if ((r.get("evaluation") or {}).get("severity") == "pass"))
-    warnings = sum(1 for r in results if ((r.get("evaluation") or {}).get("severity") == "warning"))
-    failed = sum(1 for r in results if ((r.get("evaluation") or {}).get("severity") == "fail"))
+            results.append(
+                {
+                    "scenario_id": scenario.get("id"),
+                    "error": str(e),
+                    "evaluation": {"severity": "fail", "passed": False},
+                }
+            )
+    passed = sum(
+        1 for r in results if ((r.get("evaluation") or {}).get("severity") == "pass")
+    )
+    warnings = sum(
+        1 for r in results if ((r.get("evaluation") or {}).get("severity") == "warning")
+    )
+    failed = sum(
+        1 for r in results if ((r.get("evaluation") or {}).get("severity") == "fail")
+    )
     return {
         "stage": 35,
         "name": "Regression Runner / QA Dashboard",
@@ -2244,8 +2910,7 @@ def stage35_run_regression_suite(tenant_id: str = TENANT_ID_DEFAULT, limit: int 
 @app.get("/dialogue/qa", response_class=HTMLResponse)
 def dialogue_qa_dashboard():
     matrix = stage34_regression_test_matrix()
-    rows = "".join([
-        f"""
+    rows = "".join([f"""
         <tr>
           <td><code>{item.get('id')}</code></td>
           <td>{item.get('stage')}</td>
@@ -2254,8 +2919,7 @@ def dialogue_qa_dashboard():
           <td>{' → '.join(item.get('message_sequence') or [])}</td>
           <td><button onclick=\"runScenario('{item.get('id')}')\">Run</button></td>
         </tr>
-        """ for item in matrix.get("items", [])
-    ])
+        """ for item in matrix.get("items", [])])
     html = f"""
 <!DOCTYPE html>
 <html lang="en">
@@ -2326,12 +2990,16 @@ async function loadMatrix() {{
 
 
 @app.get("/dialogue/regression_run/{scenario_id}")
-def dialogue_regression_run_endpoint(scenario_id: str, tenant_id: str = TENANT_ID_DEFAULT):
+def dialogue_regression_run_endpoint(
+    scenario_id: str, tenant_id: str = TENANT_ID_DEFAULT
+):
     return stage35_run_regression_scenario(scenario_id, tenant_id=tenant_id)
 
 
 @app.get("/dialogue/regression_run_all")
-def dialogue_regression_run_all_endpoint(tenant_id: str = TENANT_ID_DEFAULT, limit: int = 10):
+def dialogue_regression_run_all_endpoint(
+    tenant_id: str = TENANT_ID_DEFAULT, limit: int = 10
+):
     return stage35_run_regression_suite(tenant_id=tenant_id, limit=limit)
 
 
@@ -2362,10 +3030,17 @@ def ensure_dialogue_audit_table() -> None:
         log.error("ensure_dialogue_audit_table_failed err=%s", e)
 
 
-def dialogue_flags_for_turn(raw_text: str, result: Dict[str, Any], conv_before: Optional[Dict[str, Any]], conv_after: Optional[Dict[str, Any]]) -> List[str]:
+def dialogue_flags_for_turn(
+    raw_text: str,
+    result: Dict[str, Any],
+    conv_before: Optional[Dict[str, Any]],
+    conv_after: Optional[Dict[str, Any]],
+) -> List[str]:
     raw = str(raw_text or "").strip()
     low = _normalize_phrase_text(raw)
-    reply = str((result or {}).get("msg_out") or (result or {}).get("reply_voice") or "").strip()
+    reply = str(
+        (result or {}).get("msg_out") or (result or {}).get("reply_voice") or ""
+    ).strip()
     reply_low = _normalize_phrase_text(reply)
     status = str((result or {}).get("status") or "").strip().lower()
     before_state = conversation_state(conv_before or {})
@@ -2378,22 +3053,51 @@ def dialogue_flags_for_turn(raw_text: str, result: Dict[str, Any], conv_before: 
         flags.append(f"status_{status}")
     if len(reply) > 420:
         flags.append("reply_too_long")
-    if reply_low and any(reply_low.count(p) >= 2 for p in ["uz kuru", "kurš datums", "kuru dienu", "на какую", "which service"]):
+    if reply_low and any(
+        reply_low.count(p) >= 2
+        for p in ["uz kuru", "kurš datums", "kuru dienu", "на какую", "which service"]
+    ):
         flags.append("possible_repetition")
-    if any(x in low for x in ["cik maksa", "cik maksā", "сколько стоит", "price", "how much"]) and after_state == STATE_AWAITING_DATE:
+    if (
+        any(
+            x in low
+            for x in ["cik maksa", "cik maksā", "сколько стоит", "price", "how much"]
+        )
+        and after_state == STATE_AWAITING_DATE
+    ):
         flags.append("faq_price_to_date_collision")
-    if any(x in low for x in ["pakalpojumi", "услуги", "services"]) and after_state in {STATE_AWAITING_DATE, STATE_AWAITING_TIME, STATE_AWAITING_CONFIRM}:
+    if any(x in low for x in ["pakalpojumi", "услуги", "services"]) and after_state in {
+        STATE_AWAITING_DATE,
+        STATE_AWAITING_TIME,
+        STATE_AWAITING_CONFIRM,
+    }:
         flags.append("faq_services_started_booking")
-    if before_state != STATE_NEW and after_state == STATE_NEW and status not in {"booked", "cancelled", "info", "greeting"}:
+    if (
+        before_state != STATE_NEW
+        and after_state == STATE_NEW
+        and status not in {"booked", "cancelled", "info", "greeting"}
+    ):
         flags.append("unexpected_state_reset")
     if raw and len(raw.split()) >= 7 and after_state == STATE_AWAITING_SERVICE:
         flags.append("long_message_missing_service")
-    if has_date_reference(raw) and has_explicit_time(raw) and after_state in {STATE_AWAITING_SERVICE, STATE_AWAITING_DATE}:
+    if (
+        has_date_reference(raw)
+        and has_explicit_time(raw)
+        and after_state in {STATE_AWAITING_SERVICE, STATE_AWAITING_DATE}
+    ):
         flags.append("single_message_missing_date_or_time")
-    if str((result or {}).get("lang") or "").strip() and str((conv_after or {}).get("lang") or "").strip():
-        if get_lang((result or {}).get("lang")) != get_lang((conv_after or {}).get("lang")):
+    if (
+        str((result or {}).get("lang") or "").strip()
+        and str((conv_after or {}).get("lang") or "").strip()
+    ):
+        if get_lang((result or {}).get("lang")) != get_lang(
+            (conv_after or {}).get("lang")
+        ):
             flags.append("language_mismatch")
-    if reply.lower().startswith(("sure", "great", "okay")) and get_lang((result or {}).get("lang")) == "lv":
+    if (
+        reply.lower().startswith(("sure", "great", "okay"))
+        and get_lang((result or {}).get("lang")) == "lv"
+    ):
         flags.append("english_leak_in_lv")
     return sorted(set(flags))
 
@@ -2442,29 +3146,47 @@ def record_dialogue_audit_event(
             "pending": (conv_after or {}).get("pending"),
         }
         with engine.begin() as conn:
-            conn.execute(text("""
+            conn.execute(
+                text("""
                 INSERT INTO dialogue_audit_events
                 (tenant_id, user_id, channel, source, lang, state_before, state_after, intent, status, raw_text, ai_reply, score, flags_json, meta_json)
                 VALUES
                 (:tenant_id, :user_id, :channel, :source, :lang, :state_before, :state_after, :intent, :status, :raw_text, :ai_reply, :score, CAST(:flags_json AS JSONB), CAST(:meta_json AS JSONB))
-            """), {
-                "tenant_id": (tenant_id or "").strip() or TENANT_ID_DEFAULT,
-                "user_id": norm_user_key(user_id),
-                "channel": (channel or "").strip().lower() or "unknown",
-                "source": (source or "runtime").strip().lower() or "runtime",
-                "lang": get_lang((result or {}).get("lang") or (conv_after or {}).get("lang") or "lv"),
-                "state_before": conversation_state(conv_before or {}),
-                "state_after": conversation_state(conv_after or {}),
-                "intent": intent,
-                "status": status,
-                "raw_text": (raw_text or "").strip(),
-                "ai_reply": str((result or {}).get("msg_out") or (result or {}).get("reply_voice") or "").strip(),
-                "score": score,
-                "flags_json": json.dumps(flags, ensure_ascii=False),
-                "meta_json": json.dumps(payload_meta, ensure_ascii=False, default=str),
-            })
+            """),
+                {
+                    "tenant_id": (tenant_id or "").strip() or TENANT_ID_DEFAULT,
+                    "user_id": norm_user_key(user_id),
+                    "channel": (channel or "").strip().lower() or "unknown",
+                    "source": (source or "runtime").strip().lower() or "runtime",
+                    "lang": get_lang(
+                        (result or {}).get("lang")
+                        or (conv_after or {}).get("lang")
+                        or "lv"
+                    ),
+                    "state_before": conversation_state(conv_before or {}),
+                    "state_after": conversation_state(conv_after or {}),
+                    "intent": intent,
+                    "status": status,
+                    "raw_text": (raw_text or "").strip(),
+                    "ai_reply": str(
+                        (result or {}).get("msg_out")
+                        or (result or {}).get("reply_voice")
+                        or ""
+                    ).strip(),
+                    "score": score,
+                    "flags_json": json.dumps(flags, ensure_ascii=False),
+                    "meta_json": json.dumps(
+                        payload_meta, ensure_ascii=False, default=str
+                    ),
+                },
+            )
     except Exception as e:
-        log.error("dialogue_audit_write_failed tenant_id=%s user_id=%s err=%s", tenant_id, user_id, e)
+        log.error(
+            "dialogue_audit_write_failed tenant_id=%s user_id=%s err=%s",
+            tenant_id,
+            user_id,
+            e,
+        )
 
 
 def dialogue_audit_summary(tenant_id: str, limit: int = 50) -> Dict[str, Any]:
@@ -2472,48 +3194,99 @@ def dialogue_audit_summary(tenant_id: str, limit: int = 50) -> Dict[str, Any]:
     tenant_id = (tenant_id or "").strip() or TENANT_ID_DEFAULT
     limit = max(1, min(int(limit or 50), 200))
     with engine.connect() as conn:
-        total = conn.execute(text("SELECT COUNT(*) FROM dialogue_audit_events WHERE tenant_id=:tid"), {"tid": tenant_id}).scalar() or 0
-        avg_score = conn.execute(text("SELECT COALESCE(AVG(score), 0) FROM dialogue_audit_events WHERE tenant_id=:tid"), {"tid": tenant_id}).scalar() or 0
-        bad = conn.execute(text("SELECT COUNT(*) FROM dialogue_audit_events WHERE tenant_id=:tid AND score < 70"), {"tid": tenant_id}).scalar() or 0
-        rows = conn.execute(text("""
+        total = (
+            conn.execute(
+                text("SELECT COUNT(*) FROM dialogue_audit_events WHERE tenant_id=:tid"),
+                {"tid": tenant_id},
+            ).scalar()
+            or 0
+        )
+        avg_score = (
+            conn.execute(
+                text(
+                    "SELECT COALESCE(AVG(score), 0) FROM dialogue_audit_events WHERE tenant_id=:tid"
+                ),
+                {"tid": tenant_id},
+            ).scalar()
+            or 0
+        )
+        bad = (
+            conn.execute(
+                text(
+                    "SELECT COUNT(*) FROM dialogue_audit_events WHERE tenant_id=:tid AND score < 70"
+                ),
+                {"tid": tenant_id},
+            ).scalar()
+            or 0
+        )
+        rows = conn.execute(
+            text("""
             SELECT created_at, channel, lang, state_before, state_after, intent, status, raw_text, ai_reply, score, flags_json
             FROM dialogue_audit_events
             WHERE tenant_id=:tid
             ORDER BY created_at DESC
             LIMIT :lim
-        """), {"tid": tenant_id, "lim": limit}).fetchall()
+        """),
+            {"tid": tenant_id, "lim": limit},
+        ).fetchall()
     items = []
     flag_counts: Dict[str, int] = {}
     for r in rows:
         flags = r[10] if isinstance(r[10], list) else []
         if isinstance(r[10], str):
-            try: flags = json.loads(r[10])
-            except Exception: flags = []
+            try:
+                flags = json.loads(r[10])
+            except Exception:
+                flags = []
         for f in flags or []:
             flag_counts[str(f)] = flag_counts.get(str(f), 0) + 1
-        items.append({
-            "created_at": r[0], "channel": r[1], "lang": r[2], "state_before": r[3], "state_after": r[4],
-            "intent": r[5], "status": r[6], "raw_text": r[7], "ai_reply": r[8], "score": r[9], "flags": flags or [],
-        })
+        items.append(
+            {
+                "created_at": r[0],
+                "channel": r[1],
+                "lang": r[2],
+                "state_before": r[3],
+                "state_after": r[4],
+                "intent": r[5],
+                "status": r[6],
+                "raw_text": r[7],
+                "ai_reply": r[8],
+                "score": r[9],
+                "flags": flags or [],
+            }
+        )
     return {
         "tenant_id": tenant_id,
         "total_events": int(total or 0),
         "average_score": round(float(avg_score or 0), 1),
         "low_score_events": int(bad or 0),
-        "top_flags": sorted([{"flag": k, "count": v} for k, v in flag_counts.items()], key=lambda x: x["count"], reverse=True)[:20],
+        "top_flags": sorted(
+            [{"flag": k, "count": v} for k, v in flag_counts.items()],
+            key=lambda x: x["count"],
+            reverse=True,
+        )[:20],
         "recent": items,
     }
 
 
 def handle_user_text_with_logging(
-    tenant_id: str, raw_phone: str, text_in: str, channel: str, lang_hint: str, source: str = "runtime"
+    tenant_id: str,
+    raw_phone: str,
+    text_in: str,
+    channel: str,
+    lang_hint: str,
+    source: str = "runtime",
 ) -> Dict[str, Any]:
     try:
-        conv_before = dict(db_get_or_create_conversation(tenant_id, raw_phone, lang_hint or "lv") or {})
+        conv_before = dict(
+            db_get_or_create_conversation(tenant_id, raw_phone, lang_hint or "lv") or {}
+        )
     except Exception:
         conv_before = {}
 
-    result = handle_user_text(tenant_id, raw_phone, text_in, channel, lang_hint, source=source)
+    result = handle_user_text(
+        tenant_id, raw_phone, text_in, channel, lang_hint, source=source
+    )
 
     try:
         conv = db_get_or_create_conversation(tenant_id, raw_phone, lang_hint or "lv")
@@ -2522,9 +3295,20 @@ def handle_user_text_with_logging(
     try:
         tenant = get_tenant(tenant_id)
         result = humanize_result(result, conv, tenant)
-        result = ai_response_composer(result, conv, tenant, channel=channel, source=source)
-        result = stage33_soft_conversational_ux(result, conv, tenant, channel=channel, source=source)
-        result = apply_usage_soft_limit_warning(result, result.get("lang") or get_lang((conv or {}).get("lang") or lang_hint or "lv"), tenant, channel, source=source)
+        result = ai_response_composer(
+            result, conv, tenant, channel=channel, source=source
+        )
+        result = stage33_soft_conversational_ux(
+            result, conv, tenant, channel=channel, source=source
+        )
+        result = apply_usage_soft_limit_warning(
+            result,
+            result.get("lang")
+            or get_lang((conv or {}).get("lang") or lang_hint or "lv"),
+            tenant,
+            channel,
+            source=source,
+        )
     except Exception as e:
         log.error("humanize_result_failed tenant_id=%s err=%s", tenant_id, e)
         tenant = {}
@@ -2559,10 +3343,13 @@ def handle_user_text_with_logging(
         tenant = tenant or get_tenant(tenant_id)
         send_booking_confirmation_if_needed(tenant, raw_phone, channel, result)
     except Exception as e:
-        log.error("booking_confirmation_failed tenant_id=%s channel=%s err=%s", tenant_id, channel, e)
+        log.error(
+            "booking_confirmation_failed tenant_id=%s channel=%s err=%s",
+            tenant_id,
+            channel,
+            e,
+        )
     return result
-
-
 
 
 # -------------------------
@@ -2572,6 +3359,7 @@ def resolve_tenant_calendar_id(tenant: Dict[str, Any]) -> Optional[str]:
     if tenant.get("google_connected"):
         return str(tenant.get("calendar_id") or "").strip() or None
     return str(tenant.get("calendar_id") or "").strip() or None
+
 
 def get_tenant_calendar_context(tenant: Dict[str, Any]) -> Dict[str, Any]:
     return {
@@ -2585,12 +3373,17 @@ def get_tenant_calendar_context(tenant: Dict[str, Any]) -> Dict[str, Any]:
 # -------------------------
 def tenant_status_value(tenant: Dict[str, Any]) -> str:
     tenant = normalize_tenant_saas_fields(tenant or {})
-    explicit = str(
-        tenant.get("status")
-        or tenant.get("client_status")
-        or CLIENT_STATUS_FALLBACK
+    explicit = (
+        str(
+            tenant.get("status")
+            or tenant.get("client_status")
+            or CLIENT_STATUS_FALLBACK
+            or "trial"
+        )
+        .strip()
+        .lower()
         or "trial"
-    ).strip().lower() or "trial"
+    )
     if explicit in {"inactive", "suspended"}:
         return "inactive"
     lifecycle = effective_subscription_status(tenant)
@@ -2630,15 +3423,13 @@ def tenant_dialog_usage_current_month(tenant_id: str) -> int:
     ensure_usage_events_table()
     with engine.connect() as conn:
         row = conn.execute(
-            text(
-                """
+            text("""
                 SELECT COALESCE(SUM(usage_units), 0)
                 FROM usage_events
                 WHERE tenant_id=:tenant_id
                   AND billable=true
                   AND created_at >= :since_ts
-                """
-            ),
+                """),
             {"tenant_id": tenant_id, "since_ts": month_start_local()},
         ).fetchone()
     return int((row[0] if row else 0) or 0)
@@ -2684,15 +3475,29 @@ def tenant_usage_snapshot(
         return {
             "allowed": True,
             "reason": "ok",
-            "usage_current": 0 if dialog_limit <= 0 else tenant_dialog_usage_current_month(tenant_id),
-            "usage_projected": 0 if dialog_limit <= 0 else tenant_dialog_usage_current_month(tenant_id),
+            "usage_current": (
+                0 if dialog_limit <= 0 else tenant_dialog_usage_current_month(tenant_id)
+            ),
+            "usage_projected": (
+                0 if dialog_limit <= 0 else tenant_dialog_usage_current_month(tenant_id)
+            ),
             "usage_limit": dialog_limit,
             "limit_reached": False,
             "soft_limit_exceeded": False,
             "near_limit": False,
             "billable": False,
-            "percent_used": 0.0 if dialog_limit <= 0 else min(1.0, tenant_dialog_usage_current_month(tenant_id) / dialog_limit),
-            "remaining": 0 if dialog_limit <= 0 else max(0, dialog_limit - tenant_dialog_usage_current_month(tenant_id)),
+            "percent_used": (
+                0.0
+                if dialog_limit <= 0
+                else min(
+                    1.0, tenant_dialog_usage_current_month(tenant_id) / dialog_limit
+                )
+            ),
+            "remaining": (
+                0
+                if dialog_limit <= 0
+                else max(0, dialog_limit - tenant_dialog_usage_current_month(tenant_id))
+            ),
         }
 
     usage_current = tenant_dialog_usage_current_month(tenant_id)
@@ -2702,7 +3507,9 @@ def tenant_usage_snapshot(
     soft_limit_exceeded = projected > dialog_limit or usage_current >= dialog_limit
     near_limit = not limit_reached and percent_used >= 0.8
     remaining = max(0, dialog_limit - usage_current)
-    reason = "soft_limit" if soft_limit_exceeded else "near_limit" if near_limit else "ok"
+    reason = (
+        "soft_limit" if soft_limit_exceeded else "near_limit" if near_limit else "ok"
+    )
     return {
         "allowed": True,
         "reason": reason,
@@ -2718,15 +3525,28 @@ def tenant_usage_snapshot(
     }
 
 
-def tenant_usage_allowed(tenant: Dict[str, Any], channel: str = "", source: str = "runtime") -> Tuple[bool, str, int, int]:
-    snapshot = tenant_usage_snapshot(tenant, channel=channel, source=source, projected_units=0)
-    return bool(snapshot.get("allowed")), str(snapshot.get("reason") or "ok"), int(snapshot.get("usage_current") or 0), int(snapshot.get("usage_limit") or 0)
+def tenant_usage_allowed(
+    tenant: Dict[str, Any], channel: str = "", source: str = "runtime"
+) -> Tuple[bool, str, int, int]:
+    snapshot = tenant_usage_snapshot(
+        tenant, channel=channel, source=source, projected_units=0
+    )
+    return (
+        bool(snapshot.get("allowed")),
+        str(snapshot.get("reason") or "ok"),
+        int(snapshot.get("usage_current") or 0),
+        int(snapshot.get("usage_limit") or 0),
+    )
 
 
-def tenant_access_decision(tenant: Dict[str, Any], channel: str = "", source: str = "runtime") -> Dict[str, Any]:
+def tenant_access_decision(
+    tenant: Dict[str, Any], channel: str = "", source: str = "runtime"
+) -> Dict[str, Any]:
     tenant = normalize_tenant_saas_fields(tenant or {})
     tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip()
-    usage_snapshot = tenant_usage_snapshot(tenant, channel=channel, source=source, projected_units=0)
+    usage_snapshot = tenant_usage_snapshot(
+        tenant, channel=channel, source=source, projected_units=0
+    )
     lifecycle = tenant_lifecycle_payload(tenant)
     decision = {
         "allowed": True,
@@ -2742,7 +3562,9 @@ def tenant_access_decision(tenant: Dict[str, Any], channel: str = "", source: st
             "usage_projected": int(usage_snapshot.get("usage_projected") or 0),
             "usage_near_limit": bool(usage_snapshot.get("near_limit")),
             "usage_limit_reached": bool(usage_snapshot.get("limit_reached")),
-            "usage_soft_limit_exceeded": bool(usage_snapshot.get("soft_limit_exceeded")),
+            "usage_soft_limit_exceeded": bool(
+                usage_snapshot.get("soft_limit_exceeded")
+            ),
             "usage_billable": bool(usage_snapshot.get("billable")),
             "plan": tenant_plan_meta(tenant).get("plan"),
         },
@@ -2755,14 +3577,18 @@ def tenant_access_decision(tenant: Dict[str, Any], channel: str = "", source: st
     effective_status = str(lifecycle.get("effective_status") or "trial")
     if lifecycle.get("blocked"):
         decision["allowed"] = False
-        decision["reason"] = str(lifecycle.get("block_reason") or effective_status or "inactive")
+        decision["reason"] = str(
+            lifecycle.get("block_reason") or effective_status or "inactive"
+        )
         return decision
 
     if effective_status == "past_due":
         decision["reason"] = "past_due"
 
     if usage_snapshot.get("reason") in {"near_limit", "soft_limit"}:
-        decision["reason"] = str(usage_snapshot.get("reason") or decision.get("reason") or "ok")
+        decision["reason"] = str(
+            usage_snapshot.get("reason") or decision.get("reason") or "ok"
+        )
 
     return decision
 
@@ -2813,13 +3639,31 @@ def _safe_int(value: Any, default: int = 0) -> int:
 def _normalize_weekday_key(value: str) -> Optional[str]:
     low = (value or "").strip().lower()
     mapping = {
-        "mon": "mon", "monday": "mon", "1": "mon",
-        "tue": "tue", "tues": "tue", "tuesday": "tue", "2": "tue",
-        "wed": "wed", "wednesday": "wed", "3": "wed",
-        "thu": "thu", "thur": "thu", "thurs": "thu", "thursday": "thu", "4": "thu",
-        "fri": "fri", "friday": "fri", "5": "fri",
-        "sat": "sat", "saturday": "sat", "6": "sat",
-        "sun": "sun", "sunday": "sun", "0": "sun", "7": "sun",
+        "mon": "mon",
+        "monday": "mon",
+        "1": "mon",
+        "tue": "tue",
+        "tues": "tue",
+        "tuesday": "tue",
+        "2": "tue",
+        "wed": "wed",
+        "wednesday": "wed",
+        "3": "wed",
+        "thu": "thu",
+        "thur": "thu",
+        "thurs": "thu",
+        "thursday": "thu",
+        "4": "thu",
+        "fri": "fri",
+        "friday": "fri",
+        "5": "fri",
+        "sat": "sat",
+        "saturday": "sat",
+        "6": "sat",
+        "sun": "sun",
+        "sunday": "sun",
+        "0": "sun",
+        "7": "sun",
     }
     return mapping.get(low)
 
@@ -2829,11 +3673,18 @@ def _weekday_key_for_date(dt_value: datetime) -> str:
     return keys[dt_value.weekday()]
 
 
-def default_weekly_hours(work_start: str, work_end: str) -> Dict[str, Optional[List[str]]]:
-    return {k: [work_start, work_end] for k in ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]}
+def default_weekly_hours(
+    work_start: str, work_end: str
+) -> Dict[str, Optional[List[str]]]:
+    return {
+        k: [work_start, work_end]
+        for k in ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+    }
 
 
-def tenant_business_rules(tenant: Dict[str, Any], work_start: str, work_end: str) -> Dict[str, Any]:
+def tenant_business_rules(
+    tenant: Dict[str, Any], work_start: str, work_end: str
+) -> Dict[str, Any]:
     weekly_hours = default_weekly_hours(work_start, work_end)
     src_weekly = (
         tenant.get("weekly_hours_json")
@@ -2858,7 +3709,9 @@ def tenant_business_rules(tenant: Dict[str, Any], work_start: str, work_end: str
                     weekly_hours[wk] = [start, end]
 
     days_off: set[str] = set()
-    src_days_off = tenant.get("days_off") or tenant.get("days_off_json") or BUSINESS_DAYS_OFF
+    src_days_off = (
+        tenant.get("days_off") or tenant.get("days_off_json") or BUSINESS_DAYS_OFF
+    )
     parsed_days_off = _safe_json_obj(src_days_off)
     if isinstance(parsed_days_off, list):
         for item in parsed_days_off:
@@ -2874,7 +3727,9 @@ def tenant_business_rules(tenant: Dict[str, Any], work_start: str, work_end: str
         weekly_hours[wk] = None
 
     breaks_by_day = {k: [] for k in ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]}
-    src_breaks = tenant.get("breaks_json") or tenant.get("breaks") or BUSINESS_BREAKS_JSON
+    src_breaks = (
+        tenant.get("breaks_json") or tenant.get("breaks") or BUSINESS_BREAKS_JSON
+    )
     parsed_breaks = _safe_json_obj(src_breaks)
     if isinstance(parsed_breaks, dict):
         for raw_key, value in parsed_breaks.items():
@@ -2884,9 +3739,13 @@ def tenant_business_rules(tenant: Dict[str, Any], work_start: str, work_end: str
             vals = value if isinstance(value, list) else [value]
             for interval in vals:
                 if isinstance(interval, (list, tuple)) and len(interval) >= 2:
-                    breaks_by_day[wk].append([str(interval[0]).strip(), str(interval[1]).strip()])
+                    breaks_by_day[wk].append(
+                        [str(interval[0]).strip(), str(interval[1]).strip()]
+                    )
                 elif isinstance(interval, dict):
-                    start = str(interval.get("start") or interval.get("from") or "").strip()
+                    start = str(
+                        interval.get("start") or interval.get("from") or ""
+                    ).strip()
                     end = str(interval.get("end") or interval.get("to") or "").strip()
                     if start and end:
                         breaks_by_day[wk].append([start, end])
@@ -2895,7 +3754,9 @@ def tenant_business_rules(tenant: Dict[str, Any], work_start: str, work_end: str
         for wk in breaks_by_day:
             for interval in parsed_breaks:
                 if isinstance(interval, (list, tuple)) and len(interval) >= 2:
-                    breaks_by_day[wk].append([str(interval[0]).strip(), str(interval[1]).strip()])
+                    breaks_by_day[wk].append(
+                        [str(interval[0]).strip(), str(interval[1]).strip()]
+                    )
 
     holidays: List[str] = []
     src_holidays = tenant.get("holidays_json") or tenant.get("holidays")
@@ -2948,7 +3809,9 @@ def tenant_settings(tenant: Dict[str, Any], lang: str) -> Dict[str, Any]:
         "calendar_id": resolve_tenant_calendar_id(tenant) or tenant_calendar_id(tenant),
         "service_account_json": tenant_service_account_json_value(tenant),
         "business_rules": tenant_business_rules(tenant, work_start, work_end),
-        "business_type": str(tenant.get("business_type") or "barbershop").strip().lower(),
+        "business_type": str(tenant.get("business_type") or "barbershop")
+        .strip()
+        .lower(),
     }
 
 
@@ -2994,7 +3857,13 @@ def parse_service_catalog(value: Any) -> List[Dict[str, Any]]:
     for item in parsed:
         if not isinstance(item, dict):
             continue
-        base_name = str(item.get("name") or item.get("name_lv") or item.get("display_name") or item.get("key") or "").strip()
+        base_name = str(
+            item.get("name")
+            or item.get("name_lv")
+            or item.get("display_name")
+            or item.get("key")
+            or ""
+        ).strip()
         if not base_name:
             continue
         key = str(item.get("key") or _slugify_service_key(base_name)).strip()
@@ -3012,46 +3881,85 @@ def parse_service_catalog(value: Any) -> List[Dict[str, Any]]:
             aliases_ru = aliases[:]
         if not aliases_en and aliases:
             aliases_en = aliases[:]
-        out.append({
-            "key": key,
-            "name_lv": str(item.get("name_lv") or base_name).strip(),
-            "name_ru": str(item.get("name_ru") or item.get("name") or base_name).strip(),
-            "name_en": str(item.get("name_en") or item.get("name") or base_name).strip(),
-            "duration_min": max(5, duration_min),
-            "aliases_lv": aliases_lv,
-            "aliases_ru": aliases_ru,
-            "aliases_en": aliases_en,
-        })
+        out.append(
+            {
+                "key": key,
+                "name_lv": str(item.get("name_lv") or base_name).strip(),
+                "name_ru": str(
+                    item.get("name_ru") or item.get("name") or base_name
+                ).strip(),
+                "name_en": str(
+                    item.get("name_en") or item.get("name") or base_name
+                ).strip(),
+                "duration_min": max(5, duration_min),
+                "aliases_lv": aliases_lv,
+                "aliases_ru": aliases_ru,
+                "aliases_en": aliases_en,
+            }
+        )
     return out
 
 
 def fallback_service_catalog(tenant: Dict[str, Any]) -> List[Dict[str, Any]]:
     names: Dict[str, List[str]] = {
-        "lv": [x.strip() for x in str(tenant.get("services_lv") or BUSINESS_FALLBACK["services_lv"]).split(",") if x.strip()],
-        "ru": [x.strip() for x in str(tenant.get("services_ru") or BUSINESS_FALLBACK["services_ru"]).split(",") if x.strip()],
-        "en": [x.strip() for x in str(tenant.get("services_en") or BUSINESS_FALLBACK["services_en"]).split(",") if x.strip()],
+        "lv": [
+            x.strip()
+            for x in str(
+                tenant.get("services_lv") or BUSINESS_FALLBACK["services_lv"]
+            ).split(",")
+            if x.strip()
+        ],
+        "ru": [
+            x.strip()
+            for x in str(
+                tenant.get("services_ru") or BUSINESS_FALLBACK["services_ru"]
+            ).split(",")
+            if x.strip()
+        ],
+        "en": [
+            x.strip()
+            for x in str(
+                tenant.get("services_en") or BUSINESS_FALLBACK["services_en"]
+            ).split(",")
+            if x.strip()
+        ],
     }
     max_len = max(len(names["lv"]), len(names["ru"]), len(names["en"]), 1)
     catalog: List[Dict[str, Any]] = []
     for i in range(max_len):
         lv_name = names["lv"][i] if i < len(names["lv"]) else names["lv"][0]
-        ru_name = names["ru"][i] if i < len(names["ru"]) else (names["ru"][0] if names["ru"] else lv_name)
-        en_name = names["en"][i] if i < len(names["en"]) else (names["en"][0] if names["en"] else lv_name)
-        catalog.append({
-            "key": _slugify_service_key(lv_name),
-            "name_lv": lv_name,
-            "name_ru": ru_name,
-            "name_en": en_name,
-            "duration_min": APPT_MINUTES,
-            "aliases_lv": [lv_name],
-            "aliases_ru": [ru_name],
-            "aliases_en": [en_name],
-        })
+        ru_name = (
+            names["ru"][i]
+            if i < len(names["ru"])
+            else (names["ru"][0] if names["ru"] else lv_name)
+        )
+        en_name = (
+            names["en"][i]
+            if i < len(names["en"])
+            else (names["en"][0] if names["en"] else lv_name)
+        )
+        catalog.append(
+            {
+                "key": _slugify_service_key(lv_name),
+                "name_lv": lv_name,
+                "name_ru": ru_name,
+                "name_en": en_name,
+                "duration_min": APPT_MINUTES,
+                "aliases_lv": [lv_name],
+                "aliases_ru": [ru_name],
+                "aliases_en": [en_name],
+            }
+        )
     return catalog
 
 
 def tenant_service_catalog(tenant: Dict[str, Any]) -> List[Dict[str, Any]]:
-    for key in ("service_catalog", "services_catalog", "service_catalog_json", "services_json"):
+    for key in (
+        "service_catalog",
+        "services_catalog",
+        "service_catalog_json",
+        "services_json",
+    ):
         catalog = parse_service_catalog(tenant.get(key))
         if catalog:
             return catalog
@@ -3061,7 +3969,9 @@ def tenant_service_catalog(tenant: Dict[str, Any]) -> List[Dict[str, Any]]:
     return fallback_service_catalog(tenant)
 
 
-def get_service_item_by_key(catalog: List[Dict[str, Any]], service_key: Optional[str]) -> Optional[Dict[str, Any]]:
+def get_service_item_by_key(
+    catalog: List[Dict[str, Any]], service_key: Optional[str]
+) -> Optional[Dict[str, Any]]:
     sk = str(service_key or "").strip()
     if not sk:
         return None
@@ -3075,7 +3985,12 @@ def service_display_name(service_item: Optional[Dict[str, Any]], lang: str) -> s
     if not service_item:
         return ""
     lang = get_lang(lang)
-    return str(service_item.get(f"name_{lang}") or service_item.get("name_lv") or service_item.get("key") or "").strip()
+    return str(
+        service_item.get(f"name_{lang}")
+        or service_item.get("name_lv")
+        or service_item.get("key")
+        or ""
+    ).strip()
 
 
 def service_duration_min(service_item: Optional[Dict[str, Any]]) -> int:
@@ -3090,18 +4005,33 @@ def service_duration_min(service_item: Optional[Dict[str, Any]]) -> int:
 def service_group_key(service_item: Optional[Dict[str, Any]]) -> str:
     if not service_item:
         return ""
-    hay = " ".join([
-        str(service_item.get("key") or ""),
-        str(service_item.get("name_lv") or ""),
-        str(service_item.get("name_ru") or ""),
-        str(service_item.get("name_en") or ""),
-        " ".join(service_item.get("aliases_lv") or []),
-        " ".join(service_item.get("aliases_ru") or []),
-        " ".join(service_item.get("aliases_en") or []),
-    ]).lower()
-    if any(x in hay for x in ["combo", "комбо", "kombo", "haircut and beard", "стрижка и борода", "frizūra un bārda", "matu griezums un bārda"]):
+    hay = " ".join(
+        [
+            str(service_item.get("key") or ""),
+            str(service_item.get("name_lv") or ""),
+            str(service_item.get("name_ru") or ""),
+            str(service_item.get("name_en") or ""),
+            " ".join(service_item.get("aliases_lv") or []),
+            " ".join(service_item.get("aliases_ru") or []),
+            " ".join(service_item.get("aliases_en") or []),
+        ]
+    ).lower()
+    if any(
+        x in hay
+        for x in [
+            "combo",
+            "комбо",
+            "kombo",
+            "haircut and beard",
+            "стрижка и борода",
+            "frizūra un bārda",
+            "matu griezums un bārda",
+        ]
+    ):
         return "combo"
-    has_hair = any(x in hay for x in ["friz", "haircut", "стриж", "matu griez", "griezum"])
+    has_hair = any(
+        x in hay for x in ["friz", "haircut", "стриж", "matu griez", "griezum"]
+    )
     has_beard = any(x in hay for x in ["bārd", "barda", "beard", "бород"])
     if has_hair and has_beard:
         return "combo"
@@ -3112,14 +4042,20 @@ def service_group_key(service_item: Optional[Dict[str, Any]]) -> str:
     return ""
 
 
-def find_service_item_by_group(catalog: List[Dict[str, Any]], group: str) -> Optional[Dict[str, Any]]:
+def find_service_item_by_group(
+    catalog: List[Dict[str, Any]], group: str
+) -> Optional[Dict[str, Any]]:
     for item in catalog:
         if service_group_key(item) == group:
             return item
     return None
 
 
-def combined_service_display(lang: str, primary_item: Optional[Dict[str, Any]], addon_item: Optional[Dict[str, Any]]) -> str:
+def combined_service_display(
+    lang: str,
+    primary_item: Optional[Dict[str, Any]],
+    addon_item: Optional[Dict[str, Any]],
+) -> str:
     primary = service_display_name(primary_item, lang)
     addon = service_display_name(addon_item, lang)
     if primary and addon:
@@ -3127,9 +4063,16 @@ def combined_service_display(lang: str, primary_item: Optional[Dict[str, Any]], 
     return primary or addon or ""
 
 
-def build_confirm_upsell_prompt(lang: str, when_text: str, haircut_item: Optional[Dict[str, Any]], beard_item: Optional[Dict[str, Any]]) -> str:
+def build_confirm_upsell_prompt(
+    lang: str,
+    when_text: str,
+    haircut_item: Optional[Dict[str, Any]],
+    beard_item: Optional[Dict[str, Any]],
+) -> str:
     haircut_name = service_display_name(haircut_item, lang)
-    beard_name = service_display_name(beard_item, lang) or ("bārdu" if lang == "lv" else "бороду" if lang == "ru" else "a beard trim")
+    beard_name = service_display_name(beard_item, lang) or (
+        "bārdu" if lang == "lv" else "бороду" if lang == "ru" else "a beard trim"
+    )
     if lang == "ru":
         return f"Отлично — можем записать вас на {haircut_name} {when_text}. Если хотите, можем добавить и {beard_name}. Добавляем?"
     if lang == "en":
@@ -3137,9 +4080,19 @@ def build_confirm_upsell_prompt(lang: str, when_text: str, haircut_item: Optiona
     return f"Lieliski — varam pierakstīt jūs uz {haircut_name} {when_text}. Ja vēlaties, varam pievienot arī {beard_name}. Vai pievienojam?"
 
 
-def build_confirm_upsell_resolution(lang: str, when_text: str, added: bool, haircut_item: Optional[Dict[str, Any]], beard_item: Optional[Dict[str, Any]]) -> str:
+def build_confirm_upsell_resolution(
+    lang: str,
+    when_text: str,
+    added: bool,
+    haircut_item: Optional[Dict[str, Any]],
+    beard_item: Optional[Dict[str, Any]],
+) -> str:
     haircut_name = service_display_name(haircut_item, lang)
-    beard_name = service_display_name(beard_item, lang) or ("bārdas kopšanu" if lang == "lv" else "подравнивание бороды" if lang == "ru" else "a beard trim")
+    beard_name = service_display_name(beard_item, lang) or (
+        "bārdas kopšanu"
+        if lang == "lv"
+        else "подравнивание бороды" if lang == "ru" else "a beard trim"
+    )
     if added:
         if lang == "ru":
             return f"Отлично 👍 Добавил {beard_name}. Ваша запись подтверждена на {when_text}."
@@ -3163,7 +4116,9 @@ def service_catalog_summary(catalog: List[Dict[str, Any]], lang: str) -> str:
     return ", ".join(parts)
 
 
-def service_alias_map_from_catalog(catalog: List[Dict[str, Any]], lang: str) -> Dict[str, str]:
+def service_alias_map_from_catalog(
+    catalog: List[Dict[str, Any]], lang: str
+) -> Dict[str, str]:
     lang = get_lang(lang)
     out: Dict[str, str] = {}
     for item in catalog:
@@ -3178,11 +4133,15 @@ def service_alias_map_from_catalog(catalog: List[Dict[str, Any]], lang: str) -> 
     return out
 
 
-def canonical_service_key_from_text(text_: Optional[str], alias_map: Dict[str, str]) -> Optional[str]:
+def canonical_service_key_from_text(
+    text_: Optional[str], alias_map: Dict[str, str]
+) -> Optional[str]:
     low = (text_ or "").strip().lower()
     if not low:
         return None
-    norm_low = re.sub(r"\s+", " ", re.sub(r"[^\wĀ-žА-Яа-яЁё]+", " ", low, flags=re.UNICODE)).strip()
+    norm_low = re.sub(
+        r"\s+", " ", re.sub(r"[^\wĀ-žА-Яа-яЁё]+", " ", low, flags=re.UNICODE)
+    ).strip()
     folded_low = _fold_match_text(low)
     if low in alias_map:
         return alias_map[low]
@@ -3196,41 +4155,56 @@ def canonical_service_key_from_text(text_: Optional[str], alias_map: Dict[str, s
         folded_alias = _fold_match_text(alias)
         if folded_alias:
             folded_aliases.append((len(folded_alias), folded_alias, key))
-    for _, folded_alias, key in sorted(folded_aliases, key=lambda x: x[0], reverse=True):
-        if folded_alias == folded_low or folded_alias in folded_low or folded_low in folded_alias:
+    for _, folded_alias, key in sorted(
+        folded_aliases, key=lambda x: x[0], reverse=True
+    ):
+        if (
+            folded_alias == folded_low
+            or folded_alias in folded_low
+            or folded_low in folded_alias
+        ):
             return key
 
     # Prefer longest alias first so generic words don't beat specific phrases
     for alias in sorted(alias_map.keys(), key=len, reverse=True):
         if not alias:
             continue
-        norm_alias = re.sub(r"\s+", " ", re.sub(r"[^\wĀ-žА-Яа-яЁё]+", " ", alias, flags=re.UNICODE)).strip()
+        norm_alias = re.sub(
+            r"\s+", " ", re.sub(r"[^\wĀ-žА-Яа-яЁё]+", " ", alias, flags=re.UNICODE)
+        ).strip()
         if alias in low or (norm_alias and norm_alias in norm_low):
             return alias_map[alias]
     return None
 
-def merged_service_alias_map(catalog: List[Dict[str, Any]], tenant: Dict[str, Any], lang: str) -> Dict[str, str]:
+
+def merged_service_alias_map(
+    catalog: List[Dict[str, Any]], tenant: Dict[str, Any], lang: str
+) -> Dict[str, str]:
     merged = service_alias_map_from_catalog(catalog, lang)
     merged.update(tenant_service_aliases(tenant, lang))
     return merged
 
 
-def ensure_default_barbershop_aliases(catalog: List[Dict[str, Any]], alias_map: Dict[str, str], lang: str) -> Dict[str, str]:
+def ensure_default_barbershop_aliases(
+    catalog: List[Dict[str, Any]], alias_map: Dict[str, str], lang: str
+) -> Dict[str, str]:
     out = dict(alias_map)
     haircut_keys = []
     beard_keys = []
     combo_keys = []
     for item in catalog:
         key = str(item.get("key") or "").strip()
-        hay = " ".join([
-            key,
-            str(item.get("name_lv") or ""),
-            str(item.get("name_ru") or ""),
-            str(item.get("name_en") or ""),
-            " ".join(item.get("aliases_lv") or []),
-            " ".join(item.get("aliases_ru") or []),
-            " ".join(item.get("aliases_en") or []),
-        ]).lower()
+        hay = " ".join(
+            [
+                key,
+                str(item.get("name_lv") or ""),
+                str(item.get("name_ru") or ""),
+                str(item.get("name_en") or ""),
+                " ".join(item.get("aliases_lv") or []),
+                " ".join(item.get("aliases_ru") or []),
+                " ".join(item.get("aliases_en") or []),
+            ]
+        ).lower()
         if any(x in hay for x in ["friz", "haircut", "стриж", "matu griez", "griezum"]):
             haircut_keys.append(key)
         if any(x in hay for x in ["bārd", "barda", "beard", "бород"]):
@@ -3250,24 +4224,72 @@ def ensure_default_barbershop_aliases(catalog: List[Dict[str, Any]], alias_map: 
     beard_key = beard_keys[0] if beard_keys else None
     combo_key = combo_keys[0] if combo_keys else None
 
-    add_many(haircut_key, [
-        "matu griezums", "matu griezumu", "griezums", "griezumu",
-        "apgriezt matus", "apgriezt", "frizūra", "frizura", "frizūru", "frizuru",
-        "vīriešu frizūra", "viriesu frizura", "vīriešu frizūru", "viriesu frizuru",
-        "vīriešu matu griezums", "viriesu matu griezums", "vīriešu matu griezumu", "viriesu matu griezumu",
-        "подстричься", "стрижка", "стрижку", "мужская стрижка", "мужскую стрижку",
-        "haircut", "mens haircut", "men's haircut", "cut hair", "trim hair"
-    ])
-    add_many(beard_key, [
-        "bārda", "barda", "bārdu", "bardu", "bārdas korekcija", "bārdas korekciju",
-        "bārdas trim", "bārdas trimu", "beard trim", "beard", "борода", "бороду", "подровнять бороду"
-    ])
-    add_many(combo_key, [
-        "combo", "kombo", "комбо",
-        "matu griezums un bārda", "matu griezumu un bārdu",
-        "frizūra un bārda", "frizūru un bārdu",
-        "haircut and beard", "стрижка и борода", "стрижку и бороду"
-    ])
+    add_many(
+        haircut_key,
+        [
+            "matu griezums",
+            "matu griezumu",
+            "griezums",
+            "griezumu",
+            "apgriezt matus",
+            "apgriezt",
+            "frizūra",
+            "frizura",
+            "frizūru",
+            "frizuru",
+            "vīriešu frizūra",
+            "viriesu frizura",
+            "vīriešu frizūru",
+            "viriesu frizuru",
+            "vīriešu matu griezums",
+            "viriesu matu griezums",
+            "vīriešu matu griezumu",
+            "viriesu matu griezumu",
+            "подстричься",
+            "стрижка",
+            "стрижку",
+            "мужская стрижка",
+            "мужскую стрижку",
+            "haircut",
+            "mens haircut",
+            "men's haircut",
+            "cut hair",
+            "trim hair",
+        ],
+    )
+    add_many(
+        beard_key,
+        [
+            "bārda",
+            "barda",
+            "bārdu",
+            "bardu",
+            "bārdas korekcija",
+            "bārdas korekciju",
+            "bārdas trim",
+            "bārdas trimu",
+            "beard trim",
+            "beard",
+            "борода",
+            "бороду",
+            "подровнять бороду",
+        ],
+    )
+    add_many(
+        combo_key,
+        [
+            "combo",
+            "kombo",
+            "комбо",
+            "matu griezums un bārda",
+            "matu griezumu un bārdu",
+            "frizūra un bārda",
+            "frizūru un bārdu",
+            "haircut and beard",
+            "стрижка и борода",
+            "стрижку и бороду",
+        ],
+    )
     return out
 
 
@@ -3303,13 +4325,30 @@ def extract_name_from_event_description(description: str) -> Optional[str]:
         return normalize_name(m.group(1))
     return None
 
+
 def abort_reschedule_text(text_: Optional[str], lang: str) -> bool:
     low = (text_ or "").strip().lower()
     if not low:
         return False
     abort_words = {
-        "lv": {"nē", "ne", "nevajag", "atstāt", "atstat", "lai paliek", "nevajag pārcelt", "nevajag parcelt"},
-        "ru": {"нет", "не надо", "оставить", "оставь", "пусть остается", "не переносить"},
+        "lv": {
+            "nē",
+            "ne",
+            "nevajag",
+            "atstāt",
+            "atstat",
+            "lai paliek",
+            "nevajag pārcelt",
+            "nevajag parcelt",
+        },
+        "ru": {
+            "нет",
+            "не надо",
+            "оставить",
+            "оставь",
+            "пусть остается",
+            "не переносить",
+        },
         "en": {"no", "keep it", "leave it", "do not move", "dont move", "don't move"},
     }
     allowed = set().union(*abort_words.values())
@@ -3319,7 +4358,11 @@ def abort_reschedule_text(text_: Optional[str], lang: str) -> bool:
 
 def usage_soft_limit_warning_text(lang: str, usage_snapshot: Dict[str, Any]) -> str:
     lang = get_lang(lang)
-    current = int(usage_snapshot.get("usage_projected") or usage_snapshot.get("usage_current") or 0)
+    current = int(
+        usage_snapshot.get("usage_projected")
+        or usage_snapshot.get("usage_current")
+        or 0
+    )
     limit_value = int(usage_snapshot.get("usage_limit") or 0)
     if limit_value <= 0:
         return ""
@@ -3338,11 +4381,19 @@ def usage_soft_limit_warning_text(lang: str, usage_snapshot: Dict[str, Any]) -> 
     return ""
 
 
-def apply_usage_soft_limit_warning(result: Dict[str, Any], lang: str, tenant: Dict[str, Any], channel: str, source: str = "runtime") -> Dict[str, Any]:
+def apply_usage_soft_limit_warning(
+    result: Dict[str, Any],
+    lang: str,
+    tenant: Dict[str, Any],
+    channel: str,
+    source: str = "runtime",
+) -> Dict[str, Any]:
     result = dict(result or {})
     if str(result.get("status") or "").strip().lower() == "blocked":
         return result
-    usage_snapshot = tenant_usage_snapshot(tenant, channel=channel, source=source, projected_units=1)
+    usage_snapshot = tenant_usage_snapshot(
+        tenant, channel=channel, source=source, projected_units=1
+    )
     warning_text = usage_soft_limit_warning_text(lang, usage_snapshot)
     if not warning_text:
         return result
@@ -3358,7 +4409,9 @@ def apply_usage_soft_limit_warning(result: Dict[str, Any], lang: str, tenant: Di
     result["usage_projected"] = int(usage_snapshot.get("usage_projected") or 0)
     result["usage_limit"] = int(usage_snapshot.get("usage_limit") or 0)
     result["usage_near_limit"] = bool(usage_snapshot.get("near_limit"))
-    result["usage_soft_limit_exceeded"] = bool(usage_snapshot.get("soft_limit_exceeded") or usage_snapshot.get("limit_reached"))
+    result["usage_soft_limit_exceeded"] = bool(
+        usage_snapshot.get("soft_limit_exceeded") or usage_snapshot.get("limit_reached")
+    )
     return result
 
 
@@ -3413,10 +4466,13 @@ from urllib.parse import urlencode
 
 install_twilio_signature_middleware(app)
 
+
 # -------------------------
 # TWILIO / OPENAI / GOOGLE
 # -------------------------
-def send_booking_confirmation_if_needed(tenant: Dict[str, Any], raw_user: str, channel: str, result: Dict[str, Any]) -> bool:
+def send_booking_confirmation_if_needed(
+    tenant: Dict[str, Any], raw_user: str, channel: str, result: Dict[str, Any]
+) -> bool:
     if not BOOKING_CONFIRMATION_ENABLED:
         return False
     if str(result.get("status") or "").strip() != "booked":
@@ -3447,7 +4503,12 @@ def send_booking_confirmation_if_needed(tenant: Dict[str, Any], raw_user: str, c
         body = f"{biz_name}: {result.get('msg_out') or result.get('reply_voice') or ''}".strip()
     try:
         send_message(to_number, body)
-        log.info("booking_confirmation_sent channel=%s to=%s tenant_id=%s", ch, to_number, tenant.get("_id"))
+        log.info(
+            "booking_confirmation_sent channel=%s to=%s tenant_id=%s",
+            ch,
+            to_number,
+            tenant.get("_id"),
+        )
         return True
     except Exception:
         return False
@@ -3459,7 +4520,6 @@ def channel_supports_messaging(channel: str, raw_phone: str) -> bool:
         return True
     phone = normalize_incoming_to_number(raw_phone)
     return bool(phone and looks_like_phone_number(phone))
-
 
 
 def llm_understanding_enabled() -> bool:
@@ -3486,7 +4546,10 @@ def _normalize_llm_intent(value: Any) -> Optional[str]:
         "other": "other",
         "unknown": "other",
     }
-    return mapping.get(low, low if low in {"booking", "reschedule", "cancel", "info", "other"} else None)
+    return mapping.get(
+        low,
+        low if low in {"booking", "reschedule", "cancel", "info", "other"} else None,
+    )
 
 
 def _normalize_llm_confirmation(value: Any) -> Optional[str]:
@@ -3519,7 +4582,9 @@ def openai_understand_message(system: str, user: str) -> Dict[str, Any]:
         r = requests.post(url, headers=headers, json=payload, timeout=25)
         if r.status_code == 200:
             return json.loads(r.json()["choices"][0]["message"]["content"])
-        log.error("OpenAI understand error status=%s body=%s", r.status_code, r.text[:500])
+        log.error(
+            "OpenAI understand error status=%s body=%s", r.status_code, r.text[:500]
+        )
     except Exception as e:
         log.error("OpenAI understand request failed: %s", e)
     return {}
@@ -3544,7 +4609,9 @@ def llm_message_understanding(
             "confirmation": None,
         }
 
-    alias_hint = ", ".join([f"{k} => {v}" for k, v in list(service_aliases.items())[:80]])
+    alias_hint = ", ".join(
+        [f"{k} => {v}" for k, v in list(service_aliases.items())[:80]]
+    )
     sys_pt = (
         f"You classify messages for an appointment receptionist of {settings['biz_name']}. "
         f"Business hours: {settings['work_start']}-{settings['work_end']}. "
@@ -3570,7 +4637,8 @@ def llm_message_understanding(
     understood = {
         "intent": _normalize_llm_intent(raw.get("intent")),
         "confidence": max(0.0, min(1.0, confidence)),
-        "service": apply_service_aliases(raw.get("service"), service_aliases) or canonical_service_key_from_text(raw.get("service"), service_aliases),
+        "service": apply_service_aliases(raw.get("service"), service_aliases)
+        or canonical_service_key_from_text(raw.get("service"), service_aliases),
         "time_text": normalize_service(raw.get("time_text")),
         "datetime_iso": str(raw.get("datetime_iso") or "").strip() or None,
         "name": normalize_name(raw.get("name")),
@@ -3654,14 +4722,18 @@ def stage26_semantic_route_message(
     pending = pending or {}
     llm_hint = llm_hint or {}
     offered_slots = _slot_labels_from_pending(pending)
-    alias_hint = ", ".join([f"{k} => {v}" for k, v in list(service_aliases.items())[:80]])
+    alias_hint = ", ".join(
+        [f"{k} => {v}" for k, v in list(service_aliases.items())[:80]]
+    )
     current_context = {
         "language": get_lang(lang),
         "state": state,
         "active_booking_flow": is_active_booking_flow(c or {}),
         "known_service_key": (c or {}).get("service") or pending.get("service"),
         "known_service_display": pending.get("service_display"),
-        "known_datetime_iso": (c or {}).get("datetime_iso") or pending.get("candidate_datetime_iso") or pending.get("awaiting_time_date_iso"),
+        "known_datetime_iso": (c or {}).get("datetime_iso")
+        or pending.get("candidate_datetime_iso")
+        or pending.get("awaiting_time_date_iso"),
         "offered_slots": offered_slots[:3],
         "existing_llm_hint": llm_hint,
     }
@@ -3695,7 +4767,9 @@ def stage26_semantic_route_message(
     }
 
     try:
-        raw = openai_chat_json(system_prompt, json.dumps(user_payload, ensure_ascii=False, default=str))
+        raw = openai_chat_json(
+            system_prompt, json.dumps(user_payload, ensure_ascii=False, default=str)
+        )
         if not isinstance(raw, dict):
             return {}
         intent = _normalize_llm_intent(raw.get("intent"))
@@ -3707,20 +4781,31 @@ def stage26_semantic_route_message(
             confidence = max(0.0, min(1.0, float(raw.get("confidence") or 0.0)))
         except Exception:
             confidence = 0.0
-        service_value = apply_service_aliases(raw.get("service"), service_aliases) or canonical_service_key_from_text(raw.get("service"), service_aliases)
-        if service_value and not get_service_item_by_key(service_catalog, service_value):
-            service_item = extract_service_from_text(service_value, service_catalog, lang)
+        service_value = apply_service_aliases(
+            raw.get("service"), service_aliases
+        ) or canonical_service_key_from_text(raw.get("service"), service_aliases)
+        if service_value and not get_service_item_by_key(
+            service_catalog, service_value
+        ):
+            service_item = extract_service_from_text(
+                service_value, service_catalog, lang
+            )
             service_value = str((service_item or {}).get("key") or "").strip() or None
         out = {
             "intent": intent,
             "confidence": confidence,
             "service": service_value,
-            "time_text": sanitize_conversation_time_text(raw.get("time_text")) or normalize_service(raw.get("time_text")),
+            "time_text": sanitize_conversation_time_text(raw.get("time_text"))
+            or normalize_service(raw.get("time_text")),
             "datetime_iso": str(raw.get("datetime_iso") or "").strip() or None,
             "name": normalize_name(raw.get("name")),
             "confirmation": _normalize_llm_confirmation(raw.get("confirmation")),
             "action_hint": _stage26_action_hint(raw.get("action_hint")),
-            "missing_fields": [x for x in _stage26_safe_list(raw.get("missing_fields"), 4) if x in {"service", "date", "time", "confirmation"}],
+            "missing_fields": [
+                x
+                for x in _stage26_safe_list(raw.get("missing_fields"), 4)
+                if x in {"service", "date", "time", "confirmation"}
+            ],
             "user_goal": _safe_compose_text(raw.get("user_goal"), 180),
             "notes": _safe_compose_text(raw.get("notes"), 220),
             "stage26": True,
@@ -3731,7 +4816,9 @@ def stage26_semantic_route_message(
         return {}
 
 
-def merge_stage26_into_llm_hint(base_hint: Optional[Dict[str, Any]], semantic: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def merge_stage26_into_llm_hint(
+    base_hint: Optional[Dict[str, Any]], semantic: Optional[Dict[str, Any]]
+) -> Dict[str, Any]:
     merged = dict(base_hint or {})
     semantic = semantic or {}
     if not semantic:
@@ -3758,7 +4845,9 @@ def merge_stage26_into_llm_hint(base_hint: Optional[Dict[str, Any]], semantic: O
     return merged
 
 
-def remember_stage26_datetime_hint(c: Dict[str, Any], pending: Dict[str, Any], semantic_hint: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+def remember_stage26_datetime_hint(
+    c: Dict[str, Any], pending: Dict[str, Any], semantic_hint: Dict[str, Any]
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     pending = pending or {}
     if not semantic_hint:
         return c, pending
@@ -3767,16 +4856,23 @@ def remember_stage26_datetime_hint(c: Dict[str, Any], pending: Dict[str, Any], s
     if dtv:
         if dtv.hour != 9 or dtv.minute != 0:
             pending["candidate_datetime_iso"] = dtv.isoformat()
-            pending["awaiting_time_date_iso"] = dtv.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+            pending["awaiting_time_date_iso"] = dtv.replace(
+                hour=9, minute=0, second=0, microsecond=0
+            ).isoformat()
             pending["time_text"] = f"{dtv.hour:02d}:{dtv.minute:02d}"
             c["time_text"] = pending["time_text"]
         else:
-            pending["awaiting_time_date_iso"] = dtv.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+            pending["awaiting_time_date_iso"] = dtv.replace(
+                hour=9, minute=0, second=0, microsecond=0
+            ).isoformat()
     time_text = sanitize_conversation_time_text(semantic_hint.get("time_text"))
     if time_text and not pending.get("time_text"):
         pending["time_text"] = time_text
         c["time_text"] = time_text
-    if semantic_hint.get("intent") == "booking" or semantic_hint.get("action_hint") in {"start_booking", "continue_booking"}:
+    if semantic_hint.get("intent") == "booking" or semantic_hint.get("action_hint") in {
+        "start_booking",
+        "continue_booking",
+    }:
         pending["booking_intent"] = True
     c["pending"] = pending or None
     return c, pending
@@ -3815,7 +4911,9 @@ def stage27_extract_service_item_from_turn(
     raw = str(msg or "").strip()
     if raw:
         direct_key = canonical_service_key_from_text(raw, service_aliases)
-        item = get_service_item_by_key(service_catalog, direct_key) if direct_key else None
+        item = (
+            get_service_item_by_key(service_catalog, direct_key) if direct_key else None
+        )
         if item:
             return item
         item = extract_service_from_text(raw, service_catalog, lang)
@@ -3823,10 +4921,15 @@ def stage27_extract_service_item_from_turn(
             return item
 
     llm_hint = llm_hint or {}
-    for value in (llm_hint.get("service"), (llm_hint.get("stage26_semantic") or {}).get("service")):
+    for value in (
+        llm_hint.get("service"),
+        (llm_hint.get("stage26_semantic") or {}).get("service"),
+    ):
         if not value:
             continue
-        key = apply_service_aliases(value, service_aliases) or canonical_service_key_from_text(value, service_aliases)
+        key = apply_service_aliases(
+            value, service_aliases
+        ) or canonical_service_key_from_text(value, service_aliases)
         item = get_service_item_by_key(service_catalog, key) if key else None
         if item:
             return item
@@ -3840,10 +4943,18 @@ def stage27_extract_service_item_from_turn(
 
     # Stage 27.1 hotfix: common consultation stems across Latvian inflections
     # and missing diacritics: konsultācija / konsultāciju / konsultaciju.
-    if any(stem in folded_raw for stem in ("konsultac", "konsultacij", "consultation", "консультац")):
+    if any(
+        stem in folded_raw
+        for stem in ("konsultac", "konsultacij", "consultation", "консультац")
+    ):
         for item in service_catalog:
-            hay = _fold_match_text(" ".join(_stage27_service_candidates_for_item(item, lang)))
-            if any(stem in hay for stem in ("konsultac", "konsultacij", "consultation", "консультац")):
+            hay = _fold_match_text(
+                " ".join(_stage27_service_candidates_for_item(item, lang))
+            )
+            if any(
+                stem in hay
+                for stem in ("konsultac", "konsultacij", "consultation", "консультац")
+            ):
                 return item
 
     raw_words = set(folded_raw.split())
@@ -3893,12 +5004,21 @@ def stage27_persist_entities_from_turn(
         or is_active_booking_flow(c)
     )
 
-    service_item = stage27_extract_service_item_from_turn(msg, llm_hint, service_catalog, service_aliases, lang)
-    if service_item and not str(c.get("service") or pending.get("service") or "").strip():
+    service_item = stage27_extract_service_item_from_turn(
+        msg, llm_hint, service_catalog, service_aliases, lang
+    )
+    if (
+        service_item
+        and not str(c.get("service") or pending.get("service") or "").strip()
+    ):
         c, pending = remember_booking_service(c, pending, service_item, lang)
         pending["booking_intent"] = True
 
-    if booking_like or service_item or str(c.get("service") or pending.get("service") or "").strip():
+    if (
+        booking_like
+        or service_item
+        or str(c.get("service") or pending.get("service") or "").strip()
+    ):
         c, pending = remember_partial_booking_datetime_from_message(c, pending, msg)
         if semantic:
             c, pending = remember_stage26_datetime_hint(c, pending, semantic)
@@ -3908,7 +5028,9 @@ def stage27_persist_entities_from_turn(
         c["name"] = normalize_name(llm_hint.get("name") or semantic.get("name"))
 
     has_service = bool(str(c.get("service") or pending.get("service") or "").strip())
-    has_date = bool(parse_dt_any_tz(str(pending.get("awaiting_time_date_iso") or "").strip()))
+    has_date = bool(
+        parse_dt_any_tz(str(pending.get("awaiting_time_date_iso") or "").strip())
+    )
     has_candidate_time = bool(booking_candidate_datetime_from_context(c, pending))
 
     if booking_like or has_service or has_date or has_candidate_time:
@@ -3924,7 +5046,6 @@ def stage27_persist_entities_from_turn(
 
     c["pending"] = pending or None
     return c, pending
-
 
 
 ORCH_ACTION_CONTINUE = "continue_legacy"
@@ -3943,11 +5064,26 @@ ORCH_ACTION_CONFIRM_YES = "confirm_yes"
 ORCH_ACTION_CONFIRM_NO = "confirm_no"
 
 ORCHESTRATION_TOOLS: Dict[str, Dict[str, Any]] = {
-    "check_availability": {"kind": "calendar", "description": "Find available slots in the tenant calendar."},
-    "create_booking": {"kind": "calendar", "description": "Create a booking event in the tenant calendar."},
-    "cancel_booking": {"kind": "calendar", "description": "Cancel an existing booking."},
-    "reschedule_booking": {"kind": "calendar", "description": "Move an existing booking to a new time."},
-    "get_business_info": {"kind": "faq", "description": "Return structured business information such as address, price, duration, or services."},
+    "check_availability": {
+        "kind": "calendar",
+        "description": "Find available slots in the tenant calendar.",
+    },
+    "create_booking": {
+        "kind": "calendar",
+        "description": "Create a booking event in the tenant calendar.",
+    },
+    "cancel_booking": {
+        "kind": "calendar",
+        "description": "Cancel an existing booking.",
+    },
+    "reschedule_booking": {
+        "kind": "calendar",
+        "description": "Move an existing booking to a new time.",
+    },
+    "get_business_info": {
+        "kind": "faq",
+        "description": "Return structured business information such as address, price, duration, or services.",
+    },
 }
 
 
@@ -3977,24 +5113,44 @@ def build_understanding_result(
         confidence = 0.0
 
     direct_service_key = canonical_service_key_from_text(raw, service_aliases)
-    service_item = get_service_item_by_key(service_catalog, direct_service_key) if direct_service_key else None
+    service_item = (
+        get_service_item_by_key(service_catalog, direct_service_key)
+        if direct_service_key
+        else None
+    )
     if not service_item:
         service_item = extract_service_from_text(raw, service_catalog, lang)
     if not service_item and llm_hint.get("service"):
         service_item = get_service_item_by_key(service_catalog, llm_hint.get("service"))
 
-    faq_result = try_barbershop_faq(
-        msg=raw,
-        lang=lang,
-        tenant=tenant,
-        settings=settings,
-        service_catalog=service_catalog,
-        service_aliases=service_aliases,
-        business_memory=business_memory,
-    ) if raw else None
+    faq_result = (
+        try_barbershop_faq(
+            msg=raw,
+            lang=lang,
+            tenant=tenant,
+            settings=settings,
+            service_catalog=service_catalog,
+            service_aliases=service_aliases,
+            business_memory=business_memory,
+        )
+        if raw
+        else None
+    )
 
     explicit_cancel = any(w in low for w in ["atcelt", "отменить", "cancel"])
-    explicit_reschedule = any(w in low for w in ["pārcelt", "перенести", "reschedule", "move my appointment", "change my appointment", "перенеси запись", "перенести запись", "pārcelt pierakstu"])
+    explicit_reschedule = any(
+        w in low
+        for w in [
+            "pārcelt",
+            "перенести",
+            "reschedule",
+            "move my appointment",
+            "change my appointment",
+            "перенеси запись",
+            "перенести запись",
+            "pārcelt pierakstu",
+        ]
+    )
 
     signals: List[str] = []
     if is_greeting_only(raw):
@@ -4042,7 +5198,9 @@ def build_understanding_result(
         "signals": signals,
         "entities": {
             "service_key": str((service_item or {}).get("key") or "").strip() or None,
-            "service_name": service_display_name(service_item, lang) if service_item else None,
+            "service_name": (
+                service_display_name(service_item, lang) if service_item else None
+            ),
             "time_text": sanitize_conversation_time_text(llm_hint.get("time_text")),
             "datetime_iso": str(llm_hint.get("datetime_iso") or "").strip() or None,
             "name": normalize_name(llm_hint.get("name")),
@@ -4077,99 +5235,212 @@ def orchestrate_turn(
     signals = set(understanding.get("signals") or [])
     intent = understanding.get("intent")
     confidence = float(understanding.get("confidence") or 0.0)
-    selected_slot_iso = ((understanding.get("entities") or {}).get("selected_slot_iso"))
-    stage26_action_hint = str(understanding.get("stage26_action_hint") or "").strip().lower()
+    selected_slot_iso = (understanding.get("entities") or {}).get("selected_slot_iso")
+    stage26_action_hint = (
+        str(understanding.get("stage26_action_hint") or "").strip().lower()
+    )
 
     if stage26_action_hint == "answer_faq" and understanding.get("faq_result"):
-        decision.update({
-            "action": ORCH_ACTION_FAQ,
-            "needs_tool": True,
-            "tool_name": "get_business_info",
-            "reason": "stage26_faq_detected",
-            "reply_mode": "direct",
-        })
+        decision.update(
+            {
+                "action": ORCH_ACTION_FAQ,
+                "needs_tool": True,
+                "tool_name": "get_business_info",
+                "reason": "stage26_faq_detected",
+                "reply_mode": "direct",
+            }
+        )
         return decision
 
     if not active_flow and stage26_action_hint == "greeting":
-        decision.update({"action": ORCH_ACTION_GREET, "reason": "stage26_greeting", "reply_mode": "direct"})
+        decision.update(
+            {
+                "action": ORCH_ACTION_GREET,
+                "reason": "stage26_greeting",
+                "reply_mode": "direct",
+            }
+        )
         return decision
 
     if understanding.get("faq_result"):
-        decision.update({
-            "action": ORCH_ACTION_FAQ,
-            "needs_tool": True,
-            "tool_name": "get_business_info",
-            "reason": "faq_detected",
-            "reply_mode": "direct",
-        })
+        decision.update(
+            {
+                "action": ORCH_ACTION_FAQ,
+                "needs_tool": True,
+                "tool_name": "get_business_info",
+                "reason": "faq_detected",
+                "reply_mode": "direct",
+            }
+        )
         return decision
 
     if not active_flow and "greeting_only" in signals:
-        decision.update({"action": ORCH_ACTION_GREET, "reason": "greeting_only_detected", "reply_mode": "direct"})
+        decision.update(
+            {
+                "action": ORCH_ACTION_GREET,
+                "reason": "greeting_only_detected",
+                "reply_mode": "direct",
+            }
+        )
         return decision
     if not active_flow and "identity_check" in signals:
-        decision.update({"action": ORCH_ACTION_IDENTITY, "reason": "identity_check_detected", "reply_mode": "direct"})
+        decision.update(
+            {
+                "action": ORCH_ACTION_IDENTITY,
+                "reason": "identity_check_detected",
+                "reply_mode": "direct",
+            }
+        )
         return decision
     if not active_flow and "hours_question" in signals:
-        decision.update({"action": ORCH_ACTION_HOURS, "reason": "hours_question_detected", "reply_mode": "direct"})
+        decision.update(
+            {
+                "action": ORCH_ACTION_HOURS,
+                "reason": "hours_question_detected",
+                "reply_mode": "direct",
+            }
+        )
         return decision
 
-    if stage26_action_hint == "cancel" or "cancel_request" in signals or (not active_flow and intent == "cancel" and confidence >= LLM_INTENT_MIN_CONFIDENCE):
-        decision.update({
-            "action": ORCH_ACTION_CANCEL,
-            "needs_tool": True,
-            "tool_name": "cancel_booking",
-            "reason": "cancel_intent_detected",
-        })
+    if (
+        stage26_action_hint == "cancel"
+        or "cancel_request" in signals
+        or (
+            not active_flow
+            and intent == "cancel"
+            and confidence >= LLM_INTENT_MIN_CONFIDENCE
+        )
+    ):
+        decision.update(
+            {
+                "action": ORCH_ACTION_CANCEL,
+                "needs_tool": True,
+                "tool_name": "cancel_booking",
+                "reason": "cancel_intent_detected",
+            }
+        )
         return decision
 
-    if stage26_action_hint == "reschedule" or "reschedule_request" in signals or (not active_flow and intent == "reschedule" and confidence >= LLM_INTENT_MIN_CONFIDENCE):
-        decision.update({
-            "action": ORCH_ACTION_RESCHEDULE,
-            "needs_tool": True,
-            "tool_name": "reschedule_booking",
-            "reason": "reschedule_intent_detected",
-        })
+    if (
+        stage26_action_hint == "reschedule"
+        or "reschedule_request" in signals
+        or (
+            not active_flow
+            and intent == "reschedule"
+            and confidence >= LLM_INTENT_MIN_CONFIDENCE
+        )
+    ):
+        decision.update(
+            {
+                "action": ORCH_ACTION_RESCHEDULE,
+                "needs_tool": True,
+                "tool_name": "reschedule_booking",
+                "reason": "reschedule_intent_detected",
+            }
+        )
         return decision
 
-    if stage26_action_hint in {"start_booking", "continue_booking"} or "booking_opener" in signals or (not active_flow and intent == "booking" and confidence >= LLM_INTENT_MIN_CONFIDENCE):
-        decision.update({
-            "action": ORCH_ACTION_START_BOOKING,
-            "next_state": STATE_AWAITING_SERVICE,
-            "reason": "booking_intent_detected",
-            "reply_mode": "mixed",
-        })
+    if (
+        stage26_action_hint in {"start_booking", "continue_booking"}
+        or "booking_opener" in signals
+        or (
+            not active_flow
+            and intent == "booking"
+            and confidence >= LLM_INTENT_MIN_CONFIDENCE
+        )
+    ):
+        decision.update(
+            {
+                "action": ORCH_ACTION_START_BOOKING,
+                "next_state": STATE_AWAITING_SERVICE,
+                "reason": "booking_intent_detected",
+                "reply_mode": "mixed",
+            }
+        )
         if (understanding.get("entities") or {}).get("service_key"):
             decision["next_state"] = STATE_AWAITING_DATE
         return decision
 
     if state == STATE_AWAITING_TIME:
         if "other_day" in signals:
-            decision.update({"action": ORCH_ACTION_ASK_DATE, "next_state": STATE_AWAITING_DATE, "reason": "other_day_in_time_selection", "reply_mode": "direct"})
+            decision.update(
+                {
+                    "action": ORCH_ACTION_ASK_DATE,
+                    "next_state": STATE_AWAITING_DATE,
+                    "reason": "other_day_in_time_selection",
+                    "reply_mode": "direct",
+                }
+            )
             return decision
         if "hesitation" in signals:
-            decision.update({"action": ORCH_ACTION_CLARIFY_TIME, "next_state": STATE_AWAITING_TIME, "reason": "hesitation_in_time_selection", "reply_mode": "direct"})
+            decision.update(
+                {
+                    "action": ORCH_ACTION_CLARIFY_TIME,
+                    "next_state": STATE_AWAITING_TIME,
+                    "reason": "hesitation_in_time_selection",
+                    "reply_mode": "direct",
+                }
+            )
             return decision
         if selected_slot_iso:
-            decision.update({"action": ORCH_ACTION_CHOOSE_SLOT, "next_state": STATE_AWAITING_CONFIRM, "needs_tool": True, "tool_name": "check_availability", "tool_args": {"slot_iso": selected_slot_iso}, "reason": "slot_selected"})
+            decision.update(
+                {
+                    "action": ORCH_ACTION_CHOOSE_SLOT,
+                    "next_state": STATE_AWAITING_CONFIRM,
+                    "needs_tool": True,
+                    "tool_name": "check_availability",
+                    "tool_args": {"slot_iso": selected_slot_iso},
+                    "reason": "slot_selected",
+                }
+            )
             return decision
 
     if state == STATE_AWAITING_CONFIRM:
         if "other_day" in signals:
-            decision.update({"action": ORCH_ACTION_ASK_DATE, "next_state": STATE_AWAITING_DATE, "reason": "other_day_in_confirm", "reply_mode": "direct"})
+            decision.update(
+                {
+                    "action": ORCH_ACTION_ASK_DATE,
+                    "next_state": STATE_AWAITING_DATE,
+                    "reason": "other_day_in_confirm",
+                    "reply_mode": "direct",
+                }
+            )
             return decision
         if "hesitation" in signals:
-            decision.update({"action": ORCH_ACTION_CLARIFY_CONFIRM, "next_state": STATE_AWAITING_CONFIRM, "reason": "hesitation_in_confirm", "reply_mode": "direct"})
+            decision.update(
+                {
+                    "action": ORCH_ACTION_CLARIFY_CONFIRM,
+                    "next_state": STATE_AWAITING_CONFIRM,
+                    "reason": "hesitation_in_confirm",
+                    "reply_mode": "direct",
+                }
+            )
             return decision
-        if stage26_action_hint == "confirm_yes" or "yes" in signals or understanding.get("confirmation") == "yes":
-            decision.update({"action": ORCH_ACTION_CONFIRM_YES, "needs_tool": True, "tool_name": "create_booking", "reason": "confirm_yes_detected"})
+        if (
+            stage26_action_hint == "confirm_yes"
+            or "yes" in signals
+            or understanding.get("confirmation") == "yes"
+        ):
+            decision.update(
+                {
+                    "action": ORCH_ACTION_CONFIRM_YES,
+                    "needs_tool": True,
+                    "tool_name": "create_booking",
+                    "reason": "confirm_yes_detected",
+                }
+            )
             return decision
-        if stage26_action_hint == "confirm_no" or "no" in signals or understanding.get("confirmation") == "no":
-            decision.update({"action": ORCH_ACTION_CONFIRM_NO, "reason": "confirm_no_detected"})
+        if (
+            stage26_action_hint == "confirm_no"
+            or "no" in signals
+            or understanding.get("confirmation") == "no"
+        ):
+            decision.update(
+                {"action": ORCH_ACTION_CONFIRM_NO, "reason": "confirm_no_detected"}
+            )
             return decision
 
     return decision
-
 
 
 def openai_chat_json(system: str, user: str) -> Dict[str, Any]:
@@ -4208,7 +5479,10 @@ def get_gcal(service_account_json: Optional[str] = None):
     effective_json = (service_account_json or GOOGLE_SERVICE_ACCOUNT_JSON or "").strip()
     if not effective_json:
         return None
-    if effective_json == (GOOGLE_SERVICE_ACCOUNT_JSON or "").strip() and _GCAL is not None:
+    if (
+        effective_json == (GOOGLE_SERVICE_ACCOUNT_JSON or "").strip()
+        and _GCAL is not None
+    ):
         return _GCAL
     if effective_json in _GCAL_BY_KEY:
         return _GCAL_BY_KEY[effective_json]
@@ -4227,7 +5501,13 @@ def get_gcal(service_account_json: Optional[str] = None):
         return None
 
 
-def is_slot_busy(calendar_id: str, dt_start: datetime, dt_end: datetime, buffer_minutes: int = 0, service_account_json: Optional[str] = None) -> bool:
+def is_slot_busy(
+    calendar_id: str,
+    dt_start: datetime,
+    dt_end: datetime,
+    buffer_minutes: int = 0,
+    service_account_json: Optional[str] = None,
+) -> bool:
     svc = get_gcal(service_account_json)
     if not svc or not calendar_id:
         return False
@@ -4285,6 +5565,7 @@ def create_calendar_event(
     except Exception as e:
         log.error("Create calendar event failed: %s", e)
         return None
+
 
 def update_calendar_event(
     calendar_id: str,
@@ -4386,7 +5667,9 @@ def elevenlabs_tts_mp3(text_: str, voice_id: str) -> bytes:
         )
         if r.status_code == 200:
             return r.content
-        log.error("ElevenLabs TTS failed status=%s body=%s", r.status_code, r.text[:500])
+        log.error(
+            "ElevenLabs TTS failed status=%s body=%s", r.status_code, r.text[:500]
+        )
     except Exception as e:
         log.error("ElevenLabs TTS request failed: %s", e)
     return b""
@@ -4401,6 +5684,7 @@ def tts_bytes_for_lang(text_: str, lang: str) -> bytes:
             GOOGLE_TTS_VOICE_NAME,
         )
     return elevenlabs_tts_mp3(text_, ELEVENLABS_VOICE_ID)
+
 
 def say_or_play(vr: VoiceResponse, text_: str, lang: str) -> None:
     text_ = (text_ or "").strip()
@@ -4428,7 +5712,10 @@ def tts_endpoint(text: str, lang: str = "lv"):
 def gather_followup_prompt(result: Dict[str, Any]) -> str:
     status = str(result.get("status") or "").strip()
     reply = str(result.get("reply_voice") or "").strip()
-    if status in ("need_more", "reschedule_wait", "greeting", "identity", "info") and reply:
+    if (
+        status in ("need_more", "reschedule_wait", "greeting", "identity", "info")
+        and reply
+    ):
         return reply
     return t(get_lang(result.get("lang")), "how_help")
 
@@ -4436,12 +5723,18 @@ def gather_followup_prompt(result: Dict[str, Any]) -> str:
 # -------------------------
 # CALENDAR LOGIC (Business Hours & Slots)
 # -------------------------
-def _interval_overlaps(start_a: datetime, end_a: datetime, start_b: datetime, end_b: datetime) -> bool:
+def _interval_overlaps(
+    start_a: datetime, end_a: datetime, start_b: datetime, end_b: datetime
+) -> bool:
     return start_a < end_b and end_a > start_b
 
 
 def in_business_hours(
-    dt_start: datetime, duration_min: int, work_start: str, work_end: str, business_rules: Optional[Dict[str, Any]] = None
+    dt_start: datetime,
+    duration_min: int,
+    work_start: str,
+    work_end: str,
+    business_rules: Optional[Dict[str, Any]] = None,
 ) -> bool:
     try:
         rule_hours = None
@@ -4469,8 +5762,12 @@ def in_business_hours(
         for br_start, br_end in rule_breaks:
             bs_h, bs_m = _parse_hhmm(br_start)
             be_h, be_m = _parse_hhmm(br_end)
-            break_start = dt_start.replace(hour=bs_h, minute=bs_m, second=0, microsecond=0)
-            break_end = dt_start.replace(hour=be_h, minute=be_m, second=0, microsecond=0)
+            break_start = dt_start.replace(
+                hour=bs_h, minute=bs_m, second=0, microsecond=0
+            )
+            break_end = dt_start.replace(
+                hour=be_h, minute=be_m, second=0, microsecond=0
+            )
             if _interval_overlaps(dt_start, dt_end, break_start, break_end):
                 return False
         return True
@@ -4490,11 +5787,15 @@ def find_next_two_slots(
     step, found = 30, []
     candidate = dt_start + timedelta(minutes=step)
     for _ in range(96):
-        if in_business_hours(candidate, duration_min, work_start, work_end, business_rules):
+        if in_business_hours(
+            candidate, duration_min, work_start, work_end, business_rules
+        ):
             if not is_slot_busy(
-                calendar_id, candidate, candidate + timedelta(minutes=duration_min),
+                calendar_id,
+                candidate,
+                candidate + timedelta(minutes=duration_min),
                 _safe_int((business_rules or {}).get("buffer_minutes"), 0),
-                service_account_json=service_account_json
+                service_account_json=service_account_json,
             ):
                 found.append(candidate)
                 if len(found) == 2:
@@ -4534,7 +5835,15 @@ def find_first_two_slots_for_day(
     step = timedelta(minutes=30)
 
     while candidate + timedelta(minutes=duration_min) <= day_end:
-        if in_business_hours(candidate, duration_min, work_start, work_end, business_rules) and not is_slot_busy(calendar_id, candidate, candidate + timedelta(minutes=duration_min), _safe_int((business_rules or {}).get("buffer_minutes"), 0), service_account_json=service_account_json):
+        if in_business_hours(
+            candidate, duration_min, work_start, work_end, business_rules
+        ) and not is_slot_busy(
+            calendar_id,
+            candidate,
+            candidate + timedelta(minutes=duration_min),
+            _safe_int((business_rules or {}).get("buffer_minutes"), 0),
+            service_account_json=service_account_json,
+        ):
             found.append(candidate)
             if len(found) == 2:
                 return found[0], found[1]
@@ -4574,14 +5883,20 @@ def find_first_n_slots_for_day(
     step = timedelta(minutes=30)
 
     while candidate + timedelta(minutes=duration_min) <= day_end:
-        if in_business_hours(candidate, duration_min, work_start, work_end, business_rules) and not is_slot_busy(calendar_id, candidate, candidate + timedelta(minutes=duration_min), _safe_int((business_rules or {}).get("buffer_minutes"), 0), service_account_json=service_account_json):
+        if in_business_hours(
+            candidate, duration_min, work_start, work_end, business_rules
+        ) and not is_slot_busy(
+            calendar_id,
+            candidate,
+            candidate + timedelta(minutes=duration_min),
+            _safe_int((business_rules or {}).get("buffer_minutes"), 0),
+            service_account_json=service_account_json,
+        ):
             found.append(candidate)
             if len(found) >= max(1, limit):
                 return found
         candidate += step
     return found
-
-
 
 
 def find_first_n_slots_for_day_window(
@@ -4614,7 +5929,13 @@ def find_first_n_slots_for_day_window(
                 return filtered
     return filtered
 
-def find_next_event_by_phone(calendar_id: str, phone: str, tenant_id: Optional[str] = None, service_account_json: Optional[str] = None):
+
+def find_next_event_by_phone(
+    calendar_id: str,
+    phone: str,
+    tenant_id: Optional[str] = None,
+    service_account_json: Optional[str] = None,
+):
     svc = get_gcal(service_account_json)
     if not svc or not calendar_id:
         return None
@@ -4647,7 +5968,9 @@ def find_next_event_by_phone(calendar_id: str, phone: str, tenant_id: Optional[s
     return None
 
 
-def delete_calendar_event(calendar_id: str, event_id: str, service_account_json: Optional[str] = None):
+def delete_calendar_event(
+    calendar_id: str, event_id: str, service_account_json: Optional[str] = None
+):
     svc = get_gcal(service_account_json)
     if svc and calendar_id:
         try:
@@ -4689,13 +6012,153 @@ ACTIVE_BOOKING_STATES = {
 }
 
 WEEKDAY_HINTS = {
-    0: ["monday", "mondays", "monday's", "next monday", "понедельник", "понедельника", "в понедельник", "на понедельник", "pirmdien", "pirmdiena", "pirmdienas", "uz pirmdienu", "pirmdien vakarā", "pirmdienas vakarā", "pirmdien vakara", "pirmdienas vakara", "pirmdienu"],
-    1: ["tuesday", "tuesdays", "tuesday's", "next tuesday", "вторник", "вторника", "во вторник", "на вторник", "otrdien", "otrdiena", "otrdienas", "uz otrdienu", "otrdien vakarā", "otrdienas vakarā", "otrdien vakara", "otrdienas vakara", "otrdienu"],
-    2: ["wednesday", "wednesdays", "wednesday's", "next wednesday", "среда", "среду", "среды", "в среду", "на среду", "trešdien", "tresdien", "trešdiena", "tresdiena", "trešdienas", "tresdienas", "uz trešdienu", "uz tresdienu", "trešdien vakarā", "tresdien vakarā", "trešdienas vakarā", "tresdienas vakarā", "trešdien vakara", "tresdien vakara", "trešdienu", "tresdienu"],
-    3: ["thursday", "thursdays", "thursday's", "next thursday", "четверг", "четверга", "в четверг", "на четверг", "ceturtdien", "ceturtdiena", "ceturtdienas", "uz ceturtdienu", "ceturtdien vakarā", "ceturtdienas vakarā", "ceturtdien vakara", "ceturtdienu"],
-    4: ["friday", "fridays", "friday's", "next friday", "пятница", "пятницу", "пятницы", "в пятницу", "на пятницу", "piektdien", "piektdiena", "piektdienas", "uz piektdienu", "piektdien vakarā", "piektdienas vakarā", "piektdien vakara", "piektdienu"],
-    5: ["saturday", "saturdays", "saturday's", "next saturday", "суббота", "субботу", "субботы", "в субботу", "на субботу", "sestdien", "sestdiena", "sestdienas", "uz sestdienu", "sestdien vakarā", "sestdienas vakarā", "sestdien vakara", "sestdienu"],
-    6: ["sunday", "sundays", "sunday's", "next sunday", "воскресенье", "воскресенья", "в воскресенье", "на воскресенье", "svētdien", "svetdien", "svētdiena", "svetdiena", "svētdienas", "svetdienas", "uz svētdienu", "uz svetdienu", "svētdien vakarā", "svetdien vakarā", "svētdienas vakarā", "svetdienas vakarā", "svētdien vakara", "svetdien vakara", "svētdienu", "svetdienu"],
+    0: [
+        "monday",
+        "mondays",
+        "monday's",
+        "next monday",
+        "понедельник",
+        "понедельника",
+        "в понедельник",
+        "на понедельник",
+        "pirmdien",
+        "pirmdiena",
+        "pirmdienas",
+        "uz pirmdienu",
+        "pirmdien vakarā",
+        "pirmdienas vakarā",
+        "pirmdien vakara",
+        "pirmdienas vakara",
+        "pirmdienu",
+    ],
+    1: [
+        "tuesday",
+        "tuesdays",
+        "tuesday's",
+        "next tuesday",
+        "вторник",
+        "вторника",
+        "во вторник",
+        "на вторник",
+        "otrdien",
+        "otrdiena",
+        "otrdienas",
+        "uz otrdienu",
+        "otrdien vakarā",
+        "otrdienas vakarā",
+        "otrdien vakara",
+        "otrdienas vakara",
+        "otrdienu",
+    ],
+    2: [
+        "wednesday",
+        "wednesdays",
+        "wednesday's",
+        "next wednesday",
+        "среда",
+        "среду",
+        "среды",
+        "в среду",
+        "на среду",
+        "trešdien",
+        "tresdien",
+        "trešdiena",
+        "tresdiena",
+        "trešdienas",
+        "tresdienas",
+        "uz trešdienu",
+        "uz tresdienu",
+        "trešdien vakarā",
+        "tresdien vakarā",
+        "trešdienas vakarā",
+        "tresdienas vakarā",
+        "trešdien vakara",
+        "tresdien vakara",
+        "trešdienu",
+        "tresdienu",
+    ],
+    3: [
+        "thursday",
+        "thursdays",
+        "thursday's",
+        "next thursday",
+        "четверг",
+        "четверга",
+        "в четверг",
+        "на четверг",
+        "ceturtdien",
+        "ceturtdiena",
+        "ceturtdienas",
+        "uz ceturtdienu",
+        "ceturtdien vakarā",
+        "ceturtdienas vakarā",
+        "ceturtdien vakara",
+        "ceturtdienu",
+    ],
+    4: [
+        "friday",
+        "fridays",
+        "friday's",
+        "next friday",
+        "пятница",
+        "пятницу",
+        "пятницы",
+        "в пятницу",
+        "на пятницу",
+        "piektdien",
+        "piektdiena",
+        "piektdienas",
+        "uz piektdienu",
+        "piektdien vakarā",
+        "piektdienas vakarā",
+        "piektdien vakara",
+        "piektdienu",
+    ],
+    5: [
+        "saturday",
+        "saturdays",
+        "saturday's",
+        "next saturday",
+        "суббота",
+        "субботу",
+        "субботы",
+        "в субботу",
+        "на субботу",
+        "sestdien",
+        "sestdiena",
+        "sestdienas",
+        "uz sestdienu",
+        "sestdien vakarā",
+        "sestdienas vakarā",
+        "sestdien vakara",
+        "sestdienu",
+    ],
+    6: [
+        "sunday",
+        "sundays",
+        "sunday's",
+        "next sunday",
+        "воскресенье",
+        "воскресенья",
+        "в воскресенье",
+        "на воскресенье",
+        "svētdien",
+        "svetdien",
+        "svētdiena",
+        "svetdiena",
+        "svētdienas",
+        "svetdienas",
+        "uz svētdienu",
+        "uz svetdienu",
+        "svētdien vakarā",
+        "svetdien vakarā",
+        "svētdienas vakarā",
+        "svetdienas vakarā",
+        "svētdien vakara",
+        "svetdien vakara",
+        "svētdienu",
+        "svetdienu",
+    ],
 }
 
 YES_WORDS = {
@@ -4711,9 +6174,35 @@ NO_WORDS = {
 }
 
 HESITATION_WORDS = {
-    "lv": {"nezinu", "grūti pateikt", "gruti pateikt", "varbūt vēlāk", "varbut velak", "neesmu drošs", "neesmu droš a", "neesmu droša", "nav svarīgi", "nav svarigi"},
-    "ru": {"не знаю", "не уверен", "не уверена", "может позже", "пока не знаю", "затрудняюсь"},
-    "en": {"not sure", "i am not sure", "i'm not sure", "maybe later", "dont know", "don't know", "not certain"},
+    "lv": {
+        "nezinu",
+        "grūti pateikt",
+        "gruti pateikt",
+        "varbūt vēlāk",
+        "varbut velak",
+        "neesmu drošs",
+        "neesmu droš a",
+        "neesmu droša",
+        "nav svarīgi",
+        "nav svarigi",
+    },
+    "ru": {
+        "не знаю",
+        "не уверен",
+        "не уверена",
+        "может позже",
+        "пока не знаю",
+        "затрудняюсь",
+    },
+    "en": {
+        "not sure",
+        "i am not sure",
+        "i'm not sure",
+        "maybe later",
+        "dont know",
+        "don't know",
+        "not certain",
+    },
 }
 
 # Stage 24 Hotfix: protect explicit time parsing from date tokens like "15.05".
@@ -4722,12 +6211,15 @@ HESITATION_WORDS = {
 # while a bare date does not become accidental 15:05.
 _core_parse_explicit_time_parts = parse_explicit_time_parts
 
+
 def parse_explicit_time_parts(text_: Optional[str]) -> Optional[Tuple[int, int]]:
     src = str(text_ or "").strip()
     if not src:
         return None
 
-    date_token_pattern = r"(?<!\d)(?:[0-2]?\d|3[01])[./-](?:0?[1-9]|1[0-2])(?:[./-]\d{2,4})?(?!\d)"
+    date_token_pattern = (
+        r"(?<!\d)(?:[0-2]?\d|3[01])[./-](?:0?[1-9]|1[0-2])(?:[./-]\d{2,4})?(?!\d)"
+    )
     without_dates = re.sub(date_token_pattern, " ", src)
     if without_dates.strip() != src.strip():
         parsed_after_date_strip = _core_parse_explicit_time_parts(without_dates)
@@ -4740,14 +6232,25 @@ def parse_explicit_time_parts(text_: Optional[str]) -> Optional[Tuple[int, int]]
 
 def conversation_state(c: Dict[str, Any]) -> str:
     state = str(c.get("state") or STATE_NEW).strip().upper()
-    if state not in {STATE_NEW, STATE_AWAITING_SERVICE, STATE_AWAITING_DATE, STATE_AWAITING_TIME, STATE_AWAITING_CONFIRM, STATE_POST_BOOKING_UPSELL, STATE_BOOKED, STATE_CANCELLED}:
+    if state not in {
+        STATE_NEW,
+        STATE_AWAITING_SERVICE,
+        STATE_AWAITING_DATE,
+        STATE_AWAITING_TIME,
+        STATE_AWAITING_CONFIRM,
+        STATE_POST_BOOKING_UPSELL,
+        STATE_BOOKED,
+        STATE_CANCELLED,
+    }:
         return STATE_NEW
     return state
 
 
 def is_active_booking_flow(c: Dict[str, Any]) -> bool:
     pending = c.get("pending") or {}
-    return conversation_state(c) in ACTIVE_BOOKING_STATES or bool(pending.get("booking_intent"))
+    return conversation_state(c) in ACTIVE_BOOKING_STATES or bool(
+        pending.get("booking_intent")
+    )
 
 
 def get_offered_slots(pending: Dict[str, Any]) -> List[str]:
@@ -4776,19 +6279,35 @@ def clear_offered_slots(pending: Dict[str, Any]) -> Dict[str, Any]:
     return pending
 
 
-def remember_booking_service(c: Dict[str, Any], pending: Dict[str, Any], service_item: Optional[Dict[str, Any]], lang: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    service_key = str((service_item or {}).get("key") or c.get("service") or pending.get("service") or "").strip()
+def remember_booking_service(
+    c: Dict[str, Any],
+    pending: Dict[str, Any],
+    service_item: Optional[Dict[str, Any]],
+    lang: str,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    service_key = str(
+        (service_item or {}).get("key")
+        or c.get("service")
+        or pending.get("service")
+        or ""
+    ).strip()
     if service_key:
         c["service"] = service_key
         pending["service"] = service_key
-    display = service_display_name(service_item, lang) if service_item else str(pending.get("service_display") or "").strip()
+    display = (
+        service_display_name(service_item, lang)
+        if service_item
+        else str(pending.get("service_display") or "").strip()
+    )
     if display:
         pending["service_display"] = display
     c["pending"] = pending or None
     return c, pending
 
 
-def booking_candidate_datetime_from_context(c: Dict[str, Any], pending: Dict[str, Any]) -> Optional[datetime]:
+def booking_candidate_datetime_from_context(
+    c: Dict[str, Any], pending: Dict[str, Any]
+) -> Optional[datetime]:
     """Return the best partially remembered date/time from current booking context."""
     pending = pending or {}
     candidates = [
@@ -4807,7 +6326,12 @@ def booking_candidate_datetime_from_context(c: Dict[str, Any], pending: Dict[str
 
     # If date and explicit time were stored separately, combine them.
     base_day = parse_dt_any_tz(str(pending.get("awaiting_time_date_iso") or "").strip())
-    time_value = pending.get("requested_time") or pending.get("partial_time") or pending.get("time_text") or c.get("time_text")
+    time_value = (
+        pending.get("requested_time")
+        or pending.get("partial_time")
+        or pending.get("time_text")
+        or c.get("time_text")
+    )
     parts = parse_explicit_time_parts(str(time_value or ""))
     if base_day and parts:
         hh, mm = parts
@@ -4815,7 +6339,9 @@ def booking_candidate_datetime_from_context(c: Dict[str, Any], pending: Dict[str
     return None
 
 
-def remember_partial_booking_datetime_from_message(c: Dict[str, Any], pending: Dict[str, Any], msg: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+def remember_partial_booking_datetime_from_message(
+    c: Dict[str, Any], pending: Dict[str, Any], msg: str
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Persist date/time details even if service is missing."""
     pending = pending or {}
     raw = msg or ""
@@ -4829,36 +6355,47 @@ def remember_partial_booking_datetime_from_message(c: Dict[str, Any], pending: D
 
     if natural_dt and time_parts:
         pending["candidate_datetime_iso"] = natural_dt.isoformat()
-        pending["awaiting_time_date_iso"] = natural_dt.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+        pending["awaiting_time_date_iso"] = natural_dt.replace(
+            hour=9, minute=0, second=0, microsecond=0
+        ).isoformat()
         pending["time_text"] = f"{time_parts[0]:02d}:{time_parts[1]:02d}"
         c["time_text"] = pending["time_text"]
-    elif time_parts and parse_dt_any_tz(str(pending.get("awaiting_time_date_iso") or "").strip()):
+    elif time_parts and parse_dt_any_tz(
+        str(pending.get("awaiting_time_date_iso") or "").strip()
+    ):
         # Stage 24 Hotfix: user can answer with time-only after date was already remembered.
         # This also prevents stale pending["time_text"] from the rejected slot being reused.
-        base_day = parse_dt_any_tz(str(pending.get("awaiting_time_date_iso") or "").strip())
+        base_day = parse_dt_any_tz(
+            str(pending.get("awaiting_time_date_iso") or "").strip()
+        )
         hh, mm = time_parts
         candidate = base_day.replace(hour=hh, minute=mm, second=0, microsecond=0)
         pending["candidate_datetime_iso"] = candidate.isoformat()
         pending["time_text"] = f"{hh:02d}:{mm:02d}"
         c["time_text"] = pending["time_text"]
     elif natural_dt:
-        pending["awaiting_time_date_iso"] = natural_dt.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+        pending["awaiting_time_date_iso"] = natural_dt.replace(
+            hour=9, minute=0, second=0, microsecond=0
+        ).isoformat()
     elif date_only_dt:
-        pending["awaiting_time_date_iso"] = date_only_dt.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+        pending["awaiting_time_date_iso"] = date_only_dt.replace(
+            hour=9, minute=0, second=0, microsecond=0
+        ).isoformat()
 
     # Critical fallback: date reference + explicit time in one message.
     if date_only_dt and time_parts and not pending.get("candidate_datetime_iso"):
         hh, mm = time_parts
         candidate = date_only_dt.replace(hour=hh, minute=mm, second=0, microsecond=0)
         pending["candidate_datetime_iso"] = candidate.isoformat()
-        pending["awaiting_time_date_iso"] = candidate.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+        pending["awaiting_time_date_iso"] = candidate.replace(
+            hour=9, minute=0, second=0, microsecond=0
+        ).isoformat()
         pending["time_text"] = f"{hh:02d}:{mm:02d}"
         c["time_text"] = pending["time_text"]
 
     pending["booking_intent"] = True
     c["pending"] = pending
     return c, pending
-
 
 
 def is_yes_text(text_: Optional[str], lang: str) -> bool:
@@ -4877,6 +6414,7 @@ def is_no_text(text_: Optional[str], lang: str) -> bool:
     allowed = set().union(*NO_WORDS.values())
     allowed.update(NO_WORDS.get(get_lang(lang), set()))
     return low in allowed
+
 
 def is_short_ack_text(text_: Optional[str], lang: str) -> bool:
     low = (text_ or "").strip().lower()
@@ -4898,13 +6436,18 @@ def _normalize_phrase_text(text_: Optional[str]) -> str:
     low = re.sub(r"\s+", " ", low).strip()
     return low
 
+
 def _fold_match_text(text_: Optional[str]) -> str:
     """Lowercase + remove accents/diacritics for tolerant LV/RU/EN matching."""
     src = str(text_ or "").strip().lower()
     if not src:
         return ""
     try:
-        src = "".join(ch for ch in unicodedata.normalize("NFKD", src) if not unicodedata.combining(ch))
+        src = "".join(
+            ch
+            for ch in unicodedata.normalize("NFKD", src)
+            if not unicodedata.combining(ch)
+        )
     except Exception:
         pass
     src = src.replace("ё", "е")
@@ -4928,9 +6471,29 @@ def is_other_day_text(text_: Optional[str], lang: str) -> bool:
     if not low:
         return False
     phrases = {
-        "lv": {"citu dienu", "labak citu dienu", "labāk citu dienu", "cita diena", "ne citu dienu", "vēlos citu dienu"},
-        "ru": {"другой день", "на другой день", "давайте другой день", "лучше другой день", "другая дата"},
-        "en": {"other day", "another day", "different day", "better another day", "lets do another day", "let's do another day"},
+        "lv": {
+            "citu dienu",
+            "labak citu dienu",
+            "labāk citu dienu",
+            "cita diena",
+            "ne citu dienu",
+            "vēlos citu dienu",
+        },
+        "ru": {
+            "другой день",
+            "на другой день",
+            "давайте другой день",
+            "лучше другой день",
+            "другая дата",
+        },
+        "en": {
+            "other day",
+            "another day",
+            "different day",
+            "better another day",
+            "lets do another day",
+            "let's do another day",
+        },
     }
     allowed = set().union(*phrases.values())
     allowed.update(phrases.get(get_lang(lang), set()))
@@ -4942,7 +6505,15 @@ def detect_time_shift_direction(text_: Optional[str], lang: str) -> Optional[str
     if not low:
         return None
     earlier = {
-        "lv": {"agrāk", "agrak", "nedaudz agrāk", "drusku agrāk", "mazliet agrāk", "ātrāk", "atrak"},
+        "lv": {
+            "agrāk",
+            "agrak",
+            "nedaudz agrāk",
+            "drusku agrāk",
+            "mazliet agrāk",
+            "ātrāk",
+            "atrak",
+        },
         "ru": {"раньше", "пораньше", "чуть раньше", "немного раньше"},
         "en": {"earlier", "a bit earlier", "slightly earlier"},
     }
@@ -4962,13 +6533,27 @@ def detect_time_shift_direction(text_: Optional[str], lang: str) -> Optional[str
     return None
 
 
-def smart_service_clarify_prompt(lang: str, service_catalog: List[Dict[str, Any]]) -> str:
+def smart_service_clarify_prompt(
+    lang: str, service_catalog: List[Dict[str, Any]]
+) -> str:
     options = barber_service_options_text(lang, service_catalog, max_items=2)
     if lang == "ru":
-        return f"Могу предложить, например, {options}. Что вам ближе?" if options else "Что хотите сделать — стрижку или бороду?"
+        return (
+            f"Могу предложить, например, {options}. Что вам ближе?"
+            if options
+            else "Что хотите сделать — стрижку или бороду?"
+        )
     if lang == "en":
-        return f"I can offer, for example, {options}. What would you like?" if options else "Would you like a haircut or a beard trim?"
-    return f"Varu piedāvāt, piemēram, {options}. Kas jums būtu tuvāk?" if options else "Vai vēlaties frizūru vai bārdu?"
+        return (
+            f"I can offer, for example, {options}. What would you like?"
+            if options
+            else "Would you like a haircut or a beard trim?"
+        )
+    return (
+        f"Varu piedāvāt, piemēram, {options}. Kas jums būtu tuvāk?"
+        if options
+        else "Vai vēlaties frizūru vai bārdu?"
+    )
 
 
 def smart_date_clarify_prompt(lang: str) -> str:
@@ -5044,8 +6629,20 @@ def negotiation_slots_response(
         db_save_conversation(tenant_id, user_key, c)
         return {
             "status": "need_more",
-            "reply_voice": t(lang, "smart_slots_prompt", opt1=format_dt_short(slots[0]), opt2=format_dt_short(slots[1]), opt3=format_dt_short(slots[2])),
-            "msg_out": t(lang, "smart_slots_prompt", opt1=format_dt_short(slots[0]), opt2=format_dt_short(slots[1]), opt3=format_dt_short(slots[2])),
+            "reply_voice": t(
+                lang,
+                "smart_slots_prompt",
+                opt1=format_dt_short(slots[0]),
+                opt2=format_dt_short(slots[1]),
+                opt3=format_dt_short(slots[2]),
+            ),
+            "msg_out": t(
+                lang,
+                "smart_slots_prompt",
+                opt1=format_dt_short(slots[0]),
+                opt2=format_dt_short(slots[1]),
+                opt3=format_dt_short(slots[2]),
+            ),
             "lang": lang,
         }
     if len(slots) >= 2:
@@ -5056,8 +6653,18 @@ def negotiation_slots_response(
         db_save_conversation(tenant_id, user_key, c)
         return {
             "status": "need_more",
-            "reply_voice": t(lang, "voice_options_prompt", opt1=format_dt_short(slots[0]), opt2=format_dt_short(slots[1])),
-            "msg_out": t(lang, "voice_options_prompt", opt1=format_dt_short(slots[0]), opt2=format_dt_short(slots[1])),
+            "reply_voice": t(
+                lang,
+                "voice_options_prompt",
+                opt1=format_dt_short(slots[0]),
+                opt2=format_dt_short(slots[1]),
+            ),
+            "msg_out": t(
+                lang,
+                "voice_options_prompt",
+                opt1=format_dt_short(slots[0]),
+                opt2=format_dt_short(slots[1]),
+            ),
             "lang": lang,
         }
     if len(slots) == 1:
@@ -5069,8 +6676,18 @@ def negotiation_slots_response(
         db_save_conversation(tenant_id, user_key, c)
         return {
             "status": "need_more",
-            "reply_voice": t(lang, "ask_booking_confirm", when=format_dt_short(slots[0]), service=pending.get("service_display") or ""),
-            "msg_out": t(lang, "ask_booking_confirm", when=format_dt_short(slots[0]), service=pending.get("service_display") or ""),
+            "reply_voice": t(
+                lang,
+                "ask_booking_confirm",
+                when=format_dt_short(slots[0]),
+                service=pending.get("service_display") or "",
+            ),
+            "msg_out": t(
+                lang,
+                "ask_booking_confirm",
+                when=format_dt_short(slots[0]),
+                service=pending.get("service_display") or "",
+            ),
             "lang": lang,
         }
     db_save_conversation(tenant_id, user_key, c)
@@ -5083,7 +6700,9 @@ def negotiation_slots_response(
     }
 
 
-def soft_clarify_for_state(lang: str, c: Dict[str, Any], pending: Dict[str, Any]) -> str:
+def soft_clarify_for_state(
+    lang: str, c: Dict[str, Any], pending: Dict[str, Any]
+) -> str:
     state = conversation_state(c)
     if state == STATE_AWAITING_SERVICE:
         return t(lang, "soft_clarify_service")
@@ -5113,25 +6732,93 @@ def parse_date_only_text(text_: Optional[str]) -> Optional[datetime]:
     if dm:
         dd, mo = int(dm.group(1)), int(dm.group(2))
         yy = dm.group(3)
-        year = int(yy) + 2000 if yy and len(yy) == 2 else int(yy) if yy else today_local().year
+        year = (
+            int(yy) + 2000
+            if yy and len(yy) == 2
+            else int(yy) if yy else today_local().year
+        )
         try:
             return datetime(year, mo, dd, 9, 0, tzinfo=TZ)
         except Exception:
             pass
 
     month_names = {
-        "jan": 1, "january": 1, "janvaris": 1, "janvāris": 1, "janvari": 1, "janvārī": 1, "января": 1,
-        "feb": 2, "february": 2, "februaris": 2, "februāris": 2, "februari": 2, "februārī": 2, "февраля": 2,
-        "mar": 3, "march": 3, "marts": 3, "marta": 3, "martā": 3, "марта": 3,
-        "apr": 4, "april": 4, "aprīlis": 4, "aprilis": 4, "aprili": 4, "aprīlī": 4, "апреля": 4,
-        "may": 5, "maijs": 5, "maija": 5, "maijā": 5, "мая": 5,
-        "jun": 6, "june": 6, "jūnijs": 6, "junijs": 6, "junija": 6, "jūnijā": 6, "июня": 6,
-        "jul": 7, "july": 7, "jūlijs": 7, "julijs": 7, "julija": 7, "jūlijā": 7, "июля": 7,
-        "aug": 8, "august": 8, "augusts": 8, "augusta": 8, "augustā": 8, "августа": 8,
-        "sep": 9, "september": 9, "septembris": 9, "septembri": 9, "septembrī": 9, "сентября": 9,
-        "oct": 10, "october": 10, "oktobris": 10, "oktobri": 10, "oktobrī": 10, "октября": 10,
-        "nov": 11, "november": 11, "novembris": 11, "novembri": 11, "novembrī": 11, "ноября": 11,
-        "dec": 12, "december": 12, "decembris": 12, "decembri": 12, "decembrī": 12, "декабря": 12,
+        "jan": 1,
+        "january": 1,
+        "janvaris": 1,
+        "janvāris": 1,
+        "janvari": 1,
+        "janvārī": 1,
+        "января": 1,
+        "feb": 2,
+        "february": 2,
+        "februaris": 2,
+        "februāris": 2,
+        "februari": 2,
+        "februārī": 2,
+        "февраля": 2,
+        "mar": 3,
+        "march": 3,
+        "marts": 3,
+        "marta": 3,
+        "martā": 3,
+        "марта": 3,
+        "apr": 4,
+        "april": 4,
+        "aprīlis": 4,
+        "aprilis": 4,
+        "aprili": 4,
+        "aprīlī": 4,
+        "апреля": 4,
+        "may": 5,
+        "maijs": 5,
+        "maija": 5,
+        "maijā": 5,
+        "мая": 5,
+        "jun": 6,
+        "june": 6,
+        "jūnijs": 6,
+        "junijs": 6,
+        "junija": 6,
+        "jūnijā": 6,
+        "июня": 6,
+        "jul": 7,
+        "july": 7,
+        "jūlijs": 7,
+        "julijs": 7,
+        "julija": 7,
+        "jūlijā": 7,
+        "июля": 7,
+        "aug": 8,
+        "august": 8,
+        "augusts": 8,
+        "augusta": 8,
+        "augustā": 8,
+        "августа": 8,
+        "sep": 9,
+        "september": 9,
+        "septembris": 9,
+        "septembri": 9,
+        "septembrī": 9,
+        "сентября": 9,
+        "oct": 10,
+        "october": 10,
+        "oktobris": 10,
+        "oktobri": 10,
+        "oktobrī": 10,
+        "октября": 10,
+        "nov": 11,
+        "november": 11,
+        "novembris": 11,
+        "novembri": 11,
+        "novembrī": 11,
+        "ноября": 11,
+        "dec": 12,
+        "december": 12,
+        "decembris": 12,
+        "decembri": 12,
+        "decembrī": 12,
+        "декабря": 12,
     }
     folded_src = _fold_match_text(src)
     md = re.search(r"\b(\d{1,2})\s+([a-zа-я]+)\b", folded_src, flags=re.IGNORECASE)
@@ -5154,10 +6841,34 @@ def parse_date_only_text(text_: Optional[str]) -> Optional[datetime]:
             return datetime.combine(d, datetime.min.time(), tzinfo=TZ).replace(hour=9)
 
     if _contains_any_phrase(src, ["parīt", "послезавтра", "day after tomorrow"]):
-        return datetime.combine(base + timedelta(days=2), datetime.min.time(), tzinfo=TZ).replace(hour=9)
+        return datetime.combine(
+            base + timedelta(days=2), datetime.min.time(), tzinfo=TZ
+        ).replace(hour=9)
     if _contains_any_phrase(src, ["rīt", "rit", "завтра", "tomorrow"]):
-        return datetime.combine(base + timedelta(days=1), datetime.min.time(), tzinfo=TZ).replace(hour=9)
-    if _contains_any_phrase(src, ["šodien", "sodien", "šorīt", "sorit", "šovakar", "sovakar", "сегодня", "сегодня утром", "сегодня днем", "сегодня днём", "сегодня вечером", "today", "this morning", "this afternoon", "this evening", "tonight"]):
+        return datetime.combine(
+            base + timedelta(days=1), datetime.min.time(), tzinfo=TZ
+        ).replace(hour=9)
+    if _contains_any_phrase(
+        src,
+        [
+            "šodien",
+            "sodien",
+            "šorīt",
+            "sorit",
+            "šovakar",
+            "sovakar",
+            "сегодня",
+            "сегодня утром",
+            "сегодня днем",
+            "сегодня днём",
+            "сегодня вечером",
+            "today",
+            "this morning",
+            "this afternoon",
+            "this evening",
+            "tonight",
+        ],
+    ):
         return datetime.combine(base, datetime.min.time(), tzinfo=TZ).replace(hour=9)
 
     return None
@@ -5170,27 +6881,80 @@ NATURAL_TIME_DEFAULTS = {
     "evening": 17,
 }
 
+
 def detect_time_bucket(text_: Optional[str]) -> Optional[str]:
     src = (text_ or "").lower().strip()
     if not src:
         return None
     patterns = {
         "morning": [
-            "no rīta", "no rita", "rīt no rīta", "rit no rita", "šorīt", "sorit", "rīta", "rita",
-            "утром", "сегодня утром", "утра",
-            "in the morning", "this morning", "morning"
+            "no rīta",
+            "no rita",
+            "rīt no rīta",
+            "rit no rita",
+            "šorīt",
+            "sorit",
+            "rīta",
+            "rita",
+            "утром",
+            "сегодня утром",
+            "утра",
+            "in the morning",
+            "this morning",
+            "morning",
         ],
         "midday": [
-            "pusdienlaikā", "pusdienlaika", "ap pusdienlaiku", "днём", "днем", "сегодня днем", "сегодня днём", "at noon", "noon", "midday"
+            "pusdienlaikā",
+            "pusdienlaika",
+            "ap pusdienlaiku",
+            "днём",
+            "днем",
+            "сегодня днем",
+            "сегодня днём",
+            "at noon",
+            "noon",
+            "midday",
         ],
         "afternoon": [
-            "pēcpusdienā", "pecpusdiena", "pecpusdienā", "šopēcpusdien", "sopecpusdien", "after lunch", "in the afternoon", "this afternoon", "afternoon", "днём", "днем", "после обеда"
+            "pēcpusdienā",
+            "pecpusdiena",
+            "pecpusdienā",
+            "šopēcpusdien",
+            "sopecpusdien",
+            "after lunch",
+            "in the afternoon",
+            "this afternoon",
+            "afternoon",
+            "днём",
+            "днем",
+            "после обеда",
         ],
         "evening": [
-            "vakarā", "vakara", "vakaru", "uz vakaru", "vakarpusē", "vakarpuse", "šovakar", "sovakar",
-            "вечером", "вечеру", "сегодня вечером", "к вечеру", "ближе к вечеру", "на вечер", "на вечернее время",
-            "in the evening", "this evening", "later in the evening", "towards evening", "evening", "tonight",
-            "pēc darba", "pec darba", "после работы", "after work"
+            "vakarā",
+            "vakara",
+            "vakaru",
+            "uz vakaru",
+            "vakarpusē",
+            "vakarpuse",
+            "šovakar",
+            "sovakar",
+            "вечером",
+            "вечеру",
+            "сегодня вечером",
+            "к вечеру",
+            "ближе к вечеру",
+            "на вечер",
+            "на вечернее время",
+            "in the evening",
+            "this evening",
+            "later in the evening",
+            "towards evening",
+            "evening",
+            "tonight",
+            "pēc darba",
+            "pec darba",
+            "после работы",
+            "after work",
         ],
     }
     for bucket, hints in patterns.items():
@@ -5198,18 +6962,33 @@ def detect_time_bucket(text_: Optional[str]) -> Optional[str]:
             return bucket
     return None
 
+
 def parse_time_window(text_: Optional[str]) -> Optional[Tuple[int, int]]:
     src = (text_ or "").lower().strip()
     if not src:
         return None
 
-    if _contains_any_phrase(src, ["pēc darba", "pec darba", "после работы", "after work"]):
+    if _contains_any_phrase(
+        src, ["pēc darba", "pec darba", "после работы", "after work"]
+    ):
         return (17, 21)
-    if _contains_any_phrase(src, [
-        "ближе к вечеру", "к вечеру", "на вечер", "на вечернее время",
-        "uz vakaru", "vakarpusē", "vakarpuse", "vakaru",
-        "towards evening", "later in the evening", "in the evening", "tonight"
-    ]):
+    if _contains_any_phrase(
+        src,
+        [
+            "ближе к вечеру",
+            "к вечеру",
+            "на вечер",
+            "на вечернее время",
+            "uz vakaru",
+            "vakarpusē",
+            "vakarpuse",
+            "vakaru",
+            "towards evening",
+            "later in the evening",
+            "in the evening",
+            "tonight",
+        ],
+    ):
         return (16, 21)
 
     bucket = detect_time_bucket(src)
@@ -5223,6 +7002,7 @@ def parse_time_window(text_: Optional[str]) -> Optional[Tuple[int, int]]:
         return (16, 21)
     return None
 
+
 def has_natural_time_hint(text_: Optional[str]) -> bool:
     src = (text_ or "").lower().strip()
     if not src:
@@ -5231,7 +7011,16 @@ def has_natural_time_hint(text_: Optional[str]) -> bool:
         return True
     if detect_time_bucket(src):
         return True
-    approx_markers = ["ap ", "apmēram", "apmeram", "kaut kur", "around", "about", "около", "примерно"]
+    approx_markers = [
+        "ap ",
+        "apmēram",
+        "apmeram",
+        "kaut kur",
+        "around",
+        "about",
+        "около",
+        "примерно",
+    ]
     if any(m in src for m in approx_markers):
         return True
     return False
@@ -5258,7 +7047,10 @@ def pending_time_window_tuple(pending: Dict[str, Any]) -> Optional[Tuple[int, in
             return None
     return None
 
-def parse_natural_datetime(text_: Optional[str], base_iso: Optional[str] = None) -> Optional[datetime]:
+
+def parse_natural_datetime(
+    text_: Optional[str], base_iso: Optional[str] = None
+) -> Optional[datetime]:
     src = (text_ or "").lower().strip()
     if not src:
         return None
@@ -5307,7 +7099,9 @@ def parse_natural_datetime(text_: Optional[str], base_iso: Optional[str] = None)
     return None
 
 
-def extract_service_from_text(text_: Optional[str], catalog: List[Dict[str, Any]], lang: str) -> Optional[Dict[str, Any]]:
+def extract_service_from_text(
+    text_: Optional[str], catalog: List[Dict[str, Any]], lang: str
+) -> Optional[Dict[str, Any]]:
     low = (text_ or "").strip().lower()
     if not low:
         return None
@@ -5318,10 +7112,26 @@ def extract_service_from_text(text_: Optional[str], catalog: List[Dict[str, Any]
     for item in catalog:
         display = service_display_name(item, lang).lower()
         candidates = {display, str(item.get("key") or "").strip().lower()}
-        candidates.update(str(x).strip().lower() for x in (item.get(f"aliases_{get_lang(lang)}") or []) if str(x).strip())
-        candidates.update(str(x).strip().lower() for x in (item.get("aliases_lv") or []) if str(x).strip())
-        candidates.update(str(x).strip().lower() for x in (item.get("aliases_ru") or []) if str(x).strip())
-        candidates.update(str(x).strip().lower() for x in (item.get("aliases_en") or []) if str(x).strip())
+        candidates.update(
+            str(x).strip().lower()
+            for x in (item.get(f"aliases_{get_lang(lang)}") or [])
+            if str(x).strip()
+        )
+        candidates.update(
+            str(x).strip().lower()
+            for x in (item.get("aliases_lv") or [])
+            if str(x).strip()
+        )
+        candidates.update(
+            str(x).strip().lower()
+            for x in (item.get("aliases_ru") or [])
+            if str(x).strip()
+        )
+        candidates.update(
+            str(x).strip().lower()
+            for x in (item.get("aliases_en") or [])
+            if str(x).strip()
+        )
         for cand in candidates:
             if cand:
                 candidates_index.append((len(cand), cand, item))
@@ -5334,10 +7144,13 @@ def extract_service_from_text(text_: Optional[str], catalog: List[Dict[str, Any]
             return item
 
     # Stage 25.6 hotfix: diacritic-insensitive service matching for natural Latvian input.
-    for _, cand, item in sorted(folded_candidates_index, key=lambda x: x[0], reverse=True):
+    for _, cand, item in sorted(
+        folded_candidates_index, key=lambda x: x[0], reverse=True
+    ):
         if cand == folded_low or cand in folded_low or folded_low in cand:
             return item
     return None
+
 
 def extract_slot_choice(msg: Optional[str], pending: Dict[str, Any]) -> Optional[str]:
     low = (msg or "").strip().lower()
@@ -5370,10 +7183,17 @@ def extract_slot_choice(msg: Optional[str], pending: Dict[str, Any]) -> Optional
     return None
 
 
-def prompt_for_state(lang: str, c: Dict[str, Any], pending: Dict[str, Any], service_catalog: Optional[List[Dict[str, Any]]] = None) -> str:
+def prompt_for_state(
+    lang: str,
+    c: Dict[str, Any],
+    pending: Dict[str, Any],
+    service_catalog: Optional[List[Dict[str, Any]]] = None,
+) -> str:
     state = conversation_state(c)
     if state == STATE_AWAITING_SERVICE:
-        return barber_service_prompt(lang, service_catalog or default_onboarding_service_catalog("barbershop"))
+        return barber_service_prompt(
+            lang, service_catalog or default_onboarding_service_catalog("barbershop")
+        )
     if state == STATE_AWAITING_DATE:
         return t(lang, "ask_booking_date")
     if state == STATE_AWAITING_TIME:
@@ -5383,19 +7203,37 @@ def prompt_for_state(lang: str, c: Dict[str, Any], pending: Dict[str, Any], serv
             dt2 = parse_dt_any_tz(offered[1])
             dt3 = parse_dt_any_tz(offered[2])
             if dt1 and dt2 and dt3:
-                return t(lang, "smart_slots_repeat", opt1=format_dt_short(dt1), opt2=format_dt_short(dt2), opt3=format_dt_short(dt3))
+                return t(
+                    lang,
+                    "smart_slots_repeat",
+                    opt1=format_dt_short(dt1),
+                    opt2=format_dt_short(dt2),
+                    opt3=format_dt_short(dt3),
+                )
         if len(offered) >= 2:
             dt1 = parse_dt_any_tz(offered[0])
             dt2 = parse_dt_any_tz(offered[1])
             if dt1 and dt2:
-                return t(lang, "voice_options_repeat", opt1=format_dt_short(dt1), opt2=format_dt_short(dt2))
+                return t(
+                    lang,
+                    "voice_options_repeat",
+                    opt1=format_dt_short(dt1),
+                    opt2=format_dt_short(dt2),
+                )
         return t(lang, "ask_booking_time_only")
     if state == STATE_AWAITING_CONFIRM:
-        confirm_iso = str(pending.get("confirm_slot_iso") or c.get("datetime_iso") or "").strip()
+        confirm_iso = str(
+            pending.get("confirm_slot_iso") or c.get("datetime_iso") or ""
+        ).strip()
         dt_confirm = parse_dt_any_tz(confirm_iso)
         service_name = pending.get("service_display") or c.get("service") or ""
         if dt_confirm:
-            return t(lang, "ask_booking_confirm", when=format_dt_short(dt_confirm), service=service_name or t(lang, "need_service"))
+            return t(
+                lang,
+                "ask_booking_confirm",
+                when=format_dt_short(dt_confirm),
+                service=service_name or t(lang, "need_service"),
+            )
         return t(lang, "repeat_yes_no")
     return t(lang, "how_help")
 
@@ -5435,7 +7273,11 @@ def normalize_booking_state(c: Dict[str, Any]) -> Dict[str, Any]:
         state = STATE_AWAITING_CONFIRM
     elif offered_slots or awaiting_time_date_iso:
         state = STATE_AWAITING_TIME
-    elif service_key and state not in (STATE_POST_BOOKING_UPSELL, STATE_BOOKED, STATE_CANCELLED):
+    elif service_key and state not in (
+        STATE_POST_BOOKING_UPSELL,
+        STATE_BOOKED,
+        STATE_CANCELLED,
+    ):
         state = STATE_AWAITING_DATE if not booked_dt else state
     elif has_booking_intent and not service_key:
         state = STATE_AWAITING_SERVICE
@@ -5450,7 +7292,11 @@ def normalize_booking_state(c: Dict[str, Any]) -> Dict[str, Any]:
     return c
 
 
-def should_offer_post_confirm_upsell(service_catalog: List[Dict[str, Any]], primary_service_item: Optional[Dict[str, Any]], pending: Dict[str, Any]) -> bool:
+def should_offer_post_confirm_upsell(
+    service_catalog: List[Dict[str, Any]],
+    primary_service_item: Optional[Dict[str, Any]],
+    pending: Dict[str, Any],
+) -> bool:
     if not primary_service_item:
         return False
     if service_group_key(primary_service_item) != "haircut":
@@ -5467,12 +7313,16 @@ def move_to_post_confirm_upsell(
     service_catalog: List[Dict[str, Any]],
     dt_confirm: datetime,
 ) -> Dict[str, Any]:
-    haircut_item = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
+    haircut_item = get_service_item_by_key(
+        service_catalog, c.get("service") or pending.get("service")
+    )
     beard_item = find_service_item_by_group(service_catalog, "beard")
     pending["upsell_offer_active"] = True
     c["pending"] = pending
     c["state"] = STATE_POST_BOOKING_UPSELL
-    reply_text = build_confirm_upsell_prompt(lang, format_dt_short(dt_confirm), haircut_item, beard_item)
+    reply_text = build_confirm_upsell_prompt(
+        lang, format_dt_short(dt_confirm), haircut_item, beard_item
+    )
     return {
         "status": "need_more",
         "reply_voice": reply_text,
@@ -5491,13 +7341,18 @@ def finalize_post_confirm_upsell_response(
 ) -> Dict[str, Any]:
     haircut_item = get_service_item_by_key(service_catalog, pending.get("service"))
     beard_item = find_service_item_by_group(service_catalog, "beard")
-    reply_text = build_confirm_upsell_resolution(lang, format_dt_short(dt_confirm), added, haircut_item, beard_item)
+    reply_text = build_confirm_upsell_resolution(
+        lang, format_dt_short(dt_confirm), added, haircut_item, beard_item
+    )
     return {
         "status": "booked",
         "reply_voice": reply_text,
         "msg_out": reply_text,
         "lang": lang,
-        "service": combined_service_display(lang, haircut_item, beard_item if added else None) or service_display_name(haircut_item, lang),
+        "service": combined_service_display(
+            lang, haircut_item, beard_item if added else None
+        )
+        or service_display_name(haircut_item, lang),
         "when": format_dt_short(dt_confirm),
         "datetime_text": format_dt_short(dt_confirm),
         "preserve_text": True,
@@ -5514,17 +7369,26 @@ def offer_slots_for_date(
     service_catalog: List[Dict[str, Any]],
     base_date: datetime,
 ) -> Dict[str, Any]:
-    service_item_for_slots = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
+    service_item_for_slots = get_service_item_by_key(
+        service_catalog, c.get("service") or pending.get("service")
+    )
     stored_window = pending_time_window_tuple(pending)
     if not service_item_for_slots:
         c["pending"] = pending or None
         c["state"] = STATE_AWAITING_SERVICE
         db_save_conversation(tenant_id, user_key, c)
         prompt = barber_service_prompt(lang, service_catalog)
-        return {"status": "need_more", "reply_voice": prompt, "msg_out": prompt, "lang": lang}
+        return {
+            "status": "need_more",
+            "reply_voice": prompt,
+            "msg_out": prompt,
+            "lang": lang,
+        }
 
     pending["booking_intent"] = True
-    pending["awaiting_time_date_iso"] = base_date.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+    pending["awaiting_time_date_iso"] = base_date.replace(
+        hour=9, minute=0, second=0, microsecond=0
+    ).isoformat()
     pending.pop("confirm_slot_iso", None)
     pending.pop("candidate_datetime_iso", None)
     clear_offered_slots(pending)
@@ -5544,30 +7408,34 @@ def offer_slots_for_date(
 
     calendar_ready = calendar_is_configured(settings["calendar_id"])
     day_slots = (
-        find_first_n_slots_for_day_window(
-            calendar_id=settings["calendar_id"],
-            day_dt=base_date,
-            duration_min=service_duration_min(service_item_for_slots),
-            work_start=settings["work_start"],
-            work_end=settings["work_end"],
-            window_start_hour=stored_window[0],
-            window_end_hour=stored_window[1],
-            limit=3,
-            business_rules=settings.get("business_rules"),
-            service_account_json=settings.get("service_account_json"),
+        (
+            find_first_n_slots_for_day_window(
+                calendar_id=settings["calendar_id"],
+                day_dt=base_date,
+                duration_min=service_duration_min(service_item_for_slots),
+                work_start=settings["work_start"],
+                work_end=settings["work_end"],
+                window_start_hour=stored_window[0],
+                window_end_hour=stored_window[1],
+                limit=3,
+                business_rules=settings.get("business_rules"),
+                service_account_json=settings.get("service_account_json"),
+            )
+            if calendar_ready and stored_window
+            else find_first_n_slots_for_day(
+                settings["calendar_id"],
+                base_date,
+                service_duration_min(service_item_for_slots),
+                settings["work_start"],
+                settings["work_end"],
+                limit=3,
+                business_rules=settings.get("business_rules"),
+                service_account_json=settings.get("service_account_json"),
+            )
         )
-        if calendar_ready and stored_window
-        else find_first_n_slots_for_day(
-            settings["calendar_id"],
-            base_date,
-            service_duration_min(service_item_for_slots),
-            settings["work_start"],
-            settings["work_end"],
-            limit=3,
-            business_rules=settings.get("business_rules"),
-            service_account_json=settings.get("service_account_json"),
-        )
-    ) if calendar_ready else []
+        if calendar_ready
+        else []
+    )
 
     if len(day_slots) >= 3:
         pending = set_offered_slots(pending, day_slots[:3])
@@ -5575,8 +7443,20 @@ def offer_slots_for_date(
         db_save_conversation(tenant_id, user_key, c)
         return {
             "status": "need_more",
-            "reply_voice": t(lang, "smart_slots_prompt", opt1=format_dt_short(day_slots[0]), opt2=format_dt_short(day_slots[1]), opt3=format_dt_short(day_slots[2])),
-            "msg_out": t(lang, "smart_slots_prompt", opt1=format_dt_short(day_slots[0]), opt2=format_dt_short(day_slots[1]), opt3=format_dt_short(day_slots[2])),
+            "reply_voice": t(
+                lang,
+                "smart_slots_prompt",
+                opt1=format_dt_short(day_slots[0]),
+                opt2=format_dt_short(day_slots[1]),
+                opt3=format_dt_short(day_slots[2]),
+            ),
+            "msg_out": t(
+                lang,
+                "smart_slots_prompt",
+                opt1=format_dt_short(day_slots[0]),
+                opt2=format_dt_short(day_slots[1]),
+                opt3=format_dt_short(day_slots[2]),
+            ),
             "lang": lang,
         }
     if len(day_slots) >= 2:
@@ -5585,8 +7465,18 @@ def offer_slots_for_date(
         db_save_conversation(tenant_id, user_key, c)
         return {
             "status": "need_more",
-            "reply_voice": t(lang, "voice_options_prompt", opt1=format_dt_short(day_slots[0]), opt2=format_dt_short(day_slots[1])),
-            "msg_out": t(lang, "voice_options_prompt", opt1=format_dt_short(day_slots[0]), opt2=format_dt_short(day_slots[1])),
+            "reply_voice": t(
+                lang,
+                "voice_options_prompt",
+                opt1=format_dt_short(day_slots[0]),
+                opt2=format_dt_short(day_slots[1]),
+            ),
+            "msg_out": t(
+                lang,
+                "voice_options_prompt",
+                opt1=format_dt_short(day_slots[0]),
+                opt2=format_dt_short(day_slots[1]),
+            ),
             "lang": lang,
         }
     if len(day_slots) == 1:
@@ -5598,8 +7488,18 @@ def offer_slots_for_date(
         db_save_conversation(tenant_id, user_key, c)
         return {
             "status": "need_more",
-            "reply_voice": t(lang, "ask_booking_confirm", when=format_dt_short(day_slots[0]), service=pending.get("service_display") or ""),
-            "msg_out": t(lang, "ask_booking_confirm", when=format_dt_short(day_slots[0]), service=pending.get("service_display") or ""),
+            "reply_voice": t(
+                lang,
+                "ask_booking_confirm",
+                when=format_dt_short(day_slots[0]),
+                service=pending.get("service_display") or "",
+            ),
+            "msg_out": t(
+                lang,
+                "ask_booking_confirm",
+                when=format_dt_short(day_slots[0]),
+                service=pending.get("service_display") or "",
+            ),
             "lang": lang,
         }
 
@@ -5627,9 +7527,15 @@ def apply_inflow_service_override(
     pending.pop("confirm_slot_iso", None)
     pending.pop("candidate_datetime_iso", None)
     clear_offered_slots(pending)
-    base_day = parse_dt_any_tz(str(pending.get("awaiting_time_date_iso") or c.get("datetime_iso") or "").strip())
+    base_day = parse_dt_any_tz(
+        str(
+            pending.get("awaiting_time_date_iso") or c.get("datetime_iso") or ""
+        ).strip()
+    )
     if base_day:
-        return offer_slots_for_date(tenant_id, user_key, lang, c, pending, settings, service_catalog, base_day)
+        return offer_slots_for_date(
+            tenant_id, user_key, lang, c, pending, settings, service_catalog, base_day
+        )
     c["pending"] = pending or None
     c["datetime_iso"] = None
     c["state"] = STATE_AWAITING_DATE
@@ -5656,7 +7562,9 @@ def book_appointment_for_datetime(
     voice_like_channel = (channel or "").strip().lower() == "voice"
     pending = c.get("pending") or {}
     calendar_ready = calendar_is_configured(settings["calendar_id"])
-    service_item = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
+    service_item = get_service_item_by_key(
+        service_catalog, c.get("service") or pending.get("service")
+    )
     duration_min = service_duration_min(service_item)
 
     if not calendar_ready:
@@ -5697,7 +7605,16 @@ def book_appointment_for_datetime(
             c["pending"] = pending
             c["state"] = STATE_AWAITING_TIME
             c["datetime_iso"] = None
-            voice_prompt = t(lang, "voice_options_prompt", opt1=format_dt_short(opts[0]), opt2=format_dt_short(opts[1])) if voice_like_channel else t(lang, "min_notice_voice")
+            voice_prompt = (
+                t(
+                    lang,
+                    "voice_options_prompt",
+                    opt1=format_dt_short(opts[0]),
+                    opt2=format_dt_short(opts[1]),
+                )
+                if voice_like_channel
+                else t(lang, "min_notice_voice")
+            )
             return {
                 "status": "need_more" if voice_like_channel else "min_notice",
                 "reply_voice": voice_prompt,
@@ -5711,8 +7628,22 @@ def book_appointment_for_datetime(
             "lang": lang,
         }
 
-    if not in_business_hours(dt_start, duration_min, settings["work_start"], settings["work_end"], settings.get("business_rules")):
-        opts = find_next_two_slots(settings["calendar_id"], dt_start, duration_min, settings["work_start"], settings["work_end"], settings.get("business_rules"), settings.get("service_account_json"))
+    if not in_business_hours(
+        dt_start,
+        duration_min,
+        settings["work_start"],
+        settings["work_end"],
+        settings.get("business_rules"),
+    ):
+        opts = find_next_two_slots(
+            settings["calendar_id"],
+            dt_start,
+            duration_min,
+            settings["work_start"],
+            settings["work_end"],
+            settings.get("business_rules"),
+            settings.get("service_account_json"),
+        )
         if opts:
             pending = set_offered_slots(pending, [opts[0], opts[1]])
             pending["service"] = c.get("service")
@@ -5721,11 +7652,25 @@ def book_appointment_for_datetime(
             c["pending"] = pending
             c["state"] = STATE_AWAITING_TIME
             c["datetime_iso"] = None
-            voice_prompt = t(lang, "voice_options_prompt", opt1=format_dt_short(opts[0]), opt2=format_dt_short(opts[1])) if voice_like_channel else t(lang, "closed_voice")
+            voice_prompt = (
+                t(
+                    lang,
+                    "voice_options_prompt",
+                    opt1=format_dt_short(opts[0]),
+                    opt2=format_dt_short(opts[1]),
+                )
+                if voice_like_channel
+                else t(lang, "closed_voice")
+            )
             return {
                 "status": "need_more" if voice_like_channel else "busy",
                 "reply_voice": voice_prompt,
-                "msg_out": t(lang, "closed_text", opt1=format_dt_short(opts[0]), opt2=format_dt_short(opts[1])),
+                "msg_out": t(
+                    lang,
+                    "closed_text",
+                    opt1=format_dt_short(opts[0]),
+                    opt2=format_dt_short(opts[1]),
+                ),
                 "lang": lang,
             }
         return {
@@ -5735,8 +7680,22 @@ def book_appointment_for_datetime(
             "lang": lang,
         }
 
-    if is_slot_busy(settings["calendar_id"], dt_start, dt_start + timedelta(minutes=duration_min), _safe_int((settings.get("business_rules") or {}).get("buffer_minutes"), 0), service_account_json=settings.get("service_account_json")):
-        opts = find_next_two_slots(settings["calendar_id"], dt_start, duration_min, settings["work_start"], settings["work_end"], settings.get("business_rules"), settings.get("service_account_json"))
+    if is_slot_busy(
+        settings["calendar_id"],
+        dt_start,
+        dt_start + timedelta(minutes=duration_min),
+        _safe_int((settings.get("business_rules") or {}).get("buffer_minutes"), 0),
+        service_account_json=settings.get("service_account_json"),
+    ):
+        opts = find_next_two_slots(
+            settings["calendar_id"],
+            dt_start,
+            duration_min,
+            settings["work_start"],
+            settings["work_end"],
+            settings.get("business_rules"),
+            settings.get("service_account_json"),
+        )
         if opts:
             pending = set_offered_slots(pending, [opts[0], opts[1]])
             pending["service"] = c.get("service")
@@ -5745,11 +7704,25 @@ def book_appointment_for_datetime(
             c["pending"] = pending
             c["state"] = STATE_AWAITING_TIME
             c["datetime_iso"] = None
-            voice_prompt = t(lang, "voice_options_prompt", opt1=format_dt_short(opts[0]), opt2=format_dt_short(opts[1])) if voice_like_channel else t(lang, "busy_voice")
+            voice_prompt = (
+                t(
+                    lang,
+                    "voice_options_prompt",
+                    opt1=format_dt_short(opts[0]),
+                    opt2=format_dt_short(opts[1]),
+                )
+                if voice_like_channel
+                else t(lang, "busy_voice")
+            )
             return {
                 "status": "need_more" if voice_like_channel else "busy",
                 "reply_voice": voice_prompt,
-                "msg_out": t(lang, "busy_text", opt1=format_dt_short(opts[0]), opt2=format_dt_short(opts[1])),
+                "msg_out": t(
+                    lang,
+                    "busy_text",
+                    opt1=format_dt_short(opts[0]),
+                    opt2=format_dt_short(opts[1]),
+                ),
                 "lang": lang,
             }
         return {
@@ -5759,11 +7732,24 @@ def book_appointment_for_datetime(
             "lang": lang,
         }
 
-    final_name = normalize_name(c.get("name")) or normalize_name(pending.get("name")) or extract_name_from_event_description(pending.get("reschedule_description") or "") or "Client"
+    final_name = (
+        normalize_name(c.get("name"))
+        or normalize_name(pending.get("name"))
+        or extract_name_from_event_description(
+            pending.get("reschedule_description") or ""
+        )
+        or "Client"
+    )
     final_service_key = str(c.get("service") or pending.get("service") or "").strip()
-    final_service_item = get_service_item_by_key(service_catalog, final_service_key) or service_item
+    final_service_item = (
+        get_service_item_by_key(service_catalog, final_service_key) or service_item
+    )
     addon_service_key = str(pending.get("addon_service") or "").strip()
-    addon_service_item = get_service_item_by_key(service_catalog, addon_service_key) if addon_service_key else None
+    addon_service_item = (
+        get_service_item_by_key(service_catalog, addon_service_key)
+        if addon_service_key
+        else None
+    )
     if not final_service_item and pending.get("reschedule_summary"):
         old_summary = str(pending.get("reschedule_summary") or "").strip()
         if " - " in old_summary:
@@ -5772,14 +7758,26 @@ def book_appointment_for_datetime(
             old_service_name = old_summary
         final_service = old_service_name or settings["services_hint"]
     else:
-        final_service = combined_service_display(lang, final_service_item, addon_service_item) or service_display_name(final_service_item, lang) or settings["services_hint"]
-    duration_min = service_duration_min(final_service_item) + (service_duration_min(addon_service_item) if addon_service_item else 0)
-    old_dt = parse_dt_any_tz(str(pending.get("reschedule_old_iso") or "").strip()) if pending.get("reschedule_old_iso") else None
+        final_service = (
+            combined_service_display(lang, final_service_item, addon_service_item)
+            or service_display_name(final_service_item, lang)
+            or settings["services_hint"]
+        )
+    duration_min = service_duration_min(final_service_item) + (
+        service_duration_min(addon_service_item) if addon_service_item else 0
+    )
+    old_dt = (
+        parse_dt_any_tz(str(pending.get("reschedule_old_iso") or "").strip())
+        if pending.get("reschedule_old_iso")
+        else None
+    )
     is_reschedule_flow = bool(pending.get("reschedule_event_id"))
 
     if is_reschedule_flow and old_dt and abs((dt_start - old_dt).total_seconds()) < 60:
         c["pending"] = pending
-        c["state"] = STATE_AWAITING_TIME if get_offered_slots(pending) else STATE_AWAITING_DATE
+        c["state"] = (
+            STATE_AWAITING_TIME if get_offered_slots(pending) else STATE_AWAITING_DATE
+        )
         c["datetime_iso"] = old_dt.isoformat()
         return {
             "status": "need_more",
@@ -5791,7 +7789,9 @@ def book_appointment_for_datetime(
     if require_confirmation:
         pending["booking_intent"] = True
         pending["confirm_slot_iso"] = dt_start.isoformat()
-        pending["service"] = final_service_key or str(final_service_item.get("key") if final_service_item else "")
+        pending["service"] = final_service_key or str(
+            final_service_item.get("key") if final_service_item else ""
+        )
         pending["service_display"] = final_service
         pending["name"] = final_name
         c["pending"] = pending
@@ -5802,13 +7802,28 @@ def book_appointment_for_datetime(
 
         return {
             "status": "need_more",
-            "reply_voice": t(lang, "ask_booking_confirm", when=format_dt_short(dt_start), service=final_service),
-            "msg_out": t(lang, "ask_booking_confirm", when=format_dt_short(dt_start), service=final_service),
+            "reply_voice": t(
+                lang,
+                "ask_booking_confirm",
+                when=format_dt_short(dt_start),
+                service=final_service,
+            ),
+            "msg_out": t(
+                lang,
+                "ask_booking_confirm",
+                when=format_dt_short(dt_start),
+                service=final_service,
+            ),
             "lang": lang,
         }
 
-    event_summary = str(pending.get("reschedule_summary") or f"{settings['biz_name']} - {final_service}").strip()
-    event_description = str(pending.get("reschedule_description") or build_event_description(tenant_id, final_name, raw_phone)).strip()
+    event_summary = str(
+        pending.get("reschedule_summary") or f"{settings['biz_name']} - {final_service}"
+    ).strip()
+    event_description = str(
+        pending.get("reschedule_description")
+        or build_event_description(tenant_id, final_name, raw_phone)
+    ).strip()
 
     if is_reschedule_flow:
         event_result = update_calendar_event(
@@ -5865,19 +7880,38 @@ def book_appointment_for_datetime(
     c["pending"] = None
     c["state"] = STATE_BOOKED
     c["name"] = final_name
-    c["service"] = final_service_key or str((final_service_item or {}).get("key") or "").strip()
+    c["service"] = (
+        final_service_key or str((final_service_item or {}).get("key") or "").strip()
+    )
     c["datetime_iso"] = dt_start.isoformat()
     c["time_text"] = None
     return {
         "status": "booked",
-        "reply_voice": t(lang, "rescheduled_voice", when=format_dt_short(dt_start)) if was_rescheduled else t(lang, "booking_confirmed"),
-        "msg_out": t(lang, "rescheduled_text", service=final_service, when=format_dt_short(dt_start)) if was_rescheduled else t(lang, "booking_confirmed_text", service=final_service, when=format_dt_short(dt_start)),
+        "reply_voice": (
+            t(lang, "rescheduled_voice", when=format_dt_short(dt_start))
+            if was_rescheduled
+            else t(lang, "booking_confirmed")
+        ),
+        "msg_out": (
+            t(
+                lang,
+                "rescheduled_text",
+                service=final_service,
+                when=format_dt_short(dt_start),
+            )
+            if was_rescheduled
+            else t(
+                lang,
+                "booking_confirmed_text",
+                service=final_service,
+                when=format_dt_short(dt_start),
+            )
+        ),
         "lang": lang,
         "service": final_service,
         "when": format_dt_short(dt_start),
         "datetime_text": format_dt_short(dt_start),
     }
-
 
 
 # -------------------------
@@ -5888,11 +7922,34 @@ def free_router_is_variants_request(text_: Optional[str], lang: str) -> bool:
     if not low:
         return False
     phrases = [
-        "kadi ir varianti", "kādi ir varianti", "kadi varianti", "kādi varianti", "varianti",
-        "kadi laiki", "kādi laiki", "kas pieejams", "kas ir pieejams", "brivie laiki", "brīvie laiki",
-        "ir kas brivs", "ir kas brīvs", "citi varianti", "kaut kas cits",
-        "какие варианты", "какие есть варианты", "что есть", "что свободно", "какое время есть", "есть варианты",
-        "what options", "what times", "what is available", "available times", "any options", "anything available", "other options",
+        "kadi ir varianti",
+        "kādi ir varianti",
+        "kadi varianti",
+        "kādi varianti",
+        "varianti",
+        "kadi laiki",
+        "kādi laiki",
+        "kas pieejams",
+        "kas ir pieejams",
+        "brivie laiki",
+        "brīvie laiki",
+        "ir kas brivs",
+        "ir kas brīvs",
+        "citi varianti",
+        "kaut kas cits",
+        "какие варианты",
+        "какие есть варианты",
+        "что есть",
+        "что свободно",
+        "какое время есть",
+        "есть варианты",
+        "what options",
+        "what times",
+        "what is available",
+        "available times",
+        "any options",
+        "anything available",
+        "other options",
     ]
     return any(p in low for p in phrases if p)
 
@@ -5902,8 +7959,17 @@ def free_router_is_services_request(text_: Optional[str], lang: str) -> bool:
     if not low:
         return False
     phrases = [
-        "kadi pakalpojumi", "kādi pakalpojumi", "pakalpojumi", "ko piedavajat", "ko piedāvājat",
-        "какие услуги", "услуги", "что делаете", "what services", "services", "service list",
+        "kadi pakalpojumi",
+        "kādi pakalpojumi",
+        "pakalpojumi",
+        "ko piedavajat",
+        "ko piedāvājat",
+        "какие услуги",
+        "услуги",
+        "что делаете",
+        "what services",
+        "services",
+        "service list",
     ]
     return any(p in low for p in phrases if p)
 
@@ -5913,13 +7979,25 @@ def free_router_is_price_request(text_: Optional[str], lang: str) -> bool:
     if not low:
         return False
     phrases = [
-        "cik maksa", "cik maksā", "cena", "cenradis", "cenrādis",
-        "сколько стоит", "цена", "стоимость", "прайс", "how much", "price", "cost",
+        "cik maksa",
+        "cik maksā",
+        "cena",
+        "cenradis",
+        "cenrādis",
+        "сколько стоит",
+        "цена",
+        "стоимость",
+        "прайс",
+        "how much",
+        "price",
+        "cost",
     ]
     return any(p in low for p in phrases if p)
 
 
-def free_router_service_list_text(lang: str, service_catalog: List[Dict[str, Any]], max_items: int = 8) -> str:
+def free_router_service_list_text(
+    lang: str, service_catalog: List[Dict[str, Any]], max_items: int = 8
+) -> str:
     names: List[str] = []
     for item in service_catalog[:max_items]:
         name = service_display_name(item, lang)
@@ -5936,7 +8014,9 @@ def free_router_service_list_text(lang: str, service_catalog: List[Dict[str, Any
     return ", ".join(names[:-1]) + " vai " + names[-1]
 
 
-def free_router_context_datetime(c: Dict[str, Any], pending: Dict[str, Any]) -> Optional[datetime]:
+def free_router_context_datetime(
+    c: Dict[str, Any], pending: Dict[str, Any]
+) -> Optional[datetime]:
     pending = pending or {}
     c = c or {}
     for value in [
@@ -5951,7 +8031,12 @@ def free_router_context_datetime(c: Dict[str, Any], pending: Dict[str, Any]) -> 
         if dtv and (dtv.hour != 9 or dtv.minute != 0):
             return dtv
     base_day = parse_dt_any_tz(str(pending.get("awaiting_time_date_iso") or "").strip())
-    time_value = pending.get("requested_time") or pending.get("partial_time") or pending.get("time_text") or c.get("time_text")
+    time_value = (
+        pending.get("requested_time")
+        or pending.get("partial_time")
+        or pending.get("time_text")
+        or c.get("time_text")
+    )
     parts = parse_explicit_time_parts(str(time_value or ""))
     if base_day and parts:
         hh, mm = parts
@@ -5959,13 +8044,31 @@ def free_router_context_datetime(c: Dict[str, Any], pending: Dict[str, Any]) -> 
     return None
 
 
-def free_router_merge_message_slots(msg: str, c: Dict[str, Any], pending: Dict[str, Any], service_catalog: List[Dict[str, Any]], service_aliases: Dict[str, str], lang: str) -> Tuple[Dict[str, Any], Dict[str, Any], Optional[Dict[str, Any]], Optional[datetime]]:
+def free_router_merge_message_slots(
+    msg: str,
+    c: Dict[str, Any],
+    pending: Dict[str, Any],
+    service_catalog: List[Dict[str, Any]],
+    service_aliases: Dict[str, str],
+    lang: str,
+) -> Tuple[
+    Dict[str, Any], Dict[str, Any], Optional[Dict[str, Any]], Optional[datetime]
+]:
     pending = pending or {}
     service_key = canonical_service_key_from_text(msg, service_aliases)
-    service_item = get_service_item_by_key(service_catalog, service_key) if service_key else extract_service_from_text(msg, service_catalog, lang)
+    service_item = (
+        get_service_item_by_key(service_catalog, service_key)
+        if service_key
+        else extract_service_from_text(msg, service_catalog, lang)
+    )
     if service_item:
         c, pending = remember_booking_service(c, pending, service_item, lang)
-    if msg and (parse_natural_datetime(msg) or parse_date_only_text(msg) or parse_time_window(msg) or has_explicit_time(msg)):
+    if msg and (
+        parse_natural_datetime(msg)
+        or parse_date_only_text(msg)
+        or parse_time_window(msg)
+        or has_explicit_time(msg)
+    ):
         c, pending = remember_partial_booking_datetime_from_message(c, pending, msg)
     candidate_dt = free_router_context_datetime(c, pending)
     c["pending"] = pending or None
@@ -5974,57 +8077,120 @@ def free_router_merge_message_slots(msg: str, c: Dict[str, Any], pending: Dict[s
 
 def free_router_missing_fields(c: Dict[str, Any], pending: Dict[str, Any]) -> List[str]:
     missing: List[str] = []
-    if not str((c or {}).get("service") or (pending or {}).get("service") or "").strip():
+    if not str(
+        (c or {}).get("service") or (pending or {}).get("service") or ""
+    ).strip():
         missing.append("service")
     if not free_router_context_datetime(c or {}, pending or {}):
         missing.append("datetime")
     return missing
 
 
-def free_router_variants_reply_without_service(lang: str, service_catalog: List[Dict[str, Any]], pending: Dict[str, Any]) -> str:
+def free_router_variants_reply_without_service(
+    lang: str, service_catalog: List[Dict[str, Any]], pending: Dict[str, Any]
+) -> str:
     options = free_router_service_list_text(lang, service_catalog)
     dtv = free_router_context_datetime({}, pending or {})
     when = format_dt_short(dtv) if dtv else ""
     if lang == "ru":
-        return f"Сначала выберем услугу, и тогда проверю варианты на {when}. Доступные услуги: {options}." if when else f"Сначала выберем услугу, и тогда проверю свободные варианты. Доступные услуги: {options}."
+        return (
+            f"Сначала выберем услугу, и тогда проверю варианты на {when}. Доступные услуги: {options}."
+            if when
+            else f"Сначала выберем услугу, и тогда проверю свободные варианты. Доступные услуги: {options}."
+        )
     if lang == "en":
-        return f"Let’s choose the service first, then I’ll check the available options for {when}. Available services: {options}." if when else f"Let’s choose the service first, then I’ll check available options. Available services: {options}."
-    return f"Vispirms izvēlamies pakalpojumu, un tad pārbaudīšu variantus uz {when}. Pieejamie pakalpojumi: {options}." if when else f"Vispirms izvēlamies pakalpojumu, un tad pārbaudīšu brīvos laikus. Pieejamie pakalpojumi: {options}."
+        return (
+            f"Let’s choose the service first, then I’ll check the available options for {when}. Available services: {options}."
+            if when
+            else f"Let’s choose the service first, then I’ll check available options. Available services: {options}."
+        )
+    return (
+        f"Vispirms izvēlamies pakalpojumu, un tad pārbaudīšu variantus uz {when}. Pieejamie pakalpojumi: {options}."
+        if when
+        else f"Vispirms izvēlamies pakalpojumu, un tad pārbaudīšu brīvos laikus. Pieejamie pakalpojumi: {options}."
+    )
 
 
-def free_router_services_reply(lang: str, service_catalog: List[Dict[str, Any]], pending: Dict[str, Any]) -> str:
+def free_router_services_reply(
+    lang: str, service_catalog: List[Dict[str, Any]], pending: Dict[str, Any]
+) -> str:
     options = free_router_service_list_text(lang, service_catalog)
     dtv = free_router_context_datetime({}, pending or {})
     when = format_dt_short(dtv) if dtv else ""
     if lang == "ru":
-        return f"Доступные услуги: {options}. После выбора услуги проверю время {when}." if when else f"Доступные услуги: {options}. Какую услугу хотите выбрать?"
+        return (
+            f"Доступные услуги: {options}. После выбора услуги проверю время {when}."
+            if when
+            else f"Доступные услуги: {options}. Какую услугу хотите выбрать?"
+        )
     if lang == "en":
-        return f"Available services: {options}. Once you choose the service, I’ll check {when}." if when else f"Available services: {options}. Which one would you like?"
-    return f"Pieejamie pakalpojumi: {options}. Kad izvēlēsieties pakalpojumu, pārbaudīšu {when}." if when else f"Pieejamie pakalpojumi: {options}. Kuru pakalpojumu vēlaties?"
+        return (
+            f"Available services: {options}. Once you choose the service, I’ll check {when}."
+            if when
+            else f"Available services: {options}. Which one would you like?"
+        )
+    return (
+        f"Pieejamie pakalpojumi: {options}. Kad izvēlēsieties pakalpojumu, pārbaudīšu {when}."
+        if when
+        else f"Pieejamie pakalpojumi: {options}. Kuru pakalpojumu vēlaties?"
+    )
 
 
-def free_router_ask_missing_service(lang: str, pending: Dict[str, Any], service_catalog: List[Dict[str, Any]]) -> str:
+def free_router_ask_missing_service(
+    lang: str, pending: Dict[str, Any], service_catalog: List[Dict[str, Any]]
+) -> str:
     dtv = free_router_context_datetime({}, pending or {})
     when = format_dt_short(dtv) if dtv else ""
     if lang == "ru":
-        return f"Хорошо, на {when}. Какую услугу записываем?" if when else "Хорошо. Какую услугу записываем?"
+        return (
+            f"Хорошо, на {when}. Какую услугу записываем?"
+            if when
+            else "Хорошо. Какую услугу записываем?"
+        )
     if lang == "en":
-        return f"Sure, for {when}. Which service should I book?" if when else "Sure. Which service should I book?"
-    return f"Labi, uz {when}. Kuru pakalpojumu pierakstām?" if when else "Labi. Kuru pakalpojumu pierakstām?"
+        return (
+            f"Sure, for {when}. Which service should I book?"
+            if when
+            else "Sure. Which service should I book?"
+        )
+    return (
+        f"Labi, uz {when}. Kuru pakalpojumu pierakstām?"
+        if when
+        else "Labi. Kuru pakalpojumu pierakstām?"
+    )
 
 
-def free_router_ask_missing_datetime(lang: str, c: Dict[str, Any], pending: Dict[str, Any]) -> str:
-    service_name = str((pending or {}).get("service_display") or (c or {}).get("service") or "").strip()
+def free_router_ask_missing_datetime(
+    lang: str, c: Dict[str, Any], pending: Dict[str, Any]
+) -> str:
+    service_name = str(
+        (pending or {}).get("service_display") or (c or {}).get("service") or ""
+    ).strip()
     if lang == "ru":
-        return f"Хорошо, {service_name}. На какой день и время вас записать?" if service_name else "На какой день и время вас записать?"
+        return (
+            f"Хорошо, {service_name}. На какой день и время вас записать?"
+            if service_name
+            else "На какой день и время вас записать?"
+        )
     if lang == "en":
-        return f"Okay, {service_name}. What day and time would work for you?" if service_name else "What day and time would work for you?"
-    return f"Labi, {service_name}. Uz kuru dienu un laiku vēlaties pierakstīties?" if service_name else "Uz kuru dienu un laiku vēlaties pierakstīties?"
+        return (
+            f"Okay, {service_name}. What day and time would work for you?"
+            if service_name
+            else "What day and time would work for you?"
+        )
+    return (
+        f"Labi, {service_name}. Uz kuru dienu un laiku vēlaties pierakstīties?"
+        if service_name
+        else "Uz kuru dienu un laiku vēlaties pierakstīties?"
+    )
+
 
 # -------------------------
 # STAGE 29 — AFTER-TIME WINDOW ROUTER HOTFIX
 # -------------------------
-def detect_after_time_anchor(text_: Optional[str], lang: str = "") -> Optional[Tuple[int, int]]:
+def detect_after_time_anchor(
+    text_: Optional[str], lang: str = ""
+) -> Optional[Tuple[int, int]]:
     """Detect phrases meaning strictly after a time, not exactly at that time.
 
     Examples:
@@ -6053,14 +8219,18 @@ def detect_after_time_anchor(text_: Optional[str], lang: str = "") -> Optional[T
     return None
 
 
-def after_time_window_reply(lang: str, anchor_dt: datetime, slots: List[datetime]) -> str:
+def after_time_window_reply(
+    lang: str, anchor_dt: datetime, slots: List[datetime]
+) -> str:
     offered = [format_dt_short(x) for x in slots[:3]]
     joined_ru = " или ".join(offered)
     joined_en = " or ".join(offered)
     joined_lv = " vai ".join(offered)
     after_text = anchor_dt.strftime("%H:%M")
     if lang == "ru":
-        return f"После {after_text} могу предложить: {joined_ru}. Какое время вам удобнее?"
+        return (
+            f"После {after_text} могу предложить: {joined_ru}. Какое время вам удобнее?"
+        )
     if lang == "en":
         return f"After {after_text}, I can offer: {joined_en}. Which time works best?"
     return f"Pēc {after_text} varu piedāvāt: {joined_lv}. Kurš laiks jums der?"
@@ -6087,13 +8257,21 @@ def offer_slots_after_time_anchor(
     anchor_parts: Tuple[int, int],
 ) -> Dict[str, Any]:
     pending = pending or {}
-    service_item_for_slots = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
+    service_item_for_slots = get_service_item_by_key(
+        service_catalog, c.get("service") or pending.get("service")
+    )
     if not service_item_for_slots:
         c["pending"] = pending or None
         c["state"] = STATE_AWAITING_SERVICE
         db_save_conversation(tenant_id, user_key, c)
         prompt = barber_service_prompt(lang, service_catalog)
-        return {"status": "need_more", "reply_voice": prompt, "msg_out": prompt, "lang": lang, "preserve_text": True}
+        return {
+            "status": "need_more",
+            "reply_voice": prompt,
+            "msg_out": prompt,
+            "lang": lang,
+            "preserve_text": True,
+        }
 
     if not calendar_is_configured(settings["calendar_id"]):
         return blocked_result_for_lang(lang)
@@ -6101,7 +8279,9 @@ def offer_slots_after_time_anchor(
     hh, mm = anchor_parts
     anchor_dt = base_date.replace(hour=hh, minute=mm, second=0, microsecond=0)
     pending["booking_intent"] = True
-    pending["awaiting_time_date_iso"] = base_date.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+    pending["awaiting_time_date_iso"] = base_date.replace(
+        hour=9, minute=0, second=0, microsecond=0
+    ).isoformat()
     pending["preferred_time_window"] = [hh, 21]
     pending.pop("candidate_datetime_iso", None)
     pending.pop("confirm_slot_iso", None)
@@ -6127,7 +8307,13 @@ def offer_slots_after_time_anchor(
         c["time_text"] = None
         db_save_conversation(tenant_id, user_key, c)
         reply = after_time_window_reply(lang, anchor_dt, filtered[:3])
-        return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "preserve_text": True}
+        return {
+            "status": "need_more",
+            "reply_voice": reply,
+            "msg_out": reply,
+            "lang": lang,
+            "preserve_text": True,
+        }
 
     c["pending"] = pending
     c["state"] = STATE_AWAITING_TIME
@@ -6135,9 +8321,13 @@ def offer_slots_after_time_anchor(
     c["time_text"] = None
     db_save_conversation(tenant_id, user_key, c)
     reply = no_after_time_slots_reply(lang, anchor_dt)
-    return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "preserve_text": True}
-
-
+    return {
+        "status": "need_more",
+        "reply_voice": reply,
+        "msg_out": reply,
+        "lang": lang,
+        "preserve_text": True,
+    }
 
 
 # -------------------------
@@ -6168,7 +8358,9 @@ def stage30_offer_after_time_window_if_needed(
     pending = pending or {}
     service_key = str(c.get("service") or pending.get("service") or "").strip()
     if not service_key:
-        service_item = stage27_extract_service_item_from_turn(msg, {}, service_catalog, service_aliases, lang)
+        service_item = stage27_extract_service_item_from_turn(
+            msg, {}, service_catalog, service_aliases, lang
+        )
         if service_item:
             c, pending = remember_booking_service(c, pending, service_item, lang)
             service_key = str(c.get("service") or pending.get("service") or "").strip()
@@ -6176,9 +8368,14 @@ def stage30_offer_after_time_window_if_needed(
     # Persist the date part, but deliberately remove exact 14:00 candidate data.
     date_dt = parse_date_only_text(msg)
     if date_dt:
-        pending["awaiting_time_date_iso"] = date_dt.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+        pending["awaiting_time_date_iso"] = date_dt.replace(
+            hour=9, minute=0, second=0, microsecond=0
+        ).isoformat()
 
-    base_day = parse_dt_any_tz(str(pending.get("awaiting_time_date_iso") or "").strip()) or date_dt
+    base_day = (
+        parse_dt_any_tz(str(pending.get("awaiting_time_date_iso") or "").strip())
+        or date_dt
+    )
     if not service_key:
         pending["booking_intent"] = True
         pending.pop("candidate_datetime_iso", None)
@@ -6191,7 +8388,13 @@ def stage30_offer_after_time_window_if_needed(
         c["state"] = STATE_AWAITING_SERVICE
         db_save_conversation(tenant_id, user_key, c)
         prompt = barber_service_prompt(lang, service_catalog)
-        return {"status": "need_more", "reply_voice": prompt, "msg_out": prompt, "lang": lang, "preserve_text": True}
+        return {
+            "status": "need_more",
+            "reply_voice": prompt,
+            "msg_out": prompt,
+            "lang": lang,
+            "preserve_text": True,
+        }
 
     if not base_day:
         pending["booking_intent"] = True
@@ -6204,7 +8407,12 @@ def stage30_offer_after_time_window_if_needed(
         c["time_text"] = None
         c["state"] = STATE_AWAITING_DATE
         db_save_conversation(tenant_id, user_key, c)
-        return {"status": "need_more", "reply_voice": t(lang, "ask_booking_date"), "msg_out": t(lang, "ask_booking_date"), "lang": lang}
+        return {
+            "status": "need_more",
+            "reply_voice": t(lang, "ask_booking_date"),
+            "msg_out": t(lang, "ask_booking_date"),
+            "lang": lang,
+        }
 
     pending.pop("candidate_datetime_iso", None)
     pending.pop("requested_datetime_iso", None)
@@ -6247,10 +8455,18 @@ def stage30_negotiate_from_confirm_if_needed(
         return None
 
     pending = pending or {}
-    anchor_iso = str(pending.get("confirm_slot_iso") or c.get("datetime_iso") or "").strip()
+    anchor_iso = str(
+        pending.get("confirm_slot_iso") or c.get("datetime_iso") or ""
+    ).strip()
     anchor_dt = parse_dt_any_tz(anchor_iso)
-    service_item = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
-    if not anchor_dt or not service_item or not calendar_is_configured(settings["calendar_id"]):
+    service_item = get_service_item_by_key(
+        service_catalog, c.get("service") or pending.get("service")
+    )
+    if (
+        not anchor_dt
+        or not service_item
+        or not calendar_is_configured(settings["calendar_id"])
+    ):
         return None
 
     slots = find_negotiation_slots_for_direction(
@@ -6270,7 +8486,9 @@ def stage30_negotiate_from_confirm_if_needed(
     pending.pop("time_text", None)
     clear_offered_slots(pending)
     pending["booking_intent"] = True
-    pending["awaiting_time_date_iso"] = anchor_dt.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+    pending["awaiting_time_date_iso"] = anchor_dt.replace(
+        hour=9, minute=0, second=0, microsecond=0
+    ).isoformat()
     c["datetime_iso"] = None
     c["time_text"] = None
     c["state"] = STATE_AWAITING_TIME
@@ -6281,7 +8499,9 @@ def stage30_negotiate_from_confirm_if_needed(
 # -------------------------
 # STAGE 31 — HUMAN SCHEDULING INTELLIGENCE HOTFIX
 # -------------------------
-def stage31_detect_time_window_preference(text_: Optional[str], lang: str = "") -> Optional[Tuple[int, int, str]]:
+def stage31_detect_time_window_preference(
+    text_: Optional[str], lang: str = ""
+) -> Optional[Tuple[int, int, str]]:
     """Detect fuzzy scheduling windows that must not become exact timestamps.
 
     Examples:
@@ -6299,9 +8519,21 @@ def stage31_detect_time_window_preference(text_: Optional[str], lang: str = "") 
 
     folded = _fold_match_text(src)
     patterns: List[Tuple[str, Tuple[int, int], str]] = [
-        (r"\b(no rita|rita|sorit|morning|in the morning|this morning|утром|с утра|на утро)\b", (9, 12), "morning"),
-        (r"\b(pusdienlaika|ap pusdienlaiku|no pusdienam|pecpusdiena|after lunch|afternoon|in the afternoon|после обеда|днем|днем|днём|на день)\b", (12, 17), "afternoon"),
-        (r"\b(vakara|vakar|sovakar|vakarpuse|uz vakaru|evening|tonight|in the evening|this evening|вечером|на вечер|к вечеру|ближе к вечеру)\b", (16, 21), "evening"),
+        (
+            r"\b(no rita|rita|sorit|morning|in the morning|this morning|утром|с утра|на утро)\b",
+            (9, 12),
+            "morning",
+        ),
+        (
+            r"\b(pusdienlaika|ap pusdienlaiku|no pusdienam|pecpusdiena|after lunch|afternoon|in the afternoon|после обеда|днем|днем|днём|на день)\b",
+            (12, 17),
+            "afternoon",
+        ),
+        (
+            r"\b(vakara|vakar|sovakar|vakarpuse|uz vakaru|evening|tonight|in the evening|this evening|вечером|на вечер|к вечеру|ближе к вечеру)\b",
+            (16, 21),
+            "evening",
+        ),
         (r"\b(pec darba|after work|после работы)\b", (17, 21), "after_work"),
     ]
     for pat, window, label in patterns:
@@ -6319,13 +8551,27 @@ def stage31_detect_time_window_preference(text_: Optional[str], lang: str = "") 
 def stage31_window_label(lang: str, label: str, start_h: int, end_h: int) -> str:
     lang = get_lang(lang)
     if label == "morning":
-        return "утром" if lang == "ru" else "in the morning" if lang == "en" else "no rīta"
+        return (
+            "утром" if lang == "ru" else "in the morning" if lang == "en" else "no rīta"
+        )
     if label == "afternoon":
-        return "после обеда" if lang == "ru" else "in the afternoon" if lang == "en" else "pēcpusdienā"
+        return (
+            "после обеда"
+            if lang == "ru"
+            else "in the afternoon" if lang == "en" else "pēcpusdienā"
+        )
     if label == "evening":
-        return "вечером" if lang == "ru" else "in the evening" if lang == "en" else "vakarā"
+        return (
+            "вечером"
+            if lang == "ru"
+            else "in the evening" if lang == "en" else "vakarā"
+        )
     if label == "after_work":
-        return "после работы" if lang == "ru" else "after work" if lang == "en" else "pēc darba"
+        return (
+            "после работы"
+            if lang == "ru"
+            else "after work" if lang == "en" else "pēc darba"
+        )
     if lang == "ru":
         return f"с {start_h:02d}:00 до {end_h:02d}:00"
     if lang == "en":
@@ -6333,23 +8579,51 @@ def stage31_window_label(lang: str, label: str, start_h: int, end_h: int) -> str
     return f"no {start_h:02d}:00 līdz {end_h:02d}:00"
 
 
-def stage31_window_slots_reply(lang: str, label_text: str, slots: List[datetime]) -> str:
+def stage31_window_slots_reply(
+    lang: str, label_text: str, slots: List[datetime]
+) -> str:
     offered = [format_dt_short(x) for x in slots[:4]]
     if lang == "ru":
-        return f"На {label_text} могу предложить: " + " или ".join(offered) + ". Какое время вам удобнее?"
+        return (
+            f"На {label_text} могу предложить: "
+            + " или ".join(offered)
+            + ". Какое время вам удобнее?"
+        )
     if lang == "en":
-        return f"For {label_text}, I can offer: " + " or ".join(offered) + ". Which time works best?"
-    return f"Uz {label_text} varu piedāvāt: " + " vai ".join(offered) + ". Kurš laiks jums der?"
+        return (
+            f"For {label_text}, I can offer: "
+            + " or ".join(offered)
+            + ". Which time works best?"
+        )
+    return (
+        f"Uz {label_text} varu piedāvāt: "
+        + " vai ".join(offered)
+        + ". Kurš laiks jums der?"
+    )
 
 
-def stage31_no_window_slots_reply(lang: str, label_text: str, fallback_slots: List[datetime]) -> str:
+def stage31_no_window_slots_reply(
+    lang: str, label_text: str, fallback_slots: List[datetime]
+) -> str:
     if fallback_slots:
         offered = [format_dt_short(x) for x in fallback_slots[:3]]
         if lang == "ru":
-            return f"На {label_text} свободных вариантов не вижу. Ближайшие свободные времена: " + " или ".join(offered) + ". Подойдёт что-то из этого?"
+            return (
+                f"На {label_text} свободных вариантов не вижу. Ближайшие свободные времена: "
+                + " или ".join(offered)
+                + ". Подойдёт что-то из этого?"
+            )
         if lang == "en":
-            return f"I don’t see free times for {label_text}. The nearest available options are: " + " or ".join(offered) + ". Would any of these work?"
-        return f"Uz {label_text} brīvus laikus neredzu. Tuvākie pieejamie laiki: " + " vai ".join(offered) + ". Vai kāds no tiem der?"
+            return (
+                f"I don’t see free times for {label_text}. The nearest available options are: "
+                + " or ".join(offered)
+                + ". Would any of these work?"
+            )
+        return (
+            f"Uz {label_text} brīvus laikus neredzu. Tuvākie pieejamie laiki: "
+            + " vai ".join(offered)
+            + ". Vai kāds no tiem der?"
+        )
     if lang == "ru":
         return f"На {label_text} свободных вариантов не вижу. Могу посмотреть другой день или другое время."
     if lang == "en":
@@ -6371,19 +8645,29 @@ def offer_slots_for_time_window(
     window_label: str,
 ) -> Dict[str, Any]:
     pending = pending or {}
-    service_item_for_slots = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
+    service_item_for_slots = get_service_item_by_key(
+        service_catalog, c.get("service") or pending.get("service")
+    )
     if not service_item_for_slots:
         c["pending"] = pending or None
         c["state"] = STATE_AWAITING_SERVICE
         db_save_conversation(tenant_id, user_key, c)
         prompt = barber_service_prompt(lang, service_catalog)
-        return {"status": "need_more", "reply_voice": prompt, "msg_out": prompt, "lang": lang, "preserve_text": True}
+        return {
+            "status": "need_more",
+            "reply_voice": prompt,
+            "msg_out": prompt,
+            "lang": lang,
+            "preserve_text": True,
+        }
 
     if not calendar_is_configured(settings["calendar_id"]):
         return blocked_result_for_lang(lang)
 
     pending["booking_intent"] = True
-    pending["awaiting_time_date_iso"] = base_date.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+    pending["awaiting_time_date_iso"] = base_date.replace(
+        hour=9, minute=0, second=0, microsecond=0
+    ).isoformat()
     pending["preferred_time_window"] = [int(window_start_hour), int(window_end_hour)]
     pending.pop("candidate_datetime_iso", None)
     pending.pop("requested_datetime_iso", None)
@@ -6402,8 +8686,12 @@ def offer_slots_for_time_window(
         business_rules=settings.get("business_rules"),
         service_account_json=settings.get("service_account_json"),
     )
-    filtered = [s for s in all_slots if int(window_start_hour) <= s.hour < int(window_end_hour)]
-    label_text = stage31_window_label(lang, window_label, int(window_start_hour), int(window_end_hour))
+    filtered = [
+        s for s in all_slots if int(window_start_hour) <= s.hour < int(window_end_hour)
+    ]
+    label_text = stage31_window_label(
+        lang, window_label, int(window_start_hour), int(window_end_hour)
+    )
 
     c["datetime_iso"] = None
     c["time_text"] = None
@@ -6415,7 +8703,13 @@ def offer_slots_for_time_window(
         c["pending"] = pending
         db_save_conversation(tenant_id, user_key, c)
         reply = stage31_window_slots_reply(lang, label_text, filtered[:4])
-        return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "preserve_text": True}
+        return {
+            "status": "need_more",
+            "reply_voice": reply,
+            "msg_out": reply,
+            "lang": lang,
+            "preserve_text": True,
+        }
 
     fallback = all_slots[:3]
     if fallback:
@@ -6423,7 +8717,13 @@ def offer_slots_for_time_window(
     c["pending"] = pending
     db_save_conversation(tenant_id, user_key, c)
     reply = stage31_no_window_slots_reply(lang, label_text, fallback[:3])
-    return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "preserve_text": True}
+    return {
+        "status": "need_more",
+        "reply_voice": reply,
+        "msg_out": reply,
+        "lang": lang,
+        "preserve_text": True,
+    }
 
 
 def stage31_offer_time_window_if_needed(
@@ -6445,24 +8745,33 @@ def stage31_offer_time_window_if_needed(
 
     service_key = str(c.get("service") or pending.get("service") or "").strip()
     if not service_key:
-        service_item = stage27_extract_service_item_from_turn(msg, {}, service_catalog, service_aliases, lang)
+        service_item = stage27_extract_service_item_from_turn(
+            msg, {}, service_catalog, service_aliases, lang
+        )
         if service_item:
             c, pending = remember_booking_service(c, pending, service_item, lang)
             service_key = str(c.get("service") or pending.get("service") or "").strip()
 
     date_dt = parse_date_only_text(msg)
     if date_dt:
-        pending["awaiting_time_date_iso"] = date_dt.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+        pending["awaiting_time_date_iso"] = date_dt.replace(
+            hour=9, minute=0, second=0, microsecond=0
+        ).isoformat()
 
     # In confirmation, "можно утром/вечером?" means negotiate another window
     # on the same day as the currently proposed slot.
     if conversation_state(c) == STATE_AWAITING_CONFIRM and not date_dt:
-        confirm_dt = parse_dt_any_tz(str(pending.get("confirm_slot_iso") or c.get("datetime_iso") or "").strip())
+        confirm_dt = parse_dt_any_tz(
+            str(pending.get("confirm_slot_iso") or c.get("datetime_iso") or "").strip()
+        )
         if confirm_dt:
             date_dt = confirm_dt.replace(hour=9, minute=0, second=0, microsecond=0)
             pending["awaiting_time_date_iso"] = date_dt.isoformat()
 
-    base_day = parse_dt_any_tz(str(pending.get("awaiting_time_date_iso") or "").strip()) or date_dt
+    base_day = (
+        parse_dt_any_tz(str(pending.get("awaiting_time_date_iso") or "").strip())
+        or date_dt
+    )
 
     pending["booking_intent"] = True
     pending.pop("candidate_datetime_iso", None)
@@ -6477,12 +8786,24 @@ def stage31_offer_time_window_if_needed(
         c["state"] = STATE_AWAITING_SERVICE
         db_save_conversation(tenant_id, user_key, c)
         prompt = barber_service_prompt(lang, service_catalog)
-        return {"status": "need_more", "reply_voice": prompt, "msg_out": prompt, "lang": lang, "preserve_text": True}
+        return {
+            "status": "need_more",
+            "reply_voice": prompt,
+            "msg_out": prompt,
+            "lang": lang,
+            "preserve_text": True,
+        }
 
     if not base_day:
         c["state"] = STATE_AWAITING_DATE
         db_save_conversation(tenant_id, user_key, c)
-        return {"status": "need_more", "reply_voice": t(lang, "ask_booking_date"), "msg_out": t(lang, "ask_booking_date"), "lang": lang, "preserve_text": True}
+        return {
+            "status": "need_more",
+            "reply_voice": t(lang, "ask_booking_date"),
+            "msg_out": t(lang, "ask_booking_date"),
+            "lang": lang,
+            "preserve_text": True,
+        }
 
     return offer_slots_for_time_window(
         tenant_id=tenant_id,
@@ -6499,11 +8820,12 @@ def stage31_offer_time_window_if_needed(
     )
 
 
-
 # -------------------------
 # STAGE 32 — CONVERSATIONAL CONTEXT PERSISTENCE HOTFIX
 # -------------------------
-def stage32_detect_slot_refinement(text_: Optional[str], lang: str = "") -> Optional[str]:
+def stage32_detect_slot_refinement(
+    text_: Optional[str], lang: str = ""
+) -> Optional[str]:
     """Detect contextual slot refinement, not a new booking request.
 
     Returns:
@@ -6517,14 +8839,45 @@ def stage32_detect_slot_refinement(text_: Optional[str], lang: str = "") -> Opti
         return None
 
     earlier_phrases = [
-        "не так поздно", "слишком поздно", "очень поздно", "не позднее", "раньше", "пораньше", "чуть раньше", "немного раньше",
-        "ne tik velu", "par velu", "mazliet agrak", "nedaudz agrak", "agrak", "atrak",
-        "not so late", "too late", "a bit earlier", "slightly earlier", "earlier",
+        "не так поздно",
+        "слишком поздно",
+        "очень поздно",
+        "не позднее",
+        "раньше",
+        "пораньше",
+        "чуть раньше",
+        "немного раньше",
+        "ne tik velu",
+        "par velu",
+        "mazliet agrak",
+        "nedaudz agrak",
+        "agrak",
+        "atrak",
+        "not so late",
+        "too late",
+        "a bit earlier",
+        "slightly earlier",
+        "earlier",
     ]
     later_phrases = [
-        "не так рано", "слишком рано", "очень рано", "не раньше", "позже", "попозже", "чуть позже", "немного позже",
-        "ne tik agri", "par agru", "mazliet velak", "nedaudz velak", "velak",
-        "not so early", "too early", "a bit later", "slightly later", "later",
+        "не так рано",
+        "слишком рано",
+        "очень рано",
+        "не раньше",
+        "позже",
+        "попозже",
+        "чуть позже",
+        "немного позже",
+        "ne tik agri",
+        "par agru",
+        "mazliet velak",
+        "nedaudz velak",
+        "velak",
+        "not so early",
+        "too early",
+        "a bit later",
+        "slightly later",
+        "later",
     ]
 
     for phrase in earlier_phrases:
@@ -6536,7 +8889,9 @@ def stage32_detect_slot_refinement(text_: Optional[str], lang: str = "") -> Opti
     return None
 
 
-def stage32_remember_rejected_slots(pending: Dict[str, Any], slots: List[str]) -> Dict[str, Any]:
+def stage32_remember_rejected_slots(
+    pending: Dict[str, Any], slots: List[str]
+) -> Dict[str, Any]:
     pending = pending or {}
     existing = pending.get("rejected_slot_isos")
     rejected: List[str] = []
@@ -6553,12 +8908,24 @@ def stage32_remember_rejected_slots(pending: Dict[str, Any], slots: List[str]) -
 def stage32_refinement_reply(lang: str, direction: str, slots: List[datetime]) -> str:
     offered = [format_dt_short(x) for x in slots[:4]]
     if lang == "ru":
-        prefix = "Понял, посмотрим пораньше" if direction == "earlier" else "Понял, посмотрим попозже"
+        prefix = (
+            "Понял, посмотрим пораньше"
+            if direction == "earlier"
+            else "Понял, посмотрим попозже"
+        )
         return prefix + ": " + " или ".join(offered) + ". Что вам удобнее?"
     if lang == "en":
-        prefix = "Got it — here are earlier options" if direction == "earlier" else "Got it — here are later options"
+        prefix = (
+            "Got it — here are earlier options"
+            if direction == "earlier"
+            else "Got it — here are later options"
+        )
         return prefix + ": " + " or ".join(offered) + ". Which one works best?"
-    prefix = "Sapratu, paskatīsimies agrāk" if direction == "earlier" else "Sapratu, paskatīsimies vēlāk"
+    prefix = (
+        "Sapratu, paskatīsimies agrāk"
+        if direction == "earlier"
+        else "Sapratu, paskatīsimies vēlāk"
+    )
     return prefix + ": " + " vai ".join(offered) + ". Kurš laiks jums der?"
 
 
@@ -6596,12 +8963,16 @@ def stage32_refine_offered_slots_if_needed(
         return None
 
     pending = pending or {}
-    service_item = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
+    service_item = get_service_item_by_key(
+        service_catalog, c.get("service") or pending.get("service")
+    )
     if not service_item or not calendar_is_configured(settings["calendar_id"]):
         return None
 
     offered_isos = get_offered_slots(pending)
-    confirm_iso = str(pending.get("confirm_slot_iso") or c.get("datetime_iso") or "").strip()
+    confirm_iso = str(
+        pending.get("confirm_slot_iso") or c.get("datetime_iso") or ""
+    ).strip()
     context_isos = offered_isos[:]
     if confirm_iso:
         context_isos.append(confirm_iso)
@@ -6616,8 +8987,14 @@ def stage32_refine_offered_slots_if_needed(
         base_day = context_dts[0].replace(hour=9, minute=0, second=0, microsecond=0)
 
     anchor_dt = context_dts[0] if direction == "earlier" else context_dts[-1]
-    pending = stage32_remember_rejected_slots(pending, [dt.isoformat() for dt in context_dts])
-    rejected = set(str(x).strip() for x in (pending.get("rejected_slot_isos") or []) if str(x).strip())
+    pending = stage32_remember_rejected_slots(
+        pending, [dt.isoformat() for dt in context_dts]
+    )
+    rejected = set(
+        str(x).strip()
+        for x in (pending.get("rejected_slot_isos") or [])
+        if str(x).strip()
+    )
 
     all_slots = find_first_n_slots_for_day(
         calendar_id=settings["calendar_id"],
@@ -6655,7 +9032,9 @@ def stage32_refine_offered_slots_if_needed(
     pending.pop("partial_datetime_iso", None)
     pending.pop("time_text", None)
     pending["booking_intent"] = True
-    pending["awaiting_time_date_iso"] = base_day.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+    pending["awaiting_time_date_iso"] = base_day.replace(
+        hour=9, minute=0, second=0, microsecond=0
+    ).isoformat()
     c["datetime_iso"] = None
     c["time_text"] = None
     c["state"] = STATE_AWAITING_TIME
@@ -6665,13 +9044,25 @@ def stage32_refine_offered_slots_if_needed(
         c["pending"] = pending
         db_save_conversation(tenant_id, user_key, c)
         reply = stage32_refinement_reply(lang, direction, candidates[:4])
-        return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "preserve_text": True}
+        return {
+            "status": "need_more",
+            "reply_voice": reply,
+            "msg_out": reply,
+            "lang": lang,
+            "preserve_text": True,
+        }
 
     clear_offered_slots(pending)
     c["pending"] = pending
     db_save_conversation(tenant_id, user_key, c)
     reply = stage32_no_refinement_slots_reply(lang, direction)
-    return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "preserve_text": True}
+    return {
+        "status": "need_more",
+        "reply_voice": reply,
+        "msg_out": reply,
+        "lang": lang,
+        "preserve_text": True,
+    }
 
 
 def free_router_handle_candidate_datetime(
@@ -6687,34 +9078,56 @@ def free_router_handle_candidate_datetime(
     candidate_dt: datetime,
 ) -> Dict[str, Any]:
     pending = pending or {}
-    service_item = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
+    service_item = get_service_item_by_key(
+        service_catalog, c.get("service") or pending.get("service")
+    )
     duration_min = service_duration_min(service_item)
     if not calendar_is_configured(settings["calendar_id"]):
         return blocked_result_for_lang(lang)
 
     pending["booking_intent"] = True
-    pending["awaiting_time_date_iso"] = candidate_dt.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+    pending["awaiting_time_date_iso"] = candidate_dt.replace(
+        hour=9, minute=0, second=0, microsecond=0
+    ).isoformat()
     pending["time_text"] = candidate_dt.strftime("%H:%M")
     c["time_text"] = pending["time_text"]
     c["pending"] = pending
 
-    slot_ok = (
-        in_business_hours(candidate_dt, duration_min, settings["work_start"], settings["work_end"], settings.get("business_rules"))
-        and not is_slot_busy(
-            settings["calendar_id"],
-            candidate_dt,
-            candidate_dt + timedelta(minutes=duration_min),
-            _safe_int((settings.get("business_rules") or {}).get("buffer_minutes"), 0),
-            service_account_json=settings.get("service_account_json"),
-        )
+    slot_ok = in_business_hours(
+        candidate_dt,
+        duration_min,
+        settings["work_start"],
+        settings["work_end"],
+        settings.get("business_rules"),
+    ) and not is_slot_busy(
+        settings["calendar_id"],
+        candidate_dt,
+        candidate_dt + timedelta(minutes=duration_min),
+        _safe_int((settings.get("business_rules") or {}).get("buffer_minutes"), 0),
+        service_account_json=settings.get("service_account_json"),
     )
     if slot_ok:
-        result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, candidate_dt)
+        result = book_appointment_for_datetime(
+            tenant_id,
+            raw_phone,
+            channel,
+            lang,
+            c,
+            settings,
+            service_catalog,
+            candidate_dt,
+        )
         db_save_conversation(tenant_id, user_key, c)
         return result
 
     alternatives: List[datetime] = []
-    if in_business_hours(candidate_dt, duration_min, settings["work_start"], settings["work_end"], settings.get("business_rules")):
+    if in_business_hours(
+        candidate_dt,
+        duration_min,
+        settings["work_start"],
+        settings["work_end"],
+        settings.get("business_rules"),
+    ):
         alternatives = find_first_n_slots_for_day(
             calendar_id=settings["calendar_id"],
             day_dt=candidate_dt,
@@ -6725,9 +9138,19 @@ def free_router_handle_candidate_datetime(
             business_rules=settings.get("business_rules"),
             service_account_json=settings.get("service_account_json"),
         )
-        alternatives = [s for s in alternatives if abs((s - candidate_dt).total_seconds()) >= 60]
+        alternatives = [
+            s for s in alternatives if abs((s - candidate_dt).total_seconds()) >= 60
+        ]
     if not alternatives:
-        opts = find_next_two_slots(settings["calendar_id"], candidate_dt, duration_min, settings["work_start"], settings["work_end"], settings.get("business_rules"), settings.get("service_account_json"))
+        opts = find_next_two_slots(
+            settings["calendar_id"],
+            candidate_dt,
+            duration_min,
+            settings["work_start"],
+            settings["work_end"],
+            settings.get("business_rules"),
+            settings.get("service_account_json"),
+        )
         if opts:
             alternatives = [opts[0], opts[1]]
 
@@ -6741,12 +9164,30 @@ def free_router_handle_candidate_datetime(
         db_save_conversation(tenant_id, user_key, c)
         offered = [format_dt_short(x) for x in alternatives[:3]]
         if lang == "ru":
-            reply = f"На {format_dt_short(candidate_dt)} уже занято. Могу предложить: " + " или ".join(offered) + ". Что вам удобнее?"
+            reply = (
+                f"На {format_dt_short(candidate_dt)} уже занято. Могу предложить: "
+                + " или ".join(offered)
+                + ". Что вам удобнее?"
+            )
         elif lang == "en":
-            reply = f"{format_dt_short(candidate_dt)} is already taken. I can offer: " + " or ".join(offered) + ". Which works best?"
+            reply = (
+                f"{format_dt_short(candidate_dt)} is already taken. I can offer: "
+                + " or ".join(offered)
+                + ". Which works best?"
+            )
         else:
-            reply = f"Diemžēl {format_dt_short(candidate_dt)} jau ir aizņemts. Varu piedāvāt: " + " vai ".join(offered) + ". Kurš laiks jums der?"
-        return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "preserve_text": True}
+            reply = (
+                f"Diemžēl {format_dt_short(candidate_dt)} jau ir aizņemts. Varu piedāvāt: "
+                + " vai ".join(offered)
+                + ". Kurš laiks jums der?"
+            )
+        return {
+            "status": "need_more",
+            "reply_voice": reply,
+            "msg_out": reply,
+            "lang": lang,
+            "preserve_text": True,
+        }
 
     c["state"] = STATE_AWAITING_TIME
     c["pending"] = pending
@@ -6758,7 +9199,13 @@ def free_router_handle_candidate_datetime(
         reply = f"{format_dt_short(candidate_dt)} is already taken. What other time would work for you?"
     else:
         reply = f"Diemžēl {format_dt_short(candidate_dt)} jau ir aizņemts. Kāds cits laiks jums būtu ērts?"
-    return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "preserve_text": True}
+    return {
+        "status": "need_more",
+        "reply_voice": reply,
+        "msg_out": reply,
+        "lang": lang,
+        "preserve_text": True,
+    }
 
 
 def free_router_handle_turn(
@@ -6810,13 +9257,24 @@ def free_router_handle_turn(
             pending.pop("requested_datetime_iso", None)
             pending.pop("partial_datetime_iso", None)
             pending.pop("confirm_slot_iso", None)
-            pending["awaiting_time_date_iso"] = dt_selected.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+            pending["awaiting_time_date_iso"] = dt_selected.replace(
+                hour=9, minute=0, second=0, microsecond=0
+            ).isoformat()
             pending["time_text"] = dt_selected.strftime("%H:%M")
             clear_offered_slots(pending)
             c["pending"] = pending or {"booking_intent": True}
             c["datetime_iso"] = None
             c["state"] = STATE_AWAITING_TIME
-            result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, dt_selected)
+            result = book_appointment_for_datetime(
+                tenant_id,
+                raw_phone,
+                channel,
+                lang,
+                c,
+                settings,
+                service_catalog,
+                dt_selected,
+            )
             db_save_conversation(tenant_id, user_key, c)
             return result
 
@@ -6825,10 +9283,18 @@ def free_router_handle_turn(
     # the same confirmation.
     if state == STATE_AWAITING_CONFIRM and detect_time_shift_direction(msg, lang):
         shift_direction = detect_time_shift_direction(msg, lang)
-        anchor_iso = str(pending.get("confirm_slot_iso") or c.get("datetime_iso") or "").strip()
+        anchor_iso = str(
+            pending.get("confirm_slot_iso") or c.get("datetime_iso") or ""
+        ).strip()
         anchor_dt = parse_dt_any_tz(anchor_iso)
-        service_item_shift = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
-        if anchor_dt and service_item_shift and calendar_is_configured(settings["calendar_id"]):
+        service_item_shift = get_service_item_by_key(
+            service_catalog, c.get("service") or pending.get("service")
+        )
+        if (
+            anchor_dt
+            and service_item_shift
+            and calendar_is_configured(settings["calendar_id"])
+        ):
             slots = find_negotiation_slots_for_direction(
                 calendar_id=settings["calendar_id"],
                 base_day=anchor_dt,
@@ -6845,7 +9311,9 @@ def free_router_handle_turn(
             pending.pop("candidate_datetime_iso", None)
             pending["booking_intent"] = True
             c["datetime_iso"] = None
-            return negotiation_slots_response(tenant_id, user_key, lang, c, pending, slots)
+            return negotiation_slots_response(
+                tenant_id, user_key, lang, c, pending, slots
+            )
 
     # Stage 31 Hotfix: fuzzy windows such as "вечером" / "vakarā" /
     # "after lunch" should offer a set of slots, not become one exact confirmation.
@@ -6887,16 +9355,37 @@ def free_router_handle_turn(
             reply = "Understood. What other time would work for you?"
         else:
             reply = "Skaidrs. Kādu citu laiku vēlaties?"
-        return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "preserve_text": True}
+        return {
+            "status": "need_more",
+            "reply_voice": reply,
+            "msg_out": reply,
+            "lang": lang,
+            "preserve_text": True,
+        }
 
-    c, pending, service_item, candidate_dt = free_router_merge_message_slots(msg, c, pending, service_catalog, service_aliases, lang)
+    c, pending, service_item, candidate_dt = free_router_merge_message_slots(
+        msg, c, pending, service_catalog, service_aliases, lang
+    )
 
     # Stage 25.6 hotfix: when we are waiting for a date and the user gives only a date
     # ("16 maijs", "16.05"), do not treat it as missing datetime and repeat the same
     # question. Move to time selection by offering available slots for that day.
     date_only_for_router = parse_date_only_text(msg)
-    if conversation_state(c) == STATE_AWAITING_DATE and date_only_for_router and (c.get("service") or pending.get("service")):
-        return offer_slots_for_date(tenant_id, user_key, lang, c, pending, settings, service_catalog, date_only_for_router)
+    if (
+        conversation_state(c) == STATE_AWAITING_DATE
+        and date_only_for_router
+        and (c.get("service") or pending.get("service"))
+    ):
+        return offer_slots_for_date(
+            tenant_id,
+            user_key,
+            lang,
+            c,
+            pending,
+            settings,
+            service_catalog,
+            date_only_for_router,
+        )
 
     if free_router_is_services_request(msg, lang):
         pending["booking_intent"] = True
@@ -6905,7 +9394,13 @@ def free_router_handle_turn(
             c["state"] = STATE_AWAITING_SERVICE
         db_save_conversation(tenant_id, user_key, c)
         reply = free_router_services_reply(lang, service_catalog, pending)
-        return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "preserve_text": True}
+        return {
+            "status": "need_more",
+            "reply_voice": reply,
+            "msg_out": reply,
+            "lang": lang,
+            "preserve_text": True,
+        }
 
     if free_router_is_variants_request(msg, lang):
         if not (c.get("service") or pending.get("service")):
@@ -6913,24 +9408,61 @@ def free_router_handle_turn(
             c["pending"] = pending
             c["state"] = STATE_AWAITING_SERVICE
             db_save_conversation(tenant_id, user_key, c)
-            reply = free_router_variants_reply_without_service(lang, service_catalog, pending)
-            return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "preserve_text": True}
-        base_day = candidate_dt or parse_dt_any_tz(str(pending.get("awaiting_time_date_iso") or c.get("datetime_iso") or "").strip())
+            reply = free_router_variants_reply_without_service(
+                lang, service_catalog, pending
+            )
+            return {
+                "status": "need_more",
+                "reply_voice": reply,
+                "msg_out": reply,
+                "lang": lang,
+                "preserve_text": True,
+            }
+        base_day = candidate_dt or parse_dt_any_tz(
+            str(
+                pending.get("awaiting_time_date_iso") or c.get("datetime_iso") or ""
+            ).strip()
+        )
         if base_day:
-            return offer_slots_for_date(tenant_id, user_key, lang, c, pending, settings, service_catalog, base_day)
+            return offer_slots_for_date(
+                tenant_id,
+                user_key,
+                lang,
+                c,
+                pending,
+                settings,
+                service_catalog,
+                base_day,
+            )
         c["state"] = STATE_AWAITING_DATE
         c["pending"] = pending
         db_save_conversation(tenant_id, user_key, c)
         reply = free_router_ask_missing_datetime(lang, c, pending)
-        return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "preserve_text": True}
+        return {
+            "status": "need_more",
+            "reply_voice": reply,
+            "msg_out": reply,
+            "lang": lang,
+            "preserve_text": True,
+        }
 
     if free_router_is_price_request(msg, lang):
-        faq_result = try_barbershop_faq(msg, lang, tenant, settings, service_catalog, service_aliases, business_memory)
+        faq_result = try_barbershop_faq(
+            msg,
+            lang,
+            tenant,
+            settings,
+            service_catalog,
+            service_aliases,
+            business_memory,
+        )
         if faq_result:
             pending["booking_intent"] = True
             c["pending"] = pending
             db_save_conversation(tenant_id, user_key, c)
-            return faq_with_flow_followup(faq_result, lang, c, pending, service_catalog, True)
+            return faq_with_flow_followup(
+                faq_result, lang, c, pending, service_catalog, True
+            )
 
     missing = free_router_missing_fields(c, pending)
     if "service" in missing:
@@ -6939,7 +9471,13 @@ def free_router_handle_turn(
         c["state"] = STATE_AWAITING_SERVICE
         db_save_conversation(tenant_id, user_key, c)
         reply = free_router_ask_missing_service(lang, pending, service_catalog)
-        return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "preserve_text": True}
+        return {
+            "status": "need_more",
+            "reply_voice": reply,
+            "msg_out": reply,
+            "lang": lang,
+            "preserve_text": True,
+        }
 
     if "datetime" in missing:
         pending["booking_intent"] = True
@@ -6947,25 +9485,50 @@ def free_router_handle_turn(
         c["state"] = STATE_AWAITING_DATE
         db_save_conversation(tenant_id, user_key, c)
         reply = free_router_ask_missing_datetime(lang, c, pending)
-        return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "preserve_text": True}
+        return {
+            "status": "need_more",
+            "reply_voice": reply,
+            "msg_out": reply,
+            "lang": lang,
+            "preserve_text": True,
+        }
 
     candidate_dt = free_router_context_datetime(c, pending)
     if candidate_dt:
-        return free_router_handle_candidate_datetime(tenant_id, user_key, raw_phone, channel, lang, c, pending, settings, service_catalog, candidate_dt)
+        return free_router_handle_candidate_datetime(
+            tenant_id,
+            user_key,
+            raw_phone,
+            channel,
+            lang,
+            c,
+            pending,
+            settings,
+            service_catalog,
+            candidate_dt,
+        )
 
     return None
+
 
 # -------------------------
 # CORE LOGIC: handle_user_text
 # -------------------------
 def handle_user_text(
-    tenant_id: str, raw_phone: str, text_in: str, channel: str, lang_hint: str, source: str = "runtime"
+    tenant_id: str,
+    raw_phone: str,
+    text_in: str,
+    channel: str,
+    lang_hint: str,
+    source: str = "runtime",
 ) -> Dict[str, Any]:
     msg = (text_in or "").strip()
     tenant = load_runtime_tenant(tenant_id)
 
     explicit_lang_hint = (lang_hint or "").strip().lower()
-    lang_locked = explicit_lang_hint if explicit_lang_hint in ("lv", "ru", "en") else None
+    lang_locked = (
+        explicit_lang_hint if explicit_lang_hint in ("lv", "ru", "en") else None
+    )
     detected_lang = get_lang(lang_locked or detect_language(msg))
     lang = detected_lang
 
@@ -6974,7 +9537,9 @@ def handle_user_text(
 
     access = tenant_access_decision(tenant, channel=channel, source=source)
     if not access.get("allowed"):
-        blocked = blocked_result_for_reason(lang, str(access.get("reason") or "unavailable"))
+        blocked = blocked_result_for_reason(
+            lang, str(access.get("reason") or "unavailable")
+        )
         meta = access.get("meta") or {}
         if meta.get("usage_limit"):
             blocked["usage_current"] = meta.get("usage_current", 0)
@@ -7005,7 +9570,9 @@ def handle_user_text(
 
     # Stage 25.5: handle post-booking thanks/goodbye before normalizing state,
     # so stale pending booking flags cannot reopen a completed flow.
-    closure_result = maybe_conversational_closure_result(tenant_id, user_key, msg, lang, c, tenant)
+    closure_result = maybe_conversational_closure_result(
+        tenant_id, user_key, msg, lang, c, tenant
+    )
     if closure_result:
         return closure_result
 
@@ -7021,8 +9588,14 @@ def handle_user_text(
     # entity persistence. Otherwise a short answer like "да" can be treated as
     # a generic booking continuation, moving the state back to AWAITING_TIME and
     # causing the bot to repeat the same confirmation prompt.
-    if msg and conversation_state(c) == STATE_AWAITING_CONFIRM and (is_yes_text(msg, lang) or is_no_text(msg, lang)):
-        confirm_iso = str(pending.get("confirm_slot_iso") or c.get("datetime_iso") or "").strip()
+    if (
+        msg
+        and conversation_state(c) == STATE_AWAITING_CONFIRM
+        and (is_yes_text(msg, lang) or is_no_text(msg, lang))
+    ):
+        confirm_iso = str(
+            pending.get("confirm_slot_iso") or c.get("datetime_iso") or ""
+        ).strip()
         dt_confirm = parse_dt_any_tz(confirm_iso)
 
         if is_yes_text(msg, lang):
@@ -7031,16 +9604,36 @@ def handle_user_text(
                 c["datetime_iso"] = None
                 db_save_conversation(tenant_id, user_key, c)
                 reply_text = prompt_for_state(lang, c, pending, service_catalog)
-                return {"status": "need_more", "reply_voice": reply_text, "msg_out": reply_text, "lang": lang, "preserve_text": True}
+                return {
+                    "status": "need_more",
+                    "reply_voice": reply_text,
+                    "msg_out": reply_text,
+                    "lang": lang,
+                    "preserve_text": True,
+                }
 
-            primary_service_item = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
-            if should_offer_post_confirm_upsell(service_catalog, primary_service_item, pending):
-                result = move_to_post_confirm_upsell(lang, c, pending, service_catalog, dt_confirm)
+            primary_service_item = get_service_item_by_key(
+                service_catalog, c.get("service") or pending.get("service")
+            )
+            if should_offer_post_confirm_upsell(
+                service_catalog, primary_service_item, pending
+            ):
+                result = move_to_post_confirm_upsell(
+                    lang, c, pending, service_catalog, dt_confirm
+                )
                 db_save_conversation(tenant_id, user_key, c)
                 return result
 
             result = book_appointment_for_datetime(
-                tenant_id, raw_phone, channel, lang, c, settings, service_catalog, dt_confirm, require_confirmation=False
+                tenant_id,
+                raw_phone,
+                channel,
+                lang,
+                c,
+                settings,
+                service_catalog,
+                dt_confirm,
+                require_confirmation=False,
             )
             # book_appointment_for_datetime now fully exits the booking state on success.
             db_save_conversation(tenant_id, user_key, c)
@@ -7068,18 +9661,28 @@ def handle_user_text(
                 reply_text = "Understood. What other time would work for you?"
             else:
                 reply_text = "Skaidrs. Kādu citu laiku vēlaties?"
-            return {"status": "need_more", "reply_voice": reply_text, "msg_out": reply_text, "lang": lang, "preserve_text": True}
+            return {
+                "status": "need_more",
+                "reply_voice": reply_text,
+                "msg_out": reply_text,
+                "lang": lang,
+                "preserve_text": True,
+            }
 
-    stage30_confirm_negotiation = stage30_negotiate_from_confirm_if_needed(
-        tenant_id=tenant_id,
-        user_key=user_key,
-        msg=msg,
-        lang=lang,
-        c=c,
-        pending=pending,
-        settings=settings,
-        service_catalog=service_catalog,
-    ) if msg else None
+    stage30_confirm_negotiation = (
+        stage30_negotiate_from_confirm_if_needed(
+            tenant_id=tenant_id,
+            user_key=user_key,
+            msg=msg,
+            lang=lang,
+            c=c,
+            pending=pending,
+            settings=settings,
+            service_catalog=service_catalog,
+        )
+        if msg
+        else None
+    )
     if stage30_confirm_negotiation:
         return stage30_confirm_negotiation
 
@@ -7104,7 +9707,9 @@ def handle_user_text(
         nonlocal ai_data
         if ai_data is not None:
             return ai_data
-        alias_hint = ", ".join([f"{k} => {v}" for k, v in list(service_aliases.items())[:50]])
+        alias_hint = ", ".join(
+            [f"{k} => {v}" for k, v in list(service_aliases.items())[:50]]
+        )
         sys_pt = (
             f"You are an appointment receptionist for {settings['biz_name']}. "
             f"Business hours: {settings['work_start']}-{settings['work_end']}. "
@@ -7121,20 +9726,24 @@ def handle_user_text(
         return ai_data
 
     llm_hint = get_llm_data() if msg else {}
-    stage26_hint = stage26_semantic_route_message(
-        msg=msg,
-        lang=lang,
-        c=c,
-        pending=pending,
-        tenant=tenant,
-        settings=settings,
-        service_catalog=service_catalog,
-        service_aliases=service_aliases,
-        business_memory=business_memory,
-        llm_hint=llm_hint,
-        channel=channel,
-        source=source,
-    ) if msg else {}
+    stage26_hint = (
+        stage26_semantic_route_message(
+            msg=msg,
+            lang=lang,
+            c=c,
+            pending=pending,
+            tenant=tenant,
+            settings=settings,
+            service_catalog=service_catalog,
+            service_aliases=service_aliases,
+            business_memory=business_memory,
+            llm_hint=llm_hint,
+            channel=channel,
+            source=source,
+        )
+        if msg
+        else {}
+    )
     if stage26_hint:
         llm_hint = merge_stage26_into_llm_hint(llm_hint, stage26_hint)
         c, pending = remember_stage26_datetime_hint(c, pending, stage26_hint)
@@ -7153,31 +9762,39 @@ def handle_user_text(
             service_aliases=service_aliases,
         )
 
-    stage30_after_window = stage30_offer_after_time_window_if_needed(
-        tenant_id=tenant_id,
-        user_key=user_key,
-        msg=msg,
-        lang=lang,
-        c=c,
-        pending=pending,
-        settings=settings,
-        service_catalog=service_catalog,
-        service_aliases=service_aliases,
-    ) if msg else None
+    stage30_after_window = (
+        stage30_offer_after_time_window_if_needed(
+            tenant_id=tenant_id,
+            user_key=user_key,
+            msg=msg,
+            lang=lang,
+            c=c,
+            pending=pending,
+            settings=settings,
+            service_catalog=service_catalog,
+            service_aliases=service_aliases,
+        )
+        if msg
+        else None
+    )
     if stage30_after_window:
         return stage30_after_window
 
-    stage31_time_window = stage31_offer_time_window_if_needed(
-        tenant_id=tenant_id,
-        user_key=user_key,
-        msg=msg,
-        lang=lang,
-        c=c,
-        pending=pending,
-        settings=settings,
-        service_catalog=service_catalog,
-        service_aliases=service_aliases,
-    ) if msg else None
+    stage31_time_window = (
+        stage31_offer_time_window_if_needed(
+            tenant_id=tenant_id,
+            user_key=user_key,
+            msg=msg,
+            lang=lang,
+            c=c,
+            pending=pending,
+            settings=settings,
+            service_catalog=service_catalog,
+            service_aliases=service_aliases,
+        )
+        if msg
+        else None
+    )
     if stage31_time_window:
         return stage31_time_window
 
@@ -7204,30 +9821,59 @@ def handle_user_text(
     # not be reinterpreted by later generic state handlers as another confirmation prompt.
     if msg and conversation_state(c) == STATE_AWAITING_CONFIRM:
         pending = c.get("pending") or {}
-        confirm_iso = str(pending.get("confirm_slot_iso") or c.get("datetime_iso") or "").strip()
+        confirm_iso = str(
+            pending.get("confirm_slot_iso") or c.get("datetime_iso") or ""
+        ).strip()
         dt_confirm = parse_dt_any_tz(confirm_iso)
         llm_confirmation = (llm_hint or {}).get("confirmation")
 
-        if is_yes_text(msg, lang) or llm_confirmation == "yes" or orchestration.get("action") == ORCH_ACTION_CONFIRM_YES:
+        if (
+            is_yes_text(msg, lang)
+            or llm_confirmation == "yes"
+            or orchestration.get("action") == ORCH_ACTION_CONFIRM_YES
+        ):
             if not dt_confirm:
                 c["state"] = STATE_AWAITING_TIME
                 db_save_conversation(tenant_id, user_key, c)
                 reply_text = prompt_for_state(lang, c, pending, service_catalog)
-                return {"status": "need_more", "reply_voice": reply_text, "msg_out": reply_text, "lang": lang}
+                return {
+                    "status": "need_more",
+                    "reply_voice": reply_text,
+                    "msg_out": reply_text,
+                    "lang": lang,
+                }
 
-            primary_service_item = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
-            if should_offer_post_confirm_upsell(service_catalog, primary_service_item, pending):
-                result = move_to_post_confirm_upsell(lang, c, pending, service_catalog, dt_confirm)
+            primary_service_item = get_service_item_by_key(
+                service_catalog, c.get("service") or pending.get("service")
+            )
+            if should_offer_post_confirm_upsell(
+                service_catalog, primary_service_item, pending
+            ):
+                result = move_to_post_confirm_upsell(
+                    lang, c, pending, service_catalog, dt_confirm
+                )
                 db_save_conversation(tenant_id, user_key, c)
                 return result
 
             result = book_appointment_for_datetime(
-                tenant_id, raw_phone, channel, lang, c, settings, service_catalog, dt_confirm, require_confirmation=False
+                tenant_id,
+                raw_phone,
+                channel,
+                lang,
+                c,
+                settings,
+                service_catalog,
+                dt_confirm,
+                require_confirmation=False,
             )
             db_save_conversation(tenant_id, user_key, c)
             return result
 
-        if is_no_text(msg, lang) or llm_confirmation == "no" or orchestration.get("action") == ORCH_ACTION_CONFIRM_NO:
+        if (
+            is_no_text(msg, lang)
+            or llm_confirmation == "no"
+            or orchestration.get("action") == ORCH_ACTION_CONFIRM_NO
+        ):
             pending.pop("confirm_slot_iso", None)
             pending.pop("pending_confirm_upsell", None)
             pending.pop("confirm_upsell_done", None)
@@ -7249,12 +9895,23 @@ def handle_user_text(
                 reply_text = "Understood. What other time would work for you?"
             else:
                 reply_text = "Skaidrs. Kādu citu laiku vēlaties?"
-            return {"status": "need_more", "reply_voice": reply_text, "msg_out": reply_text, "lang": lang, "preserve_text": True}
+            return {
+                "status": "need_more",
+                "reply_voice": reply_text,
+                "msg_out": reply_text,
+                "lang": lang,
+                "preserve_text": True,
+            }
 
     if explicit_cancel_request:
         if not calendar_ready:
             return blocked_result_for_lang(lang)
-        ev = find_next_event_by_phone(settings["calendar_id"], raw_phone, tenant_id, settings.get("service_account_json"))
+        ev = find_next_event_by_phone(
+            settings["calendar_id"],
+            raw_phone,
+            tenant_id,
+            settings.get("service_account_json"),
+        )
         if not ev:
             return {
                 "status": "no_booking",
@@ -7262,7 +9919,9 @@ def handle_user_text(
                 "msg_out": t(lang, "no_active_booking"),
                 "lang": lang,
             }
-        deleted = delete_calendar_event(settings["calendar_id"], ev["id"], settings.get("service_account_json"))
+        deleted = delete_calendar_event(
+            settings["calendar_id"], ev["id"], settings.get("service_account_json")
+        )
         if not deleted:
             return {
                 "status": "cancel_failed",
@@ -7281,10 +9940,22 @@ def handle_user_text(
             "lang": lang,
         }
 
-    if explicit_reschedule_request or ((not active_flow) and ((llm_hint or {}).get("intent") == "reschedule" and float((llm_hint or {}).get("confidence") or 0.0) >= LLM_INTENT_MIN_CONFIDENCE)):
+    if explicit_reschedule_request or (
+        (not active_flow)
+        and (
+            (llm_hint or {}).get("intent") == "reschedule"
+            and float((llm_hint or {}).get("confidence") or 0.0)
+            >= LLM_INTENT_MIN_CONFIDENCE
+        )
+    ):
         if not calendar_ready:
             return blocked_result_for_lang(lang)
-        ev = find_next_event_by_phone(settings["calendar_id"], raw_phone, tenant_id, settings.get("service_account_json"))
+        ev = find_next_event_by_phone(
+            settings["calendar_id"],
+            raw_phone,
+            tenant_id,
+            settings.get("service_account_json"),
+        )
         if not ev:
             return {
                 "status": "no_booking",
@@ -7332,13 +10003,26 @@ def handle_user_text(
             "lang": lang,
         }
 
-    if orchestration.get("action") == ORCH_ACTION_FAQ and understanding.get("faq_result"):
-        faq_result = faq_with_flow_followup(understanding.get("faq_result"), lang, c, pending, service_catalog, active_flow)
+    if orchestration.get("action") == ORCH_ACTION_FAQ and understanding.get(
+        "faq_result"
+    ):
+        faq_result = faq_with_flow_followup(
+            understanding.get("faq_result"),
+            lang,
+            c,
+            pending,
+            service_catalog,
+            active_flow,
+        )
         if active_flow:
             db_save_conversation(tenant_id, user_key, c)
         return faq_result
 
-    if orchestration.get("action") == ORCH_ACTION_GREET and not active_flow and c["state"] not in ACTIVE_BOOKING_STATES:
+    if (
+        orchestration.get("action") == ORCH_ACTION_GREET
+        and not active_flow
+        and c["state"] not in ACTIVE_BOOKING_STATES
+    ):
         c["state"] = STATE_NEW
         c["service"] = None
         c["datetime_iso"] = None
@@ -7361,8 +10045,20 @@ def handle_user_text(
     if orchestration.get("action") == ORCH_ACTION_HOURS and not active_flow:
         return {
             "status": "info",
-            "reply_voice": t(lang, "hours_info", biz=settings["biz_name"], start=settings["work_start"], end=settings["work_end"]),
-            "msg_out": t(lang, "hours_info", biz=settings["biz_name"], start=settings["work_start"], end=settings["work_end"]),
+            "reply_voice": t(
+                lang,
+                "hours_info",
+                biz=settings["biz_name"],
+                start=settings["work_start"],
+                end=settings["work_end"],
+            ),
+            "msg_out": t(
+                lang,
+                "hours_info",
+                biz=settings["biz_name"],
+                start=settings["work_start"],
+                end=settings["work_end"],
+            ),
             "lang": lang,
         }
 
@@ -7423,9 +10119,17 @@ def handle_user_text(
     # branch if Stage 27 has already persisted a service from this same turn.
     # Otherwise phrases like "uz konsultāciju" can be recognized by Stage 27,
     # then overwritten by the older exact matcher and incorrectly ask service again.
-    if fresh_booking_start and msg and not str(c.get("service") or (pending or {}).get("service") or "").strip():
+    if (
+        fresh_booking_start
+        and msg
+        and not str(c.get("service") or (pending or {}).get("service") or "").strip()
+    ):
         direct_service_key_open = canonical_service_key_from_text(msg, service_aliases)
-        service_item_open = get_service_item_by_key(service_catalog, direct_service_key_open) if direct_service_key_open else None
+        service_item_open = (
+            get_service_item_by_key(service_catalog, direct_service_key_open)
+            if direct_service_key_open
+            else None
+        )
         if not service_item_open:
             service_item_open = extract_service_from_text(msg, service_catalog, lang)
         if service_item_open:
@@ -7450,15 +10154,28 @@ def handle_user_text(
                 "preserve_text": True,
             }
 
-    if msg and (natural_dt_for_msg or date_only_dt_for_msg or time_window_for_msg or explicit_time_present):
+    if msg and (
+        natural_dt_for_msg
+        or date_only_dt_for_msg
+        or time_window_for_msg
+        or explicit_time_present
+    ):
         c, pending = remember_partial_booking_datetime_from_message(c, pending, msg)
 
     # Stage 29 Hotfix: "после 14:00" / "pēc 14:00" / "after 14:00" is a
     # strict time window request, not an exact 14:00 booking. Offer several
     # available slots after the anchor instead of asking to confirm 14:00.
     after_anchor_stage29 = detect_after_time_anchor(msg, lang)
-    if after_anchor_stage29 and str(c.get("service") or (pending or {}).get("service") or "").strip():
-        base_day_stage29 = parse_dt_any_tz(str((pending or {}).get("awaiting_time_date_iso") or "").strip()) or date_only_dt_for_msg
+    if (
+        after_anchor_stage29
+        and str(c.get("service") or (pending or {}).get("service") or "").strip()
+    ):
+        base_day_stage29 = (
+            parse_dt_any_tz(
+                str((pending or {}).get("awaiting_time_date_iso") or "").strip()
+            )
+            or date_only_dt_for_msg
+        )
         if base_day_stage29:
             return offer_slots_after_time_anchor(
                 tenant_id=tenant_id,
@@ -7474,11 +10191,24 @@ def handle_user_text(
 
     # Stage 27: if one message already contains service + date but no exact time,
     # do not ask service again. Move directly to slot offering / time choice.
-    if (fresh_booking_start or orchestration.get("action") == ORCH_ACTION_START_BOOKING) and c.get("service"):
-        base_day_stage27 = parse_dt_any_tz(str((pending or {}).get("awaiting_time_date_iso") or "").strip())
+    if (
+        fresh_booking_start or orchestration.get("action") == ORCH_ACTION_START_BOOKING
+    ) and c.get("service"):
+        base_day_stage27 = parse_dt_any_tz(
+            str((pending or {}).get("awaiting_time_date_iso") or "").strip()
+        )
         candidate_stage27 = booking_candidate_datetime_from_context(c, pending or {})
         if base_day_stage27 and not candidate_stage27:
-            return offer_slots_for_date(tenant_id, user_key, lang, c, pending, settings, service_catalog, base_day_stage27)
+            return offer_slots_for_date(
+                tenant_id,
+                user_key,
+                lang,
+                c,
+                pending,
+                settings,
+                service_catalog,
+                base_day_stage27,
+            )
 
     # Stage 24: free-form router gets first chance inside active booking flow.
     free_router_result = free_router_handle_turn(
@@ -7502,27 +10232,64 @@ def handle_user_text(
     override_service_item = None
     if msg and c.get("service"):
         detected_override_key = canonical_service_key_from_text(msg, service_aliases)
-        if detected_override_key and detected_override_key != str(c.get("service") or pending.get("service") or "").strip():
-            override_service_item = get_service_item_by_key(service_catalog, detected_override_key)
+        if (
+            detected_override_key
+            and detected_override_key
+            != str(c.get("service") or pending.get("service") or "").strip()
+        ):
+            override_service_item = get_service_item_by_key(
+                service_catalog, detected_override_key
+            )
         elif not detected_override_key:
-            detected_service_item = extract_service_from_text(msg, service_catalog, lang)
-            current_service_item = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
-            if detected_service_item and current_service_item and str(detected_service_item.get("key") or "") != str(current_service_item.get("key") or ""):
+            detected_service_item = extract_service_from_text(
+                msg, service_catalog, lang
+            )
+            current_service_item = get_service_item_by_key(
+                service_catalog, c.get("service") or pending.get("service")
+            )
+            if (
+                detected_service_item
+                and current_service_item
+                and str(detected_service_item.get("key") or "")
+                != str(current_service_item.get("key") or "")
+            ):
                 override_service_item = detected_service_item
     if override_service_item and conversation_state(c) in ACTIVE_BOOKING_STATES:
-        return apply_inflow_service_override(tenant_id, user_key, lang, c, pending, settings, service_catalog, override_service_item)
+        return apply_inflow_service_override(
+            tenant_id,
+            user_key,
+            lang,
+            c,
+            pending,
+            settings,
+            service_catalog,
+            override_service_item,
+        )
 
     selected_iso = extract_slot_choice(msg, pending)
     if selected_iso:
         dt_sel = parse_dt_any_tz(selected_iso)
         if dt_sel:
-            result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, dt_sel)
+            result = book_appointment_for_datetime(
+                tenant_id,
+                raw_phone,
+                channel,
+                lang,
+                c,
+                settings,
+                service_catalog,
+                dt_sel,
+            )
             db_save_conversation(tenant_id, user_key, c)
             return result
 
     if active_flow or c["state"] in ACTIVE_BOOKING_STATES or c["state"] == STATE_NEW:
         direct_service_key = canonical_service_key_from_text(msg, service_aliases)
-        service_item = get_service_item_by_key(service_catalog, direct_service_key) if direct_service_key else None
+        service_item = (
+            get_service_item_by_key(service_catalog, direct_service_key)
+            if direct_service_key
+            else None
+        )
         if not service_item:
             service_item = extract_service_from_text(msg, service_catalog, lang)
         if not service_item and msg:
@@ -7531,8 +10298,12 @@ def handle_user_text(
                 service_item = get_service_item_by_key(service_catalog, llm_service_key)
         if not service_item and msg:
             data = get_ai_data()
-            extracted_service_key = apply_service_aliases(data.get("service"), service_aliases) or canonical_service_key_from_text(data.get("service"), service_aliases)
-            service_item = get_service_item_by_key(service_catalog, extracted_service_key) or extract_service_from_text(data.get("service"), service_catalog, lang)
+            extracted_service_key = apply_service_aliases(
+                data.get("service"), service_aliases
+            ) or canonical_service_key_from_text(data.get("service"), service_aliases)
+            service_item = get_service_item_by_key(
+                service_catalog, extracted_service_key
+            ) or extract_service_from_text(data.get("service"), service_catalog, lang)
             extracted_name = normalize_name(data.get("name"))
             if extracted_name and not c.get("name"):
                 c["name"] = extracted_name
@@ -7552,11 +10323,22 @@ def handle_user_text(
                 pending.pop("requested_datetime_iso", None)
                 pending.pop("partial_datetime_iso", None)
                 c["pending"] = pending or None
-                result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, candidate_dt)
+                result = book_appointment_for_datetime(
+                    tenant_id,
+                    raw_phone,
+                    channel,
+                    lang,
+                    c,
+                    settings,
+                    service_catalog,
+                    candidate_dt,
+                )
                 db_save_conversation(tenant_id, user_key, c)
                 return result
 
-            base_day = parse_dt_any_tz(str(pending.get("awaiting_time_date_iso") or "").strip())
+            base_day = parse_dt_any_tz(
+                str(pending.get("awaiting_time_date_iso") or "").strip()
+            )
             stored_window = pending_time_window_tuple(pending)
             if base_day:
                 slots = []
@@ -7593,8 +10375,20 @@ def handle_user_text(
                     db_save_conversation(tenant_id, user_key, c)
                     return {
                         "status": "need_more",
-                        "reply_voice": t(lang, "smart_slots_prompt", opt1=format_dt_short(slots[0]), opt2=format_dt_short(slots[1]), opt3=format_dt_short(slots[2])),
-                        "msg_out": t(lang, "smart_slots_prompt", opt1=format_dt_short(slots[0]), opt2=format_dt_short(slots[1]), opt3=format_dt_short(slots[2])),
+                        "reply_voice": t(
+                            lang,
+                            "smart_slots_prompt",
+                            opt1=format_dt_short(slots[0]),
+                            opt2=format_dt_short(slots[1]),
+                            opt3=format_dt_short(slots[2]),
+                        ),
+                        "msg_out": t(
+                            lang,
+                            "smart_slots_prompt",
+                            opt1=format_dt_short(slots[0]),
+                            opt2=format_dt_short(slots[1]),
+                            opt3=format_dt_short(slots[2]),
+                        ),
                         "lang": lang,
                     }
                 if len(slots) >= 2:
@@ -7603,8 +10397,18 @@ def handle_user_text(
                     db_save_conversation(tenant_id, user_key, c)
                     return {
                         "status": "need_more",
-                        "reply_voice": t(lang, "voice_options_prompt", opt1=format_dt_short(slots[0]), opt2=format_dt_short(slots[1])),
-                        "msg_out": t(lang, "voice_options_prompt", opt1=format_dt_short(slots[0]), opt2=format_dt_short(slots[1])),
+                        "reply_voice": t(
+                            lang,
+                            "voice_options_prompt",
+                            opt1=format_dt_short(slots[0]),
+                            opt2=format_dt_short(slots[1]),
+                        ),
+                        "msg_out": t(
+                            lang,
+                            "voice_options_prompt",
+                            opt1=format_dt_short(slots[0]),
+                            opt2=format_dt_short(slots[1]),
+                        ),
                         "lang": lang,
                     }
                 db_save_conversation(tenant_id, user_key, c)
@@ -7660,20 +10464,46 @@ def handle_user_text(
             dt_start = natural_dt
         elif msg:
             data = get_ai_data()
-            dt_start = parse_dt_from_iso_or_fallback(data.get("datetime_iso"), data.get("time_text"), msg)
+            dt_start = parse_dt_from_iso_or_fallback(
+                data.get("datetime_iso"), data.get("time_text"), msg
+            )
         if dt_start and (explicit_time_present or has_natural_time_hint(msg)):
-            result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, dt_start)
+            result = book_appointment_for_datetime(
+                tenant_id,
+                raw_phone,
+                channel,
+                lang,
+                c,
+                settings,
+                service_catalog,
+                dt_start,
+            )
             db_save_conversation(tenant_id, user_key, c)
             return result
-        if date_only_dt or (dt_start and not (explicit_time_present or has_natural_time_hint(msg))):
+        if date_only_dt or (
+            dt_start and not (explicit_time_present or has_natural_time_hint(msg))
+        ):
             base_date = date_only_dt or dt_start
             pending["booking_intent"] = True
-            service_item_current = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
-            c, pending = remember_booking_service(c, pending, service_item_current, lang)
+            service_item_current = get_service_item_by_key(
+                service_catalog, c.get("service") or pending.get("service")
+            )
+            c, pending = remember_booking_service(
+                c, pending, service_item_current, lang
+            )
             stored_window = parse_time_window(msg) or pending_time_window_tuple(pending)
             if stored_window:
                 pending["preferred_time_window"] = [stored_window[0], stored_window[1]]
-            return offer_slots_for_date(tenant_id, user_key, lang, c, pending, settings, service_catalog, base_date)
+            return offer_slots_for_date(
+                tenant_id,
+                user_key,
+                lang,
+                c,
+                pending,
+                settings,
+                service_catalog,
+                base_date,
+            )
         db_save_conversation(tenant_id, user_key, c)
         return {
             "status": "need_more",
@@ -7683,9 +10513,20 @@ def handle_user_text(
         }
 
     if c["state"] == STATE_AWAITING_TIME:
-        service_item_current = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
+        service_item_current = get_service_item_by_key(
+            service_catalog, c.get("service") or pending.get("service")
+        )
         if msg and date_only_dt_for_msg:
-            return offer_slots_for_date(tenant_id, user_key, lang, c, pending, settings, service_catalog, date_only_dt_for_msg)
+            return offer_slots_for_date(
+                tenant_id,
+                user_key,
+                lang,
+                c,
+                pending,
+                settings,
+                service_catalog,
+                date_only_dt_for_msg,
+            )
         if is_other_day_text(msg, lang):
             pending.pop("confirm_slot_iso", None)
             pending.pop("candidate_datetime_iso", None)
@@ -7705,7 +10546,9 @@ def handle_user_text(
             }
         shift_direction = detect_time_shift_direction(msg, lang)
         if shift_direction and pending.get("awaiting_time_date_iso"):
-            base_day = parse_dt_any_tz(str(pending.get("awaiting_time_date_iso") or "").strip())
+            base_day = parse_dt_any_tz(
+                str(pending.get("awaiting_time_date_iso") or "").strip()
+            )
             anchor_dt = None
             offered = get_offered_slots(pending)
             if shift_direction == "earlier" and offered:
@@ -7715,21 +10558,36 @@ def handle_user_text(
             if not anchor_dt and base_day:
                 win = pending_time_window_tuple(pending)
                 if win:
-                    anchor_dt = base_day.replace(hour=win[0] if shift_direction == "earlier" else max(win[1]-1, win[0]), minute=0, second=0, microsecond=0)
+                    anchor_dt = base_day.replace(
+                        hour=(
+                            win[0]
+                            if shift_direction == "earlier"
+                            else max(win[1] - 1, win[0])
+                        ),
+                        minute=0,
+                        second=0,
+                        microsecond=0,
+                    )
             if base_day and anchor_dt and service_item_current:
-                slots = find_negotiation_slots_for_direction(
-                    calendar_id=settings["calendar_id"],
-                    base_day=base_day,
-                    anchor_dt=anchor_dt,
-                    direction=shift_direction,
-                    duration_min=service_duration_min(service_item_current),
-                    work_start=settings["work_start"],
-                    work_end=settings["work_end"],
-                    limit=3,
-                    business_rules=settings.get("business_rules"),
-                    service_account_json=settings.get("service_account_json"),
-                ) if calendar_ready else []
-                return negotiation_slots_response(tenant_id, user_key, lang, c, pending, slots)
+                slots = (
+                    find_negotiation_slots_for_direction(
+                        calendar_id=settings["calendar_id"],
+                        base_day=base_day,
+                        anchor_dt=anchor_dt,
+                        direction=shift_direction,
+                        duration_min=service_duration_min(service_item_current),
+                        work_start=settings["work_start"],
+                        work_end=settings["work_end"],
+                        limit=3,
+                        business_rules=settings.get("business_rules"),
+                        service_account_json=settings.get("service_account_json"),
+                    )
+                    if calendar_ready
+                    else []
+                )
+                return negotiation_slots_response(
+                    tenant_id, user_key, lang, c, pending, slots
+                )
         if is_short_ack_text(msg, lang):
             db_save_conversation(tenant_id, user_key, c)
             return {
@@ -7751,31 +10609,51 @@ def handle_user_text(
 
         if pending.get("awaiting_time_date_iso"):
             if date_only_dt_for_msg:
-                pending["awaiting_time_date_iso"] = date_only_dt_for_msg.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
-            base_day = parse_dt_any_tz(str(pending.get("awaiting_time_date_iso") or "").strip())
+                pending["awaiting_time_date_iso"] = date_only_dt_for_msg.replace(
+                    hour=9, minute=0, second=0, microsecond=0
+                ).isoformat()
+            base_day = parse_dt_any_tz(
+                str(pending.get("awaiting_time_date_iso") or "").strip()
+            )
             time_window = parse_time_window(msg) or pending_time_window_tuple(pending)
             if time_window and base_day:
                 pending["preferred_time_window"] = [time_window[0], time_window[1]]
-                slots = find_first_n_slots_for_day_window(
-                    calendar_id=settings["calendar_id"],
-                    day_dt=base_day,
-                    duration_min=service_duration_min(service_item_current),
-                    work_start=settings["work_start"],
-                    work_end=settings["work_end"],
-                    window_start_hour=time_window[0],
-                    window_end_hour=time_window[1],
-                    limit=3,
-                    business_rules=settings.get("business_rules"),
-                    service_account_json=settings.get("service_account_json"),
-                ) if calendar_ready else []
+                slots = (
+                    find_first_n_slots_for_day_window(
+                        calendar_id=settings["calendar_id"],
+                        day_dt=base_day,
+                        duration_min=service_duration_min(service_item_current),
+                        work_start=settings["work_start"],
+                        work_end=settings["work_end"],
+                        window_start_hour=time_window[0],
+                        window_end_hour=time_window[1],
+                        limit=3,
+                        business_rules=settings.get("business_rules"),
+                        service_account_json=settings.get("service_account_json"),
+                    )
+                    if calendar_ready
+                    else []
+                )
                 if len(slots) >= 3:
                     pending = set_offered_slots(pending, slots[:3])
                     c["pending"] = pending
                     db_save_conversation(tenant_id, user_key, c)
                     return {
                         "status": "need_more",
-                        "reply_voice": t(lang, "smart_slots_prompt", opt1=format_dt_short(slots[0]), opt2=format_dt_short(slots[1]), opt3=format_dt_short(slots[2])),
-                        "msg_out": t(lang, "smart_slots_prompt", opt1=format_dt_short(slots[0]), opt2=format_dt_short(slots[1]), opt3=format_dt_short(slots[2])),
+                        "reply_voice": t(
+                            lang,
+                            "smart_slots_prompt",
+                            opt1=format_dt_short(slots[0]),
+                            opt2=format_dt_short(slots[1]),
+                            opt3=format_dt_short(slots[2]),
+                        ),
+                        "msg_out": t(
+                            lang,
+                            "smart_slots_prompt",
+                            opt1=format_dt_short(slots[0]),
+                            opt2=format_dt_short(slots[1]),
+                            opt3=format_dt_short(slots[2]),
+                        ),
                         "lang": lang,
                     }
                 if len(slots) >= 2:
@@ -7784,8 +10662,18 @@ def handle_user_text(
                     db_save_conversation(tenant_id, user_key, c)
                     return {
                         "status": "need_more",
-                        "reply_voice": t(lang, "voice_options_prompt", opt1=format_dt_short(slots[0]), opt2=format_dt_short(slots[1])),
-                        "msg_out": t(lang, "voice_options_prompt", opt1=format_dt_short(slots[0]), opt2=format_dt_short(slots[1])),
+                        "reply_voice": t(
+                            lang,
+                            "voice_options_prompt",
+                            opt1=format_dt_short(slots[0]),
+                            opt2=format_dt_short(slots[1]),
+                        ),
+                        "msg_out": t(
+                            lang,
+                            "voice_options_prompt",
+                            opt1=format_dt_short(slots[0]),
+                            opt2=format_dt_short(slots[1]),
+                        ),
                         "lang": lang,
                     }
                 if len(slots) == 1:
@@ -7797,8 +10685,18 @@ def handle_user_text(
                     db_save_conversation(tenant_id, user_key, c)
                     return {
                         "status": "need_more",
-                        "reply_voice": t(lang, "ask_booking_confirm", when=format_dt_short(slots[0]), service=pending.get("service_display") or ""),
-                        "msg_out": t(lang, "ask_booking_confirm", when=format_dt_short(slots[0]), service=pending.get("service_display") or ""),
+                        "reply_voice": t(
+                            lang,
+                            "ask_booking_confirm",
+                            when=format_dt_short(slots[0]),
+                            service=pending.get("service_display") or "",
+                        ),
+                        "msg_out": t(
+                            lang,
+                            "ask_booking_confirm",
+                            when=format_dt_short(slots[0]),
+                            service=pending.get("service_display") or "",
+                        ),
                         "lang": lang,
                     }
                 db_save_conversation(tenant_id, user_key, c)
@@ -7813,7 +10711,16 @@ def handle_user_text(
         if selected_iso:
             dt_sel = parse_dt_any_tz(selected_iso)
             if dt_sel:
-                result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, dt_sel)
+                result = book_appointment_for_datetime(
+                    tenant_id,
+                    raw_phone,
+                    channel,
+                    lang,
+                    c,
+                    settings,
+                    service_catalog,
+                    dt_sel,
+                )
                 db_save_conversation(tenant_id, user_key, c)
                 return result
 
@@ -7822,39 +10729,63 @@ def handle_user_text(
         if natural_dt:
             dt_start = natural_dt
         elif explicit_time_present and pending.get("awaiting_time_date_iso"):
-            dt_start = combine_date_with_explicit_time(pending.get("awaiting_time_date_iso"), msg)
+            dt_start = combine_date_with_explicit_time(
+                pending.get("awaiting_time_date_iso"), msg
+            )
         if not dt_start and msg:
             data = get_ai_data()
-            dt_start = parse_dt_from_iso_or_fallback(data.get("datetime_iso"), data.get("time_text"), msg)
+            dt_start = parse_dt_from_iso_or_fallback(
+                data.get("datetime_iso"), data.get("time_text"), msg
+            )
             extracted_name = normalize_name(data.get("name"))
             if extracted_name and not c.get("name"):
                 c["name"] = extracted_name
 
         if not dt_start and pending.get("awaiting_time_date_iso"):
             time_window = parse_time_window(msg)
-            base_day = parse_dt_any_tz(str(pending.get("awaiting_time_date_iso") or "").strip())
+            base_day = parse_dt_any_tz(
+                str(pending.get("awaiting_time_date_iso") or "").strip()
+            )
             if time_window and base_day:
-                service_item = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
-                slots = find_first_n_slots_for_day_window(
-                    calendar_id=settings["calendar_id"],
-                    day_dt=base_day,
-                    duration_min=service_duration_min(service_item),
-                    work_start=settings["work_start"],
-                    work_end=settings["work_end"],
-                    window_start_hour=time_window[0],
-                    window_end_hour=time_window[1],
-                    limit=3,
-                    business_rules=settings.get("business_rules"),
-                    service_account_json=settings.get("service_account_json"),
-                ) if calendar_ready else []
+                service_item = get_service_item_by_key(
+                    service_catalog, c.get("service") or pending.get("service")
+                )
+                slots = (
+                    find_first_n_slots_for_day_window(
+                        calendar_id=settings["calendar_id"],
+                        day_dt=base_day,
+                        duration_min=service_duration_min(service_item),
+                        work_start=settings["work_start"],
+                        work_end=settings["work_end"],
+                        window_start_hour=time_window[0],
+                        window_end_hour=time_window[1],
+                        limit=3,
+                        business_rules=settings.get("business_rules"),
+                        service_account_json=settings.get("service_account_json"),
+                    )
+                    if calendar_ready
+                    else []
+                )
                 if len(slots) >= 3:
                     pending = set_offered_slots(pending, slots[:3])
                     c["pending"] = pending
                     db_save_conversation(tenant_id, user_key, c)
                     return {
                         "status": "need_more",
-                        "reply_voice": t(lang, "smart_slots_prompt", opt1=format_dt_short(slots[0]), opt2=format_dt_short(slots[1]), opt3=format_dt_short(slots[2])),
-                        "msg_out": t(lang, "smart_slots_prompt", opt1=format_dt_short(slots[0]), opt2=format_dt_short(slots[1]), opt3=format_dt_short(slots[2])),
+                        "reply_voice": t(
+                            lang,
+                            "smart_slots_prompt",
+                            opt1=format_dt_short(slots[0]),
+                            opt2=format_dt_short(slots[1]),
+                            opt3=format_dt_short(slots[2]),
+                        ),
+                        "msg_out": t(
+                            lang,
+                            "smart_slots_prompt",
+                            opt1=format_dt_short(slots[0]),
+                            opt2=format_dt_short(slots[1]),
+                            opt3=format_dt_short(slots[2]),
+                        ),
                         "lang": lang,
                     }
                 if len(slots) >= 2:
@@ -7863,8 +10794,18 @@ def handle_user_text(
                     db_save_conversation(tenant_id, user_key, c)
                     return {
                         "status": "need_more",
-                        "reply_voice": t(lang, "voice_options_prompt", opt1=format_dt_short(slots[0]), opt2=format_dt_short(slots[1])),
-                        "msg_out": t(lang, "voice_options_prompt", opt1=format_dt_short(slots[0]), opt2=format_dt_short(slots[1])),
+                        "reply_voice": t(
+                            lang,
+                            "voice_options_prompt",
+                            opt1=format_dt_short(slots[0]),
+                            opt2=format_dt_short(slots[1]),
+                        ),
+                        "msg_out": t(
+                            lang,
+                            "voice_options_prompt",
+                            opt1=format_dt_short(slots[0]),
+                            opt2=format_dt_short(slots[1]),
+                        ),
                         "lang": lang,
                     }
                 if len(slots) == 1:
@@ -7876,8 +10817,18 @@ def handle_user_text(
                     db_save_conversation(tenant_id, user_key, c)
                     return {
                         "status": "need_more",
-                        "reply_voice": t(lang, "ask_booking_confirm", when=format_dt_short(slots[0]), service=pending.get("service_display") or ""),
-                        "msg_out": t(lang, "ask_booking_confirm", when=format_dt_short(slots[0]), service=pending.get("service_display") or ""),
+                        "reply_voice": t(
+                            lang,
+                            "ask_booking_confirm",
+                            when=format_dt_short(slots[0]),
+                            service=pending.get("service_display") or "",
+                        ),
+                        "msg_out": t(
+                            lang,
+                            "ask_booking_confirm",
+                            when=format_dt_short(slots[0]),
+                            service=pending.get("service_display") or "",
+                        ),
                         "lang": lang,
                     }
 
@@ -7885,7 +10836,16 @@ def handle_user_text(
             clear_offered_slots(pending)
             pending.pop("awaiting_time_date_iso", None)
             c["pending"] = pending or None
-            result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, dt_start)
+            result = book_appointment_for_datetime(
+                tenant_id,
+                raw_phone,
+                channel,
+                lang,
+                c,
+                settings,
+                service_catalog,
+                dt_start,
+            )
             db_save_conversation(tenant_id, user_key, c)
             return result
 
@@ -7893,7 +10853,9 @@ def handle_user_text(
             db_save_conversation(tenant_id, user_key, c)
             return {
                 "status": "need_more",
-                "reply_voice": t(lang, "invalid_time_choice") + " " + prompt_for_state(lang, c, pending, service_catalog),
+                "reply_voice": t(lang, "invalid_time_choice")
+                + " "
+                + prompt_for_state(lang, c, pending, service_catalog),
                 "msg_out": t(lang, "invalid_time_choice"),
                 "lang": lang,
             }
@@ -7908,14 +10870,24 @@ def handle_user_text(
 
     if not active_flow and not c.get("service") and msg:
         direct_service_key = canonical_service_key_from_text(msg, service_aliases)
-        service_item = get_service_item_by_key(service_catalog, direct_service_key) if direct_service_key else None
+        service_item = (
+            get_service_item_by_key(service_catalog, direct_service_key)
+            if direct_service_key
+            else None
+        )
         data = None
         if not service_item and (llm_hint or {}).get("service"):
-            service_item = get_service_item_by_key(service_catalog, llm_hint.get("service"))
+            service_item = get_service_item_by_key(
+                service_catalog, llm_hint.get("service")
+            )
         if not service_item:
             data = get_ai_data()
-            extracted_service_key = apply_service_aliases(data.get("service"), service_aliases) or canonical_service_key_from_text(data.get("service"), service_aliases)
-            service_item = get_service_item_by_key(service_catalog, extracted_service_key) or extract_service_from_text(data.get("service"), service_catalog, lang)
+            extracted_service_key = apply_service_aliases(
+                data.get("service"), service_aliases
+            ) or canonical_service_key_from_text(data.get("service"), service_aliases)
+            service_item = get_service_item_by_key(
+                service_catalog, extracted_service_key
+            ) or extract_service_from_text(data.get("service"), service_catalog, lang)
         name = normalize_name(data.get("name")) if data else None
         if service_item:
             c["service"] = str(service_item.get("key") or "").strip()
@@ -7934,7 +10906,9 @@ def handle_user_text(
             }
 
     if msg and conversation_state(c) == STATE_POST_BOOKING_UPSELL:
-        confirm_iso = str(pending.get("confirm_slot_iso") or c.get("datetime_iso") or "").strip()
+        confirm_iso = str(
+            pending.get("confirm_slot_iso") or c.get("datetime_iso") or ""
+        ).strip()
         dt_confirm = parse_dt_any_tz(confirm_iso)
         llm_confirmation = (llm_hint or {}).get("confirmation")
         if not dt_confirm:
@@ -7945,8 +10919,12 @@ def handle_user_text(
             db_save_conversation(tenant_id, user_key, c)
             return {
                 "status": "need_more",
-                "reply_voice": prompt_for_state(lang, c, c.get("pending") or {}, service_catalog),
-                "msg_out": prompt_for_state(lang, c, c.get("pending") or {}, service_catalog),
+                "reply_voice": prompt_for_state(
+                    lang, c, c.get("pending") or {}, service_catalog
+                ),
+                "msg_out": prompt_for_state(
+                    lang, c, c.get("pending") or {}, service_catalog
+                ),
                 "lang": lang,
             }
 
@@ -7956,9 +10934,21 @@ def handle_user_text(
             if beard_item:
                 pending["addon_service"] = str(beard_item.get("key") or "").strip()
             c["pending"] = pending
-            result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, dt_confirm, require_confirmation=False)
+            result = book_appointment_for_datetime(
+                tenant_id,
+                raw_phone,
+                channel,
+                lang,
+                c,
+                settings,
+                service_catalog,
+                dt_confirm,
+                require_confirmation=False,
+            )
             if result.get("status") == "booked":
-                result = finalize_post_confirm_upsell_response(lang, pending, service_catalog, dt_confirm, True) | {
+                result = finalize_post_confirm_upsell_response(
+                    lang, pending, service_catalog, dt_confirm, True
+                ) | {
                     "status": "booked",
                     "service": result.get("service"),
                     "when": result.get("when"),
@@ -7971,9 +10961,21 @@ def handle_user_text(
             pending.pop("upsell_offer_active", None)
             pending.pop("addon_service", None)
             c["pending"] = pending
-            result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, dt_confirm, require_confirmation=False)
+            result = book_appointment_for_datetime(
+                tenant_id,
+                raw_phone,
+                channel,
+                lang,
+                c,
+                settings,
+                service_catalog,
+                dt_confirm,
+                require_confirmation=False,
+            )
             if result.get("status") == "booked":
-                result = finalize_post_confirm_upsell_response(lang, pending, service_catalog, dt_confirm, False) | {
+                result = finalize_post_confirm_upsell_response(
+                    lang, pending, service_catalog, dt_confirm, False
+                ) | {
                     "status": "booked",
                     "service": result.get("service"),
                     "when": result.get("when"),
@@ -7997,13 +10999,31 @@ def handle_user_text(
             pending.pop("confirm_upsell_done", None)
             pending.pop("upsell_offer_active", None)
             pending.pop("addon_service", None)
-            return offer_slots_for_date(tenant_id, user_key, lang, c, pending, settings, service_catalog, date_only_dt_for_msg)
+            return offer_slots_for_date(
+                tenant_id,
+                user_key,
+                lang,
+                c,
+                pending,
+                settings,
+                service_catalog,
+                date_only_dt_for_msg,
+            )
         if explicit_time_present:
-            base_for_override = date_only_dt_for_msg or parse_dt_any_tz(str(pending.get("confirm_slot_iso") or c.get("datetime_iso") or pending.get("awaiting_time_date_iso") or "").strip())
+            base_for_override = date_only_dt_for_msg or parse_dt_any_tz(
+                str(
+                    pending.get("confirm_slot_iso")
+                    or c.get("datetime_iso")
+                    or pending.get("awaiting_time_date_iso")
+                    or ""
+                ).strip()
+            )
             if base_for_override:
                 if date_only_dt_for_msg:
                     base_for_override = date_only_dt_for_msg
-                override_dt = combine_date_with_explicit_time(base_for_override.isoformat(), msg)
+                override_dt = combine_date_with_explicit_time(
+                    base_for_override.isoformat(), msg
+                )
         if override_dt:
             pending.pop("confirm_slot_iso", None)
             pending.pop("pending_confirm_upsell", None)
@@ -8014,38 +11034,63 @@ def handle_user_text(
             c["pending"] = pending or {"booking_intent": True}
             c["datetime_iso"] = None
             c["state"] = STATE_AWAITING_TIME
-            result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, override_dt)
+            result = book_appointment_for_datetime(
+                tenant_id,
+                raw_phone,
+                channel,
+                lang,
+                c,
+                settings,
+                service_catalog,
+                override_dt,
+            )
             db_save_conversation(tenant_id, user_key, c)
             return result
         shift_direction = detect_time_shift_direction(msg, lang)
         if shift_direction:
-            confirm_anchor = parse_dt_any_tz(str(pending.get("confirm_slot_iso") or c.get("datetime_iso") or "").strip())
-            base_day = confirm_anchor or parse_dt_any_tz(str(pending.get("awaiting_time_date_iso") or "").strip())
-            service_item_confirm = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
+            confirm_anchor = parse_dt_any_tz(
+                str(
+                    pending.get("confirm_slot_iso") or c.get("datetime_iso") or ""
+                ).strip()
+            )
+            base_day = confirm_anchor or parse_dt_any_tz(
+                str(pending.get("awaiting_time_date_iso") or "").strip()
+            )
+            service_item_confirm = get_service_item_by_key(
+                service_catalog, c.get("service") or pending.get("service")
+            )
             if confirm_anchor and base_day and service_item_confirm:
-                slots = find_negotiation_slots_for_direction(
-                    calendar_id=settings["calendar_id"],
-                    base_day=base_day,
-                    anchor_dt=confirm_anchor,
-                    direction=shift_direction,
-                    duration_min=service_duration_min(service_item_confirm),
-                    work_start=settings["work_start"],
-                    work_end=settings["work_end"],
-                    limit=3,
-                    business_rules=settings.get("business_rules"),
-                    service_account_json=settings.get("service_account_json"),
-                ) if calendar_ready else []
+                slots = (
+                    find_negotiation_slots_for_direction(
+                        calendar_id=settings["calendar_id"],
+                        base_day=base_day,
+                        anchor_dt=confirm_anchor,
+                        direction=shift_direction,
+                        duration_min=service_duration_min(service_item_confirm),
+                        work_start=settings["work_start"],
+                        work_end=settings["work_end"],
+                        limit=3,
+                        business_rules=settings.get("business_rules"),
+                        service_account_json=settings.get("service_account_json"),
+                    )
+                    if calendar_ready
+                    else []
+                )
                 pending.pop("confirm_slot_iso", None)
                 pending.pop("pending_confirm_upsell", None)
                 pending.pop("confirm_upsell_done", None)
                 pending.pop("upsell_offer_active", None)
                 pending.pop("addon_service", None)
                 pending["booking_intent"] = True
-                pending["awaiting_time_date_iso"] = base_day.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+                pending["awaiting_time_date_iso"] = base_day.replace(
+                    hour=9, minute=0, second=0, microsecond=0
+                ).isoformat()
                 c["pending"] = pending or {"booking_intent": True}
                 c["datetime_iso"] = None
                 c["state"] = STATE_AWAITING_TIME
-                return negotiation_slots_response(tenant_id, user_key, lang, c, pending, slots)
+                return negotiation_slots_response(
+                    tenant_id, user_key, lang, c, pending, slots
+                )
         if is_other_day_text(msg, lang):
             pending.pop("confirm_slot_iso", None)
             pending.pop("pending_confirm_upsell", None)
@@ -8090,7 +11135,9 @@ def handle_user_text(
                 "msg_out": reply_text,
                 "lang": lang,
             }
-        confirm_iso = str(pending.get("confirm_slot_iso") or c.get("datetime_iso") or "").strip()
+        confirm_iso = str(
+            pending.get("confirm_slot_iso") or c.get("datetime_iso") or ""
+        ).strip()
         dt_confirm = parse_dt_any_tz(confirm_iso)
         if is_short_ack_text(msg, lang) and not is_yes_text(msg, lang):
             db_save_conversation(tenant_id, user_key, c)
@@ -8111,12 +11158,28 @@ def handle_user_text(
                     "msg_out": prompt_for_state(lang, c, pending, service_catalog),
                     "lang": lang,
                 }
-            primary_service_item = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
-            if should_offer_post_confirm_upsell(service_catalog, primary_service_item, pending):
-                result = move_to_post_confirm_upsell(lang, c, pending, service_catalog, dt_confirm)
+            primary_service_item = get_service_item_by_key(
+                service_catalog, c.get("service") or pending.get("service")
+            )
+            if should_offer_post_confirm_upsell(
+                service_catalog, primary_service_item, pending
+            ):
+                result = move_to_post_confirm_upsell(
+                    lang, c, pending, service_catalog, dt_confirm
+                )
                 db_save_conversation(tenant_id, user_key, c)
                 return result
-            result = book_appointment_for_datetime(tenant_id, raw_phone, channel, lang, c, settings, service_catalog, dt_confirm, require_confirmation=False)
+            result = book_appointment_for_datetime(
+                tenant_id,
+                raw_phone,
+                channel,
+                lang,
+                c,
+                settings,
+                service_catalog,
+                dt_confirm,
+                require_confirmation=False,
+            )
             db_save_conversation(tenant_id, user_key, c)
             return result
         if is_no_text(msg, lang) or llm_confirmation == "no":
@@ -8130,8 +11193,12 @@ def handle_user_text(
             db_save_conversation(tenant_id, user_key, c)
             return {
                 "status": "need_more",
-                "reply_voice": prompt_for_state(lang, c, c.get("pending") or {}, service_catalog),
-                "msg_out": prompt_for_state(lang, c, c.get("pending") or {}, service_catalog),
+                "reply_voice": prompt_for_state(
+                    lang, c, c.get("pending") or {}, service_catalog
+                ),
+                "msg_out": prompt_for_state(
+                    lang, c, c.get("pending") or {}, service_catalog
+                ),
                 "lang": lang,
             }
         db_save_conversation(tenant_id, user_key, c)
@@ -8145,9 +11212,24 @@ def handle_user_text(
     c = normalize_booking_state(c)
     db_save_conversation(tenant_id, user_key, c)
     fallback_status = "need_more" if is_active_booking_flow(c) else "info"
-    fallback_reply = soft_clarify_for_state(lang, c, c.get("pending") or {}) if is_active_booking_flow(c) else t(lang, "unclear_reply")
-    if not is_active_booking_flow(c) and llm_intent == "info" and llm_conf >= LLM_INTENT_MIN_CONFIDENCE and is_hours_question(msg):
-        fallback_reply = t(lang, "hours_info", biz=settings["biz_name"], start=settings["work_start"], end=settings["work_end"])
+    fallback_reply = (
+        soft_clarify_for_state(lang, c, c.get("pending") or {})
+        if is_active_booking_flow(c)
+        else t(lang, "unclear_reply")
+    )
+    if (
+        not is_active_booking_flow(c)
+        and llm_intent == "info"
+        and llm_conf >= LLM_INTENT_MIN_CONFIDENCE
+        and is_hours_question(msg)
+    ):
+        fallback_reply = t(
+            lang,
+            "hours_info",
+            biz=settings["biz_name"],
+            start=settings["work_start"],
+            end=settings["work_end"],
+        )
     return {
         "status": fallback_status,
         "reply_voice": fallback_reply,
@@ -8247,7 +11329,13 @@ async def voice_intent(request: Request):
 
     vr = VoiceResponse()
     say_or_play(vr, result["reply_voice"], result["lang"])
-    if result["status"] in ("need_more", "reschedule_wait", "greeting", "identity", "info"):
+    if result["status"] in (
+        "need_more",
+        "reschedule_wait",
+        "greeting",
+        "identity",
+        "info",
+    ):
         g = Gather(
             input="speech",
             action="/voice/intent",
@@ -8262,7 +11350,11 @@ async def voice_intent(request: Request):
     else:
         vr.hangup()
 
-    if result["status"] in ("booked", "busy", "cancelled") and caller != "unknown" and channel_supports_messaging("voice", caller):
+    if (
+        result["status"] in ("booked", "busy", "cancelled")
+        and caller != "unknown"
+        and channel_supports_messaging("voice", caller)
+    ):
         biz_name = tenant_settings(tenant, result["lang"])["biz_name"]
         send_message(caller, f"{biz_name}: {result['msg_out']}")
 
@@ -8309,7 +11401,6 @@ async def whatsapp_incoming(request: Request):
     return Response(status_code=204)
 
 
-
 # -------------------------
 # GOOGLE OAUTH ENDPOINTS (Phase 3 Foundation)
 # -------------------------
@@ -8328,6 +11419,7 @@ def google_connect(tenant_id: str):
     auth_url = build_google_oauth_url(tenant["_id"])
     return RedirectResponse(url=auth_url)
 
+
 @app.get("/google/callback")
 def google_callback(code: str = "", state: str = "", error: str = ""):
     if not oauth_ready():
@@ -8339,15 +11431,21 @@ def google_callback(code: str = "", state: str = "", error: str = ""):
     get_tenant_or_404(tenant_id)
 
     if error:
-        return RedirectResponse(url=f"/google/calendars/ui?tenant_id={tenant_id}&oauth_error={requests.utils.quote(error)}")
+        return RedirectResponse(
+            url=f"/google/calendars/ui?tenant_id={tenant_id}&oauth_error={requests.utils.quote(error)}"
+        )
     if not code:
-        return RedirectResponse(url=f"/google/calendars/ui?tenant_id={tenant_id}&oauth_error=missing_code")
+        return RedirectResponse(
+            url=f"/google/calendars/ui?tenant_id={tenant_id}&oauth_error=missing_code"
+        )
 
     token_data = exchange_google_code_for_tokens(code)
     access_token = str(token_data.get("access_token") or "").strip()
     refresh_token = str(token_data.get("refresh_token") or "").strip() or None
     if not access_token:
-        return RedirectResponse(url=f"/google/calendars/ui?tenant_id={tenant_id}&oauth_error=token_exchange_failed")
+        return RedirectResponse(
+            url=f"/google/calendars/ui?tenant_id={tenant_id}&oauth_error=token_exchange_failed"
+        )
 
     userinfo = fetch_google_userinfo(access_token)
     google_email = str(userinfo.get("email") or "").strip() or None
@@ -8358,7 +11456,8 @@ def google_callback(code: str = "", state: str = "", error: str = ""):
         access_token=access_token,
         refresh_token=refresh_token,
         token_expiry=token_expiry_from_google(token_data.get("expires_in")),
-        scope=str(token_data.get("scope") or GOOGLE_OAUTH_SCOPE).strip() or GOOGLE_OAUTH_SCOPE,
+        scope=str(token_data.get("scope") or GOOGLE_OAUTH_SCOPE).strip()
+        or GOOGLE_OAUTH_SCOPE,
     )
 
     mark_tenant_google_connected(tenant_id, True, owner_email=google_email)
@@ -8369,10 +11468,15 @@ def google_callback(code: str = "", state: str = "", error: str = ""):
         select_tenant_calendar_id(tenant_id, chosen_calendar_id)
         tenant = sync_tenant_onboarding_state(tenant_id)
         if bool(tenant.get("onboarding_completed")):
-            return RedirectResponse(url=f"/dashboard?tenant_id={tenant_id}&google=connected&calendar=selected")
+            return RedirectResponse(
+                url=f"/dashboard?tenant_id={tenant_id}&google=connected&calendar=selected"
+            )
 
     sync_tenant_onboarding_state(tenant_id)
-    return RedirectResponse(url=f"/google/calendars/ui?tenant_id={tenant_id}&google=connected")
+    return RedirectResponse(
+        url=f"/google/calendars/ui?tenant_id={tenant_id}&google=connected"
+    )
+
 
 @app.get("/google/calendars")
 def google_calendars(tenant_id: str):
@@ -8393,7 +11497,12 @@ def google_calendars(tenant_id: str):
         if str(c.get("id") or "").strip()
     ]
     tenant = sync_tenant_onboarding_state(tenant["_id"])
-    return {"tenant_id": tenant["_id"], "items": simplified, "onboarding": onboarding_status_payload(tenant)}
+    return {
+        "tenant_id": tenant["_id"],
+        "items": simplified,
+        "onboarding": onboarding_status_payload(tenant),
+    }
+
 
 @app.get("/google/calendars/ui", response_class=HTMLResponse)
 def google_calendars_ui(tenant_id: str, google: str = "", oauth_error: str = ""):
@@ -8495,13 +11604,16 @@ loadCalendars();
     """
     return HTMLResponse(content=html)
 
+
 @app.post("/google/select_calendar")
 async def google_select_calendar(request: Request):
     data = await request.json()
     tenant_id = str(data.get("tenant_id") or "").strip()
     calendar_id = str(data.get("calendar_id") or "").strip()
     if not tenant_id or not calendar_id:
-        raise HTTPException(status_code=400, detail="tenant_id and calendar_id are required")
+        raise HTTPException(
+            status_code=400, detail="tenant_id and calendar_id are required"
+        )
     get_tenant_or_404(tenant_id)
     select_tenant_calendar_id(tenant_id, calendar_id)
     tenant = sync_tenant_onboarding_state(tenant_id)
@@ -8518,7 +11630,7 @@ async def google_select_calendar(request: Request):
 # BROWSER SDK TOKEN
 # -------------------------
 @app.get("/voice/token")
-def get_voice_token(client_id: str = "default", tenant_id: str = ""):
+def get_voice_token(client_id: str = "clinic_demo", tenant_id: str = ""):
     if not (
         TWILIO_ACCOUNT_SID
         and TWILIO_API_KEY_SID
@@ -8527,9 +11639,16 @@ def get_voice_token(client_id: str = "default", tenant_id: str = ""):
     ):
         raise HTTPException(status_code=500, detail="Twilio Voice SDK config missing")
 
-    clean_client_id = re.sub(r"[^a-zA-Z0-9_\-]", "_", (client_id or "default")).strip("_") or "default"
+    clean_client_id = (
+        re.sub(r"[^a-zA-Z0-9_\-]", "_", (client_id or "default")).strip("_")
+        or "default"
+    )
     clean_tenant_id = re.sub(r"[^a-zA-Z0-9_\-]", "_", (tenant_id or "")).strip("_")
-    identity = f"tenant__{clean_tenant_id}__{clean_client_id}" if clean_tenant_id else clean_client_id
+    identity = (
+        f"tenant__{clean_tenant_id}__{clean_client_id}"
+        if clean_tenant_id
+        else clean_client_id
+    )
 
     token = AccessToken(
         TWILIO_ACCOUNT_SID,
@@ -8541,7 +11660,11 @@ def get_voice_token(client_id: str = "default", tenant_id: str = ""):
         outgoing_application_sid=TWILIO_TWIML_APP_SID, incoming_allow=True
     )
     token.add_grant(grant)
-    return {"token": token.to_jwt(), "identity": identity, "tenant_id": clean_tenant_id or None}
+    return {
+        "token": token.to_jwt(),
+        "identity": identity,
+        "tenant_id": clean_tenant_id or None,
+    }
 
 
 @app.on_event("startup")
@@ -8570,19 +11693,31 @@ def health():
 @app.get("/telegram/status")
 def telegram_status():
     return telegram_config_status(
-        default_tenant_id=os.getenv("TELEGRAM_DEFAULT_TENANT_ID", "").strip() or TENANT_ID_DEFAULT,
+        default_tenant_id=os.getenv("TELEGRAM_DEFAULT_TENANT_ID", "").strip()
+        or TENANT_ID_DEFAULT,
         server_base_url=SERVER_BASE_URL,
     )
 
 
 @app.post("/telegram/set-webhook")
 def telegram_set_webhook(url: str = "", tenant_id: str = ""):
-    default_tenant_id = (tenant_id or os.getenv("TELEGRAM_DEFAULT_TENANT_ID", "").strip() or TENANT_ID_DEFAULT).strip()
+    default_tenant_id = (
+        tenant_id
+        or os.getenv("TELEGRAM_DEFAULT_TENANT_ID", "").strip()
+        or TENANT_ID_DEFAULT
+    ).strip()
     webhook_url = (url or "").strip()
     if not webhook_url:
         if not SERVER_BASE_URL:
-            raise HTTPException(status_code=500, detail="SERVER_BASE_URL is required when url is not provided")
-        webhook_url = SERVER_BASE_URL.rstrip("/") + "/telegram/webhook?tenant_id=" + default_tenant_id
+            raise HTTPException(
+                status_code=500,
+                detail="SERVER_BASE_URL is required when url is not provided",
+            )
+        webhook_url = (
+            SERVER_BASE_URL.rstrip("/")
+            + "/telegram/webhook?tenant_id="
+            + default_tenant_id
+        )
     result = telegram_set_webhook_request(webhook_url)
     if not result.get("ok"):
         raise HTTPException(status_code=500, detail=result)
@@ -8591,7 +11726,11 @@ def telegram_set_webhook(url: str = "", tenant_id: str = ""):
 
 @app.post("/telegram/webhook")
 async def telegram_webhook(request: Request, tenant_id: str = ""):
-    default_tenant_id = (tenant_id or os.getenv("TELEGRAM_DEFAULT_TENANT_ID", "").strip() or TENANT_ID_DEFAULT).strip()
+    default_tenant_id = (
+        tenant_id
+        or os.getenv("TELEGRAM_DEFAULT_TENANT_ID", "").strip()
+        or TENANT_ID_DEFAULT
+    ).strip()
     return await handle_telegram_incoming(
         request=request,
         default_tenant_id=default_tenant_id,
@@ -8604,17 +11743,11 @@ async def telegram_webhook(request: Request, tenant_id: str = ""):
     )
 
 
-
 # =========================
 # Tenant Configuration Hardening (Phase 2.7)
 # =========================
 
-REQUIRED_TENANT_FIELDS = [
-    "calendar_id",
-    "timezone",
-    "work_start",
-    "work_end"
-]
+REQUIRED_TENANT_FIELDS = ["calendar_id", "timezone", "work_start", "work_end"]
 
 
 # =========================
@@ -8626,7 +11759,7 @@ SAAS_TENANT_FIELDS = {
     "google_connected": False,
     "subscription_status": "trial",
     "plan": "starter",
-    "owner_email": ""
+    "owner_email": "",
 }
 
 LIFECYCLE_STATUS_ALIASES = {
@@ -8644,12 +11777,14 @@ LIFECYCLE_STATUS_ALIASES = {
 
 ALLOWED_SUBSCRIPTION_STATUSES = {"trial", "active", "past_due", "inactive", "expired"}
 
+
 def normalize_subscription_status(value: Any) -> str:
     raw = str(value or "").strip().lower()
     raw = LIFECYCLE_STATUS_ALIASES.get(raw, raw)
     if raw in ALLOWED_SUBSCRIPTION_STATUSES:
         return raw
     return "trial"
+
 
 def normalize_tenant_saas_fields(tenant: Dict[str, Any]) -> Dict[str, Any]:
     """Ensure SaaS lifecycle fields exist so older tenants don't break."""
@@ -8658,9 +11793,14 @@ def normalize_tenant_saas_fields(tenant: Dict[str, Any]) -> Dict[str, Any]:
     for k, v in SAAS_TENANT_FIELDS.items():
         if k not in tenant or tenant.get(k) is None:
             tenant[k] = v
-    tenant["subscription_status"] = normalize_subscription_status(tenant.get("subscription_status"))
-    tenant["plan"] = normalized_plan_name(tenant.get("plan")) if "plan" in tenant else "starter"
+    tenant["subscription_status"] = normalize_subscription_status(
+        tenant.get("subscription_status")
+    )
+    tenant["plan"] = (
+        normalized_plan_name(tenant.get("plan")) if "plan" in tenant else "starter"
+    )
     return tenant
+
 
 def effective_subscription_status(tenant: Dict[str, Any]) -> str:
     tenant = normalize_tenant_saas_fields(tenant or {})
@@ -8671,10 +11811,13 @@ def effective_subscription_status(tenant: Dict[str, Any]) -> str:
             return "expired"
     return status
 
+
 def tenant_lifecycle_payload(tenant: Dict[str, Any]) -> Dict[str, Any]:
     tenant = normalize_tenant_saas_fields(tenant or {})
     trial_end = tenant_trial_end_value(tenant)
-    subscription_status = normalize_subscription_status(tenant.get("subscription_status"))
+    subscription_status = normalize_subscription_status(
+        tenant.get("subscription_status")
+    )
     effective_status = effective_subscription_status(tenant)
     blocked = effective_status in {"inactive", "expired"}
     if effective_status == "past_due":
@@ -8684,7 +11827,11 @@ def tenant_lifecycle_payload(tenant: Dict[str, Any]) -> Dict[str, Any]:
         "effective_status": effective_status,
         "trial_end": trial_end.isoformat() if hasattr(trial_end, "isoformat") else None,
         "blocked": blocked,
-        "block_reason": "trial_expired" if effective_status == "expired" and subscription_status == "trial" else effective_status if blocked else None,
+        "block_reason": (
+            "trial_expired"
+            if effective_status == "expired" and subscription_status == "trial"
+            else effective_status if blocked else None
+        ),
     }
 
 
@@ -8746,7 +11893,9 @@ def validate_tenant_config(tenant: dict):
             missing.append(f)
 
     if missing:
-        log.error(f"tenant_config_invalid tenant_id={tenant.get('id') or tenant.get('_id')} missing={missing}")
+        log.error(
+            f"tenant_config_invalid tenant_id={tenant.get('id') or tenant.get('_id')} missing={missing}"
+        )
         raise Exception(f"Tenant configuration invalid: missing {missing}")
 
     return True
@@ -8764,7 +11913,6 @@ def safe_calendar_check(tenant: dict):
         raise
 
 
-
 # =========================
 # SAAS ONBOARDING (Phase 3 Step 1)
 # =========================
@@ -8772,7 +11920,9 @@ def safe_calendar_check(tenant: dict):
 from fastapi import Body
 
 
-def default_onboarding_services(language_value: str, business_type: str = "barbershop") -> Dict[str, str]:
+def default_onboarding_services(
+    language_value: str, business_type: str = "barbershop"
+) -> Dict[str, str]:
     business_type = (business_type or "barbershop").strip().lower()
     if business_type == "clinic":
         return {
@@ -8793,19 +11943,23 @@ def default_onboarding_services(language_value: str, business_type: str = "barbe
     }
 
 
-def default_onboarding_service_catalog(business_type: str = "barbershop") -> List[Dict[str, Any]]:
+def default_onboarding_service_catalog(
+    business_type: str = "barbershop",
+) -> List[Dict[str, Any]]:
     business_type = (business_type or "barbershop").strip().lower()
     if business_type == "clinic":
-        return [{
-            "key": "consultation",
-            "name_lv": "konsultācija",
-            "name_ru": "консультация",
-            "name_en": "consultation",
-            "duration_min": 30,
-            "aliases_lv": ["konsultācija"],
-            "aliases_ru": ["консультация"],
-            "aliases_en": ["consultation"],
-        }]
+        return [
+            {
+                "key": "consultation",
+                "name_lv": "konsultācija",
+                "name_ru": "консультация",
+                "name_en": "consultation",
+                "duration_min": 30,
+                "aliases_lv": ["konsultācija"],
+                "aliases_ru": ["консультация"],
+                "aliases_en": ["consultation"],
+            }
+        ]
     return [
         {
             "key": "mens_haircut",
@@ -8850,7 +12004,9 @@ def onboarding_status_payload(tenant: Dict[str, Any]) -> Dict[str, Any]:
     google_connected = tenant_google_connected_effective(tenant)
     calendar_selected = bool(calendar_id)
     persisted_onboarding_completed = bool(tenant.get("onboarding_completed"))
-    onboarding_completed = bool(persisted_onboarding_completed or (google_connected and calendar_selected))
+    onboarding_completed = bool(
+        persisted_onboarding_completed or (google_connected and calendar_selected)
+    )
     phone_number = normalize_incoming_to_number(tenant.get("phone_number") or "")
 
     next_step = "create_tenant"
@@ -8892,7 +12048,11 @@ PLAN_CATALOG = {
         "llm_mode": "off",
         "includes_advanced_ai": False,
         "monthly_price": 0,
-        "features": ["Basic booking flow", "Calendar integration", "SMS / WhatsApp support"],
+        "features": [
+            "Basic booking flow",
+            "Calendar integration",
+            "SMS / WhatsApp support",
+        ],
     },
     "pro": {
         "display_name": "Pro",
@@ -8910,7 +12070,11 @@ PLAN_CATALOG = {
         "llm_mode": "full",
         "includes_advanced_ai": True,
         "monthly_price": 0,
-        "features": ["Advanced LLM flows", "Higher monthly capacity", "Deeper AI coverage"],
+        "features": [
+            "Advanced LLM flows",
+            "Higher monthly capacity",
+            "Deeper AI coverage",
+        ],
     },
     "business": {
         "display_name": "Business",
@@ -8919,7 +12083,11 @@ PLAN_CATALOG = {
         "llm_mode": "full",
         "includes_advanced_ai": True,
         "monthly_price": 0,
-        "features": ["High volume usage", "Multi-channel scale", "Business-grade limits"],
+        "features": [
+            "High volume usage",
+            "Multi-channel scale",
+            "Business-grade limits",
+        ],
     },
 }
 
@@ -8948,7 +12116,9 @@ def tenant_plan_defaults(tenant: Dict[str, Any]) -> Dict[str, Any]:
     return defaults
 
 
-def tenant_effective_dialog_limit(tenant: Dict[str, Any], defaults: Optional[Dict[str, Any]] = None) -> Tuple[int, bool]:
+def tenant_effective_dialog_limit(
+    tenant: Dict[str, Any], defaults: Optional[Dict[str, Any]] = None
+) -> Tuple[int, bool]:
     defaults = dict(defaults or tenant_plan_defaults(tenant))
     raw_dialog_limit = (tenant or {}).get("dialogs_per_month")
     try:
@@ -8966,11 +12136,15 @@ def tenant_plan_meta(tenant: Dict[str, Any]) -> Dict[str, Any]:
     dialog_limit, has_override = tenant_effective_dialog_limit(tenant, defaults)
     defaults["dialogs_per_month"] = dialog_limit
     tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip()
-    current_month_usage = tenant_dialog_usage_current_month(tenant_id) if tenant_id else 0
+    current_month_usage = (
+        tenant_dialog_usage_current_month(tenant_id) if tenant_id else 0
+    )
     return {
         "plan": plan,
         "display_name": defaults.get("display_name") or plan.title(),
-        "subscription_status": normalize_subscription_status(tenant.get("subscription_status")),
+        "subscription_status": normalize_subscription_status(
+            tenant.get("subscription_status")
+        ),
         "effective_status": effective_subscription_status(tenant),
         "status": tenant_status_value(tenant),
         "monthly_price": defaults.get("monthly_price", 0),
@@ -8981,7 +12155,9 @@ def tenant_plan_meta(tenant: Dict[str, Any]) -> Dict[str, Any]:
         "usage": {
             "dialogs_current_month": current_month_usage,
             "dialogs_per_month": dialog_limit,
-            "dialogs_remaining": max(0, dialog_limit - current_month_usage) if dialog_limit > 0 else 0,
+            "dialogs_remaining": (
+                max(0, dialog_limit - current_month_usage) if dialog_limit > 0 else 0
+            ),
         },
     }
 
@@ -9102,6 +12278,7 @@ def tenant_overview(tenant_id: str = TENANT_ID_DEFAULT):
     tenant = get_tenant_or_404((tenant_id or "").strip() or TENANT_ID_DEFAULT)
     tenant = sync_tenant_onboarding_state(tenant["_id"])
     return tenant_overview_payload(tenant)
+
 
 @app.get("/onboarding/ui", response_class=HTMLResponse)
 def onboarding_ui(tenant_id: str = ""):
@@ -9333,18 +12510,35 @@ def onboarding_create_tenant(payload: dict = Body(...)):
         "services_lv": str(payload.get("services_lv") or services_defaults["lv"]),
         "services_ru": str(payload.get("services_ru") or services_defaults["ru"]),
         "services_en": str(payload.get("services_en") or services_defaults["en"]),
-        "weekly_hours_json": json.dumps(payload.get("weekly_hours_json") or weekly_hours, ensure_ascii=False),
+        "weekly_hours_json": json.dumps(
+            payload.get("weekly_hours_json") or weekly_hours, ensure_ascii=False
+        ),
         "breaks_json": json.dumps(payload.get("breaks_json") or {}, ensure_ascii=False),
-        "days_off_json": json.dumps(payload.get("days_off_json") or [], ensure_ascii=False),
-        "holidays_json": json.dumps(payload.get("holidays_json") or [], ensure_ascii=False),
+        "days_off_json": json.dumps(
+            payload.get("days_off_json") or [], ensure_ascii=False
+        ),
+        "holidays_json": json.dumps(
+            payload.get("holidays_json") or [], ensure_ascii=False
+        ),
         "min_notice_minutes": min_notice_minutes,
         "buffer_minutes": buffer_minutes,
-        "service_catalog_json": json.dumps(payload.get("service_catalog_json") or service_catalog, ensure_ascii=False),
-        "service_catalog": json.dumps(payload.get("service_catalog_json") or service_catalog, ensure_ascii=False),
-        "service_account_json": str(payload.get("service_account_json") or "").strip() or None,
-        "business_memory_lv": str(payload.get("business_memory_lv") or business_memory_defaults["lv"]),
-        "business_memory_ru": str(payload.get("business_memory_ru") or business_memory_defaults["ru"]),
-        "business_memory_en": str(payload.get("business_memory_en") or business_memory_defaults["en"]),
+        "service_catalog_json": json.dumps(
+            payload.get("service_catalog_json") or service_catalog, ensure_ascii=False
+        ),
+        "service_catalog": json.dumps(
+            payload.get("service_catalog_json") or service_catalog, ensure_ascii=False
+        ),
+        "service_account_json": str(payload.get("service_account_json") or "").strip()
+        or None,
+        "business_memory_lv": str(
+            payload.get("business_memory_lv") or business_memory_defaults["lv"]
+        ),
+        "business_memory_ru": str(
+            payload.get("business_memory_ru") or business_memory_defaults["ru"]
+        ),
+        "business_memory_en": str(
+            payload.get("business_memory_en") or business_memory_defaults["en"]
+        ),
     }
 
     insert_cols = []
@@ -9361,7 +12555,9 @@ def onboarding_create_tenant(payload: dict = Body(...)):
     sql_params = ", ".join([f":{c}" for c in insert_cols])
 
     with engine.begin() as conn:
-        conn.execute(text(f"INSERT INTO tenants ({sql_cols}) VALUES ({sql_params})"), insert_vals)
+        conn.execute(
+            text(f"INSERT INTO tenants ({sql_cols}) VALUES ({sql_params})"), insert_vals
+        )
 
     if phone_number:
         upsert_phone_route(phone_number, tenant_id)
@@ -9388,8 +12584,7 @@ def dashboard_recent_bookings(tenant_id: str, limit: int = 50) -> List[Dict[str,
     limit = max(1, min(int(limit or 50), 200))
     with engine.connect() as conn:
         rows = conn.execute(
-            text(
-                """
+            text("""
                 WITH ranked AS (
                     SELECT
                         user_id,
@@ -9410,59 +12605,73 @@ def dashboard_recent_bookings(tenant_id: str, limit: int = 50) -> List[Dict[str,
                 WHERE rn=1
                 ORDER BY created_at DESC
                 LIMIT :limit
-                """
-            ),
+                """),
             {"tenant_id": tenant_id, "limit": limit},
         ).fetchall()
     items = []
     for r in rows:
         user_id, service, datetime_iso, status, raw_text, ai_reply, created_at = r
         name = None
-        text_in = str(raw_text or '').strip()
-        m = re.search(r"(?:my name is|i am|меня зовут|я\s+)([A-Za-zĀ-žА-Яа-яЁё\-]{2,40})", text_in, flags=re.IGNORECASE)
+        text_in = str(raw_text or "").strip()
+        m = re.search(
+            r"(?:my name is|i am|меня зовут|я\s+)([A-Za-zĀ-žА-Яа-яЁё\-]{2,40})",
+            text_in,
+            flags=re.IGNORECASE,
+        )
         if m:
             name = m.group(1).strip()
-        items.append({
-            "user_id": user_id,
-            "client_name": name,
-            "service": service,
-            "datetime_iso": datetime_iso,
-            "status": status,
-            "last_user_message": raw_text,
-            "last_ai_reply": ai_reply,
-            "created_at": created_at.isoformat() if hasattr(created_at, 'isoformat') else str(created_at),
-        })
+        items.append(
+            {
+                "user_id": user_id,
+                "client_name": name,
+                "service": service,
+                "datetime_iso": datetime_iso,
+                "status": status,
+                "last_user_message": raw_text,
+                "last_ai_reply": ai_reply,
+                "created_at": (
+                    created_at.isoformat()
+                    if hasattr(created_at, "isoformat")
+                    else str(created_at)
+                ),
+            }
+        )
     return items
 
-def dashboard_recent_conversations(tenant_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+
+def dashboard_recent_conversations(
+    tenant_id: str, limit: int = 100
+) -> List[Dict[str, Any]]:
     limit = max(1, min(int(limit or 100), 300))
     with engine.connect() as conn:
         rows = conn.execute(
-            text(
-                """
+            text("""
                 SELECT id, user_id, channel, intent, service, datetime_iso, status, raw_text, ai_reply, created_at
                 FROM call_logs
                 WHERE tenant_id=:tenant_id
                 ORDER BY created_at DESC
                 LIMIT :limit
-                """
-            ),
+                """),
             {"tenant_id": tenant_id, "limit": limit},
         ).fetchall()
     items = []
     for r in rows:
-        items.append({
-            "id": r[0],
-            "user_id": r[1],
-            "channel": r[2],
-            "intent": r[3],
-            "service": r[4],
-            "datetime_iso": r[5],
-            "status": r[6],
-            "user_message": r[7],
-            "ai_reply": r[8],
-            "created_at": r[9].isoformat() if hasattr(r[9], 'isoformat') else str(r[9]),
-        })
+        items.append(
+            {
+                "id": r[0],
+                "user_id": r[1],
+                "channel": r[2],
+                "intent": r[3],
+                "service": r[4],
+                "datetime_iso": r[5],
+                "status": r[6],
+                "user_message": r[7],
+                "ai_reply": r[8],
+                "created_at": (
+                    r[9].isoformat() if hasattr(r[9], "isoformat") else str(r[9])
+                ),
+            }
+        )
     return items
 
 
@@ -9471,29 +12680,28 @@ def dashboard_channel_breakdown(tenant_id: str, days: int = 14) -> List[Dict[str
     since_ts = now_ts() - timedelta(days=days)
     with engine.connect() as conn:
         rows = conn.execute(
-            text(
-                """
+            text("""
                 SELECT COALESCE(channel, 'unknown') AS channel, COUNT(*) AS total
                 FROM call_logs
                 WHERE tenant_id=:tenant_id
                   AND created_at >= :since_ts
                 GROUP BY COALESCE(channel, 'unknown')
                 ORDER BY total DESC, channel ASC
-                """
-            ),
+                """),
             {"tenant_id": tenant_id, "since_ts": since_ts},
         ).fetchall()
-    return [{"channel": str(r[0] or 'unknown'), "count": int(r[1] or 0)} for r in rows]
+    return [{"channel": str(r[0] or "unknown"), "count": int(r[1] or 0)} for r in rows]
 
 
-def dashboard_top_services(tenant_id: str, limit: int = 5, days: int = 14) -> List[Dict[str, Any]]:
+def dashboard_top_services(
+    tenant_id: str, limit: int = 5, days: int = 14
+) -> List[Dict[str, Any]]:
     limit = max(1, min(int(limit or 5), 20))
     days = max(1, min(int(days or 14), 60))
     since_ts = now_ts() - timedelta(days=days)
     with engine.connect() as conn:
         rows = conn.execute(
-            text(
-                """
+            text("""
                 SELECT COALESCE(NULLIF(TRIM(service), ''), 'unknown') AS service, COUNT(*) AS total
                 FROM call_logs
                 WHERE tenant_id=:tenant_id
@@ -9502,11 +12710,10 @@ def dashboard_top_services(tenant_id: str, limit: int = 5, days: int = 14) -> Li
                 GROUP BY COALESCE(NULLIF(TRIM(service), ''), 'unknown')
                 ORDER BY total DESC, service ASC
                 LIMIT :limit
-                """
-            ),
+                """),
             {"tenant_id": tenant_id, "limit": limit, "since_ts": since_ts},
         ).fetchall()
-    return [{"service": str(r[0] or 'unknown'), "count": int(r[1] or 0)} for r in rows]
+    return [{"service": str(r[0] or "unknown"), "count": int(r[1] or 0)} for r in rows]
 
 
 def dashboard_daily_usage(tenant_id: str, days: int = 14) -> List[Dict[str, Any]]:
@@ -9514,8 +12721,7 @@ def dashboard_daily_usage(tenant_id: str, days: int = 14) -> List[Dict[str, Any]
     start_date = today_local() - timedelta(days=days - 1)
     with engine.connect() as conn:
         rows = conn.execute(
-            text(
-                """
+            text("""
                 SELECT DATE(created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Riga') AS d,
                        COUNT(*) AS total_requests,
                        COUNT(*) FILTER (WHERE status='booked') AS total_bookings,
@@ -9525,13 +12731,17 @@ def dashboard_daily_usage(tenant_id: str, days: int = 14) -> List[Dict[str, Any]
                   AND created_at >= :start_ts
                 GROUP BY DATE(created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Riga')
                 ORDER BY d ASC
-                """
-            ),
-            {"tenant_id": tenant_id, "start_ts": datetime.combine(start_date, datetime.min.time(), tzinfo=TZ)},
+                """),
+            {
+                "tenant_id": tenant_id,
+                "start_ts": datetime.combine(
+                    start_date, datetime.min.time(), tzinfo=TZ
+                ),
+            },
         ).fetchall()
     by_day = {}
     for r in rows:
-        key = r[0].isoformat() if hasattr(r[0], 'isoformat') else str(r[0])
+        key = r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0])
         by_day[key] = {
             "date": key,
             "requests": int(r[1] or 0),
@@ -9542,7 +12752,9 @@ def dashboard_daily_usage(tenant_id: str, days: int = 14) -> List[Dict[str, Any]
     for i in range(days):
         d = start_date + timedelta(days=i)
         key = d.isoformat()
-        out.append(by_day.get(key, {"date": key, "requests": 0, "bookings": 0, "cancelled": 0}))
+        out.append(
+            by_day.get(key, {"date": key, "requests": 0, "bookings": 0, "cancelled": 0})
+        )
     return out
 
 
@@ -9551,8 +12763,7 @@ def dashboard_usage_summary(tenant_id: str, days: int = 14) -> Dict[str, Any]:
     since_ts = now_ts() - timedelta(days=days)
     with engine.connect() as conn:
         row = conn.execute(
-            text(
-                """
+            text("""
                 SELECT
                     COUNT(*) AS total_requests,
                     COUNT(*) FILTER (WHERE status='booked') AS total_bookings,
@@ -9562,8 +12773,7 @@ def dashboard_usage_summary(tenant_id: str, days: int = 14) -> Dict[str, Any]:
                 FROM call_logs
                 WHERE tenant_id=:tenant_id
                   AND created_at >= :since_ts
-                """
-            ),
+                """),
             {"tenant_id": tenant_id, "since_ts": since_ts},
         ).fetchone()
     total_requests = int((row[0] if row else 0) or 0)
@@ -9571,7 +12781,11 @@ def dashboard_usage_summary(tenant_id: str, days: int = 14) -> Dict[str, Any]:
     total_cancelled = int((row[2] if row else 0) or 0)
     total_reschedules = int((row[3] if row else 0) or 0)
     unique_users = int((row[4] if row else 0) or 0)
-    booking_rate = round((float(total_bookings) / float(total_requests) * 100.0), 1) if total_requests else 0.0
+    booking_rate = (
+        round((float(total_bookings) / float(total_requests) * 100.0), 1)
+        if total_requests
+        else 0.0
+    )
     tenant = get_tenant(tenant_id)
     return {
         "tenant_id": tenant_id,
@@ -9595,30 +12809,82 @@ def dashboard_tenant_activity(tenant_id: str, limit: int = 25) -> List[Dict[str,
     items = dashboard_recent_conversations(tenant_id, limit=limit)
     out = []
     for item in items:
-        out.append({
-            "id": item.get("id"),
-            "type": item.get("intent") or item.get("status") or "activity",
-            "channel": item.get("channel") or "unknown",
-            "status": item.get("status") or "unknown",
-            "service": item.get("service"),
-            "user_id": item.get("user_id"),
-            "message": item.get("user_message"),
-            "reply": item.get("ai_reply"),
-            "created_at": item.get("created_at"),
-        })
+        out.append(
+            {
+                "id": item.get("id"),
+                "type": item.get("intent") or item.get("status") or "activity",
+                "channel": item.get("channel") or "unknown",
+                "status": item.get("status") or "unknown",
+                "service": item.get("service"),
+                "user_id": item.get("user_id"),
+                "message": item.get("user_message"),
+                "reply": item.get("ai_reply"),
+                "created_at": item.get("created_at"),
+            }
+        )
     return out
 
 
 def dashboard_analytics(tenant_id: str) -> Dict[str, Any]:
     today_start = datetime.combine(today_local(), datetime.min.time(), tzinfo=TZ)
     with engine.connect() as conn:
-        total_requests = conn.execute(text("SELECT COUNT(*) FROM call_logs WHERE tenant_id=:tenant_id"), {"tenant_id": tenant_id}).scalar() or 0
-        total_bookings = conn.execute(text("SELECT COUNT(*) FROM call_logs WHERE tenant_id=:tenant_id AND status='booked'"), {"tenant_id": tenant_id}).scalar() or 0
-        total_cancelled = conn.execute(text("SELECT COUNT(*) FROM call_logs WHERE tenant_id=:tenant_id AND status='cancelled'"), {"tenant_id": tenant_id}).scalar() or 0
-        total_reschedule = conn.execute(text("SELECT COUNT(*) FROM call_logs WHERE tenant_id=:tenant_id AND status IN ('reschedule_wait','booked') AND intent='reschedule'"), {"tenant_id": tenant_id}).scalar() or 0
-        today_requests = conn.execute(text("SELECT COUNT(*) FROM call_logs WHERE tenant_id=:tenant_id AND created_at >= :today_start"), {"tenant_id": tenant_id, "today_start": today_start}).scalar() or 0
-        today_bookings = conn.execute(text("SELECT COUNT(*) FROM call_logs WHERE tenant_id=:tenant_id AND status='booked' AND created_at >= :today_start"), {"tenant_id": tenant_id, "today_start": today_start}).scalar() or 0
-    conversion_rate = round((float(total_bookings) / float(total_requests) * 100.0), 1) if total_requests else 0.0
+        total_requests = (
+            conn.execute(
+                text("SELECT COUNT(*) FROM call_logs WHERE tenant_id=:tenant_id"),
+                {"tenant_id": tenant_id},
+            ).scalar()
+            or 0
+        )
+        total_bookings = (
+            conn.execute(
+                text(
+                    "SELECT COUNT(*) FROM call_logs WHERE tenant_id=:tenant_id AND status='booked'"
+                ),
+                {"tenant_id": tenant_id},
+            ).scalar()
+            or 0
+        )
+        total_cancelled = (
+            conn.execute(
+                text(
+                    "SELECT COUNT(*) FROM call_logs WHERE tenant_id=:tenant_id AND status='cancelled'"
+                ),
+                {"tenant_id": tenant_id},
+            ).scalar()
+            or 0
+        )
+        total_reschedule = (
+            conn.execute(
+                text(
+                    "SELECT COUNT(*) FROM call_logs WHERE tenant_id=:tenant_id AND status IN ('reschedule_wait','booked') AND intent='reschedule'"
+                ),
+                {"tenant_id": tenant_id},
+            ).scalar()
+            or 0
+        )
+        today_requests = (
+            conn.execute(
+                text(
+                    "SELECT COUNT(*) FROM call_logs WHERE tenant_id=:tenant_id AND created_at >= :today_start"
+                ),
+                {"tenant_id": tenant_id, "today_start": today_start},
+            ).scalar()
+            or 0
+        )
+        today_bookings = (
+            conn.execute(
+                text(
+                    "SELECT COUNT(*) FROM call_logs WHERE tenant_id=:tenant_id AND status='booked' AND created_at >= :today_start"
+                ),
+                {"tenant_id": tenant_id, "today_start": today_start},
+            ).scalar()
+            or 0
+        )
+    conversion_rate = (
+        round((float(total_bookings) / float(total_requests) * 100.0), 1)
+        if total_requests
+        else 0.0
+    )
     return {
         "tenant_id": tenant_id,
         "total_requests": int(total_requests),
@@ -9630,69 +12896,76 @@ def dashboard_analytics(tenant_id: str) -> Dict[str, Any]:
         "today_bookings": int(today_bookings),
     }
 
+
 @app.get("/dashboard/bookings")
 @app.get("/bookings")
 def dashboard_bookings(tenant_id: str = TENANT_ID_DEFAULT, limit: int = 50):
-    tenant = get_tenant((tenant_id or '').strip() or TENANT_ID_DEFAULT)
-    if not tenant.get('_id'):
-        raise HTTPException(status_code=404, detail='Tenant not found')
+    tenant = get_tenant((tenant_id or "").strip() or TENANT_ID_DEFAULT)
+    if not tenant.get("_id"):
+        raise HTTPException(status_code=404, detail="Tenant not found")
     return {
-        "tenant_id": tenant.get('_id'),
-        "items": dashboard_recent_bookings(tenant.get('_id'), limit),
+        "tenant_id": tenant.get("_id"),
+        "items": dashboard_recent_bookings(tenant.get("_id"), limit),
     }
+
 
 @app.get("/dashboard/conversations")
 @app.get("/conversations")
 def dashboard_conversations(tenant_id: str = TENANT_ID_DEFAULT, limit: int = 100):
-    tenant = get_tenant((tenant_id or '').strip() or TENANT_ID_DEFAULT)
-    if not tenant.get('_id'):
-        raise HTTPException(status_code=404, detail='Tenant not found')
+    tenant = get_tenant((tenant_id or "").strip() or TENANT_ID_DEFAULT)
+    if not tenant.get("_id"):
+        raise HTTPException(status_code=404, detail="Tenant not found")
     return {
-        "tenant_id": tenant.get('_id'),
-        "items": dashboard_recent_conversations(tenant.get('_id'), limit),
+        "tenant_id": tenant.get("_id"),
+        "items": dashboard_recent_conversations(tenant.get("_id"), limit),
     }
+
 
 @app.get("/dashboard/analytics")
 @app.get("/analytics")
 def dashboard_analytics_endpoint(tenant_id: str = TENANT_ID_DEFAULT):
-    tenant = get_tenant((tenant_id or '').strip() or TENANT_ID_DEFAULT)
-    if not tenant.get('_id'):
-        raise HTTPException(status_code=404, detail='Tenant not found')
-    return dashboard_analytics(tenant.get('_id'))
+    tenant = get_tenant((tenant_id or "").strip() or TENANT_ID_DEFAULT)
+    if not tenant.get("_id"):
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    return dashboard_analytics(tenant.get("_id"))
+
 
 @app.get("/dashboard/usage")
 @app.get("/usage")
 def dashboard_usage_endpoint(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
-    tenant = get_tenant((tenant_id or '').strip() or TENANT_ID_DEFAULT)
-    if not tenant.get('_id'):
-        raise HTTPException(status_code=404, detail='Tenant not found')
-    return dashboard_usage_summary(tenant.get('_id'), days=days)
+    tenant = get_tenant((tenant_id or "").strip() or TENANT_ID_DEFAULT)
+    if not tenant.get("_id"):
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    return dashboard_usage_summary(tenant.get("_id"), days=days)
+
 
 @app.get("/dashboard/activity")
 @app.get("/activity")
 def dashboard_activity_endpoint(tenant_id: str = TENANT_ID_DEFAULT, limit: int = 25):
-    tenant = get_tenant((tenant_id or '').strip() or TENANT_ID_DEFAULT)
-    if not tenant.get('_id'):
-        raise HTTPException(status_code=404, detail='Tenant not found')
+    tenant = get_tenant((tenant_id or "").strip() or TENANT_ID_DEFAULT)
+    if not tenant.get("_id"):
+        raise HTTPException(status_code=404, detail="Tenant not found")
     return {
-        "tenant_id": tenant.get('_id'),
-        "items": dashboard_tenant_activity(tenant.get('_id'), limit=limit),
+        "tenant_id": tenant.get("_id"),
+        "items": dashboard_tenant_activity(tenant.get("_id"), limit=limit),
     }
+
 
 @app.get("/dashboard/chart-data")
 @app.get("/chart-data")
 def dashboard_chart_data_endpoint(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
-    tenant = get_tenant((tenant_id or '').strip() or TENANT_ID_DEFAULT)
-    if not tenant.get('_id'):
-        raise HTTPException(status_code=404, detail='Tenant not found')
-    usage = dashboard_usage_summary(tenant.get('_id'), days=days)
+    tenant = get_tenant((tenant_id or "").strip() or TENANT_ID_DEFAULT)
+    if not tenant.get("_id"):
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    usage = dashboard_usage_summary(tenant.get("_id"), days=days)
     return {
-        "tenant_id": tenant.get('_id'),
+        "tenant_id": tenant.get("_id"),
         "window_days": usage.get("window_days", days),
         "daily": usage.get("daily", []),
         "channels": usage.get("channels", []),
         "top_services": usage.get("top_services", []),
     }
+
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
@@ -10231,7 +13504,7 @@ function setLinks(tid) {{
   document.getElementById('lnk_analytics').href = '/analytics?tenant_id=' + encodeURIComponent(tid);
 }}
 async function loadConfig() {{
-  const tid = document.getElementById('tenant_id').value.trim() || 'default';
+  const tid = document.getElementById('tenant_id').value.trim() || 'clinic_demo';
   setLinks(tid);
   const r = await fetch('/tenant/config?tenant_id=' + encodeURIComponent(tid));
   const data = await r.json();
@@ -10321,6 +13594,7 @@ def _safe_parse_json_text(value: Any):
     except Exception:
         return None
 
+
 def _sync_weekly_hours_with_fallback_bounds(
     weekly_hours_value: Any,
     work_start: Optional[str],
@@ -10338,10 +13612,19 @@ def _sync_weekly_hours_with_fallback_bounds(
             start_val = str(val[0]).strip() if val[0] is not None else ""
             end_val = str(val[1]).strip() if val[1] is not None else ""
             parsed[day_key] = [
-                work_start.strip() if isinstance(work_start, str) and work_start.strip() else start_val,
-                work_end.strip() if isinstance(work_end, str) and work_end.strip() else end_val,
+                (
+                    work_start.strip()
+                    if isinstance(work_start, str) and work_start.strip()
+                    else start_val
+                ),
+                (
+                    work_end.strip()
+                    if isinstance(work_end, str) and work_end.strip()
+                    else end_val
+                ),
             ]
     return json.dumps(parsed, ensure_ascii=False, indent=2)
+
 
 class TenantConfigUpdateRequest(BaseModel):
     tenant_id: str
@@ -10378,12 +13661,14 @@ class TenantPlanChangeRequest(BaseModel):
     dialogs_per_month: Optional[int] = None
     reset_override: bool = False
 
+
 def _jsonable_tenant_view(tenant: Dict[str, Any]) -> Dict[str, Any]:
     tenant = dict(tenant or {})
     for k, v in list(tenant.items()):
         if hasattr(v, "isoformat"):
             tenant[k] = v.isoformat()
     return tenant
+
 
 @app.get("/tenants")
 def list_tenants(limit: int = 100):
@@ -10412,35 +13697,42 @@ def list_tenants(limit: int = 100):
         ).fetchall()
     items = []
     for r in rows:
-        tenant_item = normalize_tenant_saas_fields({
-            "_id": r[0],
-            "business_name": r[1],
-            "phone_number": r[2],
-            "timezone": r[3],
-            "language": r[4],
-            "calendar_id": r[5],
-            "onboarding_completed": r[6],
-            "google_connected": r[7],
-            "subscription_status": r[8],
-            "plan": r[9],
-        })
-        items.append({
-            "tenant_id": tenant_item["_id"],
-            "business_name": tenant_item.get("business_name"),
-            "phone_number": tenant_item.get("phone_number"),
-            "timezone": tenant_item.get("timezone"),
-            "language": tenant_item.get("language"),
-            "calendar_id": tenant_item.get("calendar_id"),
-            "onboarding_completed": tenant_item.get("onboarding_completed"),
-            "google_connected": tenant_google_connected_effective(tenant_item),
-            "subscription_status": tenant_item.get("subscription_status"),
-            "effective_status": effective_subscription_status(tenant_item),
-            "plan": tenant_item.get("plan"),
-            "ready": tenant_ready_status_payload(tenant_item).get("ready"),
-            "missing": tenant_ready_status_payload(tenant_item).get("missing"),
-            "updated_at": r[10].isoformat() if hasattr(r[10], "isoformat") else str(r[10]),
-        })
+        tenant_item = normalize_tenant_saas_fields(
+            {
+                "_id": r[0],
+                "business_name": r[1],
+                "phone_number": r[2],
+                "timezone": r[3],
+                "language": r[4],
+                "calendar_id": r[5],
+                "onboarding_completed": r[6],
+                "google_connected": r[7],
+                "subscription_status": r[8],
+                "plan": r[9],
+            }
+        )
+        items.append(
+            {
+                "tenant_id": tenant_item["_id"],
+                "business_name": tenant_item.get("business_name"),
+                "phone_number": tenant_item.get("phone_number"),
+                "timezone": tenant_item.get("timezone"),
+                "language": tenant_item.get("language"),
+                "calendar_id": tenant_item.get("calendar_id"),
+                "onboarding_completed": tenant_item.get("onboarding_completed"),
+                "google_connected": tenant_google_connected_effective(tenant_item),
+                "subscription_status": tenant_item.get("subscription_status"),
+                "effective_status": effective_subscription_status(tenant_item),
+                "plan": tenant_item.get("plan"),
+                "ready": tenant_ready_status_payload(tenant_item).get("ready"),
+                "missing": tenant_ready_status_payload(tenant_item).get("missing"),
+                "updated_at": (
+                    r[10].isoformat() if hasattr(r[10], "isoformat") else str(r[10])
+                ),
+            }
+        )
     return {"items": items}
+
 
 @app.get("/tenants/ui", response_class=HTMLResponse)
 def tenants_ui(limit: int = 200):
@@ -10563,9 +13855,13 @@ def tenant_change_plan(payload: TenantPlanChangeRequest):
     if "updated_at" in col_names:
         updates.append("updated_at=NOW()")
     if not updates:
-        raise HTTPException(status_code=500, detail="No writable tenant fields available")
+        raise HTTPException(
+            status_code=500, detail="No writable tenant fields available"
+        )
     with engine.begin() as conn:
-        conn.execute(text(f"UPDATE tenants SET {', '.join(updates)} WHERE {pk}=:tid"), params)
+        conn.execute(
+            text(f"UPDATE tenants SET {', '.join(updates)} WHERE {pk}=:tid"), params
+        )
     updated = get_tenant_or_404(tenant_id)
     return {
         "status": "ok",
@@ -10586,15 +13882,21 @@ def tenant_config(tenant_id: str = TENANT_ID_DEFAULT):
     try:
         with engine.connect() as conn:
             rows = conn.execute(
-                text("SELECT phone_number, tenant_id, updated_at FROM phone_routes WHERE tenant_id=:tenant_id ORDER BY updated_at DESC NULLS LAST, phone_number ASC"),
+                text(
+                    "SELECT phone_number, tenant_id, updated_at FROM phone_routes WHERE tenant_id=:tenant_id ORDER BY updated_at DESC NULLS LAST, phone_number ASC"
+                ),
                 {"tenant_id": tenant.get("_id")},
             ).fetchall()
         for r in rows:
-            routes.append({
-                "phone_number": r[0],
-                "tenant_id": r[1],
-                "updated_at": r[2].isoformat() if hasattr(r[2], "isoformat") else str(r[2]),
-            })
+            routes.append(
+                {
+                    "phone_number": r[0],
+                    "tenant_id": r[1],
+                    "updated_at": (
+                        r[2].isoformat() if hasattr(r[2], "isoformat") else str(r[2])
+                    ),
+                }
+            )
     except Exception:
         routes = []
     return {
@@ -10606,6 +13908,7 @@ def tenant_config(tenant_id: str = TENANT_ID_DEFAULT):
         "plan_meta": tenant_plan_meta(tenant),
         "links": onboarding_links_payload(str(tenant.get("_id") or tenant_id)),
     }
+
 
 @app.post("/tenant/config/update")
 def tenant_config_update(payload: TenantConfigUpdateRequest):
@@ -10628,12 +13931,38 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
             updates.append(f"{field_name}=:{field_name}")
             params[field_name] = value
 
-    add_field("business_name", payload.business_name.strip() if isinstance(payload.business_name, str) and payload.business_name.strip() else payload.business_name)
-    add_field("phone_number", normalize_incoming_to_number(payload.phone_number or "") or None)
-    add_field("timezone", payload.timezone.strip() if isinstance(payload.timezone, str) and payload.timezone.strip() else payload.timezone)
-    add_field("language", get_lang(payload.language) if payload.language is not None else None)
-    clean_work_start = payload.work_start.strip() if isinstance(payload.work_start, str) and payload.work_start.strip() else payload.work_start
-    clean_work_end = payload.work_end.strip() if isinstance(payload.work_end, str) and payload.work_end.strip() else payload.work_end
+    add_field(
+        "business_name",
+        (
+            payload.business_name.strip()
+            if isinstance(payload.business_name, str) and payload.business_name.strip()
+            else payload.business_name
+        ),
+    )
+    add_field(
+        "phone_number", normalize_incoming_to_number(payload.phone_number or "") or None
+    )
+    add_field(
+        "timezone",
+        (
+            payload.timezone.strip()
+            if isinstance(payload.timezone, str) and payload.timezone.strip()
+            else payload.timezone
+        ),
+    )
+    add_field(
+        "language", get_lang(payload.language) if payload.language is not None else None
+    )
+    clean_work_start = (
+        payload.work_start.strip()
+        if isinstance(payload.work_start, str) and payload.work_start.strip()
+        else payload.work_start
+    )
+    clean_work_end = (
+        payload.work_end.strip()
+        if isinstance(payload.work_end, str) and payload.work_end.strip()
+        else payload.work_end
+    )
 
     add_field("work_start", clean_work_start)
     add_field("work_end", clean_work_end)
@@ -10642,7 +13971,12 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
     add_field("services_en", payload.services_en)
 
     weekly_hours_value = payload.weekly_hours_json
-    if weekly_hours_value is None and (((isinstance(clean_work_start, str) and clean_work_start.strip()) or (isinstance(clean_work_end, str) and clean_work_end.strip()))):
+    if weekly_hours_value is None and (
+        (
+            (isinstance(clean_work_start, str) and clean_work_start.strip())
+            or (isinstance(clean_work_end, str) and clean_work_end.strip())
+        )
+    ):
         weekly_hours_value = tenant.get("weekly_hours_json")
     if weekly_hours_value is not None:
         weekly_hours_value = _sync_weekly_hours_with_fallback_bounds(
@@ -10675,7 +14009,11 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
         elif "service_catalog" in col_names:
             add_field("service_catalog", payload.service_catalog_json)
     if payload.service_account_json is not None:
-        clean_service_account_json = payload.service_account_json.strip() if isinstance(payload.service_account_json, str) else payload.service_account_json
+        clean_service_account_json = (
+            payload.service_account_json.strip()
+            if isinstance(payload.service_account_json, str)
+            else payload.service_account_json
+        )
         if "service_account_json" in col_names:
             add_field("service_account_json", clean_service_account_json or None)
         elif "google_service_account_json" in col_names:
@@ -10699,29 +14037,39 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
     return {
         "status": "ok",
         "tenant": _jsonable_tenant_view(updated),
-        "resolved_settings": tenant_settings(updated, get_lang(updated.get("language") or "lv")),
+        "resolved_settings": tenant_settings(
+            updated, get_lang(updated.get("language") or "lv")
+        ),
         "onboarding": onboarding_status_payload(updated),
         "readiness": tenant_ready_status_payload(updated),
         "plan_meta": tenant_plan_meta(updated),
         "links": onboarding_links_payload(tenant_id),
     }
 
+
 @app.get("/tenant/routes")
 def tenant_routes(tenant_id: str = TENANT_ID_DEFAULT):
     tenant_id = (tenant_id or "").strip() or TENANT_ID_DEFAULT
     with engine.connect() as conn:
         rows = conn.execute(
-            text("SELECT phone_number, tenant_id, updated_at FROM phone_routes WHERE tenant_id=:tenant_id ORDER BY updated_at DESC NULLS LAST, phone_number ASC"),
+            text(
+                "SELECT phone_number, tenant_id, updated_at FROM phone_routes WHERE tenant_id=:tenant_id ORDER BY updated_at DESC NULLS LAST, phone_number ASC"
+            ),
             {"tenant_id": tenant_id},
         ).fetchall()
     items = []
     for r in rows:
-        items.append({
-            "phone_number": r[0],
-            "tenant_id": r[1],
-            "updated_at": r[2].isoformat() if hasattr(r[2], "isoformat") else str(r[2]),
-        })
+        items.append(
+            {
+                "phone_number": r[0],
+                "tenant_id": r[1],
+                "updated_at": (
+                    r[2].isoformat() if hasattr(r[2], "isoformat") else str(r[2])
+                ),
+            }
+        )
     return {"tenant_id": tenant_id, "items": items}
+
 
 @app.get("/dev_rules")
 def dev_rules(tenant_id: str):
@@ -10732,7 +14080,9 @@ def dev_rules(tenant_id: str):
         "work_start": settings.get("work_start"),
         "work_end": settings.get("work_end"),
         "business_rules": settings.get("business_rules"),
-        "min_notice_minutes": (settings.get("business_rules") or {}).get("min_notice_minutes"),
+        "min_notice_minutes": (settings.get("business_rules") or {}).get(
+            "min_notice_minutes"
+        ),
         "buffer_minutes": (settings.get("business_rules") or {}).get("buffer_minutes"),
     }
 
@@ -10742,31 +14092,33 @@ def dev_logs(tenant_id: str, limit: int = 50):
     limit = max(1, min(int(limit or 50), 200))
     with engine.connect() as conn:
         rows = conn.execute(
-            text(
-                """
+            text("""
                 SELECT id, tenant_id, user_id, channel, intent, service, datetime_iso, status, raw_text, created_at
                 FROM call_logs
                 WHERE tenant_id=:tenant_id
                 ORDER BY created_at DESC
                 LIMIT :limit
-                """
-            ),
+                """),
             {"tenant_id": tenant_id, "limit": limit},
         ).fetchall()
     items = []
     for r in rows:
-        items.append({
-            "id": r[0],
-            "tenant_id": r[1],
-            "user_id": r[2],
-            "channel": r[3],
-            "intent": r[4],
-            "service": r[5],
-            "datetime_iso": r[6],
-            "status": r[7],
-            "raw_text": r[8],
-            "created_at": r[9].isoformat() if hasattr(r[9], "isoformat") else str(r[9]),
-        })
+        items.append(
+            {
+                "id": r[0],
+                "tenant_id": r[1],
+                "user_id": r[2],
+                "channel": r[3],
+                "intent": r[4],
+                "service": r[5],
+                "datetime_iso": r[6],
+                "status": r[7],
+                "raw_text": r[8],
+                "created_at": (
+                    r[9].isoformat() if hasattr(r[9], "isoformat") else str(r[9])
+                ),
+            }
+        )
     return {"items": items}
 
 
@@ -10775,6 +14127,7 @@ def dev_logs(tenant_id: str, limit: int = 50):
 # =========================
 from pydantic import BaseModel
 
+
 class DevChatRequest(BaseModel):
     tenant_id: str
     user_id: str
@@ -10782,13 +14135,16 @@ class DevChatRequest(BaseModel):
     channel: str = "dev"
     lang: str = "lv"
 
+
 class DevResetRequest(BaseModel):
     tenant_id: str
     user_id: str
 
+
 def _dev_raw_user(user_id: str) -> str:
     uid = (user_id or "dev_user").strip()
     return f"dev:{uid}"
+
 
 @app.post("/dev_chat")
 async def dev_chat(req: DevChatRequest):
@@ -10815,8 +14171,30 @@ async def dev_chat(req: DevChatRequest):
                 lang,
             )
             business_memory = tenant_business_memory(tenant, lang)
-            llm_hint = llm_message_understanding(req.message, lang, settings, service_catalog, service_aliases, business_memory) if (req.message or '').strip() else {}
-            understanding = build_understanding_result(req.message, lang, conv, conv.get("pending") or {}, llm_hint, tenant, settings, service_catalog, service_aliases, business_memory)
+            llm_hint = (
+                llm_message_understanding(
+                    req.message,
+                    lang,
+                    settings,
+                    service_catalog,
+                    service_aliases,
+                    business_memory,
+                )
+                if (req.message or "").strip()
+                else {}
+            )
+            understanding = build_understanding_result(
+                req.message,
+                lang,
+                conv,
+                conv.get("pending") or {},
+                llm_hint,
+                tenant,
+                settings,
+                service_catalog,
+                service_aliases,
+                business_memory,
+            )
             orch_debug = orchestrate_turn(conv, req.message, lang, understanding)
         except Exception:
             orch_debug = None
@@ -10857,14 +14235,13 @@ async def dev_reset(req: DevResetRequest):
                 """),
                 {
                     "tenant_id": req.tenant_id,
-                    "user_key": norm_user_key(_dev_raw_user(req.user_id))
-                }
+                    "user_key": norm_user_key(_dev_raw_user(req.user_id)),
+                },
             )
         return {"status": "reset_ok"}
     except Exception as e:
         log.exception("DEV RESET ERROR")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 
 class DevFocusTestRequest(BaseModel):
@@ -10894,7 +14271,11 @@ async def dev_understand(req: DevChatRequest):
         service_aliases=service_aliases,
         business_memory=business_memory,
     )
-    return {"tenant_id": req.tenant_id, "message": req.message, "understanding": understood}
+    return {
+        "tenant_id": req.tenant_id,
+        "message": req.message,
+        "understanding": understood,
+    }
 
 
 @app.post("/dev_focus_test")
@@ -10937,24 +14318,27 @@ async def dev_focus_test(req: DevFocusTestRequest):
             source="dev_ui",
         )
         conv = db_get_or_create_conversation(req.tenant_id, raw_user, lang)
-        items.append({
-            "input": case,
-            "intent": understood.get("intent"),
-            "confidence": understood.get("confidence"),
-            "entities": {
-                "service": understood.get("service"),
-                "datetime_iso": understood.get("datetime_iso"),
-                "time_text": understood.get("time_text"),
-                "name": understood.get("name"),
-                "confirmation": understood.get("confirmation"),
-            },
-            "response": result.get("msg_out") or result.get("reply_voice"),
-            "status": result.get("status"),
-            "state": conv.get("state"),
-            "success": bool(result.get("status") not in {"blocked", "booking_failed"}),
-        })
+        items.append(
+            {
+                "input": case,
+                "intent": understood.get("intent"),
+                "confidence": understood.get("confidence"),
+                "entities": {
+                    "service": understood.get("service"),
+                    "datetime_iso": understood.get("datetime_iso"),
+                    "time_text": understood.get("time_text"),
+                    "name": understood.get("name"),
+                    "confirmation": understood.get("confirmation"),
+                },
+                "response": result.get("msg_out") or result.get("reply_voice"),
+                "status": result.get("status"),
+                "state": conv.get("state"),
+                "success": bool(
+                    result.get("status") not in {"blocked", "booking_failed"}
+                ),
+            }
+        )
     return {"tenant_id": req.tenant_id, "lang": lang, "items": items}
-
 
 
 @app.get("/dialogue/audit")
@@ -10986,9 +14370,24 @@ def dev_dialogue_simulate(payload: dict = Body(...)):
         messages = [messages]
     out = []
     for msg in messages[:20]:
-        result = handle_user_text_with_logging(tenant_id, user_id, str(msg), "dev", lang, source="dialogue_simulate")
-        out.append({"user": str(msg), "assistant": result.get("msg_out") or result.get("reply_voice"), "status": result.get("status"), "lang": result.get("lang")})
-    return {"tenant_id": tenant_id, "user_id": user_id, "turns": out, "audit": dialogue_audit_summary(tenant_id, 20)}
+        result = handle_user_text_with_logging(
+            tenant_id, user_id, str(msg), "dev", lang, source="dialogue_simulate"
+        )
+        out.append(
+            {
+                "user": str(msg),
+                "assistant": result.get("msg_out") or result.get("reply_voice"),
+                "status": result.get("status"),
+                "lang": result.get("lang"),
+            }
+        )
+    return {
+        "tenant_id": tenant_id,
+        "user_id": user_id,
+        "turns": out,
+        "audit": dialogue_audit_summary(tenant_id, 20),
+    }
+
 
 @app.get("/dev_chat_ui", response_class=HTMLResponse)
 def dev_chat_ui():
@@ -11136,23 +14535,29 @@ def parse_holidays(tenant: dict):
     except Exception:
         return set()
 
+
 def is_holiday(check_date: date, tenant: dict):
     holidays = parse_holidays(tenant)
     return check_date.strftime("%Y-%m-%d") in holidays
 
-def is_holiday_for_rules(dt_value: datetime, business_rules: Optional[Dict[str, Any]] = None) -> bool:
+
+def is_holiday_for_rules(
+    dt_value: datetime, business_rules: Optional[Dict[str, Any]] = None
+) -> bool:
     if not business_rules:
         return False
     holidays = business_rules.get("holidays") or []
     return dt_value.strftime("%Y-%m-%d") in holidays
 
 
-def is_closed_day_for_rules(dt_value: datetime, business_rules: Optional[Dict[str, Any]] = None) -> bool:
+def is_closed_day_for_rules(
+    dt_value: datetime, business_rules: Optional[Dict[str, Any]] = None
+) -> bool:
     if not business_rules:
         return False
     if is_holiday_for_rules(dt_value, business_rules):
         return True
-    weekly_hours = (business_rules.get("weekly_hours") or {})
+    weekly_hours = business_rules.get("weekly_hours") or {}
     weekday_key = _weekday_key_for_date(dt_value)
     rule_hours = weekly_hours.get(weekday_key)
     if not rule_hours:
@@ -11165,13 +14570,18 @@ def is_closed_day_for_rules(dt_value: datetime, business_rules: Optional[Dict[st
     return False
 
 
-def min_notice_cutoff(business_rules: Optional[Dict[str, Any]] = None) -> Optional[datetime]:
+def min_notice_cutoff(
+    business_rules: Optional[Dict[str, Any]] = None,
+) -> Optional[datetime]:
     mins = _safe_int((business_rules or {}).get("min_notice_minutes"), 0)
     if mins <= 0:
         return None
     return now_ts() + timedelta(minutes=mins)
 
-def violates_min_notice(dt_value: datetime, business_rules: Optional[Dict[str, Any]] = None) -> bool:
+
+def violates_min_notice(
+    dt_value: datetime, business_rules: Optional[Dict[str, Any]] = None
+) -> bool:
     cutoff = min_notice_cutoff(business_rules)
     if cutoff is None:
         return False
