@@ -2071,6 +2071,270 @@ def dialogue_regression_matrix_endpoint():
     return stage34_regression_test_matrix()
 
 
+# -------------------------
+# STAGE 35 — REGRESSION RUNNER / QA DASHBOARD
+# -------------------------
+def _stage35_norm_text(value: Any) -> str:
+    txt = str(value or "").strip().lower()
+    txt = re.sub(r"\s+", " ", txt)
+    return txt
+
+
+def _stage35_time_labels(text_value: str) -> List[str]:
+    return re.findall(r"\b(?:[01]?\d|2[0-3]):[0-5]\d\b", str(text_value or ""))
+
+
+def stage35_detect_regression_observations(scenario: Dict[str, Any], turns: List[Dict[str, Any]]) -> Dict[str, Any]:
+    scenario = scenario or {}
+    expected = [str(x) for x in scenario.get("expected") or []]
+    forbidden = [str(x) for x in scenario.get("forbidden") or []]
+    lang = get_lang(scenario.get("lang") or "lv")
+    all_reply = "\n".join(str(t.get("assistant") or "") for t in turns)
+    last_reply = str((turns[-1] if turns else {}).get("assistant") or "")
+    all_low = _stage35_norm_text(all_reply)
+    last_low = _stage35_norm_text(last_reply)
+    times = _stage35_time_labels(all_reply)
+    last_times = _stage35_time_labels(last_reply)
+    statuses = [str(t.get("status") or "").strip().lower() for t in turns]
+    states = [str(t.get("state") or "").strip().upper() for t in turns]
+    result_langs = [get_lang(t.get("lang") or lang) for t in turns if t.get("lang")]
+
+    observed = set()
+    forbidden_hits = []
+
+    if any(st in {"need_more", "busy", "booked", "min_notice", "holiday_closed"} for st in statuses) or any(st.startswith("AWAITING_") for st in states):
+        observed.add("booking_flow")
+        observed.add("same_booking_flow")
+    if len(last_times or times) >= 2:
+        observed.add("multiple_slot_options")
+    if len(set(times)) >= 2:
+        observed.add("avoid_repeating_same_slots")
+    if any(int(t.split(":", 1)[0]) >= 14 for t in times):
+        observed.add("time_window_after_14")
+    if any(int(t.split(":", 1)[0]) >= 16 for t in times):
+        observed.add("evening_window")
+    if "booked" in statuses:
+        observed.add("booking_finalized")
+        observed.add("confirm_yes_detected")
+    if any(x in all_low for x in ["agr", "раньше", "earlier", "ne tik vēlu", "не так поздно"]):
+        observed.add("earlier_refinement")
+    if lang == "lv" and result_langs and all(x == "lv" for x in result_langs):
+        observed.add("lv_reply")
+    if lang == "ru" and result_langs and all(x == "ru" for x in result_langs):
+        observed.add("ru_reply")
+    if "14:00" not in last_reply or len(last_times) >= 2:
+        observed.add("no_exact_14_confirmation")
+    if "15.05" in " ".join(scenario.get("message_sequence") or []) and ("10:00" in all_reply or any(t == "10:00" for t in times)):
+        observed.add("date_15_05")
+        observed.add("time_10_00")
+    if any(st in {"need_more", "booked"} for st in statuses):
+        observed.add("move_to_confirmation_or_booking")
+        observed.add("select_offered_slot")
+    if any(x in all_low for x in ["lieliski", "отлично", "great", "der", "подходит", "jā", "да"]):
+        observed.add("soft_human_reply")
+
+    def hit_forbidden(token: str) -> bool:
+        if token == "confirm_exact_14_00":
+            return "14:00" in last_reply and any(w in last_low for w in ["подтверд", "apstip", "confirm", "pierakstīt", "записать"])
+        if token == "ask_service_again":
+            return any(x in last_low for x in ["какую услугу", "kādu pakalpojumu", "which service"])
+        if token == "ask_date_again":
+            return any(x in last_low for x in ["какой день", "kuru dienu", "which day", "what date"])
+        if token == "language_switch_to_lv":
+            return lang != "lv" and any(x == "lv" for x in result_langs)
+        if token == "language_switch_to_ru":
+            return lang != "ru" and any(x == "ru" for x in result_langs)
+        if token == "ru_reply":
+            return any(x == "ru" for x in result_langs)
+        if token == "confirm_loop" or token == "ask_same_confirmation_again":
+            return (statuses[-1] == "need_more" if statuses else False) and any(x in last_low for x in ["подтверд", "apstip", "confirm"])
+        if token == "repeat_14_busy":
+            return "14:00" in all_reply and any(x in all_low for x in ["занят", "aizņem", "busy", "taken"])
+        if token == "ignore_offered_choice":
+            return "10:00" in " ".join(scenario.get("message_sequence") or []) and "10:00" not in all_reply and statuses[-1:] == ["busy"]
+        if token == "time_15_05" or token == "accidental_date_as_time":
+            return "15:05" in all_reply
+        if token == "morning_slots_only":
+            return bool(times) and all(int(t.split(":",1)[0]) < 12 for t in times)
+        if token == "reset_to_new":
+            return "NEW" in states[1:]
+        if token == "repeat_same_three_slots":
+            return len(times) >= 6 and times[:3] == times[-3:]
+        return token in all_low
+
+    for token in forbidden:
+        if hit_forbidden(token):
+            forbidden_hits.append(token)
+
+    expected_missing = [token for token in expected if token not in observed]
+    passed = not forbidden_hits and len(expected_missing) == 0
+    # Keep the runner useful during early QA: mark as warning rather than hard fail when only soft_human_reply is missing.
+    severity = "pass" if passed else "warning" if (not forbidden_hits and expected_missing == ["soft_human_reply"]) else "fail"
+    return {
+        "passed": passed,
+        "severity": severity,
+        "observed": sorted(observed),
+        "expected_missing": expected_missing,
+        "forbidden_hits": forbidden_hits,
+        "times_detected": times,
+        "statuses": statuses,
+        "states": states,
+        "langs": result_langs,
+    }
+
+
+def stage35_run_regression_scenario(scenario_id: str, tenant_id: str = TENANT_ID_DEFAULT, user_id: Optional[str] = None) -> Dict[str, Any]:
+    scenario = next((x for x in STAGE34_REGRESSION_TEST_MATRIX if str(x.get("id")) == str(scenario_id)), None)
+    if not scenario:
+        raise HTTPException(status_code=404, detail="Regression scenario not found")
+    tenant_id = (tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
+    user_id = (user_id or f"qa_{scenario_id}_{uuid.uuid4().hex[:8]}").strip()
+    lang = get_lang(scenario.get("lang") or "lv")
+    messages = scenario.get("message_sequence") or []
+    turns: List[Dict[str, Any]] = []
+    for msg in messages[:10]:
+        result = handle_user_text_with_logging(tenant_id, user_id, str(msg), "dev", lang, source="regression_runner")
+        try:
+            conv = db_get_or_create_conversation(tenant_id, user_id, lang)
+        except Exception:
+            conv = {}
+        turns.append({
+            "user": str(msg),
+            "assistant": result.get("msg_out") or result.get("reply_voice"),
+            "status": result.get("status"),
+            "lang": result.get("lang"),
+            "state": (conv or {}).get("state"),
+            "pending": (conv or {}).get("pending"),
+        })
+    evaluation = stage35_detect_regression_observations(scenario, turns)
+    return {
+        "stage": 35,
+        "runner": "Regression Runner / QA Dashboard",
+        "tenant_id": tenant_id,
+        "user_id": user_id,
+        "scenario": scenario,
+        "turns": turns,
+        "evaluation": evaluation,
+    }
+
+
+def stage35_run_regression_suite(tenant_id: str = TENANT_ID_DEFAULT, limit: int = 10) -> Dict[str, Any]:
+    limit = max(1, min(int(limit or 10), len(STAGE34_REGRESSION_TEST_MATRIX)))
+    results = []
+    for scenario in STAGE34_REGRESSION_TEST_MATRIX[:limit]:
+        try:
+            results.append(stage35_run_regression_scenario(str(scenario.get("id")), tenant_id=tenant_id))
+        except Exception as e:
+            results.append({"scenario_id": scenario.get("id"), "error": str(e), "evaluation": {"severity": "fail", "passed": False}})
+    passed = sum(1 for r in results if ((r.get("evaluation") or {}).get("severity") == "pass"))
+    warnings = sum(1 for r in results if ((r.get("evaluation") or {}).get("severity") == "warning"))
+    failed = sum(1 for r in results if ((r.get("evaluation") or {}).get("severity") == "fail"))
+    return {
+        "stage": 35,
+        "name": "Regression Runner / QA Dashboard",
+        "tenant_id": tenant_id,
+        "total": len(results),
+        "passed": passed,
+        "warnings": warnings,
+        "failed": failed,
+        "results": results,
+    }
+
+
+@app.get("/dialogue/qa", response_class=HTMLResponse)
+def dialogue_qa_dashboard():
+    matrix = stage34_regression_test_matrix()
+    rows = "".join([
+        f"""
+        <tr>
+          <td><code>{item.get('id')}</code></td>
+          <td>{item.get('stage')}</td>
+          <td>{item.get('lang')}</td>
+          <td>{item.get('category')}</td>
+          <td>{' → '.join(item.get('message_sequence') or [])}</td>
+          <td><button onclick=\"runScenario('{item.get('id')}')\">Run</button></td>
+        </tr>
+        """ for item in matrix.get("items", [])
+    ])
+    html = f"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Repliq Stage 35 QA Dashboard</title>
+  <style>
+    body {{ font-family: Arial, sans-serif; background:#f6f7fb; color:#111827; margin:0; }}
+    .wrap {{ max-width:1200px; margin:0 auto; padding:24px; }}
+    .card {{ background:white; border-radius:16px; box-shadow:0 8px 24px rgba(15,23,42,.08); padding:20px; margin-bottom:18px; }}
+    h1 {{ margin:0 0 8px; }}
+    .muted {{ color:#6b7280; }}
+    table {{ width:100%; border-collapse:collapse; font-size:14px; }}
+    th, td {{ border-bottom:1px solid #e5e7eb; padding:10px; vertical-align:top; text-align:left; }}
+    th {{ background:#f9fafb; }}
+    button {{ border:0; border-radius:10px; padding:8px 12px; cursor:pointer; background:#111827; color:white; }}
+    button.secondary {{ background:#4b5563; }}
+    pre {{ background:#0b1020; color:#d1e7ff; border-radius:14px; padding:14px; overflow:auto; max-height:520px; }}
+    .pass {{ color:#047857; font-weight:700; }} .fail {{ color:#b91c1c; font-weight:700; }} .warning {{ color:#b45309; font-weight:700; }}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Repliq Stage 35 — Regression Runner / QA Dashboard</h1>
+      <div class="muted">Internal QA tool for protecting Stage 24 and Stage 30–33 conversational booking behavior.</div>
+      <p><button onclick="runAll()">Run full regression suite</button> <button class="secondary" onclick="loadMatrix()">Reload matrix</button></p>
+    </div>
+    <div class="card">
+      <h2>Regression Matrix ({matrix.get('total')})</h2>
+      <table>
+        <thead><tr><th>ID</th><th>Stage</th><th>Lang</th><th>Category</th><th>Messages</th><th>Action</th></tr></thead>
+        <tbody>{rows}</tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h2>Result</h2>
+      <pre id="out">Ready.</pre>
+    </div>
+  </div>
+<script>
+async function runScenario(id) {{
+  const out = document.getElementById('out');
+  out.textContent = 'Running ' + id + '...';
+  const r = await fetch('/dialogue/regression_run/' + encodeURIComponent(id));
+  const data = await r.json();
+  out.textContent = JSON.stringify(data, null, 2);
+}}
+async function runAll() {{
+  const out = document.getElementById('out');
+  out.textContent = 'Running full suite...';
+  const r = await fetch('/dialogue/regression_run_all');
+  const data = await r.json();
+  out.textContent = JSON.stringify(data, null, 2);
+}}
+async function loadMatrix() {{
+  const out = document.getElementById('out');
+  const r = await fetch('/dialogue/regression_matrix');
+  const data = await r.json();
+  out.textContent = JSON.stringify(data, null, 2);
+}}
+</script>
+</body>
+</html>
+    """
+    return HTMLResponse(html)
+
+
+@app.get("/dialogue/regression_run/{scenario_id}")
+def dialogue_regression_run_endpoint(scenario_id: str, tenant_id: str = TENANT_ID_DEFAULT):
+    return stage35_run_regression_scenario(scenario_id, tenant_id=tenant_id)
+
+
+@app.get("/dialogue/regression_run_all")
+def dialogue_regression_run_all_endpoint(tenant_id: str = TENANT_ID_DEFAULT, limit: int = 10):
+    return stage35_run_regression_suite(tenant_id=tenant_id, limit=limit)
+
+
 def ensure_dialogue_audit_table() -> None:
     try:
         with engine.begin() as conn:
