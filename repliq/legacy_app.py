@@ -5558,6 +5558,146 @@ def offer_slots_after_time_anchor(
     return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "preserve_text": True}
 
 
+
+
+# -------------------------
+# STAGE 30 — CONVERSATIONAL NEGOTIATION ENGINE HOTFIX
+# -------------------------
+def stage30_offer_after_time_window_if_needed(
+    tenant_id: str,
+    user_key: str,
+    msg: str,
+    lang: str,
+    c: Dict[str, Any],
+    pending: Dict[str, Any],
+    settings: Dict[str, Any],
+    service_catalog: List[Dict[str, Any]],
+    service_aliases: Dict[str, str],
+) -> Optional[Dict[str, Any]]:
+    """Route phrases like "после 14:00" / "pēc 14:00" as a window.
+
+    Safety contract:
+    - never creates a booking directly;
+    - never treats the anchor as an exact confirmation candidate;
+    - only offers available slots strictly after the anchor.
+    """
+    anchor = detect_after_time_anchor(msg, lang)
+    if not anchor:
+        return None
+
+    pending = pending or {}
+    service_key = str(c.get("service") or pending.get("service") or "").strip()
+    if not service_key:
+        service_item = stage27_extract_service_item_from_turn(msg, {}, service_catalog, service_aliases, lang)
+        if service_item:
+            c, pending = remember_booking_service(c, pending, service_item, lang)
+            service_key = str(c.get("service") or pending.get("service") or "").strip()
+
+    # Persist the date part, but deliberately remove exact 14:00 candidate data.
+    date_dt = parse_date_only_text(msg)
+    if date_dt:
+        pending["awaiting_time_date_iso"] = date_dt.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+
+    base_day = parse_dt_any_tz(str(pending.get("awaiting_time_date_iso") or "").strip()) or date_dt
+    if not service_key:
+        pending["booking_intent"] = True
+        pending.pop("candidate_datetime_iso", None)
+        pending.pop("confirm_slot_iso", None)
+        pending.pop("time_text", None)
+        clear_offered_slots(pending)
+        c["pending"] = pending
+        c["datetime_iso"] = None
+        c["time_text"] = None
+        c["state"] = STATE_AWAITING_SERVICE
+        db_save_conversation(tenant_id, user_key, c)
+        prompt = barber_service_prompt(lang, service_catalog)
+        return {"status": "need_more", "reply_voice": prompt, "msg_out": prompt, "lang": lang, "preserve_text": True}
+
+    if not base_day:
+        pending["booking_intent"] = True
+        pending.pop("candidate_datetime_iso", None)
+        pending.pop("confirm_slot_iso", None)
+        pending.pop("time_text", None)
+        clear_offered_slots(pending)
+        c["pending"] = pending
+        c["datetime_iso"] = None
+        c["time_text"] = None
+        c["state"] = STATE_AWAITING_DATE
+        db_save_conversation(tenant_id, user_key, c)
+        return {"status": "need_more", "reply_voice": t(lang, "ask_booking_date"), "msg_out": t(lang, "ask_booking_date"), "lang": lang}
+
+    pending.pop("candidate_datetime_iso", None)
+    pending.pop("requested_datetime_iso", None)
+    pending.pop("partial_datetime_iso", None)
+    pending.pop("confirm_slot_iso", None)
+    pending.pop("time_text", None)
+    clear_offered_slots(pending)
+    c["datetime_iso"] = None
+    c["time_text"] = None
+    c["pending"] = pending
+    c["state"] = STATE_AWAITING_TIME
+    return offer_slots_after_time_anchor(
+        tenant_id=tenant_id,
+        user_key=user_key,
+        lang=lang,
+        c=c,
+        pending=pending,
+        settings=settings,
+        service_catalog=service_catalog,
+        base_date=base_day,
+        anchor_parts=anchor,
+    )
+
+
+def stage30_negotiate_from_confirm_if_needed(
+    tenant_id: str,
+    user_key: str,
+    msg: str,
+    lang: str,
+    c: Dict[str, Any],
+    pending: Dict[str, Any],
+    settings: Dict[str, Any],
+    service_catalog: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Handle "можно позже?" / "var vēlāk?" directly in confirm state."""
+    if conversation_state(c) != STATE_AWAITING_CONFIRM:
+        return None
+    direction = detect_time_shift_direction(msg, lang)
+    if not direction:
+        return None
+
+    pending = pending or {}
+    anchor_iso = str(pending.get("confirm_slot_iso") or c.get("datetime_iso") or "").strip()
+    anchor_dt = parse_dt_any_tz(anchor_iso)
+    service_item = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
+    if not anchor_dt or not service_item or not calendar_is_configured(settings["calendar_id"]):
+        return None
+
+    slots = find_negotiation_slots_for_direction(
+        calendar_id=settings["calendar_id"],
+        base_day=anchor_dt,
+        anchor_dt=anchor_dt,
+        direction=direction,
+        duration_min=service_duration_min(service_item),
+        work_start=settings["work_start"],
+        work_end=settings["work_end"],
+        limit=3,
+        business_rules=settings.get("business_rules"),
+        service_account_json=settings.get("service_account_json"),
+    )
+    pending.pop("confirm_slot_iso", None)
+    pending.pop("candidate_datetime_iso", None)
+    pending.pop("time_text", None)
+    clear_offered_slots(pending)
+    pending["booking_intent"] = True
+    pending["awaiting_time_date_iso"] = anchor_dt.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+    c["datetime_iso"] = None
+    c["time_text"] = None
+    c["state"] = STATE_AWAITING_TIME
+    c["pending"] = pending
+    return negotiation_slots_response(tenant_id, user_key, lang, c, pending, slots)
+
+
 def free_router_handle_candidate_datetime(
     tenant_id: str,
     user_key: str,
@@ -5923,6 +6063,19 @@ def handle_user_text(
                 reply_text = "Skaidrs. Kādu citu laiku vēlaties?"
             return {"status": "need_more", "reply_voice": reply_text, "msg_out": reply_text, "lang": lang, "preserve_text": True}
 
+    stage30_confirm_negotiation = stage30_negotiate_from_confirm_if_needed(
+        tenant_id=tenant_id,
+        user_key=user_key,
+        msg=msg,
+        lang=lang,
+        c=c,
+        pending=pending,
+        settings=settings,
+        service_catalog=service_catalog,
+    ) if msg else None
+    if stage30_confirm_negotiation:
+        return stage30_confirm_negotiation
+
     ai_data: Optional[Dict[str, Any]] = None
     llm_data: Optional[Dict[str, Any]] = None
 
@@ -5992,6 +6145,20 @@ def handle_user_text(
             service_catalog=service_catalog,
             service_aliases=service_aliases,
         )
+
+    stage30_after_window = stage30_offer_after_time_window_if_needed(
+        tenant_id=tenant_id,
+        user_key=user_key,
+        msg=msg,
+        lang=lang,
+        c=c,
+        pending=pending,
+        settings=settings,
+        service_catalog=service_catalog,
+        service_aliases=service_aliases,
+    ) if msg else None
+    if stage30_after_window:
+        return stage30_after_window
 
     understanding = build_understanding_result(
         msg=msg,
