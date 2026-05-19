@@ -5919,6 +5919,181 @@ def stage31_offer_time_window_if_needed(
     )
 
 
+
+# -------------------------
+# STAGE 32 — CONVERSATIONAL CONTEXT PERSISTENCE HOTFIX
+# -------------------------
+def stage32_detect_slot_refinement(text_: Optional[str], lang: str = "") -> Optional[str]:
+    """Detect contextual slot refinement, not a new booking request.
+
+    Returns:
+    - "earlier" for: not so late / слишком поздно / ne tik vēlu
+    - "later" for: not so early / слишком рано / ne tik agri
+    This is intentionally deterministic and only influences offered-slot negotiation.
+    """
+    low = _normalize_phrase_text(text_)
+    folded = _fold_match_text(text_)
+    if not low and not folded:
+        return None
+
+    earlier_phrases = [
+        "не так поздно", "слишком поздно", "очень поздно", "не позднее", "раньше", "пораньше", "чуть раньше", "немного раньше",
+        "ne tik velu", "par velu", "mazliet agrak", "nedaudz agrak", "agrak", "atrak",
+        "not so late", "too late", "a bit earlier", "slightly earlier", "earlier",
+    ]
+    later_phrases = [
+        "не так рано", "слишком рано", "очень рано", "не раньше", "позже", "попозже", "чуть позже", "немного позже",
+        "ne tik agri", "par agru", "mazliet velak", "nedaudz velak", "velak",
+        "not so early", "too early", "a bit later", "slightly later", "later",
+    ]
+
+    for phrase in earlier_phrases:
+        if phrase in low or phrase in folded:
+            return "earlier"
+    for phrase in later_phrases:
+        if phrase in low or phrase in folded:
+            return "later"
+    return None
+
+
+def stage32_remember_rejected_slots(pending: Dict[str, Any], slots: List[str]) -> Dict[str, Any]:
+    pending = pending or {}
+    existing = pending.get("rejected_slot_isos")
+    rejected: List[str] = []
+    if isinstance(existing, list):
+        rejected = [str(x).strip() for x in existing if str(x).strip()]
+    for iso in slots or []:
+        iso_s = str(iso or "").strip()
+        if iso_s and iso_s not in rejected:
+            rejected.append(iso_s)
+    pending["rejected_slot_isos"] = rejected[-20:]
+    return pending
+
+
+def stage32_refinement_reply(lang: str, direction: str, slots: List[datetime]) -> str:
+    offered = [format_dt_short(x) for x in slots[:4]]
+    if lang == "ru":
+        prefix = "Понял, посмотрим пораньше" if direction == "earlier" else "Понял, посмотрим попозже"
+        return prefix + ": " + " или ".join(offered) + ". Что вам удобнее?"
+    if lang == "en":
+        prefix = "Got it — here are earlier options" if direction == "earlier" else "Got it — here are later options"
+        return prefix + ": " + " or ".join(offered) + ". Which one works best?"
+    prefix = "Sapratu, paskatīsimies agrāk" if direction == "earlier" else "Sapratu, paskatīsimies vēlāk"
+    return prefix + ": " + " vai ".join(offered) + ". Kurš laiks jums der?"
+
+
+def stage32_no_refinement_slots_reply(lang: str, direction: str) -> str:
+    if lang == "ru":
+        return "Подходящих вариантов в эту сторону не вижу. Могу посмотреть другой день или другое время."
+    if lang == "en":
+        return "I don’t see suitable options in that direction. I can check another day or another time."
+    return "Šajā virzienā piemērotus laikus neredzu. Varu paskatīties citu dienu vai citu laiku."
+
+
+def stage32_refine_offered_slots_if_needed(
+    tenant_id: str,
+    user_key: str,
+    msg: str,
+    lang: str,
+    c: Dict[str, Any],
+    pending: Dict[str, Any],
+    settings: Dict[str, Any],
+    service_catalog: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Refine currently offered/confirmed slots using short-term memory.
+
+    Examples:
+    - Bot offers 16:30 / 17:00 / 17:30, user says "не так поздно" -> offer earlier slots.
+    - Bot offers 09:00 / 09:30, user says "не так рано" -> offer later slots.
+    - Avoid repeating the same rejected slots.
+    """
+    state = conversation_state(c or {})
+    if state not in {STATE_AWAITING_TIME, STATE_AWAITING_CONFIRM}:
+        return None
+
+    direction = stage32_detect_slot_refinement(msg, lang)
+    if not direction:
+        return None
+
+    pending = pending or {}
+    service_item = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
+    if not service_item or not calendar_is_configured(settings["calendar_id"]):
+        return None
+
+    offered_isos = get_offered_slots(pending)
+    confirm_iso = str(pending.get("confirm_slot_iso") or c.get("datetime_iso") or "").strip()
+    context_isos = offered_isos[:]
+    if confirm_iso:
+        context_isos.append(confirm_iso)
+
+    context_dts = [dt for dt in (parse_dt_any_tz(x) for x in context_isos) if dt]
+    if not context_dts:
+        return None
+
+    context_dts = sorted(context_dts)
+    base_day = parse_dt_any_tz(str(pending.get("awaiting_time_date_iso") or "").strip())
+    if not base_day:
+        base_day = context_dts[0].replace(hour=9, minute=0, second=0, microsecond=0)
+
+    anchor_dt = context_dts[0] if direction == "earlier" else context_dts[-1]
+    pending = stage32_remember_rejected_slots(pending, [dt.isoformat() for dt in context_dts])
+    rejected = set(str(x).strip() for x in (pending.get("rejected_slot_isos") or []) if str(x).strip())
+
+    all_slots = find_first_n_slots_for_day(
+        calendar_id=settings["calendar_id"],
+        day_dt=base_day,
+        duration_min=service_duration_min(service_item),
+        work_start=settings["work_start"],
+        work_end=settings["work_end"],
+        limit=48,
+        business_rules=settings.get("business_rules"),
+        service_account_json=settings.get("service_account_json"),
+    )
+
+    win = pending_time_window_tuple(pending)
+    candidates: List[datetime] = []
+    if direction == "earlier":
+        candidates = [s for s in all_slots if s < anchor_dt]
+        if win:
+            start_h, _end_h = win
+            in_window = [s for s in candidates if int(start_h) <= s.hour]
+            candidates = in_window or candidates
+        candidates = candidates[-4:]
+    else:
+        candidates = [s for s in all_slots if s > anchor_dt]
+        if win:
+            _start_h, end_h = win
+            in_window = [s for s in candidates if s.hour < int(end_h)]
+            candidates = in_window or candidates
+        candidates = candidates[:4]
+
+    candidates = [s for s in candidates if s.isoformat() not in rejected]
+
+    pending.pop("confirm_slot_iso", None)
+    pending.pop("candidate_datetime_iso", None)
+    pending.pop("requested_datetime_iso", None)
+    pending.pop("partial_datetime_iso", None)
+    pending.pop("time_text", None)
+    pending["booking_intent"] = True
+    pending["awaiting_time_date_iso"] = base_day.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+    c["datetime_iso"] = None
+    c["time_text"] = None
+    c["state"] = STATE_AWAITING_TIME
+
+    if candidates:
+        pending = set_offered_slots(pending, candidates[:4])
+        c["pending"] = pending
+        db_save_conversation(tenant_id, user_key, c)
+        reply = stage32_refinement_reply(lang, direction, candidates[:4])
+        return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "preserve_text": True}
+
+    clear_offered_slots(pending)
+    c["pending"] = pending
+    db_save_conversation(tenant_id, user_key, c)
+    reply = stage32_no_refinement_slots_reply(lang, direction)
+    return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "preserve_text": True}
+
+
 def free_router_handle_candidate_datetime(
     tenant_id: str,
     user_key: str,
@@ -6028,6 +6203,21 @@ def free_router_handle_turn(
         return None
 
     pending = pending or {}
+
+    # Stage 32 Hotfix: contextual refinement of already offered/confirmed slots.
+    # Examples: "не так поздно" -> earlier options; "не так рано" -> later options.
+    stage32_refinement = stage32_refine_offered_slots_if_needed(
+        tenant_id=tenant_id,
+        user_key=user_key,
+        msg=msg,
+        lang=lang,
+        c=c,
+        pending=pending,
+        settings=settings,
+        service_catalog=service_catalog,
+    )
+    if stage32_refinement:
+        return stage32_refinement
 
     # Stage 24 Hotfix: offered slot choice must win before generic date/time merge.
     # Example: after offering 09:00 / 09:30 / 10:00, user says "10:00".
