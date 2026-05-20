@@ -1,21 +1,12 @@
-# REPLIQ_RULES
+# Repliq Conversational Rules
 
-## Core principle
-LLM is an understanding layer only. Orchestration and calendar actions remain deterministic backend responsibilities.
+Core rule: LLM is an understanding layer only. Booking actions remain controlled by orchestration/state logic.
 
-## Forbidden regressions
-- Do not treat `после 14:00` / `pēc 14:00` as exact 14:00 confirmation.
-- Do not repeat busy slot loops.
-- Do not switch language randomly between RU/LV/EN.
-- Do not ask again for service/date when it is already known.
-- Do not create duplicate bookings from confirmation loops.
-- Do not remove Stage 34/35 QA endpoints without replacing them.
-
-## QA before future stages
-Before adding new scheduling/conversation logic, run:
-- `/dialogue/qa`
-- `/dialogue/regression_matrix`
-- selected `/dialogue/regression_run/{scenario_id}` checks
-
-## Current focus
-Production-grade conversational UX, not voice-first behavior.
+Stage 36 recovery rules:
+- Do not reset an active booking flow on vague answers.
+- Preserve known service/date/time whenever possible.
+- If user says they do not know, offer context-aware slots if date/service are known.
+- If user rejects the day, move to date selection.
+- If user rejects the time, move to time selection.
+- If user asks to wait, preserve state and acknowledge without clearing context.
+- Existing Stage 24–35 behavior must remain protected by `/dialogue/qa`.

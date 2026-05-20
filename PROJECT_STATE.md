@@ -1,24 +1,14 @@
-# PROJECT_STATE — Repliq
+# Repliq Project State
 
-Current stage: **Stage 35 — Regression Runner / QA Dashboard**
+Current stage: Stage 36 — Advanced Conversation Recovery.
 
-## Completed milestones
-- Stage 24: Offered slot choice + parser protection
-- Stage 30: Conversational negotiation windows
-- Stage 31: Human scheduling intelligence
-- Stage 32: Context persistence and slot refinement memory
-- Stage 33: Soft conversational UX layer
-- Stage 34: Production regression matrix
-- Stage 35: Internal QA dashboard and regression runner
+Baseline preserved:
+- Stage 24 parser/offered-slot/no-confirm hotfixes
+- Stage 30 after-time negotiation window
+- Stage 31 fuzzy scheduling intelligence
+- Stage 32 contextual refinement memory
+- Stage 33 soft conversational UX
+- Stage 34 regression matrix
+- Stage 35 QA runner with clinic_demo + calendar-safe mode + calibrated evaluator
 
-## Active endpoints
-- `/dialogue/regression_matrix` — machine-readable regression matrix
-- `/dialogue/qa` — Stage 35 visual QA dashboard
-- `/dialogue/regression_run/{scenario_id}` — run one scenario
-- `/dialogue/regression_run_all` — run regression suite
-
-## Notes
-Stage 35 is a tooling layer. It should not change customer booking behavior directly. It is designed to protect Stage 24 and Stage 30–33 from future regressions.
-
-## Next recommended stage
-Stage 36 — Advanced Conversation Recovery & Edge Case Hardening.
+Stage 36 adds a deterministic recovery layer inside active booking flows. It is designed to preserve existing orchestration and avoid resetting the conversation when the user gives incomplete, hesitant, or corrective answers.

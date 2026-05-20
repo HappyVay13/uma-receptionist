@@ -6864,6 +6864,222 @@ def free_router_handle_candidate_datetime(
     return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "preserve_text": True}
 
 
+
+# -------------------------
+# STAGE 36 — ADVANCED CONVERSATION RECOVERY
+# -------------------------
+def stage36_recovery_enabled(channel: str = "", source: str = "runtime") -> bool:
+    flag = os.getenv("STAGE36_RECOVERY_ENABLED", "").strip().lower()
+    if flag in {"0", "false", "no", "off", "disabled"}:
+        return False
+    return True
+
+
+def _stage36_low(text_: Optional[str]) -> str:
+    return _fold_match_text(_normalize_phrase_text(text_ or ""))
+
+
+def stage36_is_hold_text(text_: Optional[str], lang: str) -> bool:
+    low = _stage36_low(text_)
+    if not low:
+        return False
+    phrases = {
+        "podожди", "podozhdi", "подожди", "секунду", "минуту", "пауза", "погоди",
+        "wait", "one moment", "hold on", "just a moment",
+        "pagaidi", "uzgaidi", "vienu bridi", "vienu brīdi", "mazliet pagaidi",
+    }
+    return any(p in low for p in phrases)
+
+
+def stage36_is_uncertain_text(text_: Optional[str], lang: str) -> bool:
+    low = _stage36_low(text_)
+    if not low:
+        return False
+    exact = {
+        "nezinu", "ne zinu", "nav ne jausmas", "gruti pateikt", "grūti pateikt",
+        "не знаю", "не уверен", "не уверена", "сложно сказать", "пока не знаю",
+        "i dont know", "i don't know", "not sure", "hard to say",
+    }
+    return low in exact or any(p in low for p in exact)
+
+
+def stage36_is_available_request(text_: Optional[str], lang: str) -> bool:
+    low = _stage36_low(text_)
+    if not low:
+        return False
+    phrases = {
+        "kas ir pieejams", "kas pieejams", "kas brivs", "kas brīvs", "ko var piedavat", "ko var piedāvāt",
+        "что есть", "какие есть", "что свободно", "что доступно", "предложи", "варианты", "какие варианты",
+        "what is available", "what's available", "what options", "show options", "any options",
+    }
+    return any(p in low for p in phrases)
+
+
+def stage36_is_different_time_text(text_: Optional[str], lang: str) -> bool:
+    low = _stage36_low(text_)
+    if not low:
+        return False
+    phrases = {
+        "другое время", "другой вариант", "не это время", "не подходит", "не удобно", "неудобно",
+        "citu laiku", "cits laiks", "ne sis laiks", "ne šis laiks", "neder", "nav erti", "nav ērti",
+        "another time", "different time", "not this time", "doesnt work", "doesn't work",
+    }
+    return any(p in low for p in phrases)
+
+
+def stage36_is_different_day_text(text_: Optional[str], lang: str) -> bool:
+    low = _stage36_low(text_)
+    if not low:
+        return False
+    phrases = {
+        "не завтра", "не сегодня", "другой день", "другая дата", "не этот день",
+        "ne rit", "ne rīt", "ne sodien", "ne šodien", "citu dienu", "cits datums", "ne so dienu", "ne šo dienu",
+        "not tomorrow", "not today", "another day", "different day", "different date",
+    }
+    return any(p in low for p in phrases)
+
+
+def stage36_recovery_reply(lang: str, kind: str) -> str:
+    lang = get_lang(lang)
+    if kind == "hold":
+        if lang == "ru":
+            return "Конечно, я подожду. Когда будете готовы — напишите, и продолжим с этого места."
+        if lang == "en":
+            return "Of course, take your time. Message me when you’re ready and we’ll continue from here."
+        return "Protams, pagaidīšu. Kad būsiet gatavs, uzrakstiet — turpināsim no šīs vietas."
+    if kind == "ask_day":
+        if lang == "ru":
+            return "Хорошо, тогда выберем другой день. На какую дату посмотреть варианты?"
+        if lang == "en":
+            return "Sure, let’s choose another day. What date should I check?"
+        return "Labi, tad izvēlēsimies citu dienu. Uz kuru datumu paskatīties variantus?"
+    if kind == "ask_time":
+        if lang == "ru":
+            return "Понял. Какое другое время вам было бы удобно?"
+        if lang == "en":
+            return "Understood. What other time would work for you?"
+        return "Skaidrs. Kāds cits laiks jums būtu ērts?"
+    if kind == "need_date":
+        if lang == "ru":
+            return "Могу предложить варианты, только уточните день — на какую дату смотреть?"
+        if lang == "en":
+            return "I can suggest options — just tell me which day I should check."
+        return "Varu piedāvāt variantus — tikai pasakiet, uz kuru dienu skatīties."
+    if kind == "need_service":
+        if lang == "ru":
+            return "Конечно, помогу подобрать вариант. Сначала уточню услугу — на что вас записать?"
+        if lang == "en":
+            return "Of course, I can help. First, which service should I book for you?"
+        return "Protams, palīdzēšu atrast variantu. Vispirms precizēšu pakalpojumu — uz ko jūs pierakstīt?"
+    if lang == "ru":
+        return "Понял. Давайте продолжим запись — какое время вам было бы удобно?"
+    if lang == "en":
+        return "Got it. Let’s continue the booking — what time would work for you?"
+    return "Sapratu. Turpinām pierakstu — kāds laiks jums būtu ērts?"
+
+
+def stage36_offer_context_slots(
+    tenant_id: str,
+    user_key: str,
+    lang: str,
+    c: Dict[str, Any],
+    pending: Dict[str, Any],
+    settings: Dict[str, Any],
+    service_catalog: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    pending = pending or {}
+    service_item = get_service_item_by_key(service_catalog, c.get("service") or pending.get("service"))
+    if not service_item:
+        c["state"] = STATE_AWAITING_SERVICE
+        c["pending"] = pending or {"booking_intent": True}
+        db_save_conversation(tenant_id, user_key, c)
+        reply = stage36_recovery_reply(lang, "need_service")
+        return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "preserve_text": True}
+
+    base_day = parse_dt_any_tz(str(pending.get("awaiting_time_date_iso") or "").strip())
+    if not base_day:
+        dt_context = parse_dt_any_tz(str(c.get("datetime_iso") or pending.get("candidate_datetime_iso") or pending.get("confirm_slot_iso") or "").strip())
+        if dt_context:
+            base_day = dt_context.replace(hour=9, minute=0, second=0, microsecond=0)
+    if not base_day:
+        c["state"] = STATE_AWAITING_DATE
+        c["pending"] = pending or {"booking_intent": True}
+        db_save_conversation(tenant_id, user_key, c)
+        reply = stage36_recovery_reply(lang, "need_date")
+        return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "preserve_text": True}
+
+    return offer_slots_for_date(tenant_id, user_key, lang, c, pending, settings, service_catalog, base_day)
+
+
+def stage36_advanced_recovery_if_needed(
+    tenant_id: str,
+    user_key: str,
+    msg: str,
+    lang: str,
+    c: Dict[str, Any],
+    pending: Dict[str, Any],
+    settings: Dict[str, Any],
+    service_catalog: List[Dict[str, Any]],
+    channel: str = "",
+    source: str = "runtime",
+) -> Optional[Dict[str, Any]]:
+    if not stage36_recovery_enabled(channel, source):
+        return None
+    raw = str(msg or "").strip()
+    if not raw:
+        return None
+    state = conversation_state(c)
+    pending = pending or {}
+
+    if stage36_is_hold_text(raw, lang):
+        pending["booking_intent"] = True
+        pending["stage36_hold"] = True
+        c["pending"] = pending
+        db_save_conversation(tenant_id, user_key, c)
+        reply = stage36_recovery_reply(lang, "hold")
+        return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "preserve_text": True}
+
+    if stage36_is_different_day_text(raw, lang):
+        pending.pop("confirm_slot_iso", None)
+        pending.pop("candidate_datetime_iso", None)
+        pending.pop("requested_datetime_iso", None)
+        pending.pop("partial_datetime_iso", None)
+        clear_offered_slots(pending)
+        pending["booking_intent"] = True
+        c["datetime_iso"] = None
+        c["time_text"] = None
+        c["state"] = STATE_AWAITING_DATE
+        c["pending"] = pending
+        db_save_conversation(tenant_id, user_key, c)
+        reply = stage36_recovery_reply(lang, "ask_day")
+        return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "preserve_text": True}
+
+    if stage36_is_different_time_text(raw, lang) and state in {STATE_AWAITING_CONFIRM, STATE_AWAITING_TIME}:
+        pending.pop("confirm_slot_iso", None)
+        pending.pop("candidate_datetime_iso", None)
+        pending.pop("requested_datetime_iso", None)
+        pending.pop("partial_datetime_iso", None)
+        clear_offered_slots(pending)
+        pending["booking_intent"] = True
+        c["datetime_iso"] = None
+        c["time_text"] = None
+        c["state"] = STATE_AWAITING_TIME
+        c["pending"] = pending
+        db_save_conversation(tenant_id, user_key, c)
+        reply = stage36_recovery_reply(lang, "ask_time")
+        return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "preserve_text": True}
+
+    if stage36_is_uncertain_text(raw, lang) or stage36_is_available_request(raw, lang):
+        if state in {STATE_AWAITING_TIME, STATE_AWAITING_CONFIRM, STATE_AWAITING_DATE}:
+            return stage36_offer_context_slots(tenant_id, user_key, lang, c, pending, settings, service_catalog)
+        if state == STATE_AWAITING_SERVICE:
+            reply = stage36_recovery_reply(lang, "need_service")
+            c["pending"] = pending or {"booking_intent": True}
+            db_save_conversation(tenant_id, user_key, c)
+            return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "preserve_text": True}
+
+    return None
+
 def free_router_handle_turn(
     tenant_id: str,
     user_key: str,
@@ -6886,6 +7102,23 @@ def free_router_handle_turn(
         return None
 
     pending = pending or {}
+
+    # Stage 36: recovery for chaotic / incomplete answers inside active booking flow.
+    # This layer preserves booking context and avoids resetting service/date/time.
+    stage36_recovery = stage36_advanced_recovery_if_needed(
+        tenant_id=tenant_id,
+        user_key=user_key,
+        msg=msg,
+        lang=lang,
+        c=c,
+        pending=pending,
+        settings=settings,
+        service_catalog=service_catalog,
+        channel=channel,
+        source="runtime",
+    )
+    if stage36_recovery:
+        return stage36_recovery
 
     # Stage 32 Hotfix: contextual refinement of already offered/confirmed slots.
     # Examples: "не так поздно" -> earlier options; "не так рано" -> later options.
