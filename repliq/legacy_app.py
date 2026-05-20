@@ -5353,13 +5353,40 @@ def sanitize_conversation_time_text(value: Any) -> Optional[str]:
 
 
 def pending_time_window_tuple(pending: Dict[str, Any]) -> Optional[Tuple[int, int]]:
-    raw = (pending or {}).get("preferred_time_window")
-    if isinstance(raw, (list, tuple)) and len(raw) >= 2:
-        try:
-            return int(raw[0]), int(raw[1])
-        except Exception:
-            return None
+    pending = pending or {}
+    # Stage 36.1: keep fuzzy time preferences across recovery turns.
+    # Example: "tomorrow evening" -> "not tomorrow" -> "day after tomorrow"
+    # must still offer evening slots, not morning generic availability.
+    for key in ("preferred_time_window", "stage36_recovery_time_window", "last_preferred_time_window"):
+        raw = pending.get(key)
+        if isinstance(raw, (list, tuple)) and len(raw) >= 2:
+            try:
+                start_h = max(0, min(23, int(raw[0])))
+                end_h = max(start_h + 1, min(24, int(raw[1])))
+                return start_h, end_h
+            except Exception:
+                continue
     return None
+
+
+def stage36_remember_time_window_context(pending: Dict[str, Any]) -> Dict[str, Any]:
+    pending = pending or {}
+    win = pending_time_window_tuple(pending)
+    if win:
+        pending["preferred_time_window"] = [win[0], win[1]]
+        pending["last_preferred_time_window"] = [win[0], win[1]]
+        pending["stage36_recovery_time_window"] = [win[0], win[1]]
+    return pending
+
+
+def stage36_recover_time_window_context(pending: Dict[str, Any]) -> Dict[str, Any]:
+    pending = pending or {}
+    win = pending_time_window_tuple(pending)
+    if win:
+        pending["preferred_time_window"] = [win[0], win[1]]
+        pending["last_preferred_time_window"] = [win[0], win[1]]
+        pending["stage36_recovery_time_window"] = [win[0], win[1]]
+    return pending
 
 def parse_natural_datetime(text_: Optional[str], base_iso: Optional[str] = None) -> Optional[datetime]:
     src = (text_ or "").lower().strip()
@@ -5630,7 +5657,9 @@ def offer_slots_for_date(
     pending["awaiting_time_date_iso"] = base_date.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
     pending.pop("confirm_slot_iso", None)
     pending.pop("candidate_datetime_iso", None)
+    pending = stage36_remember_time_window_context(pending)
     clear_offered_slots(pending)
+    pending = stage36_recover_time_window_context(pending)
     c["pending"] = pending
     c["datetime_iso"] = None
     c["state"] = STATE_AWAITING_TIME
@@ -6949,10 +6978,10 @@ def stage36_recovery_reply(lang: str, kind: str) -> str:
         return "Protams, pagaidīšu. Kad būsiet gatavs, uzrakstiet — turpināsim no šīs vietas."
     if kind == "ask_day":
         if lang == "ru":
-            return "Хорошо, тогда выберем другой день. На какую дату посмотреть варианты?"
+            return "Понял. Тогда посмотрим другой день и сохраним ваши пожелания по времени. Какая дата удобнее?"
         if lang == "en":
-            return "Sure, let’s choose another day. What date should I check?"
-        return "Labi, tad izvēlēsimies citu dienu. Uz kuru datumu paskatīties variantus?"
+            return "Got it. Let’s check another day and keep your time preference. What date works better?"
+        return "Sapratu. Tad paskatīsimies citu dienu un paturēsim jūsu vēlmi pēc laika. Kurš datums būtu ērtāks?"
     if kind == "ask_time":
         if lang == "ru":
             return "Понял. Какое другое время вам было бы удобно?"
@@ -6976,6 +7005,28 @@ def stage36_recovery_reply(lang: str, kind: str) -> str:
     if lang == "en":
         return "Got it. Let’s continue the booking — what time would work for you?"
     return "Sapratu. Turpinām pierakstu — kāds laiks jums būtu ērts?"
+
+
+def stage36_uncertain_slots_reply(lang: str, slots: List[str]) -> str:
+    lang = get_lang(lang)
+    joined = _stage33_join_options(lang, slots[:4]) if slots else ""
+    if lang == "ru":
+        return (
+            f"Понимаю. Можно выбрать один из этих вариантов: {joined}. Или напишите, если посмотреть раньше, позже или другой день."
+            if joined
+            else "Понимаю. Могу посмотреть раньше, позже или другой день — как вам удобнее?"
+        )
+    if lang == "en":
+        return (
+            f"No problem. You can choose one of these options: {joined}. Or tell me if I should check earlier, later, or another day."
+            if joined
+            else "No problem. I can check earlier, later, or another day — what would help?"
+        )
+    return (
+        f"Sapratu. Varat izvēlēties kādu no šiem variantiem: {joined}. Vai arī uzrakstiet, ja paskatīties agrāk, vēlāk vai citu dienu."
+        if joined
+        else "Sapratu. Varu paskatīties agrāk, vēlāk vai citu dienu — kā jums būtu ērtāk?"
+    )
 
 
 def stage36_offer_context_slots(
@@ -7040,11 +7091,14 @@ def stage36_advanced_recovery_if_needed(
         return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "preserve_text": True}
 
     if stage36_is_different_day_text(raw, lang):
+        # Preserve semantic time preference before clearing concrete slots.
+        pending = stage36_remember_time_window_context(pending)
         pending.pop("confirm_slot_iso", None)
         pending.pop("candidate_datetime_iso", None)
         pending.pop("requested_datetime_iso", None)
         pending.pop("partial_datetime_iso", None)
         clear_offered_slots(pending)
+        pending = stage36_recover_time_window_context(pending)
         pending["booking_intent"] = True
         c["datetime_iso"] = None
         c["time_text"] = None
@@ -7070,7 +7124,18 @@ def stage36_advanced_recovery_if_needed(
         return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "preserve_text": True}
 
     if stage36_is_uncertain_text(raw, lang) or stage36_is_available_request(raw, lang):
-        if state in {STATE_AWAITING_TIME, STATE_AWAITING_CONFIRM, STATE_AWAITING_DATE}:
+        if state in {STATE_AWAITING_TIME, STATE_AWAITING_CONFIRM}:
+            slots = _slot_labels_from_pending(pending)
+            if slots:
+                pending = stage36_recover_time_window_context(pending)
+                pending["booking_intent"] = True
+                c["pending"] = pending
+                c["state"] = STATE_AWAITING_TIME
+                db_save_conversation(tenant_id, user_key, c)
+                reply = stage36_uncertain_slots_reply(lang, slots)
+                return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "preserve_text": True}
+            return stage36_offer_context_slots(tenant_id, user_key, lang, c, pending, settings, service_catalog)
+        if state == STATE_AWAITING_DATE:
             return stage36_offer_context_slots(tenant_id, user_key, lang, c, pending, settings, service_catalog)
         if state == STATE_AWAITING_SERVICE:
             reply = stage36_recovery_reply(lang, "need_service")
@@ -8026,8 +8091,9 @@ def handle_user_text(
             pending.pop("confirm_slot_iso", None)
             pending.pop("candidate_datetime_iso", None)
             pending.pop("awaiting_time_date_iso", None)
-            pending.pop("preferred_time_window", None)
+            pending = stage36_remember_time_window_context(pending)
             clear_offered_slots(pending)
+            pending = stage36_recover_time_window_context(pending)
             c["pending"] = pending
             c["datetime_iso"] = None
             c["state"] = STATE_AWAITING_DATE

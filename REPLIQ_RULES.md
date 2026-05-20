@@ -10,3 +10,9 @@ Stage 36 recovery rules:
 - If user rejects the time, move to time selection.
 - If user asks to wait, preserve state and acknowledge without clearing context.
 - Existing Stage 24–35 behavior must remain protected by `/dialogue/qa`.
+
+
+## Stage 36.1 — Semantic Recovery Continuity
+- Preserves fuzzy time windows across recovery turns such as not tomorrow -> day after tomorrow.
+- Improves uncertain/hold recovery language without changing booking actions.
+- Booking/calendar execution logic remains unchanged.
