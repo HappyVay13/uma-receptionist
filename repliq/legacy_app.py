@@ -7903,6 +7903,34 @@ def handle_user_text(
 
     pending = c.get("pending") or {}
 
+    # Stage 36.3: semantic date-shift continuity.
+    # When the user rejects the current day and then provides a replacement date
+    # (e.g. "ne rīt" -> "parīt"), continue directly to contextual slot
+    # offering. This must run before generic partial datetime persistence,
+    # otherwise the flow can fall back into AWAITING_DATE and lose the
+    # evening/after-work preference.
+    if (
+        msg
+        and conversation_state(c) == STATE_AWAITING_DATE
+        and (is_active_booking_flow(c) or active_flow)
+    ):
+        stage36_shift_day = stage36_recovery_date_from_text(msg)
+        if stage36_shift_day:
+            pending = stage36_recover_time_window_context(
+                stage36_remember_time_window_context(pending or {})
+            )
+            pending["booking_intent"] = True
+            return stage36_continue_with_new_date_slots(
+                tenant_id=tenant_id,
+                user_key=user_key,
+                lang=lang,
+                c=c,
+                pending=pending,
+                settings=settings,
+                service_catalog=service_catalog,
+                base_day=stage36_shift_day,
+            )
+
     # Stage 27.1 hotfix: do not re-run the old fresh-booking service prompt
     # branch if Stage 27 has already persisted a service from this same turn.
     # Otherwise phrases like "uz konsultāciju" can be recognized by Stage 27,

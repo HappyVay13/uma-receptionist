@@ -19,3 +19,6 @@ Stage 36 recovery rules:
 
 ## Stage 36.2 Rule
 If the user corrects the day and then gives a new date, Repliq must immediately continue slot offering using the existing service and fuzzy time context. Do not ask for the date again when the new date is already provided.
+
+## Stage 36.3
+Semantic Date Shift Continuity added: preserves fuzzy time windows when user changes date after rejecting the previous one, e.g. `ne rīt` -> `parīt`.

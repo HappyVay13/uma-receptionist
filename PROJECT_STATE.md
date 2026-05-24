@@ -23,3 +23,6 @@ Stage 36 adds a deterministic recovery layer inside active booking flows. It is 
 - Added direct date refinement continuation inside recovery flow.
 - Fixed redundant ask-date loop after `ne rīt` -> `parīt`.
 - Preserves fuzzy time preferences when changing day.
+
+## Stage 36.3
+Semantic Date Shift Continuity added: preserves fuzzy time windows when user changes date after rejecting the previous one, e.g. `ne rīt` -> `parīt`.
