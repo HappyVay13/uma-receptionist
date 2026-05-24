@@ -1624,11 +1624,12 @@ def _extract_price_from_line(line: str) -> Optional[str]:
         r"(€\s*\d+(?:[\.,]\d{1,2})?)",
         r"(\d+(?:[\.,]\d{1,2})?\s*€)",
         r"(\d+(?:[\.,]\d{1,2})?\s*eur)",
+        r"(\d+(?:[\.,]\d{1,2})?\s*eiro)",
     ]
     for pat in patterns:
         m = re.search(pat, src, flags=re.IGNORECASE)
         if m:
-            return m.group(1).replace("eur", "EUR")
+            return m.group(1).replace("eur", "EUR").replace("eiro", "eiro")
     return None
 
 
@@ -1774,7 +1775,10 @@ def try_barbershop_faq(
         # the service name. In an active booking flow, use the already selected
         # service so FAQ can answer the price without resetting scheduling context.
         if not service_item and current_service_key:
-            service_item = get_service_item_by_key(service_catalog, str(current_service_key).strip())
+            current_service_text = str(current_service_key).strip()
+            service_item = get_service_item_by_key(service_catalog, current_service_text)
+            if not service_item:
+                service_item = extract_service_from_text(current_service_text, service_catalog, lang)
         if service_item:
             line = _memory_line_for_service(business_memory, service_item)
             price = _extract_price_from_line(line or "")
@@ -6496,8 +6500,8 @@ def free_router_is_price_request(text_: Optional[str], lang: str) -> bool:
     if not low:
         return False
     phrases = [
-        "cik maksa", "cik maksā", "cena", "cenradis", "cenrādis",
-        "сколько стоит", "цена", "стоимость", "прайс", "how much", "price", "cost",
+        "cik maksa", "cik maksā", "cik tas maksā", "cik tas maksa", "cik tas maksas", "cena", "cenradis", "cenrādis",
+        "сколько стоит", "сколько это стоит", "цена", "стоимость", "прайс", "how much", "how much does it cost", "price", "cost",
     ]
     return any(p in low for p in phrases if p)
 

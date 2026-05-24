@@ -60,3 +60,9 @@ Semantic Date Shift Continuity added: preserves fuzzy time windows when user cha
 - Price side-questions inside active booking flow are answered from business memory/service context.
 - Existing booking context is preserved.
 - No calendar/orchestration booking logic changed.
+
+## Stage 38.2 — Price FAQ Inline Answer
+- Fixed price side-question detection inside active booking flows.
+- Added LV `cik tas maksā?` handling.
+- Added `eiro` price extraction from business memory lines.
+- Preserves booking context after answering price.

@@ -54,3 +54,6 @@ When the user is in `AWAITING_TIME` and offered slots exist, short positive Latv
 - Price side-questions inside active booking flow are answered from business memory/service context.
 - Existing booking context is preserved.
 - No calendar/orchestration booking logic changed.
+
+## Stage 38.2 Rule
+When the user asks a price question during an active booking flow, answer the price from grounded business memory/service data first, then continue the same booking flow with the existing offered slots.
