@@ -28,3 +28,9 @@ Semantic Date Shift Continuity added: preserves fuzzy time windows when user cha
 - Added centralized temporal recovery for relative dates.
 - Latvian `rīt/parīt/aizparīt` now maps to +1/+2/+3 days.
 - Date-shift recovery preserves fuzzy time context and avoids morning fallback.
+
+## Stage 37.1 — Temporal Engine Window Preservation
+- Fixed fuzzy time window persistence for `rīt vakarā`.
+- Fixed negative-only `ne rīt` so it does not resolve back to tomorrow.
+- `parīt` and `aizparīt` should now regenerate contextual evening slots instead of morning fallback.
+

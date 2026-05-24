@@ -5452,6 +5452,13 @@ def stage37_relative_date_from_text(text_: Optional[str]) -> Optional[datetime]:
         return at(3)
     if re.search(r"\bparit\b", low):
         return at(2)
+
+    # Negative-only phrases like "ne rīt" must not resolve back to tomorrow.
+    # Combined corrections such as "ne rīt, bet parīt" are handled above by
+    # the parit/aizparit checks.
+    if any(x in low for x in ["ne rit", "not tomorrow", "ne zavtra", "не завтра"]):
+        return None
+
     # Avoid matching "rita" / "no rita" as plain tomorrow when user means morning.
     if re.search(r"\brit\b", low) or "rīt" in raw.lower():
         return at(1)
@@ -5459,9 +5466,6 @@ def stage37_relative_date_from_text(text_: Optional[str]) -> Optional[datetime]:
     if any(x in low for x in ["poslezavtra", "послезавтра", "day after tomorrow"]):
         return at(2)
     if any(x in low for x in ["zavtra", "завтра", "tomorrow"]):
-        # Negative-only phrases like "not tomorrow" / "ne rīt" should not resolve to tomorrow.
-        if any(x in low for x in ["ne rit", "not tomorrow", "ne zavtra", "не завтра"]):
-            return None
         return at(1)
     if any(x in low for x in ["sodien", "šodien", "segodnya", "сегодня", "today"]):
         return at(0)
@@ -5508,6 +5512,17 @@ def stage37_temporal_recovery_if_needed(
     active = is_active_booking_flow(c) or state in ACTIVE_BOOKING_STATES or bool(pending.get("booking_intent"))
     if not active:
         return None
+
+    # Stage 37.1: preserve fuzzy window from short temporal answers like
+    # "rīt vakarā" before any date-only routing. Without this, the date is
+    # understood but slot generation falls back to 09:00/09:30.
+    direct_window = parse_time_window(raw)
+    if direct_window:
+        pending["preferred_time_window"] = [direct_window[0], direct_window[1]]
+        pending["last_preferred_time_window"] = [direct_window[0], direct_window[1]]
+        pending["stage36_recovery_time_window"] = [direct_window[0], direct_window[1]]
+        pending["stage37_temporal_window"] = [direct_window[0], direct_window[1]]
+        c["pending"] = pending
 
     rel_day = stage37_relative_date_from_text(raw)
 
@@ -5864,6 +5879,9 @@ def offer_slots_for_date(
     pending = stage36_remember_time_window_context(pending)
     clear_offered_slots(pending)
     pending = stage36_recover_time_window_context(pending)
+    # Stage 37.1: recompute after recovery/persistence so callers that set
+    # preferred_time_window just before this function get windowed slots.
+    stored_window = pending_time_window_tuple(pending)
     c["pending"] = pending
     c["datetime_iso"] = None
     c["state"] = STATE_AWAITING_TIME
