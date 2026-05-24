@@ -57,3 +57,7 @@ When the user is in `AWAITING_TIME` and offered slots exist, short positive Latv
 
 ## Stage 38.2 Rule
 When the user asks a price question during an active booking flow, answer the price from grounded business memory/service data first, then continue the same booking flow with the existing offered slots.
+
+
+## Stage 38.3 rule
+Price side-questions inside an active booking flow must be answered before generic recovery/slot reminder logic. Preserve booking context after answering.

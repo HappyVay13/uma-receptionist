@@ -66,3 +66,8 @@ Semantic Date Shift Continuity added: preserves fuzzy time windows when user cha
 - Added LV `cik tas maksā?` handling.
 - Added `eiro` price extraction from business memory lines.
 - Preserves booking context after answering price.
+
+
+## Stage 38.3 — Price Side-question Routing Fix
+- Fixed active booking flow routing so `cik tas maksā?` answers price before repeating slots.
+- Preserves existing booking context and offered slots.
