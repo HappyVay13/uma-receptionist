@@ -39,3 +39,6 @@ Semantic Date Shift Continuity added: preserves fuzzy time windows when user cha
 - If the user gives a replacement relative date (`parīt`, `aizparīt`) inside an active booking flow, regenerate slots immediately.
 - Do not ask for the date again after a replacement date was provided.
 - If the user says `jā, der` while slot options are visible, treat it as choosing the first offered slot and move to confirmation.
+
+## Stage 37.3 Rule
+When the user is in `AWAITING_TIME` and offered slots exist, short positive Latvian replies such as `jā, der`, `ja der`, `der`, `labi`, or `apstiprinu` must select the first offered slot and move to `AWAITING_CONFIRM`. They must not re-open date selection.

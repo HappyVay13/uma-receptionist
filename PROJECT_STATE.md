@@ -43,3 +43,8 @@ Semantic Date Shift Continuity added: preserves fuzzy time windows when user cha
 - Fixed direct slot regeneration after `parīt` / `aizparīt` in temporal recovery flows.
 - Preserves `vakarā` / fuzzy time window across replacement-date turns.
 - Added slot-ack guard for `jā, der` while offered slots are visible.
+
+## Stage 37.3 — LV Confirm Intent Guard
+- Fixed Latvian positive acknowledgement detection in offered-slot state.
+- `jā, der` now chooses the first offered slot and asks for booking confirmation.
+- Prevents accidental fallback to `AWAITING_DATE`.

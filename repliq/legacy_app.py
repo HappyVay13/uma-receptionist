@@ -5509,6 +5509,50 @@ def stage37_is_short_relative_date_answer(text_: Optional[str]) -> bool:
     return low in allowed or low in {"ne rit bet parit", "ne rit bet aizparit"}
 
 
+def stage37_is_positive_slot_ack(text_: Optional[str], lang: str) -> bool:
+    """Stage 37.3: robust positive ack detector for offered slot selection.
+
+    `is_yes_text()` is intentionally strict and only matches exact tokens, so
+    natural Latvian answers like `jā, der` or `labi, der` were slipping into
+    generic temporal routing and reopening AWAITING_DATE. This helper is used
+    only inside the offered-slot guard, so it is safe to be more conversational.
+    """
+    low = _normalize_phrase_text(text_)
+    if not low:
+        return False
+    if is_yes_text(low, lang):
+        return True
+
+    positive_phrases = {
+        "lv": {
+            "ja", "jaa", "jā", "ja der", "jā der", "jaa der",
+            "der", "labi", "labi der", "ok", "okej",
+            "apstiprinu", "var", "varam", "šis der", "sis der",
+            "jā labi", "ja labi", "jā apstiprinu", "ja apstiprinu",
+        },
+        "ru": {
+            "да", "да подходит", "подходит", "хорошо", "ок",
+            "да хорошо", "подтверждаю", "да подтверждаю",
+        },
+        "en": {
+            "yes", "yes works", "works", "fits", "that works",
+            "ok", "okay", "sure", "confirm", "yes confirm",
+        },
+    }
+    allowed = set().union(*positive_phrases.values())
+    allowed.update(positive_phrases.get(get_lang(lang), set()))
+    if low in allowed:
+        return True
+
+    # Conservative compound detection: require a clear yes/ok + suitability word.
+    lv_yes = {"ja", "jaa", "jā", "labi", "ok", "okej"}
+    lv_fit = {"der", "apstiprinu", "var", "varam"}
+    parts = set(low.split())
+    if get_lang(lang) == "lv" and parts.intersection(lv_yes) and parts.intersection(lv_fit):
+        return True
+    return False
+
+
 def stage37_choose_first_offered_slot_from_ack(
     tenant_id: str,
     user_key: str,
@@ -5521,7 +5565,7 @@ def stage37_choose_first_offered_slot_from_ack(
     settings: Dict[str, Any],
     service_catalog: List[Dict[str, Any]],
 ) -> Optional[Dict[str, Any]]:
-    """Stage 37.2 guard: in slot-offer state, positive ack selects opt1.
+    """Stage 37.3 guard: in slot-offer state, positive ack selects opt1.
 
     Without this, short LV confirmations like "jā, der" can be routed as a
     vague continuation and move back to AWAITING_DATE. This guard is safe
@@ -5529,7 +5573,7 @@ def stage37_choose_first_offered_slot_from_ack(
     """
     if conversation_state(c) != STATE_AWAITING_TIME:
         return None
-    if not is_yes_text(msg, lang):
+    if not stage37_is_positive_slot_ack(msg, lang):
         return None
     offered = get_offered_slots(pending or {})
     if not offered:
