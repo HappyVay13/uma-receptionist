@@ -18,3 +18,8 @@ Stage 36 adds a deterministic recovery layer inside active booking flows. It is 
 - Preserves fuzzy time windows across recovery turns such as not tomorrow -> day after tomorrow.
 - Improves uncertain/hold recovery language without changing booking actions.
 - Booking/calendar execution logic remains unchanged.
+
+## Stage 36.2 — Conversational Continuity Smoothing
+- Added direct date refinement continuation inside recovery flow.
+- Fixed redundant ask-date loop after `ne rīt` -> `parīt`.
+- Preserves fuzzy time preferences when changing day.

@@ -5388,6 +5388,71 @@ def stage36_recover_time_window_context(pending: Dict[str, Any]) -> Dict[str, An
         pending["stage36_recovery_time_window"] = [win[0], win[1]]
     return pending
 
+
+# Stage 36.2: direct date refinement continuation inside recovery flows.
+# If the client says "not tomorrow" and then gives a new date, we should not
+# re-enter the date-question loop. Keep the fuzzy time window and immediately
+# regenerate slots for the new day.
+def stage36_recovery_date_from_text(text_: Optional[str]) -> Optional[datetime]:
+    raw = str(text_ or "").strip()
+    if not raw:
+        return None
+    low = _stage36_low(raw) if "_stage36_low" in globals() else _fold_match_text(_normalize_phrase_text(raw))
+    base = today_local()
+
+    # Explicit corrections: "ne rīt, bet parīt" / "не завтра, а послезавтра".
+    correction_markers = [
+        "bet parit", "bet aizparit", "bet aizparit", "bet parīt", "bet aizparīt",
+        "a parit", "aizparit", "parit", "parīt", "aizparīt",
+        "а послезавтра", "но послезавтра", "послезавтра",
+        "but day after tomorrow", "day after tomorrow",
+    ]
+    negative_only = any(x in low for x in ["ne rit", "ne rīt", "не завтра", "not tomorrow"])
+    has_future_alt = any(_fold_match_text(x) in low for x in correction_markers)
+    if has_future_alt:
+        return datetime.combine(base + timedelta(days=2), datetime.min.time(), tzinfo=TZ).replace(hour=9)
+
+    # Do not treat "not tomorrow" as tomorrow.
+    if negative_only:
+        return None
+
+    parsed = parse_date_only_text(raw)
+    if parsed:
+        return parsed.replace(hour=9, minute=0, second=0, microsecond=0)
+
+    if any(x in low for x in ["rit", "rīt", "завтра", "tomorrow"]):
+        return datetime.combine(base + timedelta(days=1), datetime.min.time(), tzinfo=TZ).replace(hour=9)
+    if any(x in low for x in ["sodien", "šodien", "сегодня", "today"]):
+        return datetime.combine(base, datetime.min.time(), tzinfo=TZ).replace(hour=9)
+    return None
+
+
+def stage36_continue_with_new_date_slots(
+    tenant_id: str,
+    user_key: str,
+    lang: str,
+    c: Dict[str, Any],
+    pending: Dict[str, Any],
+    settings: Dict[str, Any],
+    service_catalog: List[Dict[str, Any]],
+    base_day: datetime,
+) -> Dict[str, Any]:
+    pending = stage36_recover_time_window_context(stage36_remember_time_window_context(pending or {}))
+    pending["awaiting_time_date_iso"] = base_day.replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+    pending.pop("confirm_slot_iso", None)
+    pending.pop("candidate_datetime_iso", None)
+    pending.pop("requested_datetime_iso", None)
+    pending.pop("partial_datetime_iso", None)
+    clear_offered_slots(pending)
+    pending = stage36_recover_time_window_context(pending)
+    pending["booking_intent"] = True
+    c["datetime_iso"] = None
+    c["time_text"] = None
+    c["state"] = STATE_AWAITING_TIME
+    c["pending"] = pending
+    db_save_conversation(tenant_id, user_key, c)
+    return offer_slots_for_date(tenant_id, user_key, lang, c, pending, settings, service_catalog, base_day)
+
 def parse_natural_datetime(text_: Optional[str], base_iso: Optional[str] = None) -> Optional[datetime]:
     src = (text_ or "").lower().strip()
     if not src:
@@ -7082,6 +7147,16 @@ def stage36_advanced_recovery_if_needed(
     state = conversation_state(c)
     pending = pending or {}
 
+    # Stage 36.2: if we are waiting for a date and the user provides one
+    # (e.g. "parīt" after "ne rīt"), continue directly to slot offering.
+    if state == STATE_AWAITING_DATE:
+        recovery_day = stage36_recovery_date_from_text(raw)
+        if recovery_day:
+            pending = stage36_remember_time_window_context(pending)
+            return stage36_continue_with_new_date_slots(
+                tenant_id, user_key, lang, c, pending, settings, service_catalog, recovery_day
+            )
+
     if stage36_is_hold_text(raw, lang):
         pending["booking_intent"] = True
         pending["stage36_hold"] = True
@@ -7093,6 +7168,14 @@ def stage36_advanced_recovery_if_needed(
     if stage36_is_different_day_text(raw, lang):
         # Preserve semantic time preference before clearing concrete slots.
         pending = stage36_remember_time_window_context(pending)
+        # Stage 36.2: if the same message already contains the replacement date
+        # ("ne rīt, bet parīt" / "не завтра, а послезавтра"), do not ask the
+        # date again; continue directly to contextual slot offering.
+        recovery_day = stage36_recovery_date_from_text(raw)
+        if recovery_day:
+            return stage36_continue_with_new_date_slots(
+                tenant_id, user_key, lang, c, pending, settings, service_catalog, recovery_day
+            )
         pending.pop("confirm_slot_iso", None)
         pending.pop("candidate_datetime_iso", None)
         pending.pop("requested_datetime_iso", None)

@@ -16,3 +16,6 @@ Stage 36 recovery rules:
 - Preserves fuzzy time windows across recovery turns such as not tomorrow -> day after tomorrow.
 - Improves uncertain/hold recovery language without changing booking actions.
 - Booking/calendar execution logic remains unchanged.
+
+## Stage 36.2 Rule
+If the user corrects the day and then gives a new date, Repliq must immediately continue slot offering using the existing service and fuzzy time context. Do not ask for the date again when the new date is already provided.
