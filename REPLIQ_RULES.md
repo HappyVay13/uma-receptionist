@@ -22,3 +22,9 @@ If the user corrects the day and then gives a new date, Repliq must immediately 
 
 ## Stage 36.3
 Semantic Date Shift Continuity added: preserves fuzzy time windows when user changes date after rejecting the previous one, e.g. `ne rīt` -> `parīt`.
+
+
+## Stage 37 — Temporal Semantic Engine
+- Added centralized temporal recovery for relative dates.
+- Latvian `rīt/parīt/aizparīt` now maps to +1/+2/+3 days.
+- Date-shift recovery preserves fuzzy time context and avoids morning fallback.

@@ -2053,6 +2053,33 @@ STAGE34_REGRESSION_TEST_MATRIX: List[Dict[str, Any]] = [
         "message_sequence": ["gribu pierakstīties rīt 14:00", "konsultācija", "10:00"],
         "expected": ["select_offered_slot", "move_to_confirmation_or_booking"],
         "forbidden": ["repeat_14_busy", "ignore_offered_choice"],
+    },    {
+        "id": "stage37_lv_parit_recovery",
+        "stage": 37,
+        "lang": "lv",
+        "category": "temporal_semantic_recovery",
+        "message_sequence": [
+            "gribu pierakstīties uz konsultāciju",
+            "rīt vakarā",
+            "ne rīt",
+            "parīt",
+        ],
+        "expected": ["booking_flow", "evening_window", "multiple_slot_options", "lv_reply"],
+        "forbidden": ["morning_slots_only", "ask_service_again", "language_switch_to_ru"],
+    },
+    {
+        "id": "stage37_lv_aizparit_recovery",
+        "stage": 37,
+        "lang": "lv",
+        "category": "temporal_semantic_recovery",
+        "message_sequence": [
+            "gribu pierakstīties uz konsultāciju",
+            "rīt vakarā",
+            "ne rīt",
+            "aizparīt",
+        ],
+        "expected": ["booking_flow", "evening_window", "multiple_slot_options", "lv_reply"],
+        "forbidden": ["morning_slots_only", "ask_service_again", "language_switch_to_ru"],
     },
 ]
 
@@ -2303,9 +2330,10 @@ def stage35_run_regression_scenario(scenario_id: str, tenant_id: Optional[str] =
     }
 
 
-def stage35_run_regression_suite(tenant_id: Optional[str] = None, limit: int = 10) -> Dict[str, Any]:
+def stage35_run_regression_suite(tenant_id: Optional[str] = None, limit: Optional[int] = None) -> Dict[str, Any]:
     tenant_id = stage35_resolve_qa_tenant_id(tenant_id)
-    limit = max(1, min(int(limit or 10), len(STAGE34_REGRESSION_TEST_MATRIX)))
+    requested_limit = len(STAGE34_REGRESSION_TEST_MATRIX) if limit in (None, "", 0) else int(limit)
+    limit = max(1, min(requested_limit, len(STAGE34_REGRESSION_TEST_MATRIX)))
     results = []
     for scenario in STAGE34_REGRESSION_TEST_MATRIX[:limit]:
         try:
@@ -2419,7 +2447,7 @@ def dialogue_regression_run_endpoint(scenario_id: str, tenant_id: Optional[str] 
 
 
 @app.get("/dialogue/regression_run_all")
-def dialogue_regression_run_all_endpoint(tenant_id: Optional[str] = None, limit: int = 10):
+def dialogue_regression_run_all_endpoint(tenant_id: Optional[str] = None, limit: Optional[int] = None):
     return stage35_run_regression_suite(tenant_id=tenant_id, limit=limit)
 
 
@@ -5256,7 +5284,11 @@ def parse_date_only_text(text_: Optional[str]) -> Optional[datetime]:
             d = next_weekday_date(wd, base)
             return datetime.combine(d, datetime.min.time(), tzinfo=TZ).replace(hour=9)
 
-    if _contains_any_phrase(src, ["parīt", "послезавтра", "day after tomorrow"]):
+    # Stage 37: Latvian relative dates must be ordered from longest to shortest.
+    # "aizparīt" contains "parīt", so it must be checked first.
+    if _contains_any_phrase(src, ["aizparīt", "aizparit"]):
+        return datetime.combine(base + timedelta(days=3), datetime.min.time(), tzinfo=TZ).replace(hour=9)
+    if _contains_any_phrase(src, ["parīt", "parit", "послезавтра", "day after tomorrow"]):
         return datetime.combine(base + timedelta(days=2), datetime.min.time(), tzinfo=TZ).replace(hour=9)
     if _contains_any_phrase(src, ["rīt", "rit", "завтра", "tomorrow"]):
         return datetime.combine(base + timedelta(days=1), datetime.min.time(), tzinfo=TZ).replace(hour=9)
@@ -5393,39 +5425,146 @@ def stage36_recover_time_window_context(pending: Dict[str, Any]) -> Dict[str, An
 # If the client says "not tomorrow" and then gives a new date, we should not
 # re-enter the date-question loop. Keep the fuzzy time window and immediately
 # regenerate slots for the new day.
-def stage36_recovery_date_from_text(text_: Optional[str]) -> Optional[datetime]:
+def stage37_temporal_norm(text_: Optional[str]) -> str:
+    return _fold_match_text(_normalize_phrase_text(str(text_ or ""))).strip()
+
+
+def stage37_relative_date_from_text(text_: Optional[str]) -> Optional[datetime]:
+    """Centralized relative-date parser for conversational recovery.
+
+    Stage 37 rule: longest Latvian relative words must win first.
+    - rīt / rit = +1
+    - parīt / parit = +2
+    - aizparīt / aizparit = +3
+    Also supports Russian/English equivalents used in current Repliq tests.
+    """
     raw = str(text_ or "").strip()
     if not raw:
         return None
-    low = _stage36_low(raw) if "_stage36_low" in globals() else _fold_match_text(_normalize_phrase_text(raw))
+    low = stage37_temporal_norm(raw)
     base = today_local()
 
-    # Explicit corrections: "ne rīt, bet parīt" / "не завтра, а послезавтра".
-    correction_markers = [
-        "bet parit", "bet aizparit", "bet aizparit", "bet parīt", "bet aizparīt",
-        "a parit", "aizparit", "parit", "parīt", "aizparīt",
-        "а послезавтра", "но послезавтра", "послезавтра",
-        "but day after tomorrow", "day after tomorrow",
-    ]
-    negative_only = any(x in low for x in ["ne rit", "ne rīt", "не завтра", "not tomorrow"])
-    has_future_alt = any(_fold_match_text(x) in low for x in correction_markers)
-    if has_future_alt:
-        return datetime.combine(base + timedelta(days=2), datetime.min.time(), tzinfo=TZ).replace(hour=9)
+    def at(days: int) -> datetime:
+        return datetime.combine(base + timedelta(days=days), datetime.min.time(), tzinfo=TZ).replace(hour=9)
 
-    # Do not treat "not tomorrow" as tomorrow.
-    if negative_only:
-        return None
+    # Explicit Latvian order: aizparit before parit before rit.
+    if re.search(r"\baizparit\b", low):
+        return at(3)
+    if re.search(r"\bparit\b", low):
+        return at(2)
+    # Avoid matching "rita" / "no rita" as plain tomorrow when user means morning.
+    if re.search(r"\brit\b", low) or "rīt" in raw.lower():
+        return at(1)
+
+    if any(x in low for x in ["poslezavtra", "послезавтра", "day after tomorrow"]):
+        return at(2)
+    if any(x in low for x in ["zavtra", "завтра", "tomorrow"]):
+        # Negative-only phrases like "not tomorrow" / "ne rīt" should not resolve to tomorrow.
+        if any(x in low for x in ["ne rit", "not tomorrow", "ne zavtra", "не завтра"]):
+            return None
+        return at(1)
+    if any(x in low for x in ["sodien", "šodien", "segodnya", "сегодня", "today"]):
+        return at(0)
 
     parsed = parse_date_only_text(raw)
     if parsed:
         return parsed.replace(hour=9, minute=0, second=0, microsecond=0)
-
-    if any(x in low for x in ["rit", "rīt", "завтра", "tomorrow"]):
-        return datetime.combine(base + timedelta(days=1), datetime.min.time(), tzinfo=TZ).replace(hour=9)
-    if any(x in low for x in ["sodien", "šodien", "сегодня", "today"]):
-        return datetime.combine(base, datetime.min.time(), tzinfo=TZ).replace(hour=9)
     return None
 
+
+def stage36_recovery_date_from_text(text_: Optional[str]) -> Optional[datetime]:
+    # Stage 37 keeps the old function name for compatibility with Stage 36 call sites.
+    return stage37_relative_date_from_text(text_)
+
+
+def stage37_is_negative_date_rejection(text_: Optional[str]) -> bool:
+    low = stage37_temporal_norm(text_)
+    return any(x in low for x in [
+        "ne rit", "ne rīt", "nav rit", "ne sodien", "ne parit", "ne aizparit",
+        "не завтра", "не сегодня", "not tomorrow", "not today",
+    ])
+
+
+def stage37_temporal_recovery_if_needed(
+    tenant_id: str,
+    user_key: str,
+    msg: str,
+    lang: str,
+    c: Dict[str, Any],
+    pending: Dict[str, Any],
+    settings: Dict[str, Any],
+    service_catalog: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Early temporal recovery layer.
+
+    Runs before LLM/entity persistence so short Latvian replies like "parīt" or
+    "aizparīt" cannot be swallowed by the generic AWAITING_DATE prompt path.
+    """
+    raw = str(msg or "").strip()
+    if not raw:
+        return None
+    state = conversation_state(c)
+    pending = stage36_recover_time_window_context(stage36_remember_time_window_context(pending or {}))
+    active = is_active_booking_flow(c) or state in ACTIVE_BOOKING_STATES or bool(pending.get("booking_intent"))
+    if not active:
+        return None
+
+    rel_day = stage37_relative_date_from_text(raw)
+
+    # If we are waiting for a replacement date, a short date answer should
+    # immediately regenerate contextual slots and preserve fuzzy time window.
+    if state == STATE_AWAITING_DATE and rel_day:
+        pending["stage37_temporal_engine"] = True
+        return stage36_continue_with_new_date_slots(
+            tenant_id=tenant_id,
+            user_key=user_key,
+            lang=lang,
+            c=c,
+            pending=pending,
+            settings=settings,
+            service_catalog=service_catalog,
+            base_day=rel_day,
+        )
+
+    # Phrases like "ne rīt" should not clear fuzzy time context; they should
+    # simply ask for the new day while keeping evening/after-work preferences.
+    if state in {STATE_AWAITING_TIME, STATE_AWAITING_CONFIRM} and stage37_is_negative_date_rejection(raw) and not rel_day:
+        pending = stage36_remember_time_window_context(pending)
+        pending.pop("confirm_slot_iso", None)
+        pending.pop("candidate_datetime_iso", None)
+        pending.pop("requested_datetime_iso", None)
+        pending.pop("partial_datetime_iso", None)
+        clear_offered_slots(pending)
+        pending["booking_intent"] = True
+        pending["stage37_waiting_replacement_date"] = True
+        c["pending"] = pending
+        c["datetime_iso"] = None
+        c["time_text"] = None
+        c["state"] = STATE_AWAITING_DATE
+        db_save_conversation(tenant_id, user_key, c)
+        if lang == "ru":
+            reply = "Понял. Тогда посмотрим другой день. Какая дата вам удобна?"
+        elif lang == "en":
+            reply = "Understood. Let’s check another day. Which date works for you?"
+        else:
+            reply = "Sapratu. Tad paskatāmies citu dienu. Kurš datums jums derētu?"
+        return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "preserve_text": True}
+
+    # Combined correction in one message: "ne rīt, bet parīt".
+    if state in {STATE_AWAITING_TIME, STATE_AWAITING_CONFIRM, STATE_AWAITING_DATE} and stage37_is_negative_date_rejection(raw) and rel_day:
+        pending["stage37_temporal_engine"] = True
+        return stage36_continue_with_new_date_slots(
+            tenant_id=tenant_id,
+            user_key=user_key,
+            lang=lang,
+            c=c,
+            pending=pending,
+            settings=settings,
+            service_catalog=service_catalog,
+            base_day=rel_day,
+        )
+
+    return None
 
 def stage36_continue_with_new_date_slots(
     tenant_id: str,
@@ -7497,6 +7636,25 @@ def handle_user_text(
     c = normalize_booking_state(c)
     pending = c.get("pending") or {}
     t_low = msg.lower()
+
+    # -------------------------
+    # STAGE 37 — TEMPORAL SEMANTIC ENGINE
+    # -------------------------
+    # Must run before LLM routing and generic entity persistence so short
+    # recovery replies such as "parīt" / "aizparīt" are treated as dates,
+    # not as vague text that re-enters the AWAITING_DATE loop.
+    stage37_temporal = stage37_temporal_recovery_if_needed(
+        tenant_id=tenant_id,
+        user_key=user_key,
+        msg=msg,
+        lang=lang,
+        c=c,
+        pending=pending,
+        settings=settings,
+        service_catalog=service_catalog,
+    ) if msg else None
+    if stage37_temporal:
+        return stage37_temporal
 
     # -------------------------
     # STAGE 28 — CONFIRMATION FINALIZATION GUARD
