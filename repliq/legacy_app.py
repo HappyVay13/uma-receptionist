@@ -1685,9 +1685,13 @@ def try_barbershop_faq(
     service_aliases: Dict[str, str],
     business_memory: str,
 ) -> Optional[Dict[str, Any]]:
-    business_type = str(tenant.get("business_type") or "barbershop").strip().lower()
-    if business_type != "barbershop":
-        return None
+    # Stage 38: Business Memory Intelligence / FAQ Rules Hardening
+    # This FAQ helper is intentionally generic now. Earlier versions only
+    # answered barbershop FAQ, which made clinic/salon tenants lose side-questions
+    # inside booking flows and sometimes reset the booking state. Keep the old
+    # function name for compatibility, but use tenant settings, service catalog
+    # and business memory for every business type.
+    business_type = str(tenant.get("business_type") or settings.get("business_type") or "barbershop").strip().lower()
 
     low = (msg or "").strip().lower()
     if not low:
@@ -1697,6 +1701,30 @@ def try_barbershop_faq(
     location_markers = ["where", "address", "адрес", "где вы", "где находитесь", "kur jūs", "adrese", "kur atrodaties"]
     services_markers = ["какие услуги", "что делаете", "services", "what services", "pakalpojumi", "ko jūs darāt", "ko jus darat"]
     duration_markers = ["сколько по времени", "сколько длится", "how long", "duration", "cik ilgi", "ilgums"]
+    hours_markers = [
+        "часы", "режим", "до скольки", "когда откры", "когда работает", "работаете",
+        "opening hours", "hours", "when are you open", "work hours",
+        "darba laiks", "cikos strād", "līdz cikiem", "kad strād", "vai strādā"
+    ]
+
+    # Stage 38: prefer exact business-memory lines when tenant added them.
+    # This keeps answers grounded and avoids hallucinating business rules.
+    memory_lines = _line_candidates_from_memory(business_memory)
+
+    if any(x in low for x in hours_markers):
+        matched_line = next((ln for ln in memory_lines if any(k in ln.lower() for k in ["darba laiks", "hours", "часы", "режим", "working time"])), None)
+        if matched_line:
+            text = matched_line
+        else:
+            start = str(settings.get("work_start") or "09:00").strip()
+            end = str(settings.get("work_end") or "18:00").strip()
+            if lang == "ru":
+                text = f"Обычно мы работаем с {start} до {end}."
+            elif lang == "en":
+                text = f"We are usually open from {start} to {end}."
+            else:
+                text = f"Parasti strādājam no {start} līdz {end}."
+        return {"status": "info", "reply_voice": text, "msg_out": text, "lang": lang, "stage38_business_faq": True}
 
     if any(x in low for x in location_markers):
         addr = str(settings.get("addr") or tenant.get("address") or "").strip()
@@ -1751,12 +1779,38 @@ def try_barbershop_faq(
             else:
                 duration = service_duration_min(service_item)
                 if lang == "ru":
-                    text = f"По услуге {display} лучше уточнить цену у мастера. По времени это обычно около {duration} минут."
+                    text = f"По услуге {display} лучше уточнить цену у специалиста. По времени это обычно около {duration} минут."
                 elif lang == "en":
-                    text = f"For {display}, it is best to confirm the price with the barber. It usually takes about {duration} minutes."
+                    text = f"For {display}, it is best to confirm the price with the business. It usually takes about {duration} minutes."
                 else:
-                    text = f"Par pakalpojumu {display} cenu vislabāk precizēt pie meistara. Parasti tas aizņem apmēram {duration} minūtes."
-            return {"status": "info", "reply_voice": text, "msg_out": text, "lang": lang}
+                    text = f"Par pakalpojumu {display} cenu vislabāk precizēt uzņēmumā. Parasti tas aizņem apmēram {duration} minūtes."
+            return {"status": "info", "reply_voice": text, "msg_out": text, "lang": lang, "stage38_business_faq": True}
+
+        price_line = next((_extract_price_from_line(ln) for ln in memory_lines if _extract_price_from_line(ln)), None)
+        if price_line:
+            if lang == "ru":
+                text = f"Цена начинается от {price_line}. Если скажете услугу, уточню точнее."
+            elif lang == "en":
+                text = f"Prices start from {price_line}. If you tell me the service, I can be more specific."
+            else:
+                text = f"Cena sākas no {price_line}. Ja pateiksiet pakalpojumu, precizēšu konkrētāk."
+        else:
+            options = barber_service_options_text(lang, service_catalog, max_items=3)
+            if lang == "ru":
+                text = f"По цене лучше уточнить конкретную услугу. Например: {options}." if options else "По цене лучше уточнить конкретную услугу."
+            elif lang == "en":
+                text = f"For pricing, please specify the service. For example: {options}." if options else "For pricing, please specify the service."
+            else:
+                text = f"Par cenu vislabāk precizēt konkrētu pakalpojumu. Piemēram: {options}." if options else "Par cenu vislabāk precizēt konkrētu pakalpojumu."
+        return {"status": "info", "reply_voice": text, "msg_out": text, "lang": lang, "stage38_business_faq": True}
+
+    # Stage 38: direct memory lookup for simple tenant FAQ lines.
+    if memory_lines:
+        keywords = [w for w in re.split(r"\W+", low) if len(w) >= 4][:8]
+        for line in memory_lines:
+            ll = line.lower()
+            if keywords and any(k in ll for k in keywords):
+                return {"status": "info", "reply_voice": line, "msg_out": line, "lang": lang, "stage38_business_faq": True}
 
     return None
 
@@ -2081,6 +2135,37 @@ STAGE34_REGRESSION_TEST_MATRIX: List[Dict[str, Any]] = [
         "expected": ["booking_flow", "evening_window", "multiple_slot_options", "lv_reply", "final_slot_regeneration"],
         "forbidden": ["morning_slots_only", "ask_service_again", "ask_date_again", "awaiting_date_after_replacement", "language_switch_to_ru"],
     },
+    {
+        "id": "stage38_lv_price_side_question",
+        "stage": 38,
+        "lang": "lv",
+        "category": "business_memory_side_question",
+        "message_sequence": [
+            "gribu pierakstīties uz konsultāciju rīt vakarā",
+            "cik tas maksā?",
+            "jā, der",
+        ],
+        "expected": ["business_faq_answered", "preserve_booking_flow", "lv_reply"],
+        "forbidden": ["reset_to_new", "ask_service_again", "language_switch_to_ru"],
+    },
+    {
+        "id": "stage38_ru_hours_question",
+        "stage": 38,
+        "lang": "ru",
+        "category": "business_memory_hours",
+        "message_sequence": ["до скольки вы работаете?"],
+        "expected": ["business_faq_answered", "ru_reply"],
+        "forbidden": ["booking_started_unnecessarily", "language_switch_to_lv"],
+    },
+    {
+        "id": "stage38_lv_location_question",
+        "stage": 38,
+        "lang": "lv",
+        "category": "business_memory_location",
+        "message_sequence": ["kur jūs atrodaties?"],
+        "expected": ["business_faq_answered", "lv_reply"],
+        "forbidden": ["booking_started_unnecessarily", "language_switch_to_ru"],
+    },
 ]
 
 
@@ -2176,6 +2261,10 @@ def stage35_detect_regression_observations(scenario: Dict[str, Any], turns: List
     if any(st in {"need_more", "busy", "booked", "min_notice", "holiday_closed"} for st in statuses) or any(st.startswith("AWAITING_") for st in states):
         observed.add("booking_flow")
         observed.add("same_booking_flow")
+    if any(st == "info" for st in statuses) or any(x in all_low for x in ["cena", "maksā", "адрес", "находимся", "atrodamies", "strādājam", "работаем", "open from", "usually open", "price", "costs"]):
+        observed.add("business_faq_answered")
+    if category.startswith("business_memory") and len(turns) >= 2 and ("AWAITING_" in " ".join(states) or any(st == "need_more" for st in statuses[1:])):
+        observed.add("preserve_booking_flow")
     if len(last_times or times) >= 2:
         observed.add("multiple_slot_options")
     if len(set(times)) >= 2:
@@ -2246,6 +2335,8 @@ def stage35_detect_regression_observations(scenario: Dict[str, Any], turns: List
             return bool(times) and all(int(t.split(":",1)[0]) < 12 for t in times)
         if token == "awaiting_date_after_replacement":
             return category == "temporal_semantic_recovery" and states[-1:] == ["AWAITING_DATE"]
+        if token == "booking_started_unnecessarily":
+            return category.startswith("business_memory") and any(st.startswith("AWAITING_") for st in states)
         if token == "reset_to_new":
             return "NEW" in states[1:]
         if token == "repeat_same_three_slots":

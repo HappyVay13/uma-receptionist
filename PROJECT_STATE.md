@@ -48,3 +48,9 @@ Semantic Date Shift Continuity added: preserves fuzzy time windows when user cha
 - Fixed Latvian positive acknowledgement detection in offered-slot state.
 - `jā, der` now chooses the first offered slot and asks for booking confirmation.
 - Prevents accidental fallback to `AWAITING_DATE`.
+
+
+## Stage 38 — Business Memory Intelligence / FAQ Rules Hardening
+- Generic FAQ/business-memory answers across tenant business types.
+- Side-question handling preserves active booking flow.
+- Added regression scenarios for price, hours and location questions.

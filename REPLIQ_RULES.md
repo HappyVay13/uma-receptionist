@@ -42,3 +42,9 @@ Semantic Date Shift Continuity added: preserves fuzzy time windows when user cha
 
 ## Stage 37.3 Rule
 When the user is in `AWAITING_TIME` and offered slots exist, short positive Latvian replies such as `jā, der`, `ja der`, `der`, `labi`, or `apstiprinu` must select the first offered slot and move to `AWAITING_CONFIRM`. They must not re-open date selection.
+
+
+## Stage 38 — Business Memory Intelligence / FAQ Rules Hardening
+- Generic FAQ/business-memory answers across tenant business types.
+- Side-question handling preserves active booking flow.
+- Added regression scenarios for price, hours and location questions.
