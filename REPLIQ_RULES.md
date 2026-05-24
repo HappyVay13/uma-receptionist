@@ -34,3 +34,8 @@ Semantic Date Shift Continuity added: preserves fuzzy time windows when user cha
 - Fixed negative-only `ne rīt` so it does not resolve back to tomorrow.
 - `parīt` and `aizparīt` should now regenerate contextual evening slots instead of morning fallback.
 
+
+## Stage 37.2 temporal rules
+- If the user gives a replacement relative date (`parīt`, `aizparīt`) inside an active booking flow, regenerate slots immediately.
+- Do not ask for the date again after a replacement date was provided.
+- If the user says `jā, der` while slot options are visible, treat it as choosing the first offered slot and move to confirmation.

@@ -2064,8 +2064,8 @@ STAGE34_REGRESSION_TEST_MATRIX: List[Dict[str, Any]] = [
             "ne rīt",
             "parīt",
         ],
-        "expected": ["booking_flow", "evening_window", "multiple_slot_options", "lv_reply"],
-        "forbidden": ["morning_slots_only", "ask_service_again", "language_switch_to_ru"],
+        "expected": ["booking_flow", "evening_window", "multiple_slot_options", "lv_reply", "final_slot_regeneration"],
+        "forbidden": ["morning_slots_only", "ask_service_again", "ask_date_again", "awaiting_date_after_replacement", "language_switch_to_ru"],
     },
     {
         "id": "stage37_lv_aizparit_recovery",
@@ -2078,8 +2078,8 @@ STAGE34_REGRESSION_TEST_MATRIX: List[Dict[str, Any]] = [
             "ne rīt",
             "aizparīt",
         ],
-        "expected": ["booking_flow", "evening_window", "multiple_slot_options", "lv_reply"],
-        "forbidden": ["morning_slots_only", "ask_service_again", "language_switch_to_ru"],
+        "expected": ["booking_flow", "evening_window", "multiple_slot_options", "lv_reply", "final_slot_regeneration"],
+        "forbidden": ["morning_slots_only", "ask_service_again", "ask_date_again", "awaiting_date_after_replacement", "language_switch_to_ru"],
     },
 ]
 
@@ -2187,6 +2187,8 @@ def stage35_detect_regression_observations(scenario: Dict[str, Any], turns: List
     if "booked" in statuses:
         observed.add("booking_finalized")
         observed.add("confirm_yes_detected")
+    if category == "temporal_semantic_recovery" and states[-1:] == ["AWAITING_TIME"] and len(last_turn_times) >= 2:
+        observed.add("final_slot_regeneration")
     if selected_slot_for_confirmation:
         observed.add("confirm_yes_detected")
         observed.add("slot_selected_for_confirmation")
@@ -2242,6 +2244,8 @@ def stage35_detect_regression_observations(scenario: Dict[str, Any], turns: List
             return "15:05" in all_reply
         if token == "morning_slots_only":
             return bool(times) and all(int(t.split(":",1)[0]) < 12 for t in times)
+        if token == "awaiting_date_after_replacement":
+            return category == "temporal_semantic_recovery" and states[-1:] == ["AWAITING_DATE"]
         if token == "reset_to_new":
             return "NEW" in states[1:]
         if token == "repeat_same_three_slots":
@@ -5489,6 +5493,71 @@ def stage37_is_negative_date_rejection(text_: Optional[str]) -> bool:
     ])
 
 
+def stage37_is_short_relative_date_answer(text_: Optional[str]) -> bool:
+    low = stage37_temporal_norm(text_)
+    if not low:
+        return False
+    low = re.sub(r"[^a-zа-яё0-9 ]+", " ", low, flags=re.IGNORECASE).strip()
+    low = re.sub(r"\s+", " ", low)
+    allowed = {
+        "rit", "parit", "aizparit", "sodien",
+        "rīt", "parīt", "aizparīt", "šodien",
+        "zavtra", "poslezavtra", "segodnya",
+        "завтра", "послезавтра", "сегодня",
+        "tomorrow", "today", "day after tomorrow",
+    }
+    return low in allowed or low in {"ne rit bet parit", "ne rit bet aizparit"}
+
+
+def stage37_choose_first_offered_slot_from_ack(
+    tenant_id: str,
+    user_key: str,
+    raw_phone: str,
+    channel: str,
+    msg: str,
+    lang: str,
+    c: Dict[str, Any],
+    pending: Dict[str, Any],
+    settings: Dict[str, Any],
+    service_catalog: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Stage 37.2 guard: in slot-offer state, positive ack selects opt1.
+
+    Without this, short LV confirmations like "jā, der" can be routed as a
+    vague continuation and move back to AWAITING_DATE. This guard is safe
+    because it only runs when there are offered slots and no confirm slot yet.
+    """
+    if conversation_state(c) != STATE_AWAITING_TIME:
+        return None
+    if not is_yes_text(msg, lang):
+        return None
+    offered = get_offered_slots(pending or {})
+    if not offered:
+        return None
+    selected_iso = offered[0]
+    dt_selected = parse_dt_any_tz(selected_iso)
+    if not dt_selected:
+        return None
+    pending = pending or {}
+    pending["confirm_slot_iso"] = dt_selected.isoformat()
+    pending["candidate_datetime_iso"] = dt_selected.isoformat()
+    pending["time_text"] = dt_selected.strftime("%H:%M")
+    pending["booking_intent"] = True
+    c["pending"] = pending
+    c["datetime_iso"] = dt_selected.isoformat()
+    c["state"] = STATE_AWAITING_CONFIRM
+    db_save_conversation(tenant_id, user_key, c)
+    reply = t(lang, "ask_booking_confirm", when=format_dt_short(dt_selected), service=pending.get("service_display") or "")
+    return {
+        "status": "need_more",
+        "reply_voice": reply,
+        "msg_out": reply,
+        "lang": lang,
+        "preserve_text": True,
+        "stage37_2_slot_ack_guard": True,
+    }
+
+
 def stage37_temporal_recovery_if_needed(
     tenant_id: str,
     user_key: str,
@@ -5526,10 +5595,23 @@ def stage37_temporal_recovery_if_needed(
 
     rel_day = stage37_relative_date_from_text(raw)
 
-    # If we are waiting for a replacement date, a short date answer should
-    # immediately regenerate contextual slots and preserve fuzzy time window.
-    if state == STATE_AWAITING_DATE and rel_day:
+    # Stage 37.2: any short relative date answer inside an active booking flow
+    # with a known service should directly regenerate slots. This covers
+    # "rīt vakarā", "parīt" and "aizparīt" after "ne rīt" even if
+    # the FSM is still in AWAITING_DATE or carries stage37_waiting_replacement_date.
+    if rel_day and (
+        state in {STATE_AWAITING_DATE, STATE_AWAITING_TIME, STATE_AWAITING_CONFIRM}
+        or pending.get("stage37_waiting_replacement_date")
+    ) and str(c.get("service") or pending.get("service") or "").strip():
+        if direct_window:
+            pending["preferred_time_window"] = [direct_window[0], direct_window[1]]
+            pending["last_preferred_time_window"] = [direct_window[0], direct_window[1]]
+            pending["stage36_recovery_time_window"] = [direct_window[0], direct_window[1]]
+            pending["stage37_temporal_window"] = [direct_window[0], direct_window[1]]
+        else:
+            pending = stage36_recover_time_window_context(stage36_remember_time_window_context(pending))
         pending["stage37_temporal_engine"] = True
+        pending.pop("stage37_waiting_replacement_date", None)
         return stage36_continue_with_new_date_slots(
             tenant_id=tenant_id,
             user_key=user_key,
@@ -7654,6 +7736,24 @@ def handle_user_text(
     c = normalize_booking_state(c)
     pending = c.get("pending") or {}
     t_low = msg.lower()
+
+    # -------------------------
+    # STAGE 37.2 — SLOT ACK GUARD BEFORE TEMPORAL ROUTING
+    # -------------------------
+    stage37_ack_guard = stage37_choose_first_offered_slot_from_ack(
+        tenant_id=tenant_id,
+        user_key=user_key,
+        raw_phone=raw_phone,
+        channel=channel,
+        msg=msg,
+        lang=lang,
+        c=c,
+        pending=pending,
+        settings=settings,
+        service_catalog=service_catalog,
+    ) if msg else None
+    if stage37_ack_guard:
+        return stage37_ack_guard
 
     # -------------------------
     # STAGE 37 — TEMPORAL SEMANTIC ENGINE

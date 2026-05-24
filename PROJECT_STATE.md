@@ -38,3 +38,8 @@ Semantic Date Shift Continuity added: preserves fuzzy time windows when user cha
 - Fixed negative-only `ne rīt` so it does not resolve back to tomorrow.
 - `parīt` and `aizparīt` should now regenerate contextual evening slots instead of morning fallback.
 
+
+## Stage 37.2 — Direct Slot Regeneration After Temporal Replacement
+- Fixed direct slot regeneration after `parīt` / `aizparīt` in temporal recovery flows.
+- Preserves `vakarā` / fuzzy time window across replacement-date turns.
+- Added slot-ack guard for `jā, der` while offered slots are visible.
