@@ -1684,6 +1684,7 @@ def try_barbershop_faq(
     service_catalog: List[Dict[str, Any]],
     service_aliases: Dict[str, str],
     business_memory: str,
+    current_service_key: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     # Stage 38: Business Memory Intelligence / FAQ Rules Hardening
     # This FAQ helper is intentionally generic now. Earlier versions only
@@ -1697,7 +1698,11 @@ def try_barbershop_faq(
     if not low:
         return None
 
-    price_markers = ["цена", "сколько стоит", "price", "how much", "cena", "cik maksā", "cik maksa"]
+    price_markers = [
+        "цена", "сколько стоит", "сколько это стоит", "стоимость",
+        "price", "how much", "how much does it cost", "cost",
+        "cena", "cik maksā", "cik maksa", "cik tas maksā", "cik tas maksa", "cik tas maksas",
+    ]
     location_markers = ["where", "address", "адрес", "где вы", "где находитесь", "kur jūs", "adrese", "kur atrodaties"]
     services_markers = ["какие услуги", "что делаете", "services", "what services", "pakalpojumi", "ko jūs darāt", "ko jus darat"]
     duration_markers = ["сколько по времени", "сколько длится", "how long", "duration", "cik ilgi", "ilgums"]
@@ -1765,6 +1770,11 @@ def try_barbershop_faq(
     if any(x in low for x in price_markers):
         service_key = canonical_service_key_from_text(low, service_aliases)
         service_item = get_service_item_by_key(service_catalog, service_key) if service_key else extract_service_from_text(low, service_catalog, lang)
+        # Stage 38.1: side-questions like "cik tas maksā?" often do not repeat
+        # the service name. In an active booking flow, use the already selected
+        # service so FAQ can answer the price without resetting scheduling context.
+        if not service_item and current_service_key:
+            service_item = get_service_item_by_key(service_catalog, str(current_service_key).strip())
         if service_item:
             line = _memory_line_for_service(business_memory, service_item)
             price = _extract_price_from_line(line or "")
@@ -1839,6 +1849,7 @@ def faq_with_flow_followup(
     result["reply_voice"] = combined
     result["lang"] = lang
     result["flow_preserved"] = True
+    result["stage38_business_faq"] = bool(result.get("stage38_business_faq") or faq_result.get("stage38_business_faq"))
     return result
 
 
@@ -4202,6 +4213,7 @@ def build_understanding_result(
         service_catalog=service_catalog,
         service_aliases=service_aliases,
         business_memory=business_memory,
+        current_service_key=(c or {}).get("service") or (pending or {}).get("service"),
     ) if raw else None
 
     explicit_cancel = any(w in low for w in ["atcelt", "отменить", "cancel"])
@@ -7783,7 +7795,16 @@ def free_router_handle_turn(
         return {"status": "need_more", "reply_voice": reply, "msg_out": reply, "lang": lang, "preserve_text": True}
 
     if free_router_is_price_request(msg, lang):
-        faq_result = try_barbershop_faq(msg, lang, tenant, settings, service_catalog, service_aliases, business_memory)
+        faq_result = try_barbershop_faq(
+            msg,
+            lang,
+            tenant,
+            settings,
+            service_catalog,
+            service_aliases,
+            business_memory,
+            current_service_key=(c or {}).get("service") or (pending or {}).get("service"),
+        )
         if faq_result:
             pending["booking_intent"] = True
             c["pending"] = pending

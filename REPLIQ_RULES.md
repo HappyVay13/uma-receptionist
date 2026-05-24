@@ -48,3 +48,9 @@ When the user is in `AWAITING_TIME` and offered slots exist, short positive Latv
 - Generic FAQ/business-memory answers across tenant business types.
 - Side-question handling preserves active booking flow.
 - Added regression scenarios for price, hours and location questions.
+
+
+## Stage 38.1 — Price Side-question FAQ Fix
+- Price side-questions inside active booking flow are answered from business memory/service context.
+- Existing booking context is preserved.
+- No calendar/orchestration booking logic changed.
