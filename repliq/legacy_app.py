@@ -7972,6 +7972,34 @@ def handle_user_text(
     t_low = msg.lower()
 
     # -------------------------
+    # STAGE 38.4 — EARLY PRICE SIDE-QUESTION GUARD
+    # -------------------------
+    # Root cause: price side-questions inside an active booking flow were handled
+    # too late, inside free_router_handle_turn(). Earlier booking routers could
+    # keep the flow in AWAITING_TIME and repeat offered slots before the FAQ
+    # price handler ever ran. This guard must therefore run at the very top of
+    # handle_user_text(), after state normalization/pending load but before any
+    # temporal, LLM, Stage 31, or generic slot-selection routing.
+    if msg and free_router_is_price_request(msg, lang) and (
+        is_active_booking_flow(c) or conversation_state(c) in ACTIVE_BOOKING_STATES
+    ):
+        stage38_price_guard = stage38_price_side_question_guard(
+            tenant_id=tenant_id,
+            user_key=user_key,
+            msg=msg,
+            lang=lang,
+            c=c,
+            pending=pending,
+            tenant=tenant,
+            settings=settings,
+            service_catalog=service_catalog,
+            service_aliases=service_aliases,
+            business_memory=business_memory,
+        )
+        if stage38_price_guard:
+            return stage38_price_guard
+
+    # -------------------------
     # STAGE 37.2 — SLOT ACK GUARD BEFORE TEMPORAL ROUTING
     # -------------------------
     stage37_ack_guard = stage37_choose_first_offered_slot_from_ack(
