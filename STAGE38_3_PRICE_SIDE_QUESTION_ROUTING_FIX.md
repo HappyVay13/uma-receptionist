@@ -1,27 +1,43 @@
-# Stage 38.3 — Price Side-question Routing Fix
+# Stage 38.3 — Preserve Business FAQ Answer Through Soft UX Layer
 
 ## Problem
-Inside an active booking flow, the message `cik tas maksā?` was being handled as a generic AWAITING_TIME continuation/slot reminder instead of a business FAQ side-question.
+Inside an active booking flow, the message `cik tas maksā?` produced a valid business FAQ answer internally, but the final user-visible response only repeated offered slots.
 
-## Root cause
-The price FAQ handler existed, but it was placed after earlier booking-recovery/slot-reminder branches in the active flow router. Because of that, the runtime could preserve the booking flow but fail to answer the actual price question.
+Failing scenario:
+1. `gribu pierakstīties uz konsultāciju rīt vakarā`
+2. bot offers evening slots
+3. `cik tas maksā?`
+4. bot repeats slots but does not answer the price
+
+## Factual root cause
+The price FAQ path was able to resolve the current service and produce a grounded answer such as:
+
+`konsultācija maksā 10 eiro.`
+
+The active booking follow-up composer was also able to preserve the booking flow and append the current slot options.
+
+The visible failure happened later: the final Stage 33 soft conversational UX layer saw `status=need_more`, `state=AWAITING_TIME`, and existing offered slots, then rewrote `msg_out` / `reply_voice` into a generic slot prompt. That removed the FAQ answer from the final response.
 
 ## Fix
-Added a deterministic `stage38_price_side_question_guard` that runs at the top of the active booking flow router, before Stage 36 recovery and generic slot reminder logic.
+`stage33_soft_conversational_ux()` now returns early when the result already contains either:
 
-The guard:
-- detects price questions in LV/RU/EN;
-- resolves the current selected service from conversation/pending state;
-- answers from business memory/service configuration via the existing FAQ helper;
-- preserves booking context and offered slots;
-- returns the user to the same booking flow.
+- `flow_preserved`
+- `stage38_business_faq`
+
+This prevents the final wording layer from collapsing a combined FAQ+flow answer into a plain slot reminder.
+
+## Safety
+- No booking state transition logic changed.
+- No calendar logic changed.
+- No service/date/time parser logic changed.
+- No regression evaluator rules changed.
 
 ## Expected behavior
 `gribu pierakstīties uz konsultāciju rīt vakarā`
 → offered slots
 
 `cik tas maksā?`
-→ price answer + same offered slots
+→ price answer + same booking-flow slot prompt
 
 `jā, der`
 → first offered slot selected for confirmation

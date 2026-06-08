@@ -1,44 +1,22 @@
-# Stage 38.4 — Early Price Side-question Guard
+# Stage 38.4 — Archived Note / Superseded by Stage 38.3 Runtime Finding
 
-## Root cause
+## Status
+This note is kept for project history only.
 
-The previous Stage 38 price side-question handling was placed inside `free_router_handle_turn()`.
-That was too late in the runtime execution path. During an active booking flow, earlier booking
-routers could keep the conversation in `AWAITING_TIME` and repeat offered slots before the FAQ
-price handler executed.
+After factual code audit of the working Stage 38 archive, the confirmed production fix is not a standalone `stage38_price_side_question_guard` function and not a separate early guard in `handle_user_text()`.
 
-Failing scenario:
+The working mechanism is:
 
-1. `gribu pierakstīties uz konsultāciju rīt vakarā`
-2. bot offers evening slots
-3. `cik tas maksā?`
-4. bot repeated slots instead of answering price
+1. `try_barbershop_faq()` detects business FAQ / price questions.
+2. The current selected service can be resolved from active booking context.
+3. `faq_with_flow_followup()` combines the grounded FAQ answer with the active booking follow-up.
+4. The result is marked with `flow_preserved` and `stage38_business_faq`.
+5. `stage33_soft_conversational_ux()` returns early for those markers and does not overwrite the combined answer.
 
-## Fix
+## Why this note exists
+Earlier Stage 38 notes described an early price side-question guard. The final confirmed fix was different: the FAQ answer was already being formed, but the final soft UX layer removed it from the visible response.
 
-Added an early Stage 38.4 guard directly in `handle_user_text()` immediately after:
-
-- tenant/settings/service/business memory load
-- conversation state normalization
-- pending context load
-
-and before:
-
-- Stage 37 temporal routing
-- LLM semantic routing
-- Stage 31 time-window routing
-- generic slot-selection/recovery routing
-
-The guard only activates when:
-
-- the user message is a price question, and
-- the conversation is already inside an active booking flow.
-
-It answers the price through the existing Stage 38 FAQ/business-memory path, preserves booking
-context, and appends the current booking follow-up/slot options.
-
-## Safety
-
-No existing booking/date/time parsing logic was changed.
-No calendar booking behavior was changed.
-No regression evaluator logic was relaxed.
+## Safety contract
+- Do not introduce another early guard unless a future regression proves it is necessary.
+- Do not duplicate price-question logic across routers without execution-flow analysis.
+- Preserve the current Stage 38.3 guard behavior because `/dialogue/qa` was confirmed as 15/15 passed after it.
