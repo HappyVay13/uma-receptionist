@@ -679,6 +679,13 @@ def stage33_soft_conversational_ux(
     if not stage33_soft_ux_enabled(channel, source):
         return result
 
+    # Stage 38.3: side-question FAQ answers inside an active booking flow
+    # already include both the business-memory answer and the preserved flow
+    # follow-up. Do not let the final soft UX layer collapse that combined
+    # answer back into a generic slot prompt.
+    if result.get("flow_preserved") or result.get("stage38_business_faq"):
+        return result
+
     status = str(result.get("status") or "").strip().lower()
     if status in {"blocked", "booking_failed", "recovery"}:
         return result
@@ -6506,61 +6513,6 @@ def free_router_is_price_request(text_: Optional[str], lang: str) -> bool:
     return any(p in low for p in phrases if p)
 
 
-def stage38_price_side_question_guard(
-    tenant_id: str,
-    user_key: str,
-    msg: str,
-    lang: str,
-    c: Dict[str, Any],
-    pending: Dict[str, Any],
-    tenant: Dict[str, Any],
-    settings: Dict[str, Any],
-    service_catalog: List[Dict[str, Any]],
-    service_aliases: Dict[str, str],
-    business_memory: str,
-) -> Optional[Dict[str, Any]]:
-    """Answer price side-questions before generic booking recovery repeats slots.
-
-    Stage 38.3: in active booking flows, messages such as "cik tas maksā?"
-    are business FAQ side-questions, not time-selection uncertainty. This guard
-    must run before Stage 36 recovery and before generic AWAITING_TIME slot
-    reminders, otherwise the price question gets swallowed and the bot only
-    repeats offered slots.
-    """
-    if not free_router_is_price_request(msg, lang):
-        return None
-
-    pending = pending or {}
-    current_service_key = str((c or {}).get("service") or pending.get("service") or "").strip() or None
-    faq_result = try_barbershop_faq(
-        msg=msg,
-        lang=lang,
-        tenant=tenant,
-        settings=settings,
-        service_catalog=service_catalog,
-        service_aliases=service_aliases,
-        business_memory=business_memory,
-        current_service_key=current_service_key,
-    )
-    if not faq_result:
-        return None
-
-    # Preserve the booking state exactly where the user was. If slots were already
-    # offered, the follow-up should repeat those slots; if a slot was selected,
-    # it should repeat the confirmation. Do not clear service/date/time context.
-    pending["booking_intent"] = True
-    c["pending"] = pending
-    if get_offered_slots(pending):
-        c["state"] = STATE_AWAITING_TIME
-    elif pending.get("confirm_slot_iso") or c.get("datetime_iso"):
-        c["state"] = STATE_AWAITING_CONFIRM
-
-    result = faq_with_flow_followup(faq_result, lang, c, pending, service_catalog, True)
-    result["stage38_price_side_question_guard"] = True
-    db_save_conversation(tenant_id, user_key, c)
-    return result
-
-
 def free_router_service_list_text(lang: str, service_catalog: List[Dict[str, Any]], max_items: int = 8) -> str:
     names: List[str] = []
     for item in service_catalog[:max_items]:
@@ -7696,25 +7648,6 @@ def free_router_handle_turn(
 
     pending = pending or {}
 
-    # Stage 38.3: price side-questions inside an active booking flow must be
-    # answered before Stage 36 recovery or AWAITING_TIME slot reminders can
-    # interpret them as generic uncertainty and repeat the same slots.
-    stage38_price_guard = stage38_price_side_question_guard(
-        tenant_id=tenant_id,
-        user_key=user_key,
-        msg=msg,
-        lang=lang,
-        c=c,
-        pending=pending,
-        tenant=tenant,
-        settings=settings,
-        service_catalog=service_catalog,
-        service_aliases=service_aliases,
-        business_memory=business_memory,
-    )
-    if stage38_price_guard:
-        return stage38_price_guard
-
     # Stage 36: recovery for chaotic / incomplete answers inside active booking flow.
     # This layer preserves booking context and avoids resetting service/date/time.
     stage36_recovery = stage36_advanced_recovery_if_needed(
@@ -7970,34 +7903,6 @@ def handle_user_text(
     c = normalize_booking_state(c)
     pending = c.get("pending") or {}
     t_low = msg.lower()
-
-    # -------------------------
-    # STAGE 38.4 — EARLY PRICE SIDE-QUESTION GUARD
-    # -------------------------
-    # Root cause: price side-questions inside an active booking flow were handled
-    # too late, inside free_router_handle_turn(). Earlier booking routers could
-    # keep the flow in AWAITING_TIME and repeat offered slots before the FAQ
-    # price handler ever ran. This guard must therefore run at the very top of
-    # handle_user_text(), after state normalization/pending load but before any
-    # temporal, LLM, Stage 31, or generic slot-selection routing.
-    if msg and free_router_is_price_request(msg, lang) and (
-        is_active_booking_flow(c) or conversation_state(c) in ACTIVE_BOOKING_STATES
-    ):
-        stage38_price_guard = stage38_price_side_question_guard(
-            tenant_id=tenant_id,
-            user_key=user_key,
-            msg=msg,
-            lang=lang,
-            c=c,
-            pending=pending,
-            tenant=tenant,
-            settings=settings,
-            service_catalog=service_catalog,
-            service_aliases=service_aliases,
-            business_memory=business_memory,
-        )
-        if stage38_price_guard:
-            return stage38_price_guard
 
     # -------------------------
     # STAGE 37.2 — SLOT ACK GUARD BEFORE TEMPORAL ROUTING
