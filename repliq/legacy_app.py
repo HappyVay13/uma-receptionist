@@ -2400,6 +2400,103 @@ STAGE34_REGRESSION_TEST_MATRIX: List[Dict[str, Any]] = [
         "expected": ["business_faq_answered", "preserve_booking_flow", "lv_reply"],
         "forbidden": ["reset_to_new", "ask_service_again", "language_switch_to_ru"],
     },
+    {
+        "id": "stage44_ru_cancel_no_active_booking",
+        "stage": 44,
+        "lang": "ru",
+        "category": "cancellation_no_active",
+        "message_sequence": ["отменить запись"],
+        "expected": ["cancel_reschedule_flow", "no_active_booking", "ru_reply"],
+        "forbidden": ["booking_started_unnecessarily", "language_switch_to_lv"],
+    },
+    {
+        "id": "stage44_lv_cancel_no_active_booking",
+        "stage": 44,
+        "lang": "lv",
+        "category": "cancellation_no_active",
+        "message_sequence": ["atcelt pierakstu"],
+        "expected": ["cancel_reschedule_flow", "no_active_booking", "lv_reply"],
+        "forbidden": ["booking_started_unnecessarily", "language_switch_to_ru"],
+    },
+    {
+        "id": "stage44_ru_cancel_existing_booking",
+        "stage": 44,
+        "lang": "ru",
+        "category": "cancellation_existing_booking",
+        "message_sequence": ["отменить запись"],
+        "calendar_event_fixture": {"days_from_today": 1, "hour": 16, "minute": 0, "duration_min": 30, "service": "konsultācija"},
+        "expected": ["cancel_reschedule_flow", "cancel_request_detected", "booking_cancelled", "ru_reply"],
+        "forbidden": ["booking_started_unnecessarily", "language_switch_to_lv"],
+    },
+    {
+        "id": "stage44_lv_cancel_existing_booking",
+        "stage": 44,
+        "lang": "lv",
+        "category": "cancellation_existing_booking",
+        "message_sequence": ["atcelt pierakstu"],
+        "calendar_event_fixture": {"days_from_today": 1, "hour": 16, "minute": 0, "duration_min": 30, "service": "konsultācija"},
+        "expected": ["cancel_reschedule_flow", "cancel_request_detected", "booking_cancelled", "lv_reply"],
+        "forbidden": ["booking_started_unnecessarily", "language_switch_to_ru"],
+    },
+    {
+        "id": "stage44_ru_reschedule_no_active_booking",
+        "stage": 44,
+        "lang": "ru",
+        "category": "reschedule_no_active",
+        "message_sequence": ["перенести запись"],
+        "expected": ["cancel_reschedule_flow", "no_active_booking", "ru_reply"],
+        "forbidden": ["booking_started_unnecessarily", "language_switch_to_lv"],
+    },
+    {
+        "id": "stage44_lv_reschedule_no_active_booking",
+        "stage": 44,
+        "lang": "lv",
+        "category": "reschedule_no_active",
+        "message_sequence": ["pārcelt pierakstu"],
+        "expected": ["cancel_reschedule_flow", "no_active_booking", "lv_reply"],
+        "forbidden": ["booking_started_unnecessarily", "language_switch_to_ru"],
+    },
+    {
+        "id": "stage44_ru_reschedule_existing_booking_start",
+        "stage": 44,
+        "lang": "ru",
+        "category": "reschedule_existing_start",
+        "message_sequence": ["перенести запись"],
+        "calendar_event_fixture": {"days_from_today": 1, "hour": 16, "minute": 0, "duration_min": 30, "service": "konsultācija"},
+        "expected": ["cancel_reschedule_flow", "reschedule_started", "reschedule_pending", "ru_reply"],
+        "forbidden": ["language_switch_to_lv"],
+    },
+    {
+        "id": "stage44_lv_reschedule_existing_booking_start",
+        "stage": 44,
+        "lang": "lv",
+        "category": "reschedule_existing_start",
+        "message_sequence": ["pārcelt pierakstu"],
+        "calendar_event_fixture": {"days_from_today": 1, "hour": 16, "minute": 0, "duration_min": 30, "service": "konsultācija"},
+        "expected": ["cancel_reschedule_flow", "reschedule_started", "reschedule_pending", "lv_reply"],
+        "forbidden": ["language_switch_to_ru"],
+    },
+    {
+        "id": "stage44_ru_reschedule_abort",
+        "stage": 44,
+        "lang": "ru",
+        "category": "reschedule_abort",
+        "message_sequence": ["перенести запись", "нет"],
+        "calendar_event_fixture": {"days_from_today": 1, "hour": 16, "minute": 0, "duration_min": 30, "service": "konsultācija"},
+        "expected": ["cancel_reschedule_flow", "reschedule_started", "reschedule_aborted", "ru_reply"],
+        "forbidden": ["language_switch_to_lv"],
+    },
+    {
+        "id": "stage44_lv_reschedule_abort",
+        "stage": 44,
+        "lang": "lv",
+        "category": "reschedule_abort",
+        "message_sequence": ["pārcelt pierakstu", "nē"],
+        "calendar_event_fixture": {"days_from_today": 1, "hour": 16, "minute": 0, "duration_min": 30, "service": "konsultācija"},
+        "expected": ["cancel_reschedule_flow", "reschedule_started", "reschedule_aborted", "lv_reply"],
+        "forbidden": ["language_switch_to_ru"],
+    },
+
 ]
 
 
@@ -2503,6 +2600,24 @@ def stage35_detect_regression_observations(scenario: Dict[str, Any], turns: List
         observed.add("business_faq_answered")
     if category.startswith("business_memory") and len(turns) >= 2 and ("AWAITING_" in " ".join(states) or any(st == "need_more" for st in statuses[1:])):
         observed.add("preserve_booking_flow")
+    if category.startswith("cancellation") or category.startswith("reschedule"):
+        if any(st in {"cancelled", "no_booking", "cancel_failed", "reschedule_wait", "booked", "info"} for st in statuses):
+            observed.add("cancel_reschedule_flow")
+    if "no_booking" in statuses:
+        observed.add("no_active_booking")
+    if "cancelled" in statuses:
+        observed.add("cancel_request_detected")
+        observed.add("booking_cancelled")
+    if "cancel_failed" in statuses:
+        observed.add("cancel_failed")
+    if "reschedule_wait" in statuses:
+        observed.add("reschedule_started")
+    if any(isinstance((t or {}).get("pending"), dict) and (t.get("pending") or {}).get("reschedule_event_id") for t in turns):
+        observed.add("reschedule_pending")
+    if category.startswith("reschedule") and "reschedule_wait" in statuses and statuses[-1:] == ["info"] and states[-1:] == ["BOOKED"]:
+        observed.add("reschedule_aborted")
+    if category.startswith("reschedule") and "booked" in statuses and "reschedule_wait" in statuses:
+        observed.add("reschedule_finalized")
     if len(last_times or times) >= 2:
         observed.add("multiple_slot_options")
     if len(set(times)) >= 2:
@@ -2574,7 +2689,8 @@ def stage35_detect_regression_observations(scenario: Dict[str, Any], turns: List
         if token == "awaiting_date_after_replacement":
             return category == "temporal_semantic_recovery" and states[-1:] == ["AWAITING_DATE"]
         if token == "booking_started_unnecessarily":
-            return category.startswith("business_memory") and any(st.startswith("AWAITING_") for st in states)
+            guarded_category = category.startswith("business_memory") or category.startswith("cancellation") or category in {"reschedule_no_active"}
+            return guarded_category and any(st.startswith("AWAITING_") for st in states)
         if token == "reset_to_new":
             return "NEW" in states[1:]
         if token == "repeat_same_three_slots":
@@ -2610,10 +2726,50 @@ def stage35_detect_regression_observations(scenario: Dict[str, Any], turns: List
 STAGE35_QA_TENANT_ID = os.getenv("STAGE35_QA_TENANT_ID", "clinic_demo").strip() or "clinic_demo"
 STAGE35_CALENDAR_SAFE_MODE_ENABLED = os.getenv("STAGE35_CALENDAR_SAFE_MODE", "1").strip().lower() not in {"0", "false", "no", "off", "disabled"}
 _STAGE35_CALENDAR_SAFE_MODE: ContextVar[bool] = ContextVar("stage35_calendar_safe_mode", default=False)
+_STAGE35_CALENDAR_EVENT_FIXTURE: ContextVar[Optional[Dict[str, Any]]] = ContextVar("stage35_calendar_event_fixture", default=None)
 
 
 def stage35_calendar_safe_mode_active() -> bool:
     return bool(STAGE35_CALENDAR_SAFE_MODE_ENABLED and _STAGE35_CALENDAR_SAFE_MODE.get(False))
+
+
+def stage35_calendar_event_fixture() -> Optional[Dict[str, Any]]:
+    if not stage35_calendar_safe_mode_active():
+        return None
+    fixture = _STAGE35_CALENDAR_EVENT_FIXTURE.get(None)
+    return fixture if isinstance(fixture, dict) else None
+
+
+def stage35_build_calendar_event_fixture(scenario: Dict[str, Any], tenant_id: str, user_id: str) -> Optional[Dict[str, Any]]:
+    cfg = (scenario or {}).get("calendar_event_fixture")
+    if not isinstance(cfg, dict):
+        return None
+    try:
+        days = int(cfg.get("days_from_today", 1))
+    except Exception:
+        days = 1
+    try:
+        hour = int(cfg.get("hour", 16))
+        minute = int(cfg.get("minute", 0))
+    except Exception:
+        hour, minute = 16, 0
+    try:
+        duration_min = int(cfg.get("duration_min", 30))
+    except Exception:
+        duration_min = 30
+    start_dt = (now_ts() + timedelta(days=max(0, days))).replace(hour=max(0, min(23, hour)), minute=max(0, min(59, minute)), second=0, microsecond=0)
+    end_dt = start_dt + timedelta(minutes=max(1, duration_min))
+    service_name = str(cfg.get("service") or "konsultācija").strip() or "konsultācija"
+    summary = str(cfg.get("summary") or f"Clinic Demo - {service_name}").strip()
+    client_name = str(cfg.get("name") or "Client").strip() or "Client"
+    description = build_event_description(tenant_id, client_name, user_id)
+    return {
+        "id": str(cfg.get("id") or f"stage44-safe-fixture-{uuid.uuid4().hex[:8]}"),
+        "summary": summary,
+        "description": description,
+        "start": {"dateTime": start_dt.isoformat()},
+        "end": {"dateTime": end_dt.isoformat()},
+    }
 
 
 def stage35_resolve_qa_tenant_id(tenant_id: Optional[str] = None) -> str:
@@ -2633,6 +2789,7 @@ def stage35_run_regression_scenario(scenario_id: str, tenant_id: Optional[str] =
     messages = scenario.get("message_sequence") or []
     turns: List[Dict[str, Any]] = []
     token = _STAGE35_CALENDAR_SAFE_MODE.set(True)
+    fixture_token = _STAGE35_CALENDAR_EVENT_FIXTURE.set(stage35_build_calendar_event_fixture(scenario, tenant_id, user_id))
     try:
         for msg in messages[:10]:
             result = handle_user_text_with_logging(tenant_id, user_id, str(msg), "dev", lang, source="regression_runner")
@@ -2649,6 +2806,7 @@ def stage35_run_regression_scenario(scenario_id: str, tenant_id: Optional[str] =
                 "pending": (conv or {}).get("pending"),
             })
     finally:
+        _STAGE35_CALENDAR_EVENT_FIXTURE.reset(fixture_token)
         _STAGE35_CALENDAR_SAFE_MODE.reset(token)
     evaluation = stage35_detect_regression_observations(scenario, turns)
     return {
@@ -5075,6 +5233,18 @@ def find_first_n_slots_for_day_window(
 
 def find_next_event_by_phone(calendar_id: str, phone: str, tenant_id: Optional[str] = None, service_account_json: Optional[str] = None):
     if stage35_calendar_safe_mode_active():
+        fixture = stage35_calendar_event_fixture()
+        if fixture:
+            if tenant_id:
+                if event_belongs_to_tenant(fixture, tenant_id, phone):
+                    log.info("stage35_calendar_safe_mode find_next_event_fixture_hit calendar_id=%s phone=%s tenant_id=%s", calendar_id, phone, tenant_id)
+                    return fixture
+            else:
+                desc = fixture.get("description") or ""
+                phone_norm = norm_user_key(phone)
+                if (phone_norm and phone_norm in norm_user_key(desc)) or (phone and phone in desc):
+                    log.info("stage35_calendar_safe_mode find_next_event_fixture_hit calendar_id=%s phone=%s", calendar_id, phone)
+                    return fixture
         log.info("stage35_calendar_safe_mode find_next_event_skipped calendar_id=%s phone=%s", calendar_id, phone)
         return None
     svc = get_gcal(service_account_json)

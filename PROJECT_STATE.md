@@ -1,6 +1,6 @@
 # Repliq Project State
 
-Current stage: Stage 43A — Production Hardening & Readiness Checks.
+Current stage: Stage 44 — Cancellation/Reschedule Regression Harness.
 
 Production regression baseline before Stage 40:
 - Stage 39 was deployed and confirmed by user: `/dialogue/qa` = 15/15 passed.
@@ -160,3 +160,20 @@ Stage 36 adds a deterministic recovery layer inside active booking flows. It is 
 - Does not run regression scenarios.
 - Does not change conversational behavior, booking routing, calendar logic, state transitions, FAQ/business-memory logic, cancellation/rescheduling behavior, or evaluator rules.
 - Recommended next stage remains Stage 44 — Cancellation/Reschedule Regression Harness.
+
+
+## Stage 44 — Cancellation/Reschedule Regression Harness
+- Regression-harness stage after confirmed Stage 43A `/dialogue/qa` = 30/30 passed and `/internal/readiness` = ok.
+- Adds Stage 44 cancellation/reschedule scenarios to the existing QA matrix.
+- Expands protected regression coverage from 30 to 40 scenarios.
+- Adds regression-only calendar event fixture support inside Stage 35 calendar safe mode.
+- The fixture is available only while `_STAGE35_CALENDAR_SAFE_MODE` is active and only for scenarios that explicitly define `calendar_event_fixture`.
+- Runtime calendar behavior outside regression safe mode is unchanged.
+- Cancellation/rescheduling behavior itself is not changed in this stage.
+- Protected facts covered by new scenarios:
+  - RU/LV cancellation with no active booking returns no active booking;
+  - RU/LV cancellation with a safe-mode fixture reaches cancelled status;
+  - RU/LV reschedule with no active booking returns no active booking;
+  - RU/LV reschedule with a safe-mode fixture starts reschedule flow and preserves `reschedule_event_id`;
+  - RU/LV abort during reschedule keeps the current booking.
+- Candidate Stage 45 gap intentionally not added as required passing QA: full natural reschedule continuation after `перенести запись` / `pārcelt pierakstu` followed by a date-only or fuzzy-date answer. The existing flow starts reschedule, but continuation still needs dedicated root-cause analysis before behavior changes.

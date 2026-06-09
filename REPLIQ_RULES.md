@@ -7,6 +7,7 @@ Current protected baseline:
 - Stage 41.1 hardens cross-language grounded price lookup while preserving booking flow.
 - Stage 42 is a documentation/audit checkpoint only.
 - Stage 43A adds production readiness checks without changing conversational behavior.
+- Stage 44 adds cancellation/reschedule regression harness coverage without changing runtime cancellation/rescheduling behavior.
 - Do not change conversational behavior unless a new archive + logs/regression output prove the need.
 
 ## Global production rules
@@ -136,3 +137,16 @@ If a price question is asked inside an active booking flow and the current langu
 - Readiness endpoints must not run `/dialogue/qa`, call LLMs, mutate conversation state, or create/update/delete calendar events.
 - Protected baseline remains `/dialogue/qa` = 30/30 passed.
 - Cancellation/rescheduling remains a separate future stage and must first be covered by a dedicated regression harness.
+
+
+## Stage 44 — Cancellation/Reschedule Regression Harness Rules
+- Stage 44 may add regression-safe test fixtures, but only inside Stage 35 calendar safe mode.
+- Runtime `find_next_event_by_phone`, `delete_calendar_event`, and `update_calendar_event` behavior must remain unchanged outside regression safe mode.
+- Regression fixtures must be explicit per scenario via `calendar_event_fixture`; no real Google Calendar events may be read, created, updated, or deleted by `/dialogue/qa`.
+- Do not change cancellation/rescheduling user-facing behavior during Stage 44.
+- Protected Stage 44 behaviors:
+  - no active booking cancellation/reschedule returns a grounded no-active-booking response;
+  - fixture-backed cancellation reaches `cancelled`;
+  - fixture-backed reschedule starts `reschedule_wait` and stores `reschedule_event_id`;
+  - aborting reschedule clears reschedule pending data and keeps the current booking.
+- Full reschedule continuation is Stage 45 scope and must start with root-cause analysis from QA output/logs.
