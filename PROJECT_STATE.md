@@ -1,6 +1,6 @@
 # Repliq Project State
 
-Current stage: Stage 42 — Regression Baseline Lock 30/30 & Production Readiness Audit.
+Current stage: Stage 43A — Production Hardening & Readiness Checks.
 
 Production regression baseline before Stage 40:
 - Stage 39 was deployed and confirmed by user: `/dialogue/qa` = 15/15 passed.
@@ -45,6 +45,7 @@ Protected baseline:
 - Stage 41 side-question coverage hardening
 - Stage 41.1 cross-language price memory fallback
 - Stage 42 production readiness audit checkpoint
+- Stage 43A production hardening/readiness checks
 
 ## Stage 36 — Advanced Conversation Recovery
 
@@ -149,3 +150,13 @@ Stage 36 adds a deterministic recovery layer inside active booking flows. It is 
 - Added `STAGE42_PRODUCTION_READINESS_AUDIT.md` with detailed analysis of current production readiness and Stage 43 options A/B/C.
 - Factual conclusion: cancellation/rescheduling code already exists, but has no regression coverage in the current 30-scenario matrix.
 - Recommended next stage: Stage 43A — Production Hardening & Readiness Checks, followed by a separate cancellation/reschedule regression harness.
+
+
+## Stage 43A — Production Hardening & Readiness Checks
+- Production-hardening checkpoint after confirmed Stage 42 `/dialogue/qa` = 30/30 passed.
+- Adds internal readiness aggregation endpoint: `GET /internal/readiness`.
+- Endpoint reports env flag presence, DB connectivity, runtime table visibility, Twilio/Google/TTS readiness flags, tenant readiness, and QA baseline metadata.
+- Does not expose secret values.
+- Does not run regression scenarios.
+- Does not change conversational behavior, booking routing, calendar logic, state transitions, FAQ/business-memory logic, cancellation/rescheduling behavior, or evaluator rules.
+- Recommended next stage remains Stage 44 — Cancellation/Reschedule Regression Harness.

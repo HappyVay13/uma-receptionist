@@ -6,6 +6,7 @@ Current protected baseline:
 - `/dialogue/qa` confirmed after Stage 41.1 deploy: 30/30 passed.
 - Stage 41.1 hardens cross-language grounded price lookup while preserving booking flow.
 - Stage 42 is a documentation/audit checkpoint only.
+- Stage 43A adds production readiness checks without changing conversational behavior.
 - Do not change conversational behavior unless a new archive + logs/regression output prove the need.
 
 ## Global production rules
@@ -126,3 +127,12 @@ If a price question is asked inside an active booking flow and the current langu
 - Cancellation/rescheduling must not be modified blindly: existing code must first be protected with a dedicated safe-mode regression harness.
 - SaaS tenant foundation must not be treated as production-ready until tenant/admin access, config validation, and readiness checks are protected by tests.
 - Recommended next stage is Stage 43A production hardening before behavior expansion.
+
+
+## Stage 43A — Production Hardening Rules
+- Stage 43A may add read-only/internal readiness checks only.
+- Do not change booking routing, calendar behavior, state transitions, side-question handling, cancellation/rescheduling behavior, or evaluator logic during Stage 43A.
+- Readiness endpoints must not expose secret values; they may report boolean presence flags only.
+- Readiness endpoints must not run `/dialogue/qa`, call LLMs, mutate conversation state, or create/update/delete calendar events.
+- Protected baseline remains `/dialogue/qa` = 30/30 passed.
+- Cancellation/rescheduling remains a separate future stage and must first be covered by a dedicated regression harness.

@@ -9736,6 +9736,140 @@ def health():
     }
 
 
+def _stage43a_env_flag(value: Any) -> bool:
+    return bool(str(value or "").strip())
+
+
+def _stage43a_database_check() -> Dict[str, Any]:
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return {"ok": True}
+    except Exception as e:
+        log.error("stage43a_database_readiness_failed err=%s", e)
+        return {"ok": False, "error": e.__class__.__name__}
+
+
+def _stage43a_table_check(table_name: str) -> Dict[str, Any]:
+    try:
+        with engine.connect() as conn:
+            exists = conn.execute(text(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM information_schema.tables
+                    WHERE table_schema='public' AND table_name=:table_name
+                )
+                """
+            ), {"table_name": table_name}).scalar()
+        return {"ok": bool(exists)}
+    except Exception as e:
+        log.error("stage43a_table_readiness_failed table=%s err=%s", table_name, e)
+        return {"ok": False, "error": e.__class__.__name__}
+
+
+def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) -> Dict[str, Any]:
+    requested_tenant_id = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    db_check = _stage43a_database_check()
+    tables = {
+        name: _stage43a_table_check(name)
+        for name in ("tenants", "conversations", "phone_routes", "call_logs", "dialogue_audit_events", "usage_events")
+    }
+
+    env = {
+        "database_url_set": _stage43a_env_flag(os.getenv("DATABASE_URL")),
+        "server_base_url_set": _stage43a_env_flag(SERVER_BASE_URL),
+        "openai_api_key_set": _stage43a_env_flag(OPENAI_API_KEY),
+        "llm_intelligence_enabled": bool(LLM_INTELLIGENCE_ENABLED),
+        "openai_model": OPENAI_MODEL,
+        "sentry_enabled": _sentry_middleware_class is not None,
+        "default_tenant_id": TENANT_ID_DEFAULT,
+        "test_tenant_id": TEST_TENANT_ID or None,
+        "allow_default_tenant_fallback": bool(ALLOW_DEFAULT_TENANT_FALLBACK),
+    }
+
+    integrations = {
+        "twilio": {
+            "validate_signature": bool(TWILIO_VALIDATE_SIGNATURE),
+            "account_sid_set": _stage43a_env_flag(TWILIO_ACCOUNT_SID),
+            "auth_token_set": _stage43a_env_flag(TWILIO_AUTH_TOKEN),
+            "from_number_set": _stage43a_env_flag(TWILIO_FROM_NUMBER),
+            "whatsapp_from_set": _stage43a_env_flag(TWILIO_WHATSAPP_FROM),
+            "voice_sdk_ready": bool(TWILIO_ACCOUNT_SID and TWILIO_API_KEY_SID and TWILIO_API_KEY_SECRET and TWILIO_TWIML_APP_SID),
+        },
+        "google": {
+            "service_account_json_set": _stage43a_env_flag(GOOGLE_SERVICE_ACCOUNT_JSON),
+            "oauth_ready": bool(oauth_ready()),
+            "calendar_id_fallback_set": _stage43a_env_flag(GOOGLE_CALENDAR_ID_FALLBACK),
+            "oauth_redirect_uri_set": _stage43a_env_flag(GOOGLE_OAUTH_REDIRECT_URI),
+        },
+        "tts": {
+            "google_voice_name": GOOGLE_TTS_VOICE_NAME,
+            "google_language_code": GOOGLE_TTS_LANGUAGE_CODE,
+            "elevenlabs_api_key_set": _stage43a_env_flag(ELEVENLABS_API_KEY),
+        },
+    }
+
+    tenant_status: Dict[str, Any]
+    try:
+        tenant = get_existing_tenant(requested_tenant_id)
+        if tenant.get("_id"):
+            tenant_status = tenant_ready_status_payload(tenant)
+        else:
+            tenant_status = {"tenant_id": requested_tenant_id, "ready": False, "missing": ["tenant_not_found"]}
+    except Exception as e:
+        log.error("stage43a_tenant_readiness_failed tenant_id=%s err=%s", requested_tenant_id, e)
+        tenant_status = {"tenant_id": requested_tenant_id, "ready": False, "error": e.__class__.__name__}
+
+    qa = {
+        "protected_baseline": "30/30",
+        "scenario_count": len(globals().get("STAGE35_SCENARIOS", []) or []),
+        "calendar_safe_mode_enabled": bool(STAGE35_CALENDAR_SAFE_MODE_ENABLED),
+        "runner_endpoint": "/dialogue/qa",
+        "note": "This readiness report does not run regression scenarios.",
+    }
+
+    issues: List[str] = []
+    if not db_check.get("ok"):
+        issues.append("database_connection_failed")
+    for table_name, table_status in tables.items():
+        if not table_status.get("ok"):
+            issues.append(f"table_missing_or_unreadable:{table_name}")
+    if not env["database_url_set"]:
+        issues.append("env_missing:DATABASE_URL")
+    if LLM_INTELLIGENCE_ENABLED and not env["openai_api_key_set"]:
+        issues.append("env_missing:OPENAI_API_KEY")
+    if TWILIO_VALIDATE_SIGNATURE and not integrations["twilio"]["auth_token_set"]:
+        issues.append("env_missing:TWILIO_AUTH_TOKEN")
+    if not (integrations["google"]["service_account_json_set"] or integrations["google"]["oauth_ready"]):
+        issues.append("google_calendar_credentials_missing")
+    if not tenant_status.get("ready"):
+        issues.append("tenant_not_ready")
+
+    status = "ok" if not issues else "degraded"
+    if not db_check.get("ok"):
+        status = "error"
+
+    return {
+        "status": status,
+        "stage": "43A",
+        "name": "Production Hardening & Readiness Checks",
+        "tenant_id": requested_tenant_id,
+        "timezone": str(TZ),
+        "env": env,
+        "database": {"connection": db_check, "tables": tables},
+        "integrations": integrations,
+        "tenant_readiness": tenant_status,
+        "qa": qa,
+        "issues": issues,
+    }
+
+
+@app.get("/internal/readiness")
+def internal_readiness(tenant_id: str = TENANT_ID_DEFAULT):
+    return stage43a_production_readiness_payload(tenant_id=tenant_id)
+
+
 # -------------------------
 # TELEGRAM CHANNEL (chat-first)
 # -------------------------
