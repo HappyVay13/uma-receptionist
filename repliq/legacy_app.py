@@ -1600,6 +1600,28 @@ def tenant_business_memory(tenant: Dict[str, Any], lang: str) -> str:
     return "\n".join(parts)
 
 
+def tenant_business_memory_all_languages(tenant: Dict[str, Any]) -> List[str]:
+    # Stage 41.1: price data can be present in another business-memory language.
+    # Example from clinic_demo QA: active RU booking uses service `konsultācija`,
+    # while the grounded price line is stored in LV memory as `Konsultācija - 10 eiro`.
+    # Keep this as a read-only lookup fallback for grounded FAQ answers only.
+    keys = (
+        "business_memory_lv", "business_memory_ru", "business_memory_en",
+        "faq_lv", "faq_ru", "faq_en",
+        "booking_rules_lv", "booking_rules_ru", "booking_rules_en",
+        "business_memory", "faq", "booking_rules", "policies",
+    )
+    seen = set()
+    values: List[str] = []
+    for key in keys:
+        val = tenant.get(key) if tenant else None
+        txt = str(val or "").strip()
+        if txt and txt not in seen:
+            values.append(f"{key}: {txt}")
+            seen.add(txt)
+    return values
+
+
 def default_business_memory_payload(business_type: str = "barbershop") -> Dict[str, str]:
     business_type = (business_type or "barbershop").strip().lower()
     if business_type == "clinic":
@@ -1791,6 +1813,17 @@ def try_barbershop_faq(
         if service_item:
             line = _memory_line_for_service(business_memory, service_item)
             price = _extract_price_from_line(line or "")
+            # Stage 41.1: if the current language memory mentions the service
+            # but does not contain a price, search the tenant's other language
+            # business-memory fields before falling back to an unknown-price answer.
+            if not price:
+                for memory_blob in tenant_business_memory_all_languages(tenant):
+                    candidate_line = _memory_line_for_service(memory_blob, service_item)
+                    candidate_price = _extract_price_from_line(candidate_line or "")
+                    if candidate_price:
+                        line = candidate_line
+                        price = candidate_price
+                        break
             display = service_display_name(service_item, lang)
             if price:
                 if lang == "ru":

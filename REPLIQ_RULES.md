@@ -4,7 +4,8 @@ Core rule: LLM is an understanding layer only. Booking actions remain controlled
 
 Current protected baseline:
 - `/dialogue/qa` confirmed after Stage 40 deploy: 28/28 passed.
-- Stage 41 hardens two side-question gaps while preserving booking flow.
+- Stage 41 deploy result: 29/30 passed because RU price side-question preserved flow but did not answer grounded price.
+- Stage 41.1 hardens cross-language grounded price lookup while preserving booking flow.
 - Do not change conversational behavior unless a new archive + logs/regression output prove the need.
 
 ## Global production rules
@@ -112,3 +113,7 @@ Stage 40 candidate gaps for Stage 41 analysis:
 - LV hours side-questions such as `cikos jūs strādājat?` inside active booking flow must be handled as business FAQ, not as missing date/time.
 - After answering the side-question, Repliq must keep the same active booking state and continue with offered slots.
 - Regression matrix now protects 30 scenarios total after Stage 41.
+
+
+### Stage 41.1 Rule
+If a price question is asked inside an active booking flow and the current language business-memory blob does not contain the price, Repliq may search the tenant's other language business-memory fields for the same service before falling back to an unknown-price response. This is allowed only for grounded FAQ lookup and must not change booking state, calendar logic, or slot generation.

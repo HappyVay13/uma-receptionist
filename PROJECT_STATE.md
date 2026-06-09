@@ -1,6 +1,6 @@
 # Repliq Project State
 
-Current stage: Stage 41 — Side-question Coverage Hardening.
+Current stage: Stage 41.1 — Cross-language Price Memory Fallback.
 
 Production regression baseline before Stage 40:
 - Stage 39 was deployed and confirmed by user: `/dialogue/qa` = 15/15 passed.
@@ -12,11 +12,16 @@ Stage 40 confirmed production baseline:
 - Stage 40 was deployed and confirmed by user: `/dialogue/qa` = 28/28 passed.
 - Regression matrix expanded from 15 to 28 scenarios.
 
-Stage 41 candidate baseline:
-- Two Stage 41 side-question scenarios added.
-- Regression matrix expanded from 28 to 30 scenarios.
-- Local controlled QA harness result: 30/30 passed.
-- Production `/dialogue/qa` confirmation is required after deploy.
+Stage 41 production result:
+- Stage 41 was deployed by user.
+- Production `/dialogue/qa` result: 29/30 passed.
+- Failing scenario: `stage41_ru_price_side_question`.
+- Failure reason: RU price side-question preserved booking flow but did not answer a grounded service price.
+
+Stage 41.1 candidate baseline:
+- Adds cross-language business-memory fallback for service price lookup.
+- Regression matrix remains 30 scenarios.
+- Expected production `/dialogue/qa` after deploy: 30/30 passed.
 
 Stage 40 scope:
 - Regression matrix expansion only.
@@ -124,3 +129,11 @@ Stage 36 adds a deterministic recovery layer inside active booking flows. It is 
 - Expanded regression matrix from 28 to 30 scenarios.
 - Local controlled QA harness result: 30/30 passed.
 - Production `/dialogue/qa` must be checked after deploy.
+
+
+## Stage 41.1 — Cross-language Price Memory Fallback
+- Fixes production Stage 41 regression result `29/30 passed`.
+- Root cause: the RU price FAQ branch could parse `евро`, but the grounded price line was present in LV business memory, not in the current RU memory blob.
+- Added read-only cross-language tenant business-memory lookup for price extraction before falling back to unknown-price text.
+- No booking routing, calendar logic, state transitions, or evaluator expectations changed.
+- Expected production `/dialogue/qa` after deploy: 30/30 passed.
