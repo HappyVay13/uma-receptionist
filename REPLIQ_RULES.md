@@ -3,8 +3,8 @@
 Core rule: LLM is an understanding layer only. Booking actions remain controlled by orchestration/state logic.
 
 Current protected baseline:
-- `/dialogue/qa` confirmed after Stage 38.3: 15/15 passed.
-- Stage 40 expands regression coverage only; conversational behavior remains unchanged.
+- `/dialogue/qa` confirmed after Stage 40 deploy: 28/28 passed.
+- Stage 41 hardens two side-question gaps while preserving booking flow.
 - Do not change conversational behavior unless a new archive + logs/regression output prove the need.
 
 ## Global production rules
@@ -104,3 +104,11 @@ Expected:
 Stage 40 candidate gaps for Stage 41 analysis:
 1. RU price side-question inside active booking flow should answer grounded price and preserve slots.
 2. LV hours side-question inside active booking flow should answer hours and preserve slots.
+
+
+## Stage 41 — Side-question Coverage Hardening Rules
+- RU price side-questions inside active booking flow must answer grounded service price and preserve the existing slot-selection flow.
+- Russian business-memory prices written as `10 евро` are valid grounded prices and must be extracted by `_extract_price_from_line()`.
+- LV hours side-questions such as `cikos jūs strādājat?` inside active booking flow must be handled as business FAQ, not as missing date/time.
+- After answering the side-question, Repliq must keep the same active booking state and continue with offered slots.
+- Regression matrix now protects 30 scenarios total after Stage 41.

@@ -1,6 +1,6 @@
 # Repliq Project State
 
-Current stage: Stage 40 — Regression Matrix Expansion.
+Current stage: Stage 41 — Side-question Coverage Hardening.
 
 Production regression baseline before Stage 40:
 - Stage 39 was deployed and confirmed by user: `/dialogue/qa` = 15/15 passed.
@@ -8,10 +8,15 @@ Production regression baseline before Stage 40:
 - Calendar safe mode baseline remains active for QA/regression context.
 - Tenant used in QA baseline: `clinic_demo`.
 
-Stage 40 candidate baseline:
+Stage 40 confirmed production baseline:
+- Stage 40 was deployed and confirmed by user: `/dialogue/qa` = 28/28 passed.
 - Regression matrix expanded from 15 to 28 scenarios.
-- Local controlled QA harness result: 28/28 passed.
-- Production `/dialogue/qa` confirmation is still required after deploy.
+
+Stage 41 candidate baseline:
+- Two Stage 41 side-question scenarios added.
+- Regression matrix expanded from 28 to 30 scenarios.
+- Local controlled QA harness result: 30/30 passed.
+- Production `/dialogue/qa` confirmation is required after deploy.
 
 Stage 40 scope:
 - Regression matrix expansion only.
@@ -31,6 +36,7 @@ Protected baseline:
 - Stage 36 advanced conversation recovery
 - Stage 37 temporal semantic engine and Latvian relative-date recovery
 - Stage 38 business-memory FAQ / side-question handling inside active booking flows
+- Stage 40 regression expansion to 28 scenarios
 
 ## Stage 36 — Advanced Conversation Recovery
 
@@ -106,3 +112,15 @@ Stage 36 adds a deterministic recovery layer inside active booking flows. It is 
 - Local controlled QA harness result: 28/28 passed.
 - Production `/dialogue/qa` must be checked after deploy to confirm the new baseline.
 - Candidate gaps discovered but not added as required passing checks: RU price side-question inside booking flow and LV hours side-question inside booking flow. These should be handled as a separate Stage 41 after Stage 40 deploy confirmation.
+
+
+## Stage 41 — Side-question Coverage Hardening
+- Closed the two Stage 40 candidate gaps:
+  - RU price side-question inside active booking flow;
+  - LV hours side-question inside active booking flow.
+- `_extract_price_from_line()` now recognizes Russian `евро` price strings.
+- LV hours FAQ markers now cover `cikos jūs strādājat?`-style phrasing.
+- Regression evaluator now recognizes grounded `евро` / `стоит` / `darba laiks` FAQ answers.
+- Expanded regression matrix from 28 to 30 scenarios.
+- Local controlled QA harness result: 30/30 passed.
+- Production `/dialogue/qa` must be checked after deploy.

@@ -1632,6 +1632,7 @@ def _extract_price_from_line(line: str) -> Optional[str]:
         r"(\d+(?:[\.,]\d{1,2})?\s*€)",
         r"(\d+(?:[\.,]\d{1,2})?\s*eur)",
         r"(\d+(?:[\.,]\d{1,2})?\s*eiro)",
+        r"(\d+(?:[\.,]\d{1,2})?\s*евро)",
     ]
     for pat in patterns:
         m = re.search(pat, src, flags=re.IGNORECASE)
@@ -1717,7 +1718,8 @@ def try_barbershop_faq(
     hours_markers = [
         "часы", "режим", "до скольки", "когда откры", "когда работает", "работаете",
         "opening hours", "hours", "when are you open", "work hours",
-        "darba laiks", "cikos strād", "līdz cikiem", "kad strād", "vai strādā"
+        "darba laiks", "cikos strād", "cikos jūs strād", "cikos jus strad",
+        "līdz cikiem", "lidz cikiem", "kad strād", "kad jus strad", "kad jūs strād", "vai strādā"
     ]
 
     # Stage 38: prefer exact business-memory lines when tenant added them.
@@ -2339,6 +2341,32 @@ STAGE34_REGRESSION_TEST_MATRIX: List[Dict[str, Any]] = [
         "expected": ["business_faq_answered", "ru_reply"],
         "forbidden": ["booking_started_unnecessarily", "language_switch_to_lv"],
     },
+    {
+        "id": "stage41_ru_price_side_question",
+        "stage": 41,
+        "lang": "ru",
+        "category": "business_memory_side_question",
+        "message_sequence": [
+            "хочу записаться на консультацию завтра вечером",
+            "сколько это стоит?",
+            "да, подходит",
+        ],
+        "expected": ["business_faq_answered", "preserve_booking_flow", "ru_reply"],
+        "forbidden": ["reset_to_new", "ask_service_again", "language_switch_to_lv"],
+    },
+    {
+        "id": "stage41_lv_hours_side_question",
+        "stage": 41,
+        "lang": "lv",
+        "category": "business_memory_side_question",
+        "message_sequence": [
+            "gribu pierakstīties uz konsultāciju rīt vakarā",
+            "cikos jūs strādājat?",
+            "jā, der",
+        ],
+        "expected": ["business_faq_answered", "preserve_booking_flow", "lv_reply"],
+        "forbidden": ["reset_to_new", "ask_service_again", "language_switch_to_ru"],
+    },
 ]
 
 
@@ -2434,7 +2462,11 @@ def stage35_detect_regression_observations(scenario: Dict[str, Any], turns: List
     if any(st in {"need_more", "busy", "booked", "min_notice", "holiday_closed"} for st in statuses) or any(st.startswith("AWAITING_") for st in states):
         observed.add("booking_flow")
         observed.add("same_booking_flow")
-    if any(st == "info" for st in statuses) or any(x in all_low for x in ["cena", "maksā", "адрес", "находимся", "atrodamies", "strādājam", "работаем", "open from", "usually open", "price", "costs"]):
+    if any(st == "info" for st in statuses) or any(x in all_low for x in [
+        "cena", "maksā", "darba laiks", "adrese",
+        "адрес", "находимся", "стоит", "евро",
+        "atrodamies", "strādājam", "работаем", "open from", "usually open", "price", "costs"
+    ]):
         observed.add("business_faq_answered")
     if category.startswith("business_memory") and len(turns) >= 2 and ("AWAITING_" in " ".join(states) or any(st == "need_more" for st in statuses[1:])):
         observed.add("preserve_booking_flow")
