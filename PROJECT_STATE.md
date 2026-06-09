@@ -1,6 +1,6 @@
 # Repliq Project State
 
-Current stage: Stage 41.1 — Cross-language Price Memory Fallback.
+Current stage: Stage 42 — Regression Baseline Lock 30/30 & Production Readiness Audit.
 
 Production regression baseline before Stage 40:
 - Stage 39 was deployed and confirmed by user: `/dialogue/qa` = 15/15 passed.
@@ -18,10 +18,10 @@ Stage 41 production result:
 - Failing scenario: `stage41_ru_price_side_question`.
 - Failure reason: RU price side-question preserved booking flow but did not answer a grounded service price.
 
-Stage 41.1 candidate baseline:
+Stage 41.1 confirmed production baseline:
 - Adds cross-language business-memory fallback for service price lookup.
+- User confirmed production `/dialogue/qa` after deploy: 30/30 passed.
 - Regression matrix remains 30 scenarios.
-- Expected production `/dialogue/qa` after deploy: 30/30 passed.
 
 Stage 40 scope:
 - Regression matrix expansion only.
@@ -42,6 +42,9 @@ Protected baseline:
 - Stage 37 temporal semantic engine and Latvian relative-date recovery
 - Stage 38 business-memory FAQ / side-question handling inside active booking flows
 - Stage 40 regression expansion to 28 scenarios
+- Stage 41 side-question coverage hardening
+- Stage 41.1 cross-language price memory fallback
+- Stage 42 production readiness audit checkpoint
 
 ## Stage 36 — Advanced Conversation Recovery
 
@@ -137,3 +140,12 @@ Stage 36 adds a deterministic recovery layer inside active booking flows. It is 
 - Added read-only cross-language tenant business-memory lookup for price extraction before falling back to unknown-price text.
 - No booking routing, calendar logic, state transitions, or evaluator expectations changed.
 - Expected production `/dialogue/qa` after deploy: 30/30 passed.
+
+
+## Stage 42 — Regression Baseline Lock 30/30 & Production Readiness Audit
+- Documentation and audit checkpoint only.
+- User confirmed Stage 41.1 production `/dialogue/qa` = 30/30 passed.
+- No conversational behavior, booking routing, calendar logic, state transitions, or evaluator expectations changed.
+- Added `STAGE42_PRODUCTION_READINESS_AUDIT.md` with detailed analysis of current production readiness and Stage 43 options A/B/C.
+- Factual conclusion: cancellation/rescheduling code already exists, but has no regression coverage in the current 30-scenario matrix.
+- Recommended next stage: Stage 43A — Production Hardening & Readiness Checks, followed by a separate cancellation/reschedule regression harness.
