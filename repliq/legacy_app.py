@@ -2497,47 +2497,6 @@ STAGE34_REGRESSION_TEST_MATRIX: List[Dict[str, Any]] = [
         "forbidden": ["language_switch_to_ru"],
     },
 
-    {
-        "id": "stage45_ru_reschedule_full_slot_ack_confirm",
-        "stage": 45,
-        "lang": "ru",
-        "category": "reschedule_full_flow",
-        "message_sequence": ["перенести запись", "послезавтра вечером", "да, подходит", "да"],
-        "calendar_event_fixture": {"days_from_today": 1, "hour": 16, "minute": 0, "duration_min": 30, "service": "konsultācija"},
-        "expected": ["cancel_reschedule_flow", "reschedule_started", "reschedule_pending", "multiple_slot_options", "reschedule_finalized", "ru_reply"],
-        "forbidden": ["ask_service_again", "reset_to_new", "language_switch_to_lv"],
-    },
-    {
-        "id": "stage45_lv_reschedule_full_slot_ack_confirm",
-        "stage": 45,
-        "lang": "lv",
-        "category": "reschedule_full_flow",
-        "message_sequence": ["pārcelt pierakstu", "parīt vakarā", "jā, der", "jā"],
-        "calendar_event_fixture": {"days_from_today": 1, "hour": 16, "minute": 0, "duration_min": 30, "service": "konsultācija"},
-        "expected": ["cancel_reschedule_flow", "reschedule_started", "reschedule_pending", "multiple_slot_options", "reschedule_finalized", "lv_reply"],
-        "forbidden": ["ask_service_again", "reset_to_new", "language_switch_to_ru"],
-    },
-    {
-        "id": "stage45_ru_reschedule_slot_number_confirm",
-        "stage": 45,
-        "lang": "ru",
-        "category": "reschedule_full_flow",
-        "message_sequence": ["перенести запись", "послезавтра вечером", "2", "да"],
-        "calendar_event_fixture": {"days_from_today": 1, "hour": 16, "minute": 0, "duration_min": 30, "service": "konsultācija"},
-        "expected": ["cancel_reschedule_flow", "reschedule_started", "reschedule_pending", "multiple_slot_options", "reschedule_finalized", "ru_reply"],
-        "forbidden": ["ask_service_again", "reset_to_new", "language_switch_to_lv"],
-    },
-    {
-        "id": "stage45_lv_reschedule_slot_number_confirm",
-        "stage": 45,
-        "lang": "lv",
-        "category": "reschedule_full_flow",
-        "message_sequence": ["pārcelt pierakstu", "parīt vakarā", "2", "jā"],
-        "calendar_event_fixture": {"days_from_today": 1, "hour": 16, "minute": 0, "duration_min": 30, "service": "konsultācija"},
-        "expected": ["cancel_reschedule_flow", "reschedule_started", "reschedule_pending", "multiple_slot_options", "reschedule_finalized", "lv_reply"],
-        "forbidden": ["ask_service_again", "reset_to_new", "language_switch_to_ru"],
-    },
-
 ]
 
 
@@ -3950,43 +3909,6 @@ def extract_name_from_event_description(description: str) -> Optional[str]:
     if m:
         return normalize_name(m.group(1))
     return None
-
-def infer_service_item_from_calendar_event(
-    event: Optional[Dict[str, Any]],
-    service_catalog: List[Dict[str, Any]],
-    lang: str,
-) -> Optional[Dict[str, Any]]:
-    """Infer the original service from an existing calendar event.
-
-    Stage 45: reschedule flows start from a calendar event, not from a fresh
-    booking message. The event summary often contains the original service
-    (for example, "Clinic Demo - konsultācija"). Persisting that service in
-    the booking context lets the next user turn ("послезавтра вечером" /
-    "parīt vakarā") regenerate slots without asking for the service again.
-    """
-    if not isinstance(event, dict):
-        return None
-    texts: List[str] = []
-    summary = str(event.get("summary") or "").strip()
-    description = str(event.get("description") or "").strip()
-    if summary:
-        texts.append(summary)
-        if " - " in summary:
-            texts.append(summary.split(" - ", 1)[1].strip())
-    if description:
-        texts.append(description)
-
-    seen = set()
-    for candidate in texts:
-        candidate = str(candidate or "").strip()
-        if not candidate or candidate in seen:
-            continue
-        seen.add(candidate)
-        service_item = extract_service_from_text(candidate, service_catalog, lang)
-        if service_item:
-            return service_item
-    return None
-
 
 def abort_reschedule_text(text_: Optional[str], lang: str) -> bool:
     low = (text_ or "").strip().lower()
@@ -8684,7 +8606,7 @@ def handle_user_text(
                 "lang": lang,
             }
         dt_old = parse_dt_any_tz(ev["start"].get("dateTime", ""))
-        reschedule_pending = {
+        c["pending"] = {
             "booking_intent": True,
             "reschedule_event_id": ev["id"],
             "reschedule_old_iso": ev["start"].get("dateTime"),
@@ -8694,11 +8616,6 @@ def handle_user_text(
         existing_name = extract_name_from_event_description(ev.get("description") or "")
         if existing_name and not c.get("name"):
             c["name"] = existing_name
-        reschedule_service_item = infer_service_item_from_calendar_event(ev, service_catalog, lang)
-        if reschedule_service_item:
-            c, reschedule_pending = remember_booking_service(c, reschedule_pending, reschedule_service_item, lang)
-        else:
-            c["pending"] = reschedule_pending
         c["state"] = STATE_AWAITING_DATE
         db_save_conversation(tenant_id, user_key, c)
         return {
@@ -10075,8 +9992,8 @@ def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) ->
         tenant_status = {"tenant_id": requested_tenant_id, "ready": False, "error": e.__class__.__name__}
 
     qa = {
-        "protected_baseline": "44/44",
-        "scenario_count": len(STAGE34_REGRESSION_TEST_MATRIX),
+        "protected_baseline": "30/30",
+        "scenario_count": len(globals().get("STAGE35_SCENARIOS", []) or []),
         "calendar_safe_mode_enabled": bool(STAGE35_CALENDAR_SAFE_MODE_ENABLED),
         "runner_endpoint": "/dialogue/qa",
         "note": "This readiness report does not run regression scenarios.",

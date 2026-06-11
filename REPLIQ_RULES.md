@@ -3,12 +3,11 @@
 Core rule: LLM is an understanding layer only. Booking actions remain controlled by orchestration/state logic.
 
 Current protected baseline:
-- `/dialogue/qa` confirmed after Stage 44 deploy: 40/40 passed. Stage 45 expands the expected protected matrix to 44 scenarios.
+- `/dialogue/qa` confirmed after Stage 41.1 deploy: 30/30 passed.
 - Stage 41.1 hardens cross-language grounded price lookup while preserving booking flow.
 - Stage 42 is a documentation/audit checkpoint only.
 - Stage 43A adds production readiness checks without changing conversational behavior.
 - Stage 44 adds cancellation/reschedule regression harness coverage without changing runtime cancellation/rescheduling behavior.
-- Stage 45 may complete reschedule continuation only after preserving `reschedule_event_id` and the original calendar-event service context.
 - Do not change conversational behavior unless a new archive + logs/regression output prove the need.
 
 ## Global production rules
@@ -151,13 +150,3 @@ If a price question is asked inside an active booking flow and the current langu
   - fixture-backed reschedule starts `reschedule_wait` and stores `reschedule_event_id`;
   - aborting reschedule clears reschedule pending data and keeps the current booking.
 - Full reschedule continuation is Stage 45 scope and must start with root-cause analysis from QA output/logs.
-
-
-## Stage 45 — Reschedule Flow Completion Rules
-- Reschedule continuation must preserve `reschedule_event_id`, `reschedule_old_iso`, `reschedule_summary`, and `reschedule_description` until final confirmation or explicit abort.
-- When a reschedule starts from an existing calendar event, infer and persist the original service from the event summary/description if possible. This prevents asking for the service again after `перенести запись` / `pārcelt pierakstu`.
-- A new date/time answer inside reschedule flow must regenerate slots using the preserved service and language.
-- A numeric slot choice or positive acknowledgement after reschedule slot options must move to confirmation.
-- Final yes confirmation must call the existing reschedule update path, not create a separate new booking.
-- Stage 35 calendar safe mode must still prevent real Google Calendar mutation during `/dialogue/qa`.
-- Do not relax evaluator rules to make Stage 45 pass.
