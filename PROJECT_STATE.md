@@ -1,6 +1,6 @@
 # Repliq Project State
 
-Current stage: Stage 44 — Cancellation/Reschedule Regression Harness.
+Current stage: Stage 45 — Reschedule Flow Completion.
 
 Production regression baseline before Stage 40:
 - Stage 39 was deployed and confirmed by user: `/dialogue/qa` = 15/15 passed.
@@ -46,6 +46,8 @@ Protected baseline:
 - Stage 41.1 cross-language price memory fallback
 - Stage 42 production readiness audit checkpoint
 - Stage 43A production hardening/readiness checks
+- Stage 44 cancellation/reschedule regression harness
+- Stage 45 reschedule flow completion
 
 ## Stage 36 — Advanced Conversation Recovery
 
@@ -177,3 +179,14 @@ Stage 36 adds a deterministic recovery layer inside active booking flows. It is 
   - RU/LV reschedule with a safe-mode fixture starts reschedule flow and preserves `reschedule_event_id`;
   - RU/LV abort during reschedule keeps the current booking.
 - Candidate Stage 45 gap intentionally not added as required passing QA: full natural reschedule continuation after `перенести запись` / `pārcelt pierakstu` followed by a date-only or fuzzy-date answer. The existing flow starts reschedule, but continuation still needs dedicated root-cause analysis before behavior changes.
+
+
+## Stage 45 — Reschedule Flow Completion
+- Behavior-hardening stage after confirmed Stage 44 `/dialogue/qa` = 40/40 passed.
+- Root cause found in existing reschedule continuation: after `перенести запись` / `pārcelt pierakstu`, Repliq stored `reschedule_event_id`, but did not persist the original service from the matched calendar event into the active booking context.
+- Because the active reschedule context had no service, the next fuzzy date/time answer such as `послезавтра вечером` / `parīt vakarā` could fall into service-selection prompts instead of regenerating new slots.
+- Added deterministic service inference from the existing calendar event summary/description, e.g. `Clinic Demo - konsultācija`, during reschedule start.
+- Existing `book_appointment_for_datetime()` update path remains the execution point for actual calendar update when `pending.reschedule_event_id` is present.
+- Added four Stage 45 regression scenarios covering full RU/LV reschedule completion by positive slot acknowledgement and numeric slot choice.
+- Regression matrix expands from 40 to 44 scenarios.
+- Runtime calendar update behavior is unchanged outside the existing reschedule path; Stage 35 safe mode still prevents real calendar mutation in `/dialogue/qa`.
