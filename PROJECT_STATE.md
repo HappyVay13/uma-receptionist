@@ -190,3 +190,14 @@ Stage 36 adds a deterministic recovery layer inside active booking flows. It is 
 - Added four Stage 45 regression scenarios covering full RU/LV reschedule completion by positive slot acknowledgement and numeric slot choice.
 - Regression matrix expands from 40 to 44 scenarios.
 - Runtime calendar update behavior is unchanged outside the existing reschedule path; Stage 35 safe mode still prevents real calendar mutation in `/dialogue/qa`.
+
+
+## Stage 45.1 — Reschedule Slot Evaluator Calibration
+- Hotfix after Stage 45 production `/dialogue/qa` returned 40/44 passed.
+- The four failing scenarios were the new full reschedule flows only.
+- QA output showed the actual reschedule behavior was successful: reschedule started, `reschedule_event_id` stayed present, new slots were offered, confirmation was reached, and final confirmation completed.
+- The only missing expected token was `multiple_slot_options`.
+- Root cause: Stage 35 evaluator checked the final assistant turn first. In a full reschedule flow the final turn contains only the confirmed time, while the multiple slot offer happened on the earlier slot-generation turn.
+- Updated evaluator detection to count multiple offered times on any individual turn via existing `_turn_times()`.
+- No conversational behavior, booking routing, cancellation/reschedule runtime logic, or calendar update logic changed.
+- Expected production `/dialogue/qa` after deploy: 44/44 passed.

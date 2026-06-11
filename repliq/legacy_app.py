@@ -2659,7 +2659,11 @@ def stage35_detect_regression_observations(scenario: Dict[str, Any], turns: List
         observed.add("reschedule_aborted")
     if category.startswith("reschedule") and "booked" in statuses and "reschedule_wait" in statuses:
         observed.add("reschedule_finalized")
-    if len(last_times or times) >= 2:
+    # Stage 45.1: a full reschedule flow may end on a final confirmation turn
+    # with only one time in the last reply, while the actual slot options were
+    # correctly offered on an earlier turn. Detect multiple options per turn
+    # instead of relying only on the final turn.
+    if any(len(_turn_times(t)) >= 2 for t in turns):
         observed.add("multiple_slot_options")
     if len(set(times)) >= 2:
         observed.add("avoid_repeating_same_slots")

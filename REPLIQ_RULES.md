@@ -161,3 +161,10 @@ If a price question is asked inside an active booking flow and the current langu
 - Final yes confirmation must call the existing reschedule update path, not create a separate new booking.
 - Stage 35 calendar safe mode must still prevent real Google Calendar mutation during `/dialogue/qa`.
 - Do not relax evaluator rules to make Stage 45 pass.
+
+
+## Stage 45.1 — Reschedule Slot Evaluator Calibration Rules
+- Stage 45.1 may only correct QA evaluator detection for multi-slot offers already present in the conversation.
+- Do not change conversational routing, slot generation, cancellation/reschedule runtime logic, or calendar mutation logic in this stage.
+- A full reschedule flow may end with a single confirmed time in the final assistant turn; `multiple_slot_options` must therefore be detected from the turn where slot options were actually offered, not only from the final turn.
+- The evaluator may use existing `pending.offered_slots` and visible assistant text via `_turn_times()` to determine whether multiple slot options were presented.
