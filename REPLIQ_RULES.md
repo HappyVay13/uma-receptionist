@@ -168,3 +168,12 @@ If a price question is asked inside an active booking flow and the current langu
 - Do not change conversational routing, slot generation, cancellation/reschedule runtime logic, or calendar mutation logic in this stage.
 - A full reschedule flow may end with a single confirmed time in the final assistant turn; `multiple_slot_options` must therefore be detected from the turn where slot options were actually offered, not only from the final turn.
 - The evaluator may use existing `pending.offered_slots` and visible assistant text via `_turn_times()` to determine whether multiple slot options were presented.
+
+## Stage 46 — Calendar Runtime Cancel/Reschedule Hardening Rules
+- Completed reschedule flows must preserve action-specific wording: the final reply must say that the appointment was moved/rescheduled, not that a new booking was made.
+- The reschedule finalization path must continue using `update_calendar_event()` whenever `pending.reschedule_event_id` is present.
+- The cancellation success path must continue using `delete_calendar_event()` and may expose safe audit metadata such as `calendar_action=delete_event`.
+- Safe metadata added for regression/audit (`calendar_action`, `reschedule_finalized`) must not expose secrets or Google event contents beyond already-visible action type.
+- Stage 35 calendar safe mode must continue preventing real Google Calendar create/update/delete mutation during `/dialogue/qa`.
+- Do not change slot generation, service inference, date parsing, or booking side-question behavior in Stage 46 unless a new root cause is proven by QA output/code.
+

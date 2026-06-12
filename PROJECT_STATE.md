@@ -201,3 +201,16 @@ Stage 36 adds a deterministic recovery layer inside active booking flows. It is 
 - Updated evaluator detection to count multiple offered times on any individual turn via existing `_turn_times()`.
 - No conversational behavior, booking routing, cancellation/reschedule runtime logic, or calendar update logic changed.
 - Expected production `/dialogue/qa` after deploy: 44/44 passed.
+
+## Stage 46 — Calendar Runtime Cancel/Reschedule Hardening
+- Behavior/runtime hardening stage after confirmed Stage 45.1 production `/dialogue/qa` = 44/44 passed.
+- Root cause found in the completed reschedule path: `book_appointment_for_datetime()` correctly chose `update_calendar_event()` when `pending.reschedule_event_id` existed, but the final customer-facing text was later rewritten by the humanize/AI/Stage 33 soft UX layers as a generic new-booking confirmation such as “записал вас” / “pierakstīju jūs”.
+- Added explicit reschedule completion metadata on successful update-path finalization: `calendar_action=update_event`, `reschedule_finalized=True`, and `preserve_text=True`.
+- Stage 33 now respects `preserve_text` / `reschedule_finalized` and does not rewrite completed reschedule wording into a generic booking message.
+- Cancellation success now exposes `calendar_action=delete_event` for regression/audit visibility.
+- QA runner now records safe metadata (`calendar_action`, `reschedule_finalized`) per turn so the safe-mode regression suite can verify delete/update routing without mutating Google Calendar.
+- Added Stage 46 regression scenarios for RU/LV cancellation delete-path coverage and RU/LV reschedule update-path + final-text coverage.
+- Regression matrix expands from 44 to 48 scenarios.
+- Real Google Calendar mutation is still disabled in `/dialogue/qa` by Stage 35 calendar safe mode; runtime functions outside safe mode still call `delete_calendar_event()` and `update_calendar_event()` as before.
+- Expected production `/dialogue/qa` after deploy: 48/48 passed.
+

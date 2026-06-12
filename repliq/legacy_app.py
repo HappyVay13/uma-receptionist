@@ -679,6 +679,12 @@ def stage33_soft_conversational_ux(
     if not stage33_soft_ux_enabled(channel, source):
         return result
 
+    # Stage 46: some upstream actions carry exact, action-specific wording
+    # (notably completed reschedules). Preserve those replies so the soft
+    # UX layer cannot turn "record moved" into a generic new-booking message.
+    if result.get("preserve_text") or result.get("reschedule_finalized"):
+        return result
+
     # Stage 38.3: side-question FAQ answers inside an active booking flow
     # already include both the business-memory answer and the preserved flow
     # follow-up. Do not let the final soft UX layer collapse that combined
@@ -1924,6 +1930,8 @@ def ensure_lang_update(tenant_id: str, user_key: str, c: Dict[str, Any], lang: s
 def usage_type_from_event(raw_text: str, result: Dict[str, Any], conv: Optional[Dict[str, Any]] = None) -> str:
     intent = infer_intent_label(raw_text, str((result or {}).get("status") or "").strip(), conv)
     status = str((result or {}).get("status") or "").strip().lower()
+    if (result or {}).get("reschedule_finalized") or str((result or {}).get("calendar_action") or "").strip() == "update_event":
+        return "reschedule"
     if status == "booked":
         return "booking"
     if intent == "reschedule":
@@ -2020,6 +2028,8 @@ def log_call_event(
     try:
         conv = conv or {}
         intent = infer_intent_label(raw_text, str(result.get("status") or "").strip(), conv)
+        if (result or {}).get("reschedule_finalized") or str((result or {}).get("calendar_action") or "").strip() == "update_event":
+            intent = "reschedule"
         service = str(conv.get("service") or "").strip() or None
         datetime_iso = str(conv.get("datetime_iso") or "").strip() or None
         status = str(result.get("status") or "").strip() or "unknown"
@@ -2538,6 +2548,47 @@ STAGE34_REGRESSION_TEST_MATRIX: List[Dict[str, Any]] = [
         "forbidden": ["ask_service_again", "reset_to_new", "language_switch_to_ru"],
     },
 
+    {
+        "id": "stage46_ru_cancel_existing_booking_delete_path",
+        "stage": 46,
+        "lang": "ru",
+        "category": "cancellation_existing_booking",
+        "message_sequence": ["отменить запись"],
+        "calendar_event_fixture": {"days_from_today": 1, "hour": 16, "minute": 0, "duration_min": 30, "service": "konsultācija"},
+        "expected": ["cancel_reschedule_flow", "cancel_request_detected", "booking_cancelled", "calendar_delete_path", "ru_reply"],
+        "forbidden": ["booking_started_unnecessarily", "language_switch_to_lv"],
+    },
+    {
+        "id": "stage46_lv_cancel_existing_booking_delete_path",
+        "stage": 46,
+        "lang": "lv",
+        "category": "cancellation_existing_booking",
+        "message_sequence": ["atcelt pierakstu"],
+        "calendar_event_fixture": {"days_from_today": 1, "hour": 16, "minute": 0, "duration_min": 30, "service": "konsultācija"},
+        "expected": ["cancel_reschedule_flow", "cancel_request_detected", "booking_cancelled", "calendar_delete_path", "lv_reply"],
+        "forbidden": ["booking_started_unnecessarily", "language_switch_to_ru"],
+    },
+    {
+        "id": "stage46_ru_reschedule_update_path_final_text",
+        "stage": 46,
+        "lang": "ru",
+        "category": "reschedule_full_flow",
+        "message_sequence": ["перенести запись", "послезавтра вечером", "2", "да"],
+        "calendar_event_fixture": {"days_from_today": 1, "hour": 16, "minute": 0, "duration_min": 30, "service": "konsultācija"},
+        "expected": ["cancel_reschedule_flow", "reschedule_started", "reschedule_pending", "multiple_slot_options", "calendar_update_path", "reschedule_finalized", "reschedule_final_text", "ru_reply"],
+        "forbidden": ["ask_service_again", "reset_to_new", "language_switch_to_lv", "generic_booking_final_text"],
+    },
+    {
+        "id": "stage46_lv_reschedule_update_path_final_text",
+        "stage": 46,
+        "lang": "lv",
+        "category": "reschedule_full_flow",
+        "message_sequence": ["pārcelt pierakstu", "parīt vakarā", "2", "jā"],
+        "calendar_event_fixture": {"days_from_today": 1, "hour": 16, "minute": 0, "duration_min": 30, "service": "konsultācija"},
+        "expected": ["cancel_reschedule_flow", "reschedule_started", "reschedule_pending", "multiple_slot_options", "calendar_update_path", "reschedule_finalized", "reschedule_final_text", "lv_reply"],
+        "forbidden": ["ask_service_again", "reset_to_new", "language_switch_to_ru", "generic_booking_final_text"],
+    },
+
 ]
 
 
@@ -2593,6 +2644,7 @@ def stage35_detect_regression_observations(scenario: Dict[str, Any], turns: List
     statuses = [str(t.get("status") or "").strip().lower() for t in turns]
     states = [str(t.get("state") or "").strip().upper() for t in turns]
     result_langs = [get_lang(t.get("lang") or lang) for t in turns if t.get("lang")]
+    calendar_actions = [str((t or {}).get("calendar_action") or "").strip() for t in turns]
 
     observed = set()
     forbidden_hits = []
@@ -2659,6 +2711,12 @@ def stage35_detect_regression_observations(scenario: Dict[str, Any], turns: List
         observed.add("reschedule_aborted")
     if category.startswith("reschedule") and "booked" in statuses and "reschedule_wait" in statuses:
         observed.add("reschedule_finalized")
+    if category.startswith("reschedule") and ("update_event" in calendar_actions or any((t or {}).get("reschedule_finalized") for t in turns)):
+        observed.add("calendar_update_path")
+    if category.startswith("cancellation") and "delete_event" in calendar_actions:
+        observed.add("calendar_delete_path")
+    if category.startswith("reschedule") and any(x in last_low for x in ["перенесена", "перенёс", "перенес", "pārcelts", "pārcēlu", "appointment moved"]):
+        observed.add("reschedule_final_text")
     # Stage 45.1: a full reschedule flow may end on a final confirmation turn
     # with only one time in the last reply, while the actual slot options were
     # correctly offered on an earlier turn. Detect multiple options per turn
@@ -2740,6 +2798,11 @@ def stage35_detect_regression_observations(scenario: Dict[str, Any], turns: List
             return "NEW" in states[1:]
         if token == "repeat_same_three_slots":
             return len(times) >= 6 and times[:3] == times[-3:]
+        if token == "generic_booking_final_text":
+            if not category.startswith("reschedule") or statuses[-1:] != ["booked"]:
+                return False
+            final_markers = ["перенесена", "перенёс", "перенес", "pārcelts", "pārcēlu", "appointment moved"]
+            return not any(x in last_low for x in final_markers)
         return token in all_low
 
     for token in forbidden:
@@ -2849,6 +2912,8 @@ def stage35_run_regression_scenario(scenario_id: str, tenant_id: Optional[str] =
                 "lang": result.get("lang"),
                 "state": (conv or {}).get("state"),
                 "pending": (conv or {}).get("pending"),
+                "calendar_action": result.get("calendar_action"),
+                "reschedule_finalized": result.get("reschedule_finalized"),
             })
     finally:
         _STAGE35_CALENDAR_EVENT_FIXTURE.reset(fixture_token)
@@ -6938,6 +7003,9 @@ def book_appointment_for_datetime(
         "service": final_service,
         "when": format_dt_short(dt_start),
         "datetime_text": format_dt_short(dt_start),
+        "calendar_action": "update_event" if was_rescheduled else "create_event",
+        "reschedule_finalized": bool(was_rescheduled),
+        "preserve_text": bool(was_rescheduled),
     }
 
 
@@ -8674,6 +8742,7 @@ def handle_user_text(
             "reply_voice": t(lang, "cancelled"),
             "msg_out": t(lang, "cancelled"),
             "lang": lang,
+            "calendar_action": "delete_event",
         }
 
     if explicit_reschedule_request or ((not active_flow) and ((llm_hint or {}).get("intent") == "reschedule" and float((llm_hint or {}).get("confidence") or 0.0) >= LLM_INTENT_MIN_CONFIDENCE)):
