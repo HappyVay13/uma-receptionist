@@ -1,6 +1,6 @@
 # Repliq Project State
 
-Current stage: Stage 45 — Reschedule Flow Completion.
+Current stage: Stage 47 — Live Calendar E2E Smoke Audit & Baseline Sync.
 
 Production regression baseline before Stage 40:
 - Stage 39 was deployed and confirmed by user: `/dialogue/qa` = 15/15 passed.
@@ -48,6 +48,9 @@ Protected baseline:
 - Stage 43A production hardening/readiness checks
 - Stage 44 cancellation/reschedule regression harness
 - Stage 45 reschedule flow completion
+- Stage 45.1 reschedule slot evaluator calibration
+- Stage 46 calendar runtime cancel/reschedule hardening
+- Stage 47 live calendar E2E smoke audit and baseline sync
 
 ## Stage 36 — Advanced Conversation Recovery
 
@@ -213,4 +216,12 @@ Stage 36 adds a deterministic recovery layer inside active booking flows. It is 
 - Regression matrix expands from 44 to 48 scenarios.
 - Real Google Calendar mutation is still disabled in `/dialogue/qa` by Stage 35 calendar safe mode; runtime functions outside safe mode still call `delete_calendar_event()` and `update_calendar_event()` as before.
 - Expected production `/dialogue/qa` after deploy: 48/48 passed.
+
+## Stage 47 — Live Calendar E2E Smoke Audit & Baseline Sync
+- Audit/checklist stage after confirmed Stage 46 production `/dialogue/qa` = 48/48 passed.
+- Updates internal readiness QA baseline metadata from 44/44 to 48/48 so `/internal/readiness` reflects the current protected regression baseline.
+- Adds `STAGE47_LIVE_CALENDAR_E2E_SMOKE_AUDIT.md` with the manual live Google Calendar smoke checklist.
+- No conversational behavior, booking routing, cancellation/reschedule runtime logic, slot generation, date parsing, side-question behavior, or Google Calendar mutation functions were changed.
+- Live smoke is still required because `/dialogue/qa` runs in Stage 35 calendar safe mode and intentionally does not create/update/delete real Google Calendar events.
+- Pass criteria for live smoke: real booking creates one event, reschedule updates the same event without duplication, cancellation removes it, and `/dialogue/qa` remains 48/48.
 

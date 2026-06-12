@@ -1,0 +1,5 @@
+# Repliq local artifacts / generated files
+*.zip
+*.rar
+__pycache__/
+*.pyc

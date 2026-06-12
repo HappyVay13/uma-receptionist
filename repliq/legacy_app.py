@@ -10148,7 +10148,7 @@ def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) ->
         tenant_status = {"tenant_id": requested_tenant_id, "ready": False, "error": e.__class__.__name__}
 
     qa = {
-        "protected_baseline": "44/44",
+        "protected_baseline": "48/48",
         "scenario_count": len(STAGE34_REGRESSION_TEST_MATRIX),
         "calendar_safe_mode_enabled": bool(STAGE35_CALENDAR_SAFE_MODE_ENABLED),
         "runner_endpoint": "/dialogue/qa",

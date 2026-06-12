@@ -177,3 +177,11 @@ If a price question is asked inside an active booking flow and the current langu
 - Stage 35 calendar safe mode must continue preventing real Google Calendar create/update/delete mutation during `/dialogue/qa`.
 - Do not change slot generation, service inference, date parsing, or booking side-question behavior in Stage 46 unless a new root cause is proven by QA output/code.
 
+## Stage 47 — Live Calendar E2E Smoke Audit Rules
+- Stage 47 is an audit/checklist and baseline-sync stage.
+- Do not change conversational routing, slot generation, date parsing, business FAQ/side-question handling, cancellation flow, reschedule flow, or Google Calendar create/update/delete functions during Stage 47.
+- `/dialogue/qa` remains the safe-mode regression proof and must stay 48/48.
+- Live Google Calendar behavior must be verified manually through a real channel because regression safe mode intentionally does not mutate Google Calendar.
+- Live smoke must confirm that booking creates one event, reschedule updates that same event, cancellation deletes it, and no duplicate calendar event is left behind.
+- If live smoke fails, handle it as a separate Stage 47.1 using the exact transcript, channel, user id/phone, and observed calendar result.
+
