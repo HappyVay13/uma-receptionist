@@ -1,6 +1,6 @@
 # Repliq Project State
 
-Current stage: Stage 48 — Text MVP UX Scope Hardening.
+Current stage: Stage 49 — Text Channel Production Smoke Audit.
 
 Production regression baseline before Stage 40:
 - Stage 39 was deployed and confirmed by user: `/dialogue/qa` = 15/15 passed.
@@ -52,6 +52,7 @@ Protected baseline:
 - Stage 46 calendar runtime cancel/reschedule hardening
 - Stage 47 live calendar E2E smoke audit and baseline sync
 - Stage 48 text MVP UX scope hardening
+- Stage 49 text channel production smoke audit
 
 ## Stage 36 — Advanced Conversation Recovery
 
@@ -235,3 +236,11 @@ Stage 36 adds a deterministic recovery layer inside active booking flows. It is 
 - Adds text-only helpers for localized service/price display. These helpers do not mutate canonical service keys, booking state, slot generation, or calendar payloads.
 - Expands regression matrix from 48 to 50 scenarios with RU text UX guards.
 - Expected production `/dialogue/qa` after deploy: 50/50 passed.
+
+
+## Stage 49 — Text Channel Production Smoke Audit
+- Stage 49 is a text-first MVP audit/checklist stage.
+- User-confirmed baseline before this stage: Stage 48 deployed with `/dialogue/qa = 50/50 passed` and `/internal/readiness = ok`.
+- No conversational routing, booking, cancellation, reschedule, slot generation, date parsing, or calendar mutation logic is changed.
+- `/internal/readiness` now exposes read-only `text_channel_smoke` metadata so the current production smoke scope is visible without running or mutating anything.
+- Recommended first live channel remains `/dev_chat_ui`; Telegram/WhatsApp text can be checked later as integration smoke, while voice/calls remain future scope.

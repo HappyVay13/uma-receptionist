@@ -10286,6 +10286,15 @@ def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) ->
             "voice_calls_scope": "future_phase",
             "note": "Voice/TTS/Twilio readiness may exist as infrastructure, but current MVP scope is text receptionist behavior.",
         },
+        "text_channel_smoke": {
+            "stage": "49",
+            "purpose": "manual production smoke for text-first receptionist behavior",
+            "recommended_first_channel": "/dev_chat_ui",
+            "covered_paths": ["booking", "price_side_question", "slot_confirmation", "reschedule", "cancel"],
+            "live_calendar_required": True,
+            "mutates_calendar": False,
+            "note": "Readiness exposes this as checklist metadata only. This endpoint does not run smoke tests or create/update/delete calendar events.",
+        },
         "qa": qa,
         "issues": issues,
     }

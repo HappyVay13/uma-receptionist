@@ -194,3 +194,13 @@ If a price question is asked inside an active booking flow and the current langu
 - Text localization helpers must affect output text only; they must not change canonical service keys, service matching, booking state, slot generation, or calendar payloads.
 - Russian price side-question replies should use Russian-facing service/price text such as `консультация стоит 10 евро`, not mixed labels such as `konsultācija стоит 10 eiro`.
 - Stage 48 must preserve the Stage 46 calendar guarantees and Stage 47 live-smoke assumptions.
+
+
+## Stage 49 — Text Channel Production Smoke Audit Rules
+- Stage 49 is not a behavior-expansion stage. It must not change booking routing, slot generation, date/time parsing, side-question handling, cancellation, reschedule, or Google Calendar create/update/delete logic.
+- The active launch surface remains text-first receptionist behavior. Do not design Stage 49 around voice/calls.
+- The first production smoke channel should be `/dev_chat_ui` or `/dev_chat` with `tenant_id=clinic_demo`; Telegram/WhatsApp text can be tested afterward as channel integration smoke.
+- `/dialogue/qa` remains the safe-mode regression proof and must stay 50/50.
+- Live smoke must verify real text behavior and real Google Calendar side effects manually: create one event, reschedule the same event without duplicates, cancel the updated event, and preserve RU/LV response language.
+- Readiness metadata may expose smoke checklist scope, but readiness endpoints must not run the smoke test, call LLMs, mutate conversation state, or create/update/delete calendar events.
+- Any failing live smoke result must be handled in a separate fix stage using the exact transcript, channel, test user id/phone, and observed calendar result.
