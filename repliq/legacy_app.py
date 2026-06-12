@@ -171,7 +171,7 @@ def humanize_result(result: Dict[str, Any], conv: Optional[Dict[str, Any]], tena
     state = conversation_state(conv)
     pending = conv.get("pending") or {}
     settings = tenant_settings(tenant, lang)
-    service_text = str(result.get("service") or pending.get("service_display") or "").strip()
+    service_text = text_mvp_localized_service_name(result.get("service") or pending.get("service_display") or "", lang)
     when_text = str(result.get("when") or result.get("datetime_text") or "").strip()
     slots = _slot_labels_from_pending(pending)
 
@@ -704,7 +704,7 @@ def stage33_soft_conversational_ux(
     base_text = str(result.get("msg_out") or result.get("reply_voice") or "").strip()
     slots = _slot_labels_from_pending(pending)
     when_text = _stage33_when_text(result, conv, pending)
-    service_text = str(result.get("service") or result.get("service_display") or pending.get("service_display") or "").strip()
+    service_text = text_mvp_localized_service_name(result.get("service") or result.get("service_display") or pending.get("service_display") or "", lang)
 
     def apply(text_value: str) -> Dict[str, Any]:
         text_value = str(text_value or "").strip()
@@ -762,7 +762,7 @@ def stage33_soft_conversational_ux(
 
     if status == "need_more" and state == STATE_AWAITING_CONFIRM and when_text:
         if lang == "ru":
-            service_part = f" на {service_text}" if service_text else ""
+            service_part = f" на услугу «{service_text}»" if service_text else ""
             return apply(_pick_variant([
                 f"Это время свободно — записываем вас{service_part} на {when_text}?",
                 f"Можем поставить запись на {when_text}. Подтверждаем?",
@@ -1832,12 +1832,13 @@ def try_barbershop_faq(
                         break
             display = service_display_name(service_item, lang)
             if price:
+                price_display = text_mvp_localized_price(price, lang)
                 if lang == "ru":
-                    text = f"{display} стоит {price}."
+                    text = f"{display} стоит {price_display}."
                 elif lang == "en":
-                    text = f"{display} costs {price}."
+                    text = f"{display} costs {price_display}."
                 else:
-                    text = f"{display} maksā {price}."
+                    text = f"{display} maksā {price_display}."
             else:
                 duration = service_duration_min(service_item)
                 if lang == "ru":
@@ -1850,12 +1851,13 @@ def try_barbershop_faq(
 
         price_line = next((_extract_price_from_line(ln) for ln in memory_lines if _extract_price_from_line(ln)), None)
         if price_line:
+            price_display = text_mvp_localized_price(price_line, lang)
             if lang == "ru":
-                text = f"Цена начинается от {price_line}. Если скажете услугу, уточню точнее."
+                text = f"Цена начинается от {price_display}. Если скажете услугу, уточню точнее."
             elif lang == "en":
-                text = f"Prices start from {price_line}. If you tell me the service, I can be more specific."
+                text = f"Prices start from {price_display}. If you tell me the service, I can be more specific."
             else:
-                text = f"Cena sākas no {price_line}. Ja pateiksiet pakalpojumu, precizēšu konkrētāk."
+                text = f"Cena sākas no {price_display}. Ja pateiksiet pakalpojumu, precizēšu konkrētāk."
         else:
             options = barber_service_options_text(lang, service_catalog, max_items=3)
             if lang == "ru":
@@ -2588,6 +2590,28 @@ STAGE34_REGRESSION_TEST_MATRIX: List[Dict[str, Any]] = [
         "expected": ["cancel_reschedule_flow", "reschedule_started", "reschedule_pending", "multiple_slot_options", "calendar_update_path", "reschedule_finalized", "reschedule_final_text", "lv_reply"],
         "forbidden": ["ask_service_again", "reset_to_new", "language_switch_to_ru", "generic_booking_final_text"],
     },
+    {
+        "id": "stage48_ru_price_side_question_localized_text",
+        "stage": 48,
+        "lang": "ru",
+        "category": "business_memory_side_question",
+        "message_sequence": [
+            "хочу записаться на консультацию завтра вечером",
+            "сколько это стоит?",
+            "да, подходит",
+        ],
+        "expected": ["business_faq_answered", "preserve_booking_flow", "localized_ru_price_text", "ru_text_localized", "ru_reply"],
+        "forbidden": ["reset_to_new", "ask_service_again", "language_switch_to_lv", "raw_lv_service_text_in_ru_reply"],
+    },
+    {
+        "id": "stage48_ru_slot_number_confirmation_localized_service_text",
+        "stage": 48,
+        "lang": "ru",
+        "category": "text_mvp_confirmation_ux",
+        "message_sequence": ["хочу записаться на консультацию завтра вечером", "2"],
+        "expected": ["booking_flow", "move_to_confirmation_or_booking", "ru_text_localized", "ru_reply"],
+        "forbidden": ["ask_service_again", "language_switch_to_lv", "raw_lv_service_text_in_ru_reply"],
+    },
 
 ]
 
@@ -2747,6 +2771,14 @@ def stage35_detect_regression_observations(scenario: Dict[str, Any], turns: List
         observed.add("lv_reply")
     if lang == "ru" and result_langs and all(x == "ru" for x in result_langs):
         observed.add("ru_reply")
+    # Stage 48: text-MVP UX guard. Russian customer-facing replies should not
+    # expose raw Latvian service/price labels when a safe localized display is
+    # available for common MVP services such as consultation.
+    raw_lv_service_markers = ["konsultācija", "konsultacija", " eiro"]
+    if lang == "ru" and not any(x in all_low for x in raw_lv_service_markers):
+        observed.add("ru_text_localized")
+    if lang == "ru" and "консультац" in all_low and "евро" in all_low and not any(x in all_low for x in raw_lv_service_markers):
+        observed.add("localized_ru_price_text")
     if "14:00" not in last_reply or len(last_times) >= 2:
         observed.add("no_exact_14_confirmation")
     if "no_exact_default_time" in expected:
@@ -2803,6 +2835,8 @@ def stage35_detect_regression_observations(scenario: Dict[str, Any], turns: List
                 return False
             final_markers = ["перенесена", "перенёс", "перенес", "pārcelts", "pārcēlu", "appointment moved"]
             return not any(x in last_low for x in final_markers)
+        if token == "raw_lv_service_text_in_ru_reply":
+            return lang == "ru" and any(x in all_low for x in ["konsultācija", "konsultacija", " eiro"])
         return token in all_low
 
     for token in forbidden:
@@ -3788,11 +3822,71 @@ def get_service_item_by_key(catalog: List[Dict[str, Any]], service_key: Optional
     return None
 
 
+def _text_mvp_fold_service_name(value: Any) -> str:
+    txt = str(value or "").strip().lower()
+    txt = unicodedata.normalize("NFKD", txt)
+    txt = "".join(ch for ch in txt if not unicodedata.combining(ch))
+    return re.sub(r"\s+", " ", txt).strip()
+
+
+def text_mvp_localized_service_name(value: Any, lang: str) -> str:
+    """Return a customer-facing service name for the active reply language.
+
+    Some tenants may have a minimal service catalog where only the Latvian name
+    is configured (for example `konsultācija`). Routing should keep using the
+    canonical service key, but text replies in Russian/English should not expose
+    raw Latvian labels when a safe common translation is obvious.
+    """
+    txt = str(value or "").strip()
+    if not txt:
+        return ""
+    lang = get_lang(lang)
+    folded = _text_mvp_fold_service_name(txt)
+    if lang == "ru":
+        known = {
+            "konsultacija": "консультация",
+            "konsultacijas": "консультация",
+            "consultation": "консультация",
+            "service": "сервис",
+            "serviss": "сервис",
+            "atbalsts": "поддержка",
+            "support": "поддержка",
+        }
+        return known.get(folded, txt)
+    if lang == "en":
+        known = {
+            "konsultacija": "consultation",
+            "konsultacijas": "consultation",
+            "консультация": "consultation",
+            "serviss": "service",
+            "сервис": "service",
+            "atbalsts": "support",
+            "поддержка": "support",
+        }
+        return known.get(folded, txt)
+    return txt
+
+
+def text_mvp_localized_price(price: Any, lang: str) -> str:
+    txt = str(price or "").strip()
+    if not txt:
+        return ""
+    lang = get_lang(lang)
+    if lang == "ru":
+        txt = re.sub(r"\beiro\b", "евро", txt, flags=re.IGNORECASE)
+        txt = re.sub(r"\beur\b", "евро", txt, flags=re.IGNORECASE)
+    elif lang == "en":
+        txt = re.sub(r"\beiro\b", "EUR", txt, flags=re.IGNORECASE)
+        txt = re.sub(r"\bевро\b", "EUR", txt, flags=re.IGNORECASE)
+    return txt
+
+
 def service_display_name(service_item: Optional[Dict[str, Any]], lang: str) -> str:
     if not service_item:
         return ""
     lang = get_lang(lang)
-    return str(service_item.get(f"name_{lang}") or service_item.get("name_lv") or service_item.get("key") or "").strip()
+    raw = str(service_item.get(f"name_{lang}") or service_item.get("name_lv") or service_item.get("key") or "").strip()
+    return text_mvp_localized_service_name(raw, lang)
 
 
 def service_duration_min(service_item: Optional[Dict[str, Any]]) -> int:
@@ -10148,7 +10242,7 @@ def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) ->
         tenant_status = {"tenant_id": requested_tenant_id, "ready": False, "error": e.__class__.__name__}
 
     qa = {
-        "protected_baseline": "48/48",
+        "protected_baseline": "50/50",
         "scenario_count": len(STAGE34_REGRESSION_TEST_MATRIX),
         "calendar_safe_mode_enabled": bool(STAGE35_CALENDAR_SAFE_MODE_ENABLED),
         "runner_endpoint": "/dialogue/qa",
@@ -10186,6 +10280,12 @@ def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) ->
         "database": {"connection": db_check, "tables": tables},
         "integrations": integrations,
         "tenant_readiness": tenant_status,
+        "product_scope": {
+            "current_mvp_channel": "text",
+            "active_receptionist_mode": "text_first",
+            "voice_calls_scope": "future_phase",
+            "note": "Voice/TTS/Twilio readiness may exist as infrastructure, but current MVP scope is text receptionist behavior.",
+        },
         "qa": qa,
         "issues": issues,
     }

@@ -1,6 +1,6 @@
 # Repliq Project State
 
-Current stage: Stage 47 — Live Calendar E2E Smoke Audit & Baseline Sync.
+Current stage: Stage 48 — Text MVP UX Scope Hardening.
 
 Production regression baseline before Stage 40:
 - Stage 39 was deployed and confirmed by user: `/dialogue/qa` = 15/15 passed.
@@ -51,6 +51,7 @@ Protected baseline:
 - Stage 45.1 reschedule slot evaluator calibration
 - Stage 46 calendar runtime cancel/reschedule hardening
 - Stage 47 live calendar E2E smoke audit and baseline sync
+- Stage 48 text MVP UX scope hardening
 
 ## Stage 36 — Advanced Conversation Recovery
 
@@ -225,3 +226,12 @@ Stage 36 adds a deterministic recovery layer inside active booking flows. It is 
 - Live smoke is still required because `/dialogue/qa` runs in Stage 35 calendar safe mode and intentionally does not create/update/delete real Google Calendar events.
 - Pass criteria for live smoke: real booking creates one event, reschedule updates the same event without duplication, cancellation removes it, and `/dialogue/qa` remains 48/48.
 
+
+
+## Stage 48 — Text MVP UX Scope Hardening
+- Current MVP scope is text receptionist first. Voice/calls remain future expansion only.
+- Adds read-only `product_scope` metadata to `/internal/readiness` so active MVP scope is explicit.
+- Hardens Russian customer-facing text so raw Latvian minimal-catalog labels such as `konsultācija` and price token `eiro` are not exposed when safe localized text is available.
+- Adds text-only helpers for localized service/price display. These helpers do not mutate canonical service keys, booking state, slot generation, or calendar payloads.
+- Expands regression matrix from 48 to 50 scenarios with RU text UX guards.
+- Expected production `/dialogue/qa` after deploy: 50/50 passed.

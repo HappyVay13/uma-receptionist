@@ -185,3 +185,12 @@ If a price question is asked inside an active booking flow and the current langu
 - Live smoke must confirm that booking creates one event, reschedule updates that same event, cancellation deletes it, and no duplicate calendar event is left behind.
 - If live smoke fails, handle it as a separate Stage 47.1 using the exact transcript, channel, user id/phone, and observed calendar result.
 
+
+
+## Stage 48 — Text MVP UX Scope Rules
+- Repliq MVP must be treated as a text-first receptionist. Voice/calls are future scope and must not drive current stage design unless the user explicitly switches phases.
+- Existing voice/TTS/Twilio infrastructure may remain, but it is not the active launch product surface.
+- Customer-facing text should not expose raw foreign-language service labels when a safe localized display is available.
+- Text localization helpers must affect output text only; they must not change canonical service keys, service matching, booking state, slot generation, or calendar payloads.
+- Russian price side-question replies should use Russian-facing service/price text such as `консультация стоит 10 евро`, not mixed labels such as `konsultācija стоит 10 eiro`.
+- Stage 48 must preserve the Stage 46 calendar guarantees and Stage 47 live-smoke assumptions.
