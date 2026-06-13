@@ -10231,6 +10231,7 @@ def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) ->
     }
 
     tenant_status: Dict[str, Any]
+    tenant: Dict[str, Any] = {}
     try:
         tenant = get_existing_tenant(requested_tenant_id)
         if tenant.get("_id"):
@@ -10315,6 +10316,12 @@ def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) ->
             "do_not_position_as_current_scope": ["voice calls", "voice agent", "TTS demo"],
             "mutates_calendar": False,
             "note": "Readiness exposes demo checklist metadata only. The live demo itself must be run manually through a text channel.",
+        },
+        "tenant_admin_config": tenant_admin_config_readiness_payload(tenant) if tenant_status.get("tenant_id") else {
+            "stage": "51",
+            "status": "blocked",
+            "tenant_id": requested_tenant_id,
+            "blocking": ["tenant_not_found"],
         },
         "qa": qa,
         "issues": issues,
@@ -10784,6 +10791,135 @@ def tenant_ready_status_payload(tenant: Dict[str, Any]) -> Dict[str, Any]:
         "onboarding_completed": onboarding.get("onboarding_completed"),
         "has_service_account_json": tenant_has_service_account_json(tenant),
         "has_service_catalog": bool(tenant_service_catalog(tenant)),
+    }
+
+
+def _stage51_has_text(value: Any) -> bool:
+    return bool(str(value or "").strip())
+
+
+def _stage51_json_field_status(value: Any, expected_type: Optional[str] = None) -> Dict[str, Any]:
+    """Read-only admin validation for JSON-like tenant config fields.
+
+    Stage 51 intentionally does not reject existing config values. This helper only
+    reports whether editable admin fields are syntactically safe for a non-technical
+    tenant/admin surface.
+    """
+    if value is None:
+        return {"present": False, "valid": True, "status": "missing"}
+    if isinstance(value, str) and not value.strip():
+        return {"present": False, "valid": True, "status": "missing"}
+
+    parsed = value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except Exception:
+            return {"present": True, "valid": False, "status": "invalid_json"}
+
+    actual_type = "list" if isinstance(parsed, list) else "dict" if isinstance(parsed, dict) else type(parsed).__name__
+    if expected_type == "list" and not isinstance(parsed, list):
+        return {"present": True, "valid": False, "status": "wrong_type", "expected_type": "list", "actual_type": actual_type}
+    if expected_type == "dict" and not isinstance(parsed, dict):
+        return {"present": True, "valid": False, "status": "wrong_type", "expected_type": "dict", "actual_type": actual_type}
+    return {"present": True, "valid": True, "status": "ok", "type": actual_type}
+
+
+def _stage51_service_catalog_source(tenant: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]]]:
+    for key in ("service_catalog", "services_catalog", "service_catalog_json", "services_json"):
+        catalog = parse_service_catalog((tenant or {}).get(key))
+        if catalog:
+            return key, catalog
+    env_catalog = parse_service_catalog(os.getenv("BIZ_SERVICE_CATALOG", "").strip())
+    if env_catalog:
+        return "env:BIZ_SERVICE_CATALOG", env_catalog
+    return "fallback:services_by_language", fallback_service_catalog(tenant or {})
+
+
+def tenant_admin_config_readiness_payload(tenant: Dict[str, Any]) -> Dict[str, Any]:
+    """Read-only SaaS/admin readiness for tenant config and business memory.
+
+    This is not used by runtime booking logic and must not mutate tenant data.
+    It exists to make Stage 51 admin gaps explicit before building a fuller client
+    dashboard/editor.
+    """
+    tenant = normalize_tenant_saas_fields(tenant or {})
+    tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip()
+    service_catalog_source, catalog = _stage51_service_catalog_source(tenant)
+    runtime_missing = tenant_runtime_missing_items(tenant)
+
+    json_checks = {
+        "service_catalog_json": _stage51_json_field_status(tenant.get("service_catalog_json") or tenant.get("service_catalog"), "list"),
+        "weekly_hours_json": _stage51_json_field_status(tenant.get("weekly_hours_json"), "dict"),
+        "days_off_json": _stage51_json_field_status(tenant.get("days_off_json")),
+        "breaks_json": _stage51_json_field_status(tenant.get("breaks_json")),
+        "holidays_json": _stage51_json_field_status(tenant.get("holidays_json")),
+    }
+
+    business_memory = {
+        "lv": {"configured": _stage51_has_text(tenant.get("business_memory_lv")), "chars": len(str(tenant.get("business_memory_lv") or ""))},
+        "ru": {"configured": _stage51_has_text(tenant.get("business_memory_ru")), "chars": len(str(tenant.get("business_memory_ru") or ""))},
+        "en": {"configured": _stage51_has_text(tenant.get("business_memory_en")), "chars": len(str(tenant.get("business_memory_en") or ""))},
+    }
+
+    warnings: List[str] = []
+    for field, check in json_checks.items():
+        if not check.get("valid", True):
+            warnings.append(f"invalid_json:{field}")
+    if service_catalog_source.startswith("fallback:"):
+        warnings.append("service_catalog_uses_language_fallback")
+    for lang_key, item in business_memory.items():
+        if not item.get("configured"):
+            warnings.append(f"business_memory_{lang_key}_missing")
+
+    blocking = list(runtime_missing)
+    for field, check in json_checks.items():
+        if check.get("present") and not check.get("valid"):
+            blocking.append(f"invalid_json:{field}")
+
+    status = "ready" if not blocking and not warnings else "attention" if not blocking else "blocked"
+
+    return {
+        "stage": "51",
+        "purpose": "tenant config and business memory admin readiness",
+        "tenant_id": tenant_id or None,
+        "status": status,
+        "safe_to_demo": not blocking,
+        "runtime_missing": runtime_missing,
+        "blocking": blocking,
+        "warnings": warnings,
+        "editable_surfaces": {
+            "config_ui": f"/tenant/config/ui?tenant_id={tenant_id}" if tenant_id else None,
+            "config_json": f"/tenant/config?tenant_id={tenant_id}" if tenant_id else None,
+            "config_update": "/tenant/config/update",
+            "admin_readiness": f"/tenant/admin/readiness?tenant_id={tenant_id}" if tenant_id else None,
+        },
+        "business_identity": {
+            "business_name_configured": _stage51_has_text(tenant.get("business_name")),
+            "timezone_configured": _stage51_has_text(tenant.get("timezone")),
+            "language": get_lang(tenant.get("language") or "lv"),
+        },
+        "calendar": {
+            "google_connected": tenant_google_connected_effective(tenant),
+            "calendar_selected": _stage51_has_text(tenant.get("calendar_id")),
+            "has_service_account_json": tenant_has_service_account_json(tenant),
+        },
+        "business_hours": {
+            "work_start": tenant.get("work_start"),
+            "work_end": tenant.get("work_end"),
+            "weekly_hours_json": json_checks["weekly_hours_json"],
+            "days_off_json": json_checks["days_off_json"],
+            "breaks_json": json_checks["breaks_json"],
+            "holidays_json": json_checks["holidays_json"],
+        },
+        "service_catalog": {
+            "source": service_catalog_source,
+            "count": len(catalog),
+            "json_check": json_checks["service_catalog_json"],
+            "sample_keys": [str(item.get("key") or "").strip() for item in catalog[:5] if str(item.get("key") or "").strip()],
+        },
+        "business_memory": business_memory,
+        "note": "Readiness metadata only. This endpoint does not call LLMs, change tenant config, mutate conversations, or create/update/delete calendar events.",
     }
 
 
@@ -12365,9 +12501,17 @@ def tenant_config(tenant_id: str = TENANT_ID_DEFAULT):
         "phone_routes": routes,
         "onboarding": onboarding_status_payload(tenant),
         "readiness": tenant_ready_status_payload(tenant),
+        "admin_readiness": tenant_admin_config_readiness_payload(tenant),
         "plan_meta": tenant_plan_meta(tenant),
         "links": onboarding_links_payload(str(tenant.get("_id") or tenant_id)),
     }
+
+
+@app.get("/tenant/admin/readiness")
+def tenant_admin_readiness(tenant_id: str = TENANT_ID_DEFAULT):
+    tenant = get_tenant_or_404((tenant_id or "").strip() or TENANT_ID_DEFAULT)
+    return tenant_admin_config_readiness_payload(tenant)
+
 
 @app.post("/tenant/config/update")
 def tenant_config_update(payload: TenantConfigUpdateRequest):
@@ -12464,6 +12608,7 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
         "resolved_settings": tenant_settings(updated, get_lang(updated.get("language") or "lv")),
         "onboarding": onboarding_status_payload(updated),
         "readiness": tenant_ready_status_payload(updated),
+        "admin_readiness": tenant_admin_config_readiness_payload(updated),
         "plan_meta": tenant_plan_meta(updated),
         "links": onboarding_links_payload(tenant_id),
     }

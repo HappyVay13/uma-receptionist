@@ -213,3 +213,13 @@ If a price question is asked inside an active booking flow and the current langu
 - Client demo should start from `/dev_chat_ui`, then optionally proceed to Telegram/WhatsApp text integration smoke.
 - Current protected baseline remains `/dialogue/qa = 50/50 passed`.
 - Any live demo issue must be handled as a separate fix stage using exact transcript, channel, user id/phone, and observed calendar result.
+
+
+## Stage 51 — Tenant Config / Business Memory Admin Hardening Rules
+- Stage 51 must not change receptionist behavior, booking routing, slot generation, date/time parsing, side-question handling, cancellation, reschedule, or Google Calendar mutation logic.
+- The active MVP remains text-first receptionist. Voice/calls remain future scope.
+- Tenant/admin readiness must be read-only metadata only. It must not call an LLM, mutate tenant rows, mutate conversations, or create/update/delete Google Calendar events.
+- New admin checks may report warnings/blockers for business identity, timezone, hours JSON, service catalog source, business memory language coverage, Google/calendar setup, service account presence, and runtime missing items.
+- `/tenant/admin/readiness`, `/tenant/config`, `/tenant/config/update`, and `/internal/readiness` may expose safe config status, but must not expose secret values such as service account JSON contents or OAuth tokens.
+- Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+- Any future change that rejects tenant config updates or changes the admin UI editing model must be handled as a separate behavior/admin stage after explicit root-cause analysis.

@@ -1,6 +1,6 @@
 # Repliq Project State
 
-Current stage: Stage 49 — Text Channel Production Smoke Audit.
+Current stage: Stage 51 — Tenant Config / Business Memory Admin Hardening.
 
 Production regression baseline before Stage 40:
 - Stage 39 was deployed and confirmed by user: `/dialogue/qa` = 15/15 passed.
@@ -53,6 +53,8 @@ Protected baseline:
 - Stage 47 live calendar E2E smoke audit and baseline sync
 - Stage 48 text MVP UX scope hardening
 - Stage 49 text channel production smoke audit
+- Stage 50 text MVP launch demo readiness
+- Stage 51 tenant config / business memory admin hardening
 
 ## Stage 36 — Advanced Conversation Recovery
 
@@ -253,3 +255,15 @@ Stage 36 adds a deterministic recovery layer inside active booking flows. It is 
 - Active MVP scope remains text-first receptionist; voice/calls remain future phase.
 - Current protected regression baseline remains `/dialogue/qa = 50/50 passed`.
 - Recommended next stage: Stage 51 — Tenant Config / Business Memory Admin Hardening.
+
+
+## Stage 51 — Tenant Config / Business Memory Admin Hardening
+- Stage 51 is an admin/readiness hardening stage after confirmed Stage 50 production `/dialogue/qa = 50/50 passed` and `/internal/readiness = ok`.
+- No receptionist conversational behavior is changed: booking, price side-questions, slot selection, confirmation, cancellation, reschedule, date parsing, slot generation, and Google Calendar create/update/delete paths remain untouched.
+- Adds read-only tenant admin readiness metadata for tenant config and business memory.
+- Adds `GET /tenant/admin/readiness?tenant_id=...` as a safe admin audit endpoint.
+- `/tenant/config` and `/tenant/config/update` responses now include `admin_readiness` so the current tenant config state is visible after loading or saving settings.
+- `/internal/readiness` now includes `tenant_admin_config` for the requested tenant.
+- Stage 51 checks editable SaaS/admin surfaces: business identity, timezone, hours JSON, service catalog source, business memory language coverage, Google/calendar setup, service account presence, and runtime missing items.
+- The new audit endpoints do not call LLMs, mutate tenant config, mutate conversations, or create/update/delete Google Calendar events.
+- Current protected regression baseline remains `/dialogue/qa = 50/50 passed`.
