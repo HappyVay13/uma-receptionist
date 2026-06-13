@@ -204,3 +204,12 @@ If a price question is asked inside an active booking flow and the current langu
 - Live smoke must verify real text behavior and real Google Calendar side effects manually: create one event, reschedule the same event without duplicates, cancel the updated event, and preserve RU/LV response language.
 - Readiness metadata may expose smoke checklist scope, but readiness endpoints must not run the smoke test, call LLMs, mutate conversation state, or create/update/delete calendar events.
 - Any failing live smoke result must be handled in a separate fix stage using the exact transcript, channel, test user id/phone, and observed calendar result.
+
+## Stage 50 — Text MVP Launch Demo Readiness Rules
+- Stage 50 is not a behavior-expansion stage. It must not change booking routing, slot generation, date/time parsing, side-question handling, cancellation, reschedule, or Google Calendar create/update/delete logic.
+- The active MVP launch surface remains text-first receptionist behavior.
+- Voice/calls must remain explicitly marked as future scope and must not drive Stage 50 demo readiness.
+- `/internal/readiness` may expose read-only client demo metadata, but must not run a demo, call an LLM, mutate conversation state, or create/update/delete Google Calendar events.
+- Client demo should start from `/dev_chat_ui`, then optionally proceed to Telegram/WhatsApp text integration smoke.
+- Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+- Any live demo issue must be handled as a separate fix stage using exact transcript, channel, user id/phone, and observed calendar result.

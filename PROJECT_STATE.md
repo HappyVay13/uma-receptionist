@@ -244,3 +244,12 @@ Stage 36 adds a deterministic recovery layer inside active booking flows. It is 
 - No conversational routing, booking, cancellation, reschedule, slot generation, date parsing, or calendar mutation logic is changed.
 - `/internal/readiness` now exposes read-only `text_channel_smoke` metadata so the current production smoke scope is visible without running or mutating anything.
 - Recommended first live channel remains `/dev_chat_ui`; Telegram/WhatsApp text can be checked later as integration smoke, while voice/calls remain future scope.
+
+## Stage 50 — Text MVP Launch Demo Readiness
+- Stage 50 is a launch/demo readiness metadata and documentation stage after confirmed Stage 49 live text smoke success.
+- User reported that all proposed text smoke tests across RU/LV/EN worked and appointments were created successfully.
+- No conversational routing, booking, cancellation, reschedule, slot generation, date parsing, side-question handling, or Google Calendar mutation logic is changed.
+- `/internal/readiness` now exposes read-only `client_demo_readiness` metadata with Stage 50 demo scope, recommended demo channel, demo paths, and explicit non-scope items.
+- Active MVP scope remains text-first receptionist; voice/calls remain future phase.
+- Current protected regression baseline remains `/dialogue/qa = 50/50 passed`.
+- Recommended next stage: Stage 51 — Tenant Config / Business Memory Admin Hardening.

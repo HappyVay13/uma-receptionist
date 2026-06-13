@@ -10295,6 +10295,27 @@ def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) ->
             "mutates_calendar": False,
             "note": "Readiness exposes this as checklist metadata only. This endpoint does not run smoke tests or create/update/delete calendar events.",
         },
+        "client_demo_readiness": {
+            "stage": "50",
+            "purpose": "text-first MVP launch/demo readiness checklist",
+            "status": "candidate" if status == "ok" and tenant_status.get("ready") else "blocked",
+            "recommended_demo_channel": "/dev_chat_ui",
+            "demo_paths": [
+                "RU booking with price side-question",
+                "RU reschedule same calendar event",
+                "RU cancel updated booking",
+                "LV booking/reschedule/cancel smoke",
+            ],
+            "must_show": [
+                "text receptionist creates a real calendar booking",
+                "side questions preserve the active booking flow",
+                "reschedule updates the same event without duplicates",
+                "cancel removes the active event",
+            ],
+            "do_not_position_as_current_scope": ["voice calls", "voice agent", "TTS demo"],
+            "mutates_calendar": False,
+            "note": "Readiness exposes demo checklist metadata only. The live demo itself must be run manually through a text channel.",
+        },
         "qa": qa,
         "issues": issues,
     }
