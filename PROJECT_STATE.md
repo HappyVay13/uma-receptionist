@@ -1,6 +1,6 @@
 # Repliq Project State
 
-Current stage: Stage 52 — Demo UI / Tenant Config UX Hardening.
+Current stage: Stage 53 — Client Demo Script & Demo Mode Readiness.
 
 Production regression baseline before Stage 40:
 - Stage 39 was deployed and confirmed by user: `/dialogue/qa` = 15/15 passed.
@@ -56,6 +56,8 @@ Protected baseline:
 - Stage 50 text MVP launch demo readiness
 - Stage 51 tenant config / business memory admin hardening
 - Stage 52 demo UI / tenant config UX hardening
+- Stage 52.1 service catalog localization polish
+- Stage 53 client demo script and demo mode readiness
 
 ## Stage 36 — Advanced Conversation Recovery
 
@@ -287,3 +289,14 @@ Stage 36 adds a deterministic recovery layer inside active booking flows. It is 
 - No receptionist core behavior, regression evaluator, Google Calendar runtime logic, booking, cancellation, reschedule, side-question handling, slot generation, or date parsing changed.
 - Expected production baseline remains `/dialogue/qa = 50/50 passed`.
 
+
+
+## Stage 53 — Client Demo Script & Demo Mode Readiness
+- Stage 53 is a read-only demo script/readiness stage after confirmed Stage 52.1 production `/dialogue/qa = 50/50 passed`.
+- Adds `GET /demo/script?tenant_id=...` with a deterministic text-first demo script, pages-to-open checklist, RU/LV demo messages, calendar checks, fallback plan, and known limitations.
+- `/internal/readiness` now exposes `client_demo_script` metadata for the requested tenant.
+- `/tenant/config/ui` quick links now include the demo script endpoint for easier client-demo preparation.
+- The endpoint is read-only and does not call LLMs, mutate conversations, change tenant config, or create/update/delete Google Calendar events.
+- No receptionist core behavior, regression evaluator, Google Calendar runtime logic, booking, cancellation, reschedule, side-question handling, slot generation, or date parsing changed.
+- Active MVP scope remains text-first receptionist. Voice/calls remain future scope.
+- Expected production baseline remains `/dialogue/qa = 50/50 passed`.

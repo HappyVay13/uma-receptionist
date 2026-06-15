@@ -10188,6 +10188,88 @@ def _stage43a_table_check(table_name: str) -> Dict[str, Any]:
         return {"ok": False, "error": e.__class__.__name__}
 
 
+
+def stage53_client_demo_script_payload(tenant_id: str = TENANT_ID_DEFAULT) -> Dict[str, Any]:
+    """Read-only demo script metadata for the text-first MVP.
+
+    Stage 53 does not run conversations, call LLMs, or mutate calendar data.
+    It only exposes a deterministic checklist for manual client/demo preparation.
+    """
+    tid = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    base = (SERVER_BASE_URL or "").rstrip("/")
+
+    def url(path: str) -> str:
+        if base:
+            return base + path
+        return path
+
+    return {
+        "stage": "53",
+        "purpose": "client demo script and demo mode guidance for the text-first MVP",
+        "tenant_id": tid,
+        "status": "ready",
+        "demo_scope": {
+            "current_mvp_channel": "text",
+            "recommended_channel": "/dev_chat_ui",
+            "voice_calls_scope": "future_phase",
+            "do_not_position_as_current_scope": ["voice calls", "voice agent", "TTS demo"],
+        },
+        "open_before_demo": [
+            {"label": "Tenant config UI", "url": url(f"/tenant/config/ui?tenant_id={tid}")},
+            {"label": "Dev chat", "url": url(f"/dev_chat_ui?tenant_id={tid}")},
+            {"label": "Internal readiness", "url": url(f"/internal/readiness?tenant_id={tid}")},
+            {"label": "Tenant admin readiness", "url": url(f"/tenant/admin/readiness?tenant_id={tid}")},
+            {"label": "Google Calendar", "url": "open selected tenant Google Calendar manually"},
+        ],
+        "demo_story": [
+            "Show Repliq as a text-first AI receptionist for appointment handling.",
+            "Show tenant readiness and demo-safe configuration surface.",
+            "Create one real booking from chat and verify it appears in Google Calendar.",
+            "Ask a side question during booking and show the booking flow continues.",
+            "Reschedule the same booking and verify there is no duplicate calendar event.",
+            "Cancel the booking and verify the event is removed.",
+        ],
+        "script_ru": [
+            "Хочу записаться на консультацию завтра вечером",
+            "Сколько это стоит?",
+            "2",
+            "Да",
+            "Хочу перенести запись",
+            "Послезавтра вечером",
+            "2",
+            "Да",
+            "Отменить запись",
+        ],
+        "script_lv": [
+            "Gribu pierakstīties uz konsultāciju rīt vakarā",
+            "Cik tas maksā?",
+            "2",
+            "Jā",
+            "Gribu pārcelt pierakstu",
+            "Parīt vakarā",
+            "2",
+            "Jā",
+            "Atcelt pierakstu",
+        ],
+        "expected_calendar_checks": [
+            "After booking: exactly one new calendar event exists.",
+            "After reschedule: the same event is updated to the new time; no duplicate is created.",
+            "After cancel: the event is removed or no longer active.",
+        ],
+        "fallback_plan": [
+            "If live chat is slow, show /internal/readiness and /tenant/config/ui first.",
+            "If calendar UI lags, refresh the selected Google Calendar before concluding failure.",
+            "If a live demo step fails, stop and collect the exact chat transcript before changing code.",
+        ],
+        "known_limitations": [
+            "Current launch scope is text receptionist behavior, not voice calls.",
+            "English has passed manual smoke but RU/LV have the strongest protected regression coverage.",
+            "Readiness endpoints expose checklist metadata only and do not execute demo flows.",
+        ],
+        "mutates_calendar": False,
+        "note": "This endpoint is read-only. The live demo itself must be run manually through a text channel.",
+    }
+
 def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) -> Dict[str, Any]:
     requested_tenant_id = (tenant_id or "").strip() or TENANT_ID_DEFAULT
     db_check = _stage43a_database_check()
@@ -10317,6 +10399,7 @@ def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) ->
             "mutates_calendar": False,
             "note": "Readiness exposes demo checklist metadata only. The live demo itself must be run manually through a text channel.",
         },
+        "client_demo_script": stage53_client_demo_script_payload(requested_tenant_id),
         "tenant_admin_config": tenant_admin_config_readiness_payload(tenant) if tenant_status.get("tenant_id") else {
             "stage": "51",
             "status": "blocked",
@@ -10337,6 +10420,11 @@ def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) ->
 @app.get("/internal/readiness")
 def internal_readiness(tenant_id: str = TENANT_ID_DEFAULT):
     return stage43a_production_readiness_payload(tenant_id=tenant_id)
+
+
+@app.get("/demo/script")
+def demo_script(tenant_id: str = TENANT_ID_DEFAULT):
+    return stage53_client_demo_script_payload(tenant_id=tenant_id)
 
 
 # -------------------------
@@ -12101,6 +12189,7 @@ summary { cursor:pointer; font-weight:800; }
         <button onclick="loadConfig()">Load</button>
         <button class="secondary" onclick="openPath('/dashboard?tenant_id='+encodeURIComponent(currentTenant()))">Dashboard</button>
         <button class="secondary" onclick="openPath('/dev_chat_ui?tenant_id='+encodeURIComponent(currentTenant()))">Dev chat</button>
+        <button class="secondary" onclick="openPath('/demo/script?tenant_id='+encodeURIComponent(currentTenant()))">Demo script</button>
       </div>
     </div>
     <div style="min-width:260px;">
@@ -12199,6 +12288,7 @@ summary { cursor:pointer; font-weight:800; }
       <a id="lnk_admin" href="#">Admin readiness</a>
       <a id="lnk_dashboard" href="#">Dashboard</a>
       <a id="lnk_devchat" href="#">Dev chat</a>
+      <a id="lnk_demo_script" href="#">Demo script</a>
       <a id="lnk_routes" href="#">Phone routes</a>
       <a id="lnk_bookings" href="#">Bookings</a>
       <a id="lnk_conv" href="#">Conversations</a>
@@ -12219,6 +12309,7 @@ function setLinks(tid){
   document.getElementById('lnk_admin').href = '/tenant/admin/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_dashboard').href = '/dashboard?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_devchat').href = '/dev_chat_ui?tenant_id=' + encodeURIComponent(tid);
+  document.getElementById('lnk_demo_script').href = '/demo/script?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_routes').href = '/tenant/routes?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_bookings').href = '/bookings?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_conv').href = '/conversations?tenant_id=' + encodeURIComponent(tid);
