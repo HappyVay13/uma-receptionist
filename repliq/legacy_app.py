@@ -10323,6 +10323,12 @@ def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) ->
             "tenant_id": requested_tenant_id,
             "blocking": ["tenant_not_found"],
         },
+        "tenant_config_ui": tenant_config_ui_readiness_payload(tenant) if tenant_status.get("tenant_id") else {
+            "stage": "52",
+            "status": "blocked",
+            "tenant_id": requested_tenant_id,
+            "blocking": ["tenant_not_found"],
+        },
         "qa": qa,
         "issues": issues,
     }
@@ -12024,89 +12030,175 @@ document.addEventListener('DOMContentLoaded', loadAll);
 @app.get("/tenant/config/ui")
 def tenant_config_ui(tenant_id: str = TENANT_ID_DEFAULT):
     tenant_id = (tenant_id or "").strip() or TENANT_ID_DEFAULT
-    html = f"""
+    tenant_id_json = json.dumps(tenant_id, ensure_ascii=False)
+    html = """
 <!doctype html>
 <html>
 <head>
 <meta charset="utf-8"/>
-<title>Tenant Config</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Repliq Tenant Config</title>
 <style>
-body {{ font-family: Arial, sans-serif; background:#f7f7f8; color:#111; margin:0; padding:24px; }}
-.wrap {{ max-width: 1100px; margin:0 auto; }}
-.card {{ background:#fff; border:1px solid #e5e7eb; border-radius:16px; padding:20px; margin-bottom:18px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }}
-h1,h2 {{ margin:0 0 14px 0; }}
-.grid {{ display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:14px; }}
-label {{ display:block; font-size:14px; margin-bottom:6px; color:#374151; }}
-input, select, textarea {{ width:100%; box-sizing:border-box; border:1px solid #d1d5db; border-radius:10px; padding:10px 12px; font-size:14px; }}
-textarea {{ min-height:110px; resize:vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }}
-.actions {{ display:flex; gap:10px; align-items:center; margin-top:14px; }}
-button {{ border:0; background:#111827; color:#fff; padding:10px 16px; border-radius:10px; cursor:pointer; }}
-button.secondary {{ background:#fff; color:#111827; border:1px solid #d1d5db; }}
-.small {{ font-size:12px; color:#6b7280; }}
-.ok {{ color:#065f46; }}
-.err {{ color:#991b1b; white-space:pre-wrap; }}
-.links a {{ margin-right:14px; }}
-.full {{ grid-column: 1 / -1; }}
+:root { --bg:#f6f7fb; --card:#fff; --text:#111827; --muted:#6b7280; --line:#e5e7eb; --soft:#f9fafb; --brand:#111827; --ok:#065f46; --okbg:#ecfdf5; --warn:#92400e; --warnbg:#fffbeb; --err:#991b1b; --errbg:#fef2f2; }
+* { box-sizing:border-box; }
+body { font-family: Inter, Arial, sans-serif; background:var(--bg); color:var(--text); margin:0; padding:24px; }
+.wrap { max-width: 1180px; margin:0 auto; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:18px; padding:20px; margin-bottom:18px; box-shadow:0 10px 28px rgba(15,23,42,.055); }
+.hero { display:flex; gap:16px; align-items:flex-start; justify-content:space-between; flex-wrap:wrap; }
+h1,h2,h3 { margin:0; }
+h1 { font-size:32px; letter-spacing:-.03em; }
+h2 { font-size:22px; margin-bottom:14px; }
+h3 { font-size:16px; margin-bottom:10px; }
+.sub { color:var(--muted); font-size:14px; margin-top:6px; line-height:1.45; }
+.grid { display:grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap:14px 16px; }
+.grid3 { display:grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap:12px; }
+.full { grid-column:1/-1; }
+label { display:flex; justify-content:space-between; gap:8px; font-size:13px; margin-bottom:6px; color:#374151; font-weight:650; }
+.hint { color:var(--muted); font-size:12px; font-weight:400; }
+input,select,textarea { width:100%; border:1px solid #d1d5db; border-radius:12px; padding:11px 12px; background:#fff; color:#111827; font:14px/1.4 Arial, sans-serif; }
+textarea { min-height:92px; resize:vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+textarea.big { min-height:170px; }
+button { border:0; background:var(--brand); color:#fff; padding:11px 16px; border-radius:12px; cursor:pointer; font-weight:700; }
+button.secondary { background:#fff; color:#111827; border:1px solid #d1d5db; }
+button.ghost { background:#f3f4f6; color:#111827; }
+button:disabled { opacity:.55; cursor:not-allowed; }
+.actions { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+.badge { display:inline-flex; align-items:center; gap:6px; padding:5px 9px; border-radius:999px; border:1px solid var(--line); background:var(--soft); font-size:12px; font-weight:700; }
+.badge.ok { color:var(--ok); background:var(--okbg); border-color:#a7f3d0; }
+.badge.warn { color:var(--warn); background:var(--warnbg); border-color:#fde68a; }
+.badge.err { color:var(--err); background:var(--errbg); border-color:#fecaca; }
+.status-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin-top:16px; }
+.status-card { background:var(--soft); border:1px solid var(--line); border-radius:14px; padding:12px; min-height:74px; }
+.status-card .label { color:var(--muted); font-size:12px; margin-bottom:6px; }
+.status-card .value { font-weight:800; }
+.small { font-size:12px; color:var(--muted); }
+.notice { border-radius:14px; padding:12px 14px; margin-top:12px; font-size:13px; line-height:1.45; }
+.notice.ok { background:var(--okbg); color:#064e3b; border:1px solid #a7f3d0; }
+.notice.warn { background:var(--warnbg); color:#78350f; border:1px solid #fde68a; }
+.notice.err { background:var(--errbg); color:#7f1d1d; border:1px solid #fecaca; }
+table { width:100%; border-collapse:collapse; font-size:13px; }
+th,td { text-align:left; border-bottom:1px solid var(--line); padding:9px 8px; vertical-align:top; }
+th { color:#374151; background:#fafafa; }
+.preview-empty { color:var(--muted); border:1px dashed #d1d5db; border-radius:12px; padding:12px; }
+details { border:1px solid var(--line); border-radius:14px; padding:12px 14px; background:#fff; }
+details + details { margin-top:12px; }
+summary { cursor:pointer; font-weight:800; }
+.links a { display:inline-block; margin:6px 10px 0 0; color:#1d4ed8; text-decoration:none; }
+.links a:hover { text-decoration:underline; }
+.secret-box { background:#f8fafc; border:1px solid #cbd5e1; border-radius:12px; padding:12px; }
+.sticky-save { position:sticky; bottom:0; z-index:5; background:rgba(246,247,251,.9); backdrop-filter:blur(8px); padding:12px 0; }
+@media (max-width: 850px) { .grid,.grid3,.status-grid { grid-template-columns:1fr; } body { padding:12px; } }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <div class="card">
-    <h1>Tenant Config Editor</h1>
-    <div class="actions">
-      <input id="tenant_id" value="{tenant_id}" />
-      <button onclick="loadConfig()">Load</button>
-      <button class="secondary" onclick="window.location='/dashboard?tenant_id='+encodeURIComponent(document.getElementById('tenant_id').value)">Open dashboard</button>
+  <div class="card hero">
+    <div>
+      <h1>Repliq Tenant Config</h1>
+      <div class="sub">Demo-safe editor for the current text-first receptionist MVP. Voice/calls are future scope.</div>
+      <div class="actions" style="margin-top:14px;">
+        <input id="tenant_id" style="min-width:280px; max-width:420px;" />
+        <button onclick="loadConfig()">Load</button>
+        <button class="secondary" onclick="openPath('/dashboard?tenant_id='+encodeURIComponent(currentTenant()))">Dashboard</button>
+        <button class="secondary" onclick="openPath('/dev_chat_ui?tenant_id='+encodeURIComponent(currentTenant()))">Dev chat</button>
+      </div>
     </div>
-    <div class="small">Edits are saved via <code>POST /tenant/config/update</code>.</div>
+    <div style="min-width:260px;">
+      <div id="ready_badge" class="badge warn">Loading readiness…</div>
+      <div id="scope_badge" class="badge ok" style="margin-left:6px;">Text MVP</div>
+      <div class="sub">Settings are saved via <code>POST /tenant/config/update</code>. Secrets are not displayed by this UI.</div>
+    </div>
   </div>
 
   <div class="card">
-    <h2>Basic settings</h2>
+    <h2>Demo readiness</h2>
+    <div class="status-grid">
+      <div class="status-card"><div class="label">Admin status</div><div id="st_admin" class="value">—</div></div>
+      <div class="status-card"><div class="label">Google Calendar</div><div id="st_calendar" class="value">—</div></div>
+      <div class="status-card"><div class="label">Service catalog</div><div id="st_catalog" class="value">—</div></div>
+      <div class="status-card"><div class="label">Business memory</div><div id="st_memory" class="value">—</div></div>
+    </div>
+    <div id="readiness_notice" class="notice warn">Loading tenant readiness…</div>
+  </div>
+
+  <div class="card">
+    <h2>Basic business settings</h2>
     <div class="grid">
-      <div><label>Business name</label><input id="business_name"/></div>
-      <div><label>Phone number</label><input id="phone_number"/></div>
-      <div><label>Timezone</label><input id="timezone"/></div>
-      <div><label>Language</label>
-        <select id="language">
-          <option value="lv">lv</option>
-          <option value="ru">ru</option>
-          <option value="en">en</option>
-        </select>
-      </div>
+      <div><label>Business name <span class="hint">shown in dashboard/demo</span></label><input id="business_name"/></div>
+      <div><label>Phone number <span class="hint">optional route</span></label><input id="phone_number"/></div>
+      <div><label>Timezone</label><input id="timezone" placeholder="Europe/Riga"/></div>
+      <div><label>Primary language</label><select id="language"><option value="lv">Latvian (lv)</option><option value="ru">Russian (ru)</option><option value="en">English (en)</option></select></div>
       <div><label>Work start</label><input id="work_start" placeholder="09:00"/></div>
       <div><label>Work end</label><input id="work_end" placeholder="18:00"/></div>
-      <div><label>Min notice minutes</label><input id="min_notice_minutes" type="number"/></div>
-      <div><label>Buffer minutes</label><input id="buffer_minutes" type="number"/></div>
+      <div><label>Min notice minutes <span class="hint">optional</span></label><input id="min_notice_minutes" type="number" min="0"/></div>
+      <div><label>Buffer minutes <span class="hint">optional</span></label><input id="buffer_minutes" type="number" min="0"/></div>
     </div>
   </div>
 
   <div class="card">
-    <h2>Services and rules</h2>
+    <h2>Client-facing services</h2>
     <div class="grid">
-      <div><label>Services LV</label><textarea id="services_lv"></textarea></div>
-      <div><label>Services RU</label><textarea id="services_ru"></textarea></div>
-      <div class="full"><label>Services EN</label><textarea id="services_en"></textarea></div>
-      <div class="full"><label>Service catalog JSON</label><textarea id="service_catalog_json" placeholder='[{{"key":"mens_haircut","name_lv":"vīriešu frizūra","name_ru":"мужская стрижка","name_en":"men&#39;s haircut","duration_min":30,"aliases_lv":["matu griezums"],"aliases_ru":["стрижка"],"aliases_en":["haircut"]}}]'></textarea></div>
-      <div class="full"><label>Service account JSON</label><textarea id="service_account_json" placeholder='{{"type":"service_account",...}}'></textarea></div>
-      <div><label>Weekly hours JSON</label><textarea id="weekly_hours_json"></textarea></div>
-      <div><label>Days off JSON</label><textarea id="days_off_json"></textarea></div>
-      <div><label>Breaks JSON</label><textarea id="breaks_json"></textarea></div>
-      <div><label>Holidays JSON</label><textarea id="holidays_json"></textarea></div>
-      <div><label>Business memory LV</label><textarea id="business_memory_lv" placeholder="Piemēram: Vīriešu frizūra 20€, bārda 12€, atrodamies Brīvības ielā 10"></textarea></div>
-      <div><label>Business memory RU</label><textarea id="business_memory_ru" placeholder="Например: Мужская стрижка 20€, борода 12€, адрес: Brīvības iela 10"></textarea></div>
-      <div class="full"><label>Business memory EN</label><textarea id="business_memory_en" placeholder="For example: Men's haircut 20€, beard trim 12€, address: Brīvības iela 10"></textarea></div>
+      <div><label>Services LV <span class="hint">comma-separated</span></label><textarea id="services_lv"></textarea></div>
+      <div><label>Services RU <span class="hint">comma-separated</span></label><textarea id="services_ru"></textarea></div>
+      <div class="full"><label>Services EN <span class="hint">comma-separated</span></label><textarea id="services_en"></textarea></div>
     </div>
-    <div class="actions">
-      <button onclick="saveConfig()">Save config</button>
-      <span id="save_status" class="small"></span>
+    <h3 style="margin-top:16px;">Service catalog preview</h3>
+    <div id="service_preview" class="preview-empty">Load config to preview services.</div>
+  </div>
+
+  <div class="card">
+    <h2>Business memory / FAQ text</h2>
+    <div class="sub" style="margin-bottom:12px;">Simple lines like “Consultation - 10 euro”, address, working rules, or FAQ facts. This is what side-questions use during booking.</div>
+    <div class="grid">
+      <div><label>Business memory LV</label><textarea id="business_memory_lv" placeholder="Konsultācija - 10 eiro\nServiss - 20 eiro\nAdrese: Rēzekne"></textarea></div>
+      <div><label>Business memory RU</label><textarea id="business_memory_ru" placeholder="Консультация - 10 евро\nСервис - 20 евро\nАдрес: Резекне"></textarea></div>
+      <div class="full"><label>Business memory EN</label><textarea id="business_memory_en" placeholder="Consultation - 10 euro\nService - 20 euro\nAddress: Rezekne"></textarea></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Advanced settings</h2>
+    <details>
+      <summary>Service catalog JSON</summary>
+      <div class="sub">Advanced structured service list. Used for matching services and durations. Keep valid JSON.</div>
+      <textarea class="big" id="service_catalog_json" placeholder='[{"key":"consultation","name_lv":"konsultācija","name_ru":"консультация","name_en":"consultation","duration_min":30}]'></textarea>
+    </details>
+    <details>
+      <summary>Optional schedule JSON</summary>
+      <div class="grid" style="margin-top:12px;">
+        <div><label>Weekly hours JSON <span class="hint">optional</span></label><textarea id="weekly_hours_json" placeholder='{"mon":["09:00","18:00"]}'></textarea></div>
+        <div><label>Days off JSON <span class="hint">optional</span></label><textarea id="days_off_json" placeholder='[]'></textarea></div>
+        <div><label>Breaks JSON <span class="hint">optional</span></label><textarea id="breaks_json" placeholder='{"mon":[]}'></textarea></div>
+        <div><label>Holidays JSON <span class="hint">optional</span></label><textarea id="holidays_json" placeholder='[]'></textarea></div>
+      </div>
+    </details>
+    <details>
+      <summary>Google service account</summary>
+      <div class="secret-box" style="margin-top:12px;">
+        <div id="service_account_status" class="badge warn">Checking…</div>
+        <div class="sub">For safety, existing service account JSON is not displayed. Paste a new JSON here only if you intentionally want to replace it. Leave empty to keep current credentials.</div>
+        <textarea id="service_account_json" placeholder='Paste new service account JSON only to replace existing credentials'></textarea>
+      </div>
+    </details>
+  </div>
+
+  <div class="sticky-save">
+    <div class="card" style="margin-bottom:0;">
+      <div class="actions">
+        <button onclick="saveConfig()">Save config</button>
+        <button class="secondary" onclick="loadConfig()">Reload</button>
+        <span id="save_status" class="small"></span>
+      </div>
     </div>
   </div>
 
   <div class="card">
     <h2>Quick links</h2>
     <div class="links">
-      <a id="lnk_json" href="#">JSON config</a>
+      <a id="lnk_json" href="#">Safe JSON config</a>
+      <a id="lnk_admin" href="#">Admin readiness</a>
+      <a id="lnk_dashboard" href="#">Dashboard</a>
+      <a id="lnk_devchat" href="#">Dev chat</a>
       <a id="lnk_routes" href="#">Phone routes</a>
       <a id="lnk_bookings" href="#">Bookings</a>
       <a id="lnk_conv" href="#">Conversations</a>
@@ -12114,26 +12206,74 @@ button.secondary {{ background:#fff; color:#111827; border:1px solid #d1d5db; }}
     </div>
   </div>
 </div>
-
 <script>
-function j(v) {{
-  if (v === null || v === undefined || v === "") return "";
-  if (typeof v === "string") return v;
-  return JSON.stringify(v, null, 2);
-}}
-function setLinks(tid) {{
+const DEFAULT_TENANT_ID = __TENANT_ID_JSON__;
+let lastConfig = null;
+function currentTenant(){ return (document.getElementById('tenant_id').value || '').trim() || DEFAULT_TENANT_ID || 'default'; }
+function openPath(path){ window.location = path; }
+function esc(v){ return v === null || v === undefined ? '' : String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'", '&#39;'); }
+function j(v){ if(v===null || v===undefined || v==='') return ''; if(typeof v==='string') return v; return JSON.stringify(v,null,2); }
+function badgeText(ok, labelOk, labelBad){ return `<span class="badge ${ok ? 'ok':'warn'}">${esc(ok ? labelOk : labelBad)}</span>`; }
+function setLinks(tid){
   document.getElementById('lnk_json').href = '/tenant/config?tenant_id=' + encodeURIComponent(tid);
+  document.getElementById('lnk_admin').href = '/tenant/admin/readiness?tenant_id=' + encodeURIComponent(tid);
+  document.getElementById('lnk_dashboard').href = '/dashboard?tenant_id=' + encodeURIComponent(tid);
+  document.getElementById('lnk_devchat').href = '/dev_chat_ui?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_routes').href = '/tenant/routes?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_bookings').href = '/bookings?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_conv').href = '/conversations?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_analytics').href = '/analytics?tenant_id=' + encodeURIComponent(tid);
-}}
-async function loadConfig() {{
-  const tid = document.getElementById('tenant_id').value.trim() || 'default';
+}
+function parseJsonField(id, label){
+  const raw = document.getElementById(id).value.trim();
+  if(!raw) return null;
+  try { JSON.parse(raw); return raw; }
+  catch(e){ throw new Error(`${label}: invalid JSON (${e.message})`); }
+}
+function renderReadiness(admin){
+  admin = admin || {};
+  const ready = admin.safe_to_demo === true || admin.status === 'ready';
+  document.getElementById('ready_badge').className = 'badge ' + (ready ? 'ok' : 'warn');
+  document.getElementById('ready_badge').textContent = ready ? 'Ready for demo' : 'Needs attention';
+  document.getElementById('st_admin').innerHTML = badgeText(ready, 'Ready', 'Attention');
+  const cal = admin.calendar || {};
+  document.getElementById('st_calendar').innerHTML = badgeText(!!(cal.google_connected && cal.calendar_selected), 'Connected', 'Check setup');
+  const cat = admin.service_catalog || {};
+  document.getElementById('st_catalog').innerHTML = `${badgeText((cat.count || 0) > 0, `${cat.count || 0} services`, 'Missing')}<div class="small">${esc(cat.source || '')}</div>`;
+  const bm = admin.business_memory || {};
+  const memOk = !!(bm.lv?.configured && bm.ru?.configured && bm.en?.configured);
+  document.getElementById('st_memory').innerHTML = badgeText(memOk, 'LV/RU/EN ready', 'Check languages');
+  const blocking = Array.isArray(admin.blocking) ? admin.blocking : [];
+  const warnings = Array.isArray(admin.warnings) ? admin.warnings : [];
+  const notice = document.getElementById('readiness_notice');
+  if(blocking.length){ notice.className='notice err'; notice.textContent='Blocking: '+blocking.join(', '); }
+  else if(warnings.length){ notice.className='notice warn'; notice.textContent='Warnings: '+warnings.join(', '); }
+  else { notice.className='notice ok'; notice.textContent='Tenant config is safe to demo. Optional weekly hours/days off/breaks/holidays may remain empty for the MVP.'; }
+  document.getElementById('service_account_status').className = 'badge ' + (cal.has_service_account_json ? 'ok' : 'warn');
+  document.getElementById('service_account_status').textContent = cal.has_service_account_json ? 'Service account configured' : 'Service account missing';
+}
+function renderServicePreview(value){
+  const box = document.getElementById('service_preview');
+  let parsed = value;
+  if(typeof value === 'string' && value.trim()){
+    try { parsed = JSON.parse(value); } catch(e){ box.className='notice warn'; box.textContent='Service catalog JSON is invalid; preview unavailable.'; return; }
+  }
+  if(!Array.isArray(parsed) || !parsed.length){ box.className='preview-empty'; box.textContent='No structured services found.'; return; }
+  box.className='';
+  const rows = parsed.map(item => `<tr><td><code>${esc(item.key || '')}</code></td><td>${esc(item.name_lv || item.name || '')}</td><td>${esc(item.name_ru || item.name || '')}</td><td>${esc(item.name_en || item.name || '')}</td><td>${esc(item.duration_min || '')} min</td></tr>`).join('');
+  box.innerHTML = `<table><thead><tr><th>Key</th><th>LV</th><th>RU</th><th>EN</th><th>Duration</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+async function loadConfig(){
+  const tid = currentTenant();
+  document.getElementById('tenant_id').value = tid;
   setLinks(tid);
+  const st = document.getElementById('save_status');
+  st.className='small'; st.textContent='Loading…';
   const r = await fetch('/tenant/config?tenant_id=' + encodeURIComponent(tid));
   const data = await r.json();
-  const t = data.tenant || {{}};
+  if(!r.ok){ st.className='small err'; st.textContent = data.detail || JSON.stringify(data); return; }
+  lastConfig = data;
+  const t = data.tenant || {};
   document.getElementById('business_name').value = t.business_name || '';
   document.getElementById('phone_number').value = t.phone_number || '';
   document.getElementById('timezone').value = t.timezone || '';
@@ -12149,62 +12289,61 @@ async function loadConfig() {{
   document.getElementById('holidays_json').value = j(t.holidays_json);
   document.getElementById('min_notice_minutes').value = t.min_notice_minutes ?? '';
   document.getElementById('buffer_minutes').value = t.buffer_minutes ?? '';
-  document.getElementById('service_catalog_json').value = j(t.service_catalog_json || t.service_catalog);
-  document.getElementById('service_account_json').value = t.service_account_json || t.google_service_account_json || '';
+  const catalogValue = t.service_catalog_json || t.service_catalog;
+  document.getElementById('service_catalog_json').value = j(catalogValue);
+  document.getElementById('service_account_json').value = '';
   document.getElementById('business_memory_lv').value = t.business_memory_lv || '';
   document.getElementById('business_memory_ru').value = t.business_memory_ru || '';
   document.getElementById('business_memory_en').value = t.business_memory_en || '';
-}}
-async function saveConfig() {{
-  const tid = document.getElementById('tenant_id').value.trim() || 'default';
-  const payload = {{
-    tenant_id: tid,
-    business_name: document.getElementById('business_name').value || null,
-    phone_number: document.getElementById('phone_number').value || null,
-    timezone: document.getElementById('timezone').value || null,
-    language: document.getElementById('language').value || null,
-    work_start: document.getElementById('work_start').value || null,
-    work_end: document.getElementById('work_end').value || null,
-    services_lv: document.getElementById('services_lv').value || null,
-    services_ru: document.getElementById('services_ru').value || null,
-    services_en: document.getElementById('services_en').value || null,
-    weekly_hours_json: document.getElementById('weekly_hours_json').value || null,
-    days_off_json: document.getElementById('days_off_json').value || null,
-    breaks_json: document.getElementById('breaks_json').value || null,
-    holidays_json: document.getElementById('holidays_json').value || null,
-    min_notice_minutes: document.getElementById('min_notice_minutes').value ? Number(document.getElementById('min_notice_minutes').value) : null,
-    buffer_minutes: document.getElementById('buffer_minutes').value ? Number(document.getElementById('buffer_minutes').value) : null,
-    service_catalog_json: document.getElementById('service_catalog_json').value || null,
-    service_account_json: document.getElementById('service_account_json').value || null,
-    business_memory_lv: document.getElementById('business_memory_lv').value || null,
-    business_memory_ru: document.getElementById('business_memory_ru').value || null,
-    business_memory_en: document.getElementById('business_memory_en').value || null
-  }};
+  renderReadiness(data.admin_readiness || {});
+  renderServicePreview(catalogValue);
+  st.className='small ok'; st.textContent='Loaded safe config. Existing secrets are hidden.';
+}
+async function saveConfig(){
   const st = document.getElementById('save_status');
-  st.className = 'small';
-  st.textContent = 'Saving...';
-  const r = await fetch('/tenant/config/update', {{
-    method: 'POST',
-    headers: {{ 'Content-Type': 'application/json' }},
-    body: JSON.stringify(payload)
-  }});
-  const data = await r.json();
-  if (r.ok) {{
-    st.className = 'small ok';
-    st.textContent = 'Saved';
+  try{
+    const tid = currentTenant();
+    const serviceAccountReplacement = document.getElementById('service_account_json').value.trim();
+    const payload = {
+      tenant_id: tid,
+      business_name: document.getElementById('business_name').value || null,
+      phone_number: document.getElementById('phone_number').value || null,
+      timezone: document.getElementById('timezone').value || null,
+      language: document.getElementById('language').value || null,
+      work_start: document.getElementById('work_start').value || null,
+      work_end: document.getElementById('work_end').value || null,
+      services_lv: document.getElementById('services_lv').value || null,
+      services_ru: document.getElementById('services_ru').value || null,
+      services_en: document.getElementById('services_en').value || null,
+      weekly_hours_json: parseJsonField('weekly_hours_json','Weekly hours JSON'),
+      days_off_json: parseJsonField('days_off_json','Days off JSON'),
+      breaks_json: parseJsonField('breaks_json','Breaks JSON'),
+      holidays_json: parseJsonField('holidays_json','Holidays JSON'),
+      min_notice_minutes: document.getElementById('min_notice_minutes').value ? Number(document.getElementById('min_notice_minutes').value) : null,
+      buffer_minutes: document.getElementById('buffer_minutes').value ? Number(document.getElementById('buffer_minutes').value) : null,
+      service_catalog_json: parseJsonField('service_catalog_json','Service catalog JSON'),
+      service_account_json: serviceAccountReplacement || null,
+      business_memory_lv: document.getElementById('business_memory_lv').value || null,
+      business_memory_ru: document.getElementById('business_memory_ru').value || null,
+      business_memory_en: document.getElementById('business_memory_en').value || null
+    };
+    if(serviceAccountReplacement){ JSON.parse(serviceAccountReplacement); }
+    st.className='small'; st.textContent='Saving…';
+    const r = await fetch('/tenant/config/update', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
+    const data = await r.json();
+    if(!r.ok){ throw new Error(data.detail || JSON.stringify(data)); }
+    st.className='small ok'; st.textContent='Saved. Reloading safe config…';
     await loadConfig();
-  }} else {{
-    st.className = 'small err';
-    st.textContent = (data.detail || JSON.stringify(data, null, 2));
-  }}
-}}
-document.addEventListener('DOMContentLoaded', loadConfig);
+  } catch(e){
+    st.className='small err'; st.textContent = e.message || String(e);
+  }
+}
+document.addEventListener('DOMContentLoaded', () => { document.getElementById('tenant_id').value = DEFAULT_TENANT_ID || 'clinic_demo'; loadConfig(); });
 </script>
 </body>
 </html>
-    """
+    """.replace("__TENANT_ID_JSON__", tenant_id_json)
     return HTMLResponse(content=html)
-
 
 def _safe_parse_json_text(value: Any):
     if value is None:
@@ -12276,12 +12415,61 @@ class TenantPlanChangeRequest(BaseModel):
     dialogs_per_month: Optional[int] = None
     reset_override: bool = False
 
-def _jsonable_tenant_view(tenant: Dict[str, Any]) -> Dict[str, Any]:
+TENANT_CONFIG_SECRET_FIELDS = {
+    "service_account_json",
+    "google_service_account_json",
+    "google_oauth_tokens_json",
+    "google_refresh_token",
+    "private_key",
+    "client_secret",
+}
+
+
+def _jsonable_tenant_view(tenant: Dict[str, Any], include_secrets: bool = False) -> Dict[str, Any]:
     tenant = dict(tenant or {})
     for k, v in list(tenant.items()):
         if hasattr(v, "isoformat"):
             tenant[k] = v.isoformat()
+    if not include_secrets:
+        for key in TENANT_CONFIG_SECRET_FIELDS:
+            if key in tenant:
+                tenant[f"{key}_configured"] = bool(str(tenant.get(key) or "").strip())
+                tenant[key] = None
     return tenant
+
+
+def _safe_resolved_settings_view(settings: Dict[str, Any]) -> Dict[str, Any]:
+    settings = dict(settings or {})
+    if "service_account_json" in settings:
+        settings["service_account_json_configured"] = bool(str(settings.get("service_account_json") or "").strip())
+        settings["service_account_json"] = None
+    return settings
+
+
+def tenant_config_ui_readiness_payload(tenant: Dict[str, Any]) -> Dict[str, Any]:
+    tenant = normalize_tenant_saas_fields(tenant or {})
+    tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip()
+    admin = tenant_admin_config_readiness_payload(tenant)
+    return {
+        "stage": "52",
+        "purpose": "demo-safe tenant config UI and admin UX hardening",
+        "tenant_id": tenant_id or None,
+        "status": "ready" if admin.get("safe_to_demo") else "attention",
+        "safe_to_demo": bool(admin.get("safe_to_demo")),
+        "recommended_ui": f"/tenant/config/ui?tenant_id={tenant_id}" if tenant_id else None,
+        "admin_readiness": f"/tenant/admin/readiness?tenant_id={tenant_id}" if tenant_id else None,
+        "secrets_exposed_by_config_api": False,
+        "service_account_editing": "paste_to_replace_only",
+        "advanced_json_collapsed_by_default": True,
+        "client_friendly_sections": [
+            "demo_status",
+            "basic_business_settings",
+            "service_preview",
+            "business_memory",
+            "advanced_json_settings",
+        ],
+        "note": "Readiness metadata only. The UI is demo-safe by default and does not expose tenant secrets in /tenant/config responses.",
+    }
 
 @app.get("/tenants")
 def list_tenants(limit: int = 100):
@@ -12497,11 +12685,12 @@ def tenant_config(tenant_id: str = TENANT_ID_DEFAULT):
         routes = []
     return {
         "tenant": _jsonable_tenant_view(tenant),
-        "resolved_settings": settings,
+        "resolved_settings": _safe_resolved_settings_view(settings),
         "phone_routes": routes,
         "onboarding": onboarding_status_payload(tenant),
         "readiness": tenant_ready_status_payload(tenant),
         "admin_readiness": tenant_admin_config_readiness_payload(tenant),
+        "config_ui_hardening": tenant_config_ui_readiness_payload(tenant),
         "plan_meta": tenant_plan_meta(tenant),
         "links": onboarding_links_payload(str(tenant.get("_id") or tenant_id)),
     }
@@ -12605,10 +12794,11 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
     return {
         "status": "ok",
         "tenant": _jsonable_tenant_view(updated),
-        "resolved_settings": tenant_settings(updated, get_lang(updated.get("language") or "lv")),
+        "resolved_settings": _safe_resolved_settings_view(tenant_settings(updated, get_lang(updated.get("language") or "lv"))),
         "onboarding": onboarding_status_payload(updated),
         "readiness": tenant_ready_status_payload(updated),
         "admin_readiness": tenant_admin_config_readiness_payload(updated),
+        "config_ui_hardening": tenant_config_ui_readiness_payload(updated),
         "plan_meta": tenant_plan_meta(updated),
         "links": onboarding_links_payload(tenant_id),
     }

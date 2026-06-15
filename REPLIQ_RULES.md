@@ -3,7 +3,7 @@
 Core rule: LLM is an understanding layer only. Booking actions remain controlled by orchestration/state logic.
 
 Current protected baseline:
-- `/dialogue/qa` confirmed after Stage 44 deploy: 40/40 passed. Stage 45 expands the expected protected matrix to 44 scenarios.
+- `/dialogue/qa` confirmed after Stage 51 deploy: 50/50 passed. Stage 52 must preserve this baseline.
 - Stage 41.1 hardens cross-language grounded price lookup while preserving booking flow.
 - Stage 42 is a documentation/audit checkpoint only.
 - Stage 43A adds production readiness checks without changing conversational behavior.
@@ -223,3 +223,13 @@ If a price question is asked inside an active booking flow and the current langu
 - `/tenant/admin/readiness`, `/tenant/config`, `/tenant/config/update`, and `/internal/readiness` may expose safe config status, but must not expose secret values such as service account JSON contents or OAuth tokens.
 - Current protected baseline remains `/dialogue/qa = 50/50 passed`.
 - Any future change that rejects tenant config updates or changes the admin UI editing model must be handled as a separate behavior/admin stage after explicit root-cause analysis.
+
+
+## Stage 52 — Demo UI / Tenant Config UX Hardening Rules
+- Stage 52 may change tenant/admin UI and read-only readiness metadata only.
+- Do not change booking routing, slot generation, date/time parsing, side-question behavior, cancellation, reschedule, Google Calendar runtime actions, or regression evaluator rules.
+- `/tenant/config/ui` must be demo-safe and text-first MVP oriented.
+- Existing service account JSON/private keys must not be displayed in the config UI. Credential editing is paste-to-replace only.
+- `/tenant/config` and config update responses must not expose raw tenant secrets. They may expose boolean configured flags.
+- Optional advanced schedule JSON fields may remain empty without making the tenant look blocked when Stage 51 readiness is ready.
+- Voice/call/TTS surfaces remain future scope and must not be positioned as current MVP behavior.

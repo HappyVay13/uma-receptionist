@@ -1,6 +1,6 @@
 # Repliq Project State
 
-Current stage: Stage 51 — Tenant Config / Business Memory Admin Hardening.
+Current stage: Stage 52 — Demo UI / Tenant Config UX Hardening.
 
 Production regression baseline before Stage 40:
 - Stage 39 was deployed and confirmed by user: `/dialogue/qa` = 15/15 passed.
@@ -55,6 +55,7 @@ Protected baseline:
 - Stage 49 text channel production smoke audit
 - Stage 50 text MVP launch demo readiness
 - Stage 51 tenant config / business memory admin hardening
+- Stage 52 demo UI / tenant config UX hardening
 
 ## Stage 36 — Advanced Conversation Recovery
 
@@ -267,3 +268,13 @@ Stage 36 adds a deterministic recovery layer inside active booking flows. It is 
 - Stage 51 checks editable SaaS/admin surfaces: business identity, timezone, hours JSON, service catalog source, business memory language coverage, Google/calendar setup, service account presence, and runtime missing items.
 - The new audit endpoints do not call LLMs, mutate tenant config, mutate conversations, or create/update/delete Google Calendar events.
 - Current protected regression baseline remains `/dialogue/qa = 50/50 passed`.
+
+
+## Stage 52 — Demo UI / Tenant Config UX Hardening
+- Reworked `/tenant/config/ui` from a technical editor into a demo-safe text-first MVP admin surface.
+- Added visible readiness/status cards, service catalog preview, business memory guidance, quick links, and collapsed advanced JSON settings.
+- Existing Google service account JSON is no longer loaded into the UI; the field is paste-to-replace only.
+- `/tenant/config` and `/tenant/config/update` now return secret-safe tenant/settings views with configured flags instead of raw secret values.
+- Added Stage 52 config UI hardening metadata to `/internal/readiness` and tenant config responses.
+- No receptionist core behavior, regression evaluator, or Google Calendar runtime logic changed.
+- Expected production baseline after deploy remains `/dialogue/qa` = 50/50 passed.
