@@ -12252,6 +12252,21 @@ function renderReadiness(admin){
   document.getElementById('service_account_status').className = 'badge ' + (cal.has_service_account_json ? 'ok' : 'warn');
   document.getElementById('service_account_status').textContent = cal.has_service_account_json ? 'Service account configured' : 'Service account missing';
 }
+function splitServiceList(value){
+  return String(value || '').split(',').map(x => x.trim()).filter(Boolean);
+}
+function currentClientServiceNames(){
+  return {
+    lv: splitServiceList(document.getElementById('services_lv')?.value || ''),
+    ru: splitServiceList(document.getElementById('services_ru')?.value || ''),
+    en: splitServiceList(document.getElementById('services_en')?.value || '')
+  };
+}
+function previewServiceName(item, lang, idx, clientNames){
+  const fromClientList = (clientNames?.[lang] || [])[idx];
+  if(fromClientList) return fromClientList;
+  return item[`name_${lang}`] || item.name || item.key || '';
+}
 function renderServicePreview(value){
   const box = document.getElementById('service_preview');
   let parsed = value;
@@ -12260,8 +12275,9 @@ function renderServicePreview(value){
   }
   if(!Array.isArray(parsed) || !parsed.length){ box.className='preview-empty'; box.textContent='No structured services found.'; return; }
   box.className='';
-  const rows = parsed.map(item => `<tr><td><code>${esc(item.key || '')}</code></td><td>${esc(item.name_lv || item.name || '')}</td><td>${esc(item.name_ru || item.name || '')}</td><td>${esc(item.name_en || item.name || '')}</td><td>${esc(item.duration_min || '')} min</td></tr>`).join('');
-  box.innerHTML = `<table><thead><tr><th>Key</th><th>LV</th><th>RU</th><th>EN</th><th>Duration</th></tr></thead><tbody>${rows}</tbody></table>`;
+  const clientNames = currentClientServiceNames();
+  const rows = parsed.map((item, idx) => `<tr><td><code>${esc(item.key || '')}</code></td><td>${esc(previewServiceName(item,'lv',idx,clientNames))}</td><td>${esc(previewServiceName(item,'ru',idx,clientNames))}</td><td>${esc(previewServiceName(item,'en',idx,clientNames))}</td><td>${esc(item.duration_min || '')} min</td></tr>`).join('');
+  box.innerHTML = `<table><thead><tr><th>Key</th><th>LV</th><th>RU</th><th>EN</th><th>Duration</th></tr></thead><tbody>${rows}</tbody></table><div class="small" style="margin-top:8px;">Preview uses client-facing service names when available. Advanced JSON keys remain canonical for matching.</div>`;
 }
 async function loadConfig(){
   const tid = currentTenant();
@@ -12451,8 +12467,8 @@ def tenant_config_ui_readiness_payload(tenant: Dict[str, Any]) -> Dict[str, Any]
     tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip()
     admin = tenant_admin_config_readiness_payload(tenant)
     return {
-        "stage": "52",
-        "purpose": "demo-safe tenant config UI and admin UX hardening",
+        "stage": "52.1",
+        "purpose": "demo-safe tenant config UI and service catalog localization polish",
         "tenant_id": tenant_id or None,
         "status": "ready" if admin.get("safe_to_demo") else "attention",
         "safe_to_demo": bool(admin.get("safe_to_demo")),
@@ -12461,6 +12477,7 @@ def tenant_config_ui_readiness_payload(tenant: Dict[str, Any]) -> Dict[str, Any]
         "secrets_exposed_by_config_api": False,
         "service_account_editing": "paste_to_replace_only",
         "advanced_json_collapsed_by_default": True,
+        "service_catalog_preview_uses_client_facing_names": True,
         "client_friendly_sections": [
             "demo_status",
             "basic_business_settings",
@@ -12468,7 +12485,7 @@ def tenant_config_ui_readiness_payload(tenant: Dict[str, Any]) -> Dict[str, Any]
             "business_memory",
             "advanced_json_settings",
         ],
-        "note": "Readiness metadata only. The UI is demo-safe by default and does not expose tenant secrets in /tenant/config responses.",
+        "note": "Readiness metadata only. The UI is demo-safe by default, does not expose tenant secrets, and uses client-facing service names in the catalog preview when available.",
     }
 
 @app.get("/tenants")

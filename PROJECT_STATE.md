@@ -278,3 +278,12 @@ Stage 36 adds a deterministic recovery layer inside active booking flows. It is 
 - Added Stage 52 config UI hardening metadata to `/internal/readiness` and tenant config responses.
 - No receptionist core behavior, regression evaluator, or Google Calendar runtime logic changed.
 - Expected production baseline after deploy remains `/dialogue/qa` = 50/50 passed.
+
+## Stage 52.1 — Service Catalog Localization Polish
+- Small demo/admin UI polish after Stage 52.
+- `/tenant/config/ui` service catalog preview now uses client-facing `services_lv`, `services_ru`, and `services_en` names when available, so the preview does not show raw/minimal LV labels in RU/EN columns.
+- Canonical `service_catalog_json` keys remain unchanged for runtime matching.
+- Adds `service_catalog_preview_uses_client_facing_names=true` to tenant config UI readiness metadata.
+- No receptionist core behavior, regression evaluator, Google Calendar runtime logic, booking, cancellation, reschedule, side-question handling, slot generation, or date parsing changed.
+- Expected production baseline remains `/dialogue/qa = 50/50 passed`.
+

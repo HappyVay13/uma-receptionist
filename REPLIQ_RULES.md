@@ -233,3 +233,11 @@ If a price question is asked inside an active booking flow and the current langu
 - `/tenant/config` and config update responses must not expose raw tenant secrets. They may expose boolean configured flags.
 - Optional advanced schedule JSON fields may remain empty without making the tenant look blocked when Stage 51 readiness is ready.
 - Voice/call/TTS surfaces remain future scope and must not be positioned as current MVP behavior.
+
+## Stage 52.1 — Service Catalog Localization Polish Rules
+- Stage 52.1 may only polish tenant/admin UI preview and read-only readiness metadata.
+- Do not change receptionist behavior, booking routing, slot generation, date/time parsing, side-question handling, cancellation, reschedule, Google Calendar runtime actions, or regression evaluator rules.
+- Service catalog preview may use client-facing service lists for display, but canonical service keys and `service_catalog_json` matching data must remain stable.
+- `/tenant/config` and `/tenant/config/ui` must remain demo-safe and must not expose service account/private key contents or OAuth tokens.
+- Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+
