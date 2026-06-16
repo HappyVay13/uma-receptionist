@@ -10270,6 +10270,128 @@ def stage53_client_demo_script_payload(tenant_id: str = TENANT_ID_DEFAULT) -> Di
         "note": "This endpoint is read-only. The live demo itself must be run manually through a text channel.",
     }
 
+
+def stage54_launch_readiness_lock_payload(tenant_id: str = TENANT_ID_DEFAULT) -> Dict[str, Any]:
+    """Read-only launch/demo readiness lock for the text-first MVP.
+
+    Stage 54 does not run conversations, call LLMs, mutate tenant config,
+    or create/update/delete calendar events. It summarizes the current launch
+    gate state using safe tenant/admin/UI readiness metadata.
+    """
+    tid = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    base = (SERVER_BASE_URL or "").rstrip("/")
+
+    def url(path: str) -> str:
+        return base + path if base else path
+
+    tenant: Dict[str, Any] = {}
+    tenant_status: Dict[str, Any] = {"tenant_id": tid, "ready": False, "missing": ["tenant_not_checked"]}
+    admin_status: Dict[str, Any] = {"stage": "51", "status": "blocked", "safe_to_demo": False, "blocking": ["tenant_not_checked"]}
+    ui_status: Dict[str, Any] = {"stage": "52.1", "status": "blocked", "safe_to_demo": False, "blocking": ["tenant_not_checked"]}
+    blocking: List[str] = []
+    warnings: List[str] = []
+
+    try:
+        tenant = get_existing_tenant(tid)
+        if tenant.get("_id"):
+            tenant_status = tenant_ready_status_payload(tenant)
+            admin_status = tenant_admin_config_readiness_payload(tenant)
+            ui_status = tenant_config_ui_readiness_payload(tenant)
+        else:
+            blocking.append("tenant_not_found")
+            tenant_status = {"tenant_id": tid, "ready": False, "missing": ["tenant_not_found"]}
+    except Exception as e:
+        log.error("stage54_launch_readiness_lock_failed tenant_id=%s err=%s", tid, e)
+        blocking.append("tenant_readiness_error")
+        tenant_status = {"tenant_id": tid, "ready": False, "error": e.__class__.__name__}
+
+    if not tenant_status.get("ready"):
+        blocking.append("tenant_not_ready")
+    if not admin_status.get("safe_to_demo"):
+        blocking.append("tenant_admin_not_demo_safe")
+    if not ui_status.get("safe_to_demo"):
+        blocking.append("tenant_config_ui_not_demo_safe")
+    if ui_status.get("secrets_exposed_by_config_api"):
+        blocking.append("config_api_secrets_exposed")
+
+    admin_blocking = admin_status.get("blocking") if isinstance(admin_status, dict) else []
+    admin_warnings = admin_status.get("warnings") if isinstance(admin_status, dict) else []
+    if isinstance(admin_blocking, list):
+        blocking.extend([str(x) for x in admin_blocking if str(x)])
+    if isinstance(admin_warnings, list):
+        warnings.extend([str(x) for x in admin_warnings if str(x)])
+
+    # Keep order but remove duplicates.
+    blocking = list(dict.fromkeys(blocking))
+    warnings = list(dict.fromkeys(warnings))
+
+    locked = not blocking
+    return {
+        "stage": "54",
+        "purpose": "text-first MVP launch readiness lock",
+        "tenant_id": tid,
+        "status": "locked" if locked else "attention",
+        "launch_ready_for_demo": bool(locked),
+        "pilot_candidate": bool(locked),
+        "protected_regression_baseline": "50/50",
+        "manual_live_smoke": "user_reported_passed_after_stage49",
+        "current_mvp_scope": {
+            "channel": "text",
+            "positioning": "text-first AI receptionist for appointment handling",
+            "voice_calls_scope": "future_phase",
+        },
+        "launch_gate": {
+            "tenant_ready": bool(tenant_status.get("ready")),
+            "tenant_admin_demo_safe": bool(admin_status.get("safe_to_demo")),
+            "tenant_config_ui_demo_safe": bool(ui_status.get("safe_to_demo")),
+            "config_api_secrets_exposed": bool(ui_status.get("secrets_exposed_by_config_api")),
+            "demo_script_ready": True,
+            "qa_baseline_expected": "50/50",
+        },
+        "blocking": blocking,
+        "warnings": warnings,
+        "recommended_demo_order": [
+            "Open launch readiness and internal readiness.",
+            "Open demo-safe tenant config UI.",
+            "Open /dev_chat_ui for the selected tenant.",
+            "Create one booking and verify one Google Calendar event.",
+            "Ask a side question and continue slot confirmation.",
+            "Reschedule the same event and verify no duplicate event.",
+            "Cancel the event and verify it is removed.",
+        ],
+        "show_in_demo": [
+            "Text receptionist creates a real Google Calendar booking.",
+            "Price/business side-questions preserve the active booking flow.",
+            "Reschedule updates the same calendar event without duplicates.",
+            "Cancel removes the active appointment.",
+            "Tenant config UI is demo-safe and hides secrets.",
+        ],
+        "do_not_promise_now": [
+            "production voice calls",
+            "voice agent",
+            "TTS-driven demo",
+            "full self-serve billing lifecycle",
+            "fully polished multi-tenant client dashboard",
+        ],
+        "post_mvp_backlog": [
+            "tenant onboarding polish",
+            "business memory and FAQ admin polish",
+            "basic analytics and usage visibility",
+            "auth/access boundaries for client-facing admin surfaces",
+            "Telegram/WhatsApp text channel integration smoke",
+            "voice/calls phase after text MVP",
+        ],
+        "links": {
+            "internal_readiness": url(f"/internal/readiness?tenant_id={tid}"),
+            "tenant_config_ui": url(f"/tenant/config/ui?tenant_id={tid}"),
+            "tenant_admin_readiness": url(f"/tenant/admin/readiness?tenant_id={tid}"),
+            "demo_script": url(f"/demo/script?tenant_id={tid}"),
+            "dev_chat": url(f"/dev_chat_ui?tenant_id={tid}"),
+            "dashboard": url(f"/dashboard?tenant_id={tid}"),
+        },
+        "note": "Readiness metadata only. This endpoint does not call LLMs, run demos, mutate conversations, change tenant config, or create/update/delete calendar events.",
+    }
+
 def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) -> Dict[str, Any]:
     requested_tenant_id = (tenant_id or "").strip() or TENANT_ID_DEFAULT
     db_check = _stage43a_database_check()
@@ -10400,6 +10522,7 @@ def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) ->
             "note": "Readiness exposes demo checklist metadata only. The live demo itself must be run manually through a text channel.",
         },
         "client_demo_script": stage53_client_demo_script_payload(requested_tenant_id),
+        "launch_readiness_lock": stage54_launch_readiness_lock_payload(requested_tenant_id),
         "tenant_admin_config": tenant_admin_config_readiness_payload(tenant) if tenant_status.get("tenant_id") else {
             "stage": "51",
             "status": "blocked",
@@ -10425,6 +10548,11 @@ def internal_readiness(tenant_id: str = TENANT_ID_DEFAULT):
 @app.get("/demo/script")
 def demo_script(tenant_id: str = TENANT_ID_DEFAULT):
     return stage53_client_demo_script_payload(tenant_id=tenant_id)
+
+
+@app.get("/launch/readiness")
+def launch_readiness(tenant_id: str = TENANT_ID_DEFAULT):
+    return stage54_launch_readiness_lock_payload(tenant_id=tenant_id)
 
 
 # -------------------------
@@ -12190,6 +12318,7 @@ summary { cursor:pointer; font-weight:800; }
         <button class="secondary" onclick="openPath('/dashboard?tenant_id='+encodeURIComponent(currentTenant()))">Dashboard</button>
         <button class="secondary" onclick="openPath('/dev_chat_ui?tenant_id='+encodeURIComponent(currentTenant()))">Dev chat</button>
         <button class="secondary" onclick="openPath('/demo/script?tenant_id='+encodeURIComponent(currentTenant()))">Demo script</button>
+        <button class="secondary" onclick="openPath('/launch/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Launch readiness</button>
       </div>
     </div>
     <div style="min-width:260px;">
@@ -12289,6 +12418,7 @@ summary { cursor:pointer; font-weight:800; }
       <a id="lnk_dashboard" href="#">Dashboard</a>
       <a id="lnk_devchat" href="#">Dev chat</a>
       <a id="lnk_demo_script" href="#">Demo script</a>
+      <a id="lnk_launch" href="#">Launch readiness</a>
       <a id="lnk_routes" href="#">Phone routes</a>
       <a id="lnk_bookings" href="#">Bookings</a>
       <a id="lnk_conv" href="#">Conversations</a>
@@ -12310,6 +12440,7 @@ function setLinks(tid){
   document.getElementById('lnk_dashboard').href = '/dashboard?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_devchat').href = '/dev_chat_ui?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_demo_script').href = '/demo/script?tenant_id=' + encodeURIComponent(tid);
+  document.getElementById('lnk_launch').href = '/launch/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_routes').href = '/tenant/routes?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_bookings').href = '/bookings?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_conv').href = '/conversations?tenant_id=' + encodeURIComponent(tid);

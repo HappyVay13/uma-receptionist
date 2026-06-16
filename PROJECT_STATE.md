@@ -1,6 +1,6 @@
 # Repliq Project State
 
-Current stage: Stage 53 — Client Demo Script & Demo Mode Readiness.
+Current stage: Stage 54 — Launch Readiness Lock.
 
 Production regression baseline before Stage 40:
 - Stage 39 was deployed and confirmed by user: `/dialogue/qa` = 15/15 passed.
@@ -58,6 +58,7 @@ Protected baseline:
 - Stage 52 demo UI / tenant config UX hardening
 - Stage 52.1 service catalog localization polish
 - Stage 53 client demo script and demo mode readiness
+- Stage 54 launch readiness lock
 
 ## Stage 36 — Advanced Conversation Recovery
 
@@ -300,3 +301,15 @@ Stage 36 adds a deterministic recovery layer inside active booking flows. It is 
 - No receptionist core behavior, regression evaluator, Google Calendar runtime logic, booking, cancellation, reschedule, side-question handling, slot generation, or date parsing changed.
 - Active MVP scope remains text-first receptionist. Voice/calls remain future scope.
 - Expected production baseline remains `/dialogue/qa = 50/50 passed`.
+
+
+## Stage 54 — Launch Readiness Lock
+- Stage 54 is a read-only launch/demo lock checkpoint after confirmed Stage 53 production `/dialogue/qa = 50/50 passed` and demo script readiness.
+- No receptionist core behavior is changed: booking, price side-questions, slot selection, confirmation, cancellation, reschedule, date parsing, slot generation, and Google Calendar create/update/delete paths remain untouched.
+- Adds `GET /launch/readiness?tenant_id=...` as a safe launch-readiness summary endpoint.
+- Adds `launch_readiness_lock` metadata to `/internal/readiness` for the requested tenant.
+- Adds Launch readiness links to `/tenant/config/ui` and quick links so the demo/admin surface has a final launch gate view.
+- The launch lock summarizes: protected regression baseline, text-first MVP scope, tenant readiness, tenant admin readiness, demo-safe config UI, demo script readiness, manual live smoke status, demo order, do-not-promise items, and post-MVP backlog.
+- The new endpoint is read-only. It does not call LLMs, run demo flows, mutate conversations, change tenant config, or create/update/delete calendar events.
+- Current protected regression baseline remains `/dialogue/qa = 50/50 passed`.
+- If production `/launch/readiness` returns `status=locked` and `/dialogue/qa` remains 50/50, Repliq can be treated as text MVP demo/pilot candidate.

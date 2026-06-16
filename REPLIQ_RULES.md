@@ -3,7 +3,7 @@
 Core rule: LLM is an understanding layer only. Booking actions remain controlled by orchestration/state logic.
 
 Current protected baseline:
-- `/dialogue/qa` confirmed after Stage 52.1 deploy: 50/50 passed. Stage 53 must preserve this baseline.
+- `/dialogue/qa` confirmed after Stage 53 deploy: 50/50 passed. Stage 54 must preserve this baseline.
 - Stage 41.1 hardens cross-language grounded price lookup while preserving booking flow.
 - Stage 42 is a documentation/audit checkpoint only.
 - Stage 43A adds production readiness checks without changing conversational behavior.
@@ -250,3 +250,13 @@ If a price question is asked inside an active booking flow and the current langu
 - The demo script must position Repliq as a text-first receptionist MVP. Voice/calls remain future scope and must not be presented as current launch behavior.
 - Demo checks may include RU/LV scripted messages, calendar verification steps, and fallback guidance.
 - Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+
+
+## Stage 54 — Launch Readiness Lock Rules
+- Stage 54 may add read-only launch readiness/checkpoint metadata and documentation only.
+- Do not change receptionist behavior, booking routing, slot generation, date/time parsing, side-question handling, cancellation, reschedule, Google Calendar runtime actions, or regression evaluator rules.
+- `/launch/readiness` and readiness launch-lock metadata must not call LLMs, run demos, mutate conversation state, change tenant config, or create/update/delete Google Calendar events.
+- The launch lock must position Repliq as a text-first receptionist MVP. Voice/calls remain future scope and must not be presented as current launch behavior.
+- Launch readiness may summarize demo status, tenant/admin readiness, safe config UI, protected regression baseline, manual live smoke status, known limitations, and post-MVP backlog.
+- Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+- If launch/demo/pilot validation fails, handle it as a separate stage using exact endpoint output, live transcript, channel, tenant id, and observed calendar result.
