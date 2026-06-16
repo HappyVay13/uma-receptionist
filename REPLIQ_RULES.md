@@ -269,3 +269,13 @@ If a price question is asked inside an active booking flow and the current langu
 - Onboarding status may distinguish effective runtime completion from persisted onboarding flags so pilot/admin screens are not confusing.
 - Google calendars UI should not look blocked when a selected `calendar_id` already exists even if the OAuth calendar-list endpoint returns no items.
 - Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+
+
+## Stage 56 — Business Memory / FAQ Admin Polish Rules
+- Stage 56 may add read-only business memory / FAQ admin readiness metadata and admin UI guidance only.
+- Do not change receptionist behavior, booking routing, slot generation, date/time parsing, side-question handling, cancellation, reschedule, Google Calendar runtime create/update/delete behavior, or regression evaluator rules.
+- `/business-memory/readiness` must not call LLMs, mutate tenant config, mutate conversation state, or create/update/delete Google Calendar events.
+- Business memory readiness may inspect LV/RU/EN memory text, service mentions, price lines, address/hours hints, and line counts for admin guidance.
+- Business memory UI polish may show guidance and readiness summaries, but saving behavior must remain compatible with existing `/tenant/config/update`.
+- The active MVP remains text-first receptionist. Voice/calls remain future scope and must not be positioned as current pilot scope.
+- Current protected baseline remains `/dialogue/qa = 50/50 passed`.

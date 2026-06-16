@@ -1,6 +1,6 @@
 # Repliq Project State
 
-Current stage: Stage 54 — Launch Readiness Lock.
+Current stage: Stage 56 — Business Memory / FAQ Admin Polish.
 
 Production regression baseline before Stage 40:
 - Stage 39 was deployed and confirmed by user: `/dialogue/qa` = 15/15 passed.
@@ -59,6 +59,8 @@ Protected baseline:
 - Stage 52.1 service catalog localization polish
 - Stage 53 client demo script and demo mode readiness
 - Stage 54 launch readiness lock
+- Stage 55 pilot client setup / tenant onboarding polish
+- Stage 56 business memory / FAQ admin polish
 
 ## Stage 36 — Advanced Conversation Recovery
 
@@ -323,4 +325,17 @@ Stage 36 adds a deterministic recovery layer inside active booking flows. It is 
 - `/google/calendars` now returns selected-calendar metadata, and `/google/calendars/ui` no longer looks blocked when Google returns an empty calendar list but a selected calendar is already saved.
 - `/tenant/config/ui` now links to Pilot setup from the header and quick links.
 - Stage 55 keeps the active MVP scope text-first; voice/calls remain future scope.
+- Expected production baseline remains `/dialogue/qa = 50/50 passed`.
+
+
+## Stage 56 — Business Memory / FAQ Admin Polish
+- Stage 56 is an admin/readiness and UI polish stage after confirmed Stage 55 pilot setup readiness.
+- No receptionist core behavior is changed: booking, price side-questions, slot confirmation, cancellation, reschedule, date parsing, slot generation, regression evaluator, and Google Calendar create/update/delete paths remain untouched.
+- Adds `GET /business-memory/readiness?tenant_id=...` as a read-only business memory / FAQ admin readiness endpoint.
+- `/internal/readiness` now includes `business_memory_admin` for the requested tenant.
+- `/tenant/config` and `/tenant/config/update` responses now include `business_memory_admin` metadata so the admin UI can show memory readiness without exposing secrets.
+- `/tenant/config/ui` now links to Memory readiness and shows a business-memory readiness panel with LV/RU/EN line and price-fact counts.
+- Stage 56 checks whether business memory is configured per language, whether each client-facing service appears in the relevant memory text, and whether useful price/address/hours facts are present as guidance.
+- The new endpoint is read-only. It does not call LLMs, mutate tenant config, mutate conversations, or create/update/delete Google Calendar events.
+- Active MVP scope remains text-first receptionist. Voice/calls remain future scope.
 - Expected production baseline remains `/dialogue/qa = 50/50 passed`.

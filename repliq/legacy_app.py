@@ -10544,6 +10544,139 @@ def stage55_pilot_setup_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) ->
         "note": "Readiness metadata only. This endpoint does not call LLMs, change tenant config, mutate conversations, or create/update/delete calendar events.",
     }
 
+
+_STAGE56_PRICE_RE = re.compile(r"(?:\d+[\.,]?\d*)\s*(?:eiro|euro|eur|евро|€)", re.IGNORECASE)
+_STAGE56_ADDRESS_RE = re.compile(r"\b(?:adrese|address|адрес|rēzekne|rezekne|резекне)\b", re.IGNORECASE)
+
+
+def _stage56_memory_lines(value: Any) -> List[str]:
+    return [line.strip() for line in str(value or "").splitlines() if line.strip()]
+
+
+def _stage56_split_services(value: Any) -> List[str]:
+    return [item.strip() for item in str(value or "").split(",") if item.strip()]
+
+
+def _stage56_memory_blob_status(tenant: Dict[str, Any], lang: str) -> Dict[str, Any]:
+    lang = get_lang(lang)
+    field = f"business_memory_{lang}"
+    lines = _stage56_memory_lines((tenant or {}).get(field))
+    price_lines = [line for line in lines if _STAGE56_PRICE_RE.search(line)]
+    address_lines = [line for line in lines if _STAGE56_ADDRESS_RE.search(line)]
+    services = _stage56_split_services((tenant or {}).get(f"services_{lang}") or "")
+    normalized_lines = "\n".join(lines).casefold()
+    covered_services: List[str] = []
+    missing_services: List[str] = []
+    for service in services:
+        service_clean = str(service or "").strip()
+        if not service_clean:
+            continue
+        if service_clean.casefold() in normalized_lines:
+            covered_services.append(service_clean)
+        else:
+            missing_services.append(service_clean)
+    return {
+        "field": field,
+        "configured": bool(lines),
+        "chars": len(str((tenant or {}).get(field) or "")),
+        "line_count": len(lines),
+        "price_line_count": len(price_lines),
+        "address_line_count": len(address_lines),
+        "services_count": len(services),
+        "services_covered_count": len(covered_services),
+        "covered_services": covered_services,
+        "missing_service_mentions": missing_services,
+        "sample_lines": lines[:3],
+    }
+
+
+def stage56_business_memory_admin_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) -> Dict[str, Any]:
+    """Read-only business memory / FAQ admin readiness for the text-first MVP.
+
+    Stage 56 is an admin-polish layer only. It must not call LLMs, mutate tenant
+    config, mutate conversations, or create/update/delete calendar events.
+    """
+    tid = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    base = (SERVER_BASE_URL or "").rstrip("/")
+
+    def url(path: str) -> str:
+        return base + path if base else path
+
+    tenant = get_existing_tenant(tid)
+    if not tenant.get("_id"):
+        return {
+            "stage": "56",
+            "purpose": "business memory and FAQ admin polish readiness",
+            "tenant_id": tid,
+            "status": "blocked",
+            "business_memory_ready": False,
+            "blocking": ["tenant_not_found"],
+            "warnings": [],
+            "note": "Readiness metadata only. This endpoint does not call LLMs or mutate data.",
+        }
+
+    tenant = normalize_tenant_saas_fields(tenant)
+    tenant_id_clean = str(tenant.get("_id") or tenant.get("id") or tid).strip()
+    language_coverage = {
+        lang: _stage56_memory_blob_status(tenant, lang)
+        for lang in ("lv", "ru", "en")
+    }
+
+    blocking: List[str] = []
+    warnings: List[str] = []
+    suggestions: List[str] = []
+
+    for lang, status in language_coverage.items():
+        if not status.get("configured"):
+            blocking.append(f"business_memory_{lang}_missing")
+        elif status.get("services_count", 0) and status.get("missing_service_mentions"):
+            warnings.append(f"business_memory_{lang}_missing_service_mentions")
+        if status.get("configured") and int(status.get("price_line_count") or 0) == 0:
+            suggestions.append(f"business_memory_{lang}_has_no_price_lines")
+        if status.get("configured") and int(status.get("address_line_count") or 0) == 0:
+            suggestions.append(f"business_memory_{lang}_address_optional_missing")
+
+    blocking = list(dict.fromkeys([str(x) for x in blocking if str(x)]))
+    warnings = list(dict.fromkeys([str(x) for x in warnings if str(x)]))
+    suggestions = list(dict.fromkeys([str(x) for x in suggestions if str(x)]))
+    ready = not blocking and not warnings
+
+    return {
+        "stage": "56",
+        "purpose": "business memory and FAQ admin polish readiness",
+        "tenant_id": tenant_id_clean,
+        "status": "ready" if ready else "attention" if not blocking else "blocked",
+        "business_memory_ready": bool(ready),
+        "current_mvp_scope": {
+            "channel": "text",
+            "voice_calls_scope": "future_phase",
+            "used_for": ["price side-questions", "service facts", "address/hours answers", "FAQ-style replies during booking"],
+        },
+        "language_coverage": language_coverage,
+        "blocking": blocking,
+        "warnings": warnings,
+        "suggestions": suggestions,
+        "recommended_line_formats": {
+            "lv": ["Konsultācija - 10 eiro", "Adrese: Rēzekne", "Darba laiks: 09:00-18:00"],
+            "ru": ["Консультация - 10 евро", "Адрес: Резекне", "Время работы: 09:00-18:00"],
+            "en": ["Consultation - 10 euro", "Address: Rezekne", "Working hours: 09:00-18:00"],
+        },
+        "admin_guidance": [
+            "Keep one fact per line for predictable side-question answers.",
+            "Mention each public service at least once in each language.",
+            "Use client-facing service names in memory text; canonical service keys can remain in advanced JSON.",
+            "Prices, address, work rules, and short FAQ facts are safe here; secrets or private keys are not.",
+        ],
+        "safe_links": {
+            "tenant_config_ui": url(f"/tenant/config/ui?tenant_id={tenant_id_clean}"),
+            "tenant_config_json": url(f"/tenant/config?tenant_id={tenant_id_clean}"),
+            "tenant_admin_readiness": url(f"/tenant/admin/readiness?tenant_id={tenant_id_clean}"),
+            "dev_chat": url(f"/dev_chat_ui?tenant_id={tenant_id_clean}"),
+            "launch_readiness": url(f"/launch/readiness?tenant_id={tenant_id_clean}"),
+        },
+        "note": "Readiness metadata only. This endpoint does not call LLMs, change tenant config, mutate conversations, or create/update/delete calendar events.",
+    }
+
 def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) -> Dict[str, Any]:
     requested_tenant_id = (tenant_id or "").strip() or TENANT_ID_DEFAULT
     db_check = _stage43a_database_check()
@@ -10676,6 +10809,7 @@ def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) ->
         "client_demo_script": stage53_client_demo_script_payload(requested_tenant_id),
         "launch_readiness_lock": stage54_launch_readiness_lock_payload(requested_tenant_id),
         "pilot_setup_readiness": stage55_pilot_setup_readiness_payload(requested_tenant_id),
+        "business_memory_admin": stage56_business_memory_admin_readiness_payload(requested_tenant_id),
         "tenant_admin_config": tenant_admin_config_readiness_payload(tenant) if tenant_status.get("tenant_id") else {
             "stage": "51",
             "status": "blocked",
@@ -10711,6 +10845,11 @@ def launch_readiness(tenant_id: str = TENANT_ID_DEFAULT):
 @app.get("/pilot/setup/readiness")
 def pilot_setup_readiness(tenant_id: str = TENANT_ID_DEFAULT):
     return stage55_pilot_setup_readiness_payload(tenant_id=tenant_id)
+
+
+@app.get("/business-memory/readiness")
+def business_memory_readiness(tenant_id: str = TENANT_ID_DEFAULT):
+    return stage56_business_memory_admin_readiness_payload(tenant_id=tenant_id)
 
 
 # -------------------------
@@ -12480,6 +12619,7 @@ summary { cursor:pointer; font-weight:800; }
         <button class="secondary" onclick="openPath('/demo/script?tenant_id='+encodeURIComponent(currentTenant()))">Demo script</button>
         <button class="secondary" onclick="openPath('/launch/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Launch readiness</button>
         <button class="secondary" onclick="openPath('/pilot/setup/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Pilot setup</button>
+        <button class="secondary" onclick="openPath('/business-memory/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Memory readiness</button>
       </div>
     </div>
     <div style="min-width:260px;">
@@ -12528,6 +12668,13 @@ summary { cursor:pointer; font-weight:800; }
   <div class="card">
     <h2>Business memory / FAQ text</h2>
     <div class="sub" style="margin-bottom:12px;">Simple lines like “Consultation - 10 euro”, address, working rules, or FAQ facts. This is what side-questions use during booking.</div>
+    <div id="memory_admin_notice" class="notice warn">Loading business memory readiness…</div>
+    <div class="grid3" style="margin-top:12px; margin-bottom:12px;">
+      <div class="status-card"><div class="label">LV memory</div><div id="mem_lv" class="value">—</div></div>
+      <div class="status-card"><div class="label">RU memory</div><div id="mem_ru" class="value">—</div></div>
+      <div class="status-card"><div class="label">EN memory</div><div id="mem_en" class="value">—</div></div>
+    </div>
+    <div class="sub" style="margin-bottom:12px;">Recommended: one fact per line, mention each service in each language, and keep prices/address/hours here for side-questions. Do not paste secrets here.</div>
     <div class="grid">
       <div><label>Business memory LV</label><textarea id="business_memory_lv" placeholder="Konsultācija - 10 eiro\nServiss - 20 eiro\nAdrese: Rēzekne"></textarea></div>
       <div><label>Business memory RU</label><textarea id="business_memory_ru" placeholder="Консультация - 10 евро\nСервис - 20 евро\nАдрес: Резекне"></textarea></div>
@@ -12581,6 +12728,7 @@ summary { cursor:pointer; font-weight:800; }
       <a id="lnk_demo_script" href="#">Demo script</a>
       <a id="lnk_launch" href="#">Launch readiness</a>
       <a id="lnk_pilot" href="#">Pilot setup</a>
+      <a id="lnk_memory" href="#">Memory readiness</a>
       <a id="lnk_routes" href="#">Phone routes</a>
       <a id="lnk_bookings" href="#">Bookings</a>
       <a id="lnk_conv" href="#">Conversations</a>
@@ -12604,6 +12752,7 @@ function setLinks(tid){
   document.getElementById('lnk_demo_script').href = '/demo/script?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_launch').href = '/launch/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_pilot').href = '/pilot/setup/readiness?tenant_id=' + encodeURIComponent(tid);
+  document.getElementById('lnk_memory').href = '/business-memory/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_routes').href = '/tenant/routes?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_bookings').href = '/bookings?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_conv').href = '/conversations?tenant_id=' + encodeURIComponent(tid);
@@ -12636,6 +12785,28 @@ function renderReadiness(admin){
   else { notice.className='notice ok'; notice.textContent='Tenant config is safe to demo. Optional weekly hours/days off/breaks/holidays may remain empty for the MVP.'; }
   document.getElementById('service_account_status').className = 'badge ' + (cal.has_service_account_json ? 'ok' : 'warn');
   document.getElementById('service_account_status').textContent = cal.has_service_account_json ? 'Service account configured' : 'Service account missing';
+}
+
+function renderMemoryAdmin(memory){
+  memory = memory || {};
+  const ready = memory.business_memory_ready === true || memory.status === 'ready';
+  const notice = document.getElementById('memory_admin_notice');
+  if(notice){
+    const blocking = Array.isArray(memory.blocking) ? memory.blocking : [];
+    const warnings = Array.isArray(memory.warnings) ? memory.warnings : [];
+    if(blocking.length){ notice.className='notice err'; notice.textContent='Business memory blocking: '+blocking.join(', '); }
+    else if(warnings.length){ notice.className='notice warn'; notice.textContent='Business memory warnings: '+warnings.join(', '); }
+    else { notice.className='notice ok'; notice.textContent='Business memory is ready for text MVP side-questions. Optional address/hours facts can be added later.'; }
+  }
+  const cov = memory.language_coverage || {};
+  ['lv','ru','en'].forEach(lang => {
+    const item = cov[lang] || {};
+    const el = document.getElementById('mem_'+lang);
+    if(!el) return;
+    const ok = !!item.configured && !(Array.isArray(item.missing_service_mentions) && item.missing_service_mentions.length);
+    const lineText = `${item.line_count || 0} lines · ${item.price_line_count || 0} price facts`;
+    el.innerHTML = `${badgeText(ok, 'Ready', 'Check')}<div class="small">${esc(lineText)}</div>`;
+  });
 }
 function splitServiceList(value){
   return String(value || '').split(',').map(x => x.trim()).filter(Boolean);
@@ -12697,6 +12868,7 @@ async function loadConfig(){
   document.getElementById('business_memory_ru').value = t.business_memory_ru || '';
   document.getElementById('business_memory_en').value = t.business_memory_en || '';
   renderReadiness(data.admin_readiness || {});
+  renderMemoryAdmin(data.business_memory_admin || {});
   renderServicePreview(catalogValue);
   st.className='small ok'; st.textContent='Loaded safe config. Existing secrets are hidden.';
 }
@@ -13092,6 +13264,7 @@ def tenant_config(tenant_id: str = TENANT_ID_DEFAULT):
         "onboarding": onboarding_status_payload(tenant),
         "readiness": tenant_ready_status_payload(tenant),
         "admin_readiness": tenant_admin_config_readiness_payload(tenant),
+        "business_memory_admin": stage56_business_memory_admin_readiness_payload(str(tenant.get("_id") or tenant_id)),
         "config_ui_hardening": tenant_config_ui_readiness_payload(tenant),
         "plan_meta": tenant_plan_meta(tenant),
         "links": onboarding_links_payload(str(tenant.get("_id") or tenant_id)),
@@ -13200,6 +13373,7 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
         "onboarding": onboarding_status_payload(updated),
         "readiness": tenant_ready_status_payload(updated),
         "admin_readiness": tenant_admin_config_readiness_payload(updated),
+        "business_memory_admin": stage56_business_memory_admin_readiness_payload(tenant_id),
         "config_ui_hardening": tenant_config_ui_readiness_payload(updated),
         "plan_meta": tenant_plan_meta(updated),
         "links": onboarding_links_payload(tenant_id),
