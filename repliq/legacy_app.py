@@ -9985,7 +9985,14 @@ def google_calendars(tenant_id: str):
         if str(c.get("id") or "").strip()
     ]
     tenant = sync_tenant_onboarding_state(tenant["_id"])
-    return {"tenant_id": tenant["_id"], "items": simplified, "onboarding": onboarding_status_payload(tenant)}
+    onboarding = onboarding_status_payload(tenant)
+    return {
+        "tenant_id": tenant["_id"],
+        "items": simplified,
+        "selected_calendar_id": onboarding.get("calendar_id"),
+        "selected_calendar_configured": bool(onboarding.get("calendar_selected")),
+        "onboarding": onboarding,
+    }
 
 @app.get("/google/calendars/ui", response_class=HTMLResponse)
 def google_calendars_ui(tenant_id: str, google: str = "", oauth_error: str = ""):
@@ -10034,6 +10041,7 @@ button.secondary {{ background:#fff; color:#111827; border:1px solid #d1d5db; }}
 </div>
 <script>
 const tenantId = {json.dumps(tenant['_id'])};
+function esc(v){{ return v === null || v === undefined ? '' : String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('\"','&quot;').replaceAll("'", '&#39;'); }}
 async function loadCalendars() {{
   const loading = document.getElementById('loading');
   const list = document.getElementById('calendar_list');
@@ -10045,10 +10053,31 @@ async function loadCalendars() {{
       loading.textContent = data.detail || 'Could not load calendars';
       return;
     }}
+    const items = data.items || [];
+    const onboarding = data.onboarding || {{}};
     loading.className = 'small';
-    loading.textContent = data.items && data.items.length ? 'Select the calendar Repliq should use:' : 'No calendars available for this account.';
+    if (items.length) {{
+      loading.textContent = 'Select the calendar Repliq should use:';
+    }} else if (onboarding.calendar_selected && onboarding.calendar_id) {{
+      loading.textContent = 'No calendars were returned by the OAuth list, but Repliq already has a selected calendar saved for this tenant.';
+    }} else {{
+      loading.textContent = 'No calendars available for this account.';
+    }}
     list.innerHTML = '';
-    (data.items || []).forEach(item => {{
+    if (!items.length && onboarding.calendar_selected && onboarding.calendar_id) {{
+      const row = document.createElement('div');
+      row.className = 'row';
+      const left = document.createElement('div');
+      left.innerHTML = '<div><strong>Currently selected calendar</strong> <span class="small ok">(saved)</span></div><div class="small">' + esc(onboarding.calendar_id || '') + '</div><div class="small">Pilot note: booking can still use the saved calendar even if Google did not return a calendar list here.</div>';
+      const btn = document.createElement('button');
+      btn.className = 'secondary';
+      btn.textContent = 'Open dashboard';
+      btn.onclick = () => {{ window.location = '/dashboard?tenant_id=' + encodeURIComponent(tenantId); }};
+      row.appendChild(left);
+      row.appendChild(btn);
+      list.appendChild(row);
+    }}
+    items.forEach(item => {{
       const row = document.createElement('div');
       row.className = 'row';
       const left = document.createElement('div');
@@ -10388,8 +10417,131 @@ def stage54_launch_readiness_lock_payload(tenant_id: str = TENANT_ID_DEFAULT) ->
             "demo_script": url(f"/demo/script?tenant_id={tid}"),
             "dev_chat": url(f"/dev_chat_ui?tenant_id={tid}"),
             "dashboard": url(f"/dashboard?tenant_id={tid}"),
+            "pilot_setup_readiness": url(f"/pilot/setup/readiness?tenant_id={tid}"),
         },
         "note": "Readiness metadata only. This endpoint does not call LLMs, run demos, mutate conversations, change tenant config, or create/update/delete calendar events.",
+    }
+
+
+
+def stage55_pilot_setup_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) -> Dict[str, Any]:
+    """Read-only pilot client setup readiness.
+
+    Stage 55 intentionally does not create tenants, connect Google, mutate calendar
+    events, call LLMs, or change receptionist behavior. It summarizes whether the
+    current tenant is suitable as a pilot/client setup template and makes known
+    setup ambiguities explicit for the admin UI.
+    """
+    tid = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    base = (SERVER_BASE_URL or "").rstrip("/")
+
+    def url(path: str) -> str:
+        return base + path if base else path
+
+    tenant = get_existing_tenant(tid)
+    if not tenant.get("_id"):
+        return {
+            "stage": "55",
+            "purpose": "pilot client setup and onboarding polish readiness",
+            "tenant_id": tid,
+            "status": "blocked",
+            "pilot_setup_ready": False,
+            "blocking": ["tenant_not_found"],
+            "warnings": [],
+            "note": "Readiness metadata only. This endpoint does not mutate tenant setup or calendar events.",
+        }
+
+    tenant = normalize_tenant_saas_fields(tenant)
+    tenant_status = tenant_ready_status_payload(tenant)
+    onboarding = onboarding_status_payload(tenant)
+    admin_status = tenant_admin_config_readiness_payload(tenant)
+    ui_status = tenant_config_ui_readiness_payload(tenant)
+    launch_status = stage54_launch_readiness_lock_payload(tid)
+    tenant_id_clean = str(tenant.get("_id") or tenant.get("id") or tid).strip()
+
+    blocking: List[str] = []
+    warnings: List[str] = []
+
+    if not tenant_status.get("ready"):
+        blocking.append("tenant_not_ready")
+    if not onboarding.get("google_connected"):
+        blocking.append("google_not_connected")
+    if not onboarding.get("calendar_selected"):
+        blocking.append("calendar_not_selected")
+    if not admin_status.get("safe_to_demo"):
+        blocking.append("tenant_admin_not_ready")
+    if not ui_status.get("safe_to_demo"):
+        blocking.append("tenant_config_ui_not_ready")
+    if not launch_status.get("launch_ready_for_demo"):
+        blocking.append("launch_readiness_not_locked")
+
+    if onboarding.get("onboarding_completed") and not onboarding.get("persisted_onboarding_completed"):
+        warnings.append("onboarding_effective_completed_but_persisted_flag_false")
+    if not str(tenant.get("owner_email") or "").strip():
+        warnings.append("owner_email_missing_for_future_self_serve_onboarding")
+    if not str(tenant.get("phone_number") or "").strip():
+        warnings.append("phone_number_missing_optional_for_future_external_channels")
+
+    blocking = list(dict.fromkeys([str(x) for x in blocking if str(x)]))
+    warnings = list(dict.fromkeys([str(x) for x in warnings if str(x)]))
+    ready = not blocking
+
+    return {
+        "stage": "55",
+        "purpose": "pilot client setup and onboarding polish readiness",
+        "tenant_id": tenant_id_clean,
+        "status": "ready" if ready else "attention",
+        "pilot_setup_ready": bool(ready),
+        "pilot_template_tenant": tenant_id_clean,
+        "recommended_next_tenant_type": "separate_client_tenant_not_demo_tenant",
+        "current_mvp_scope": {
+            "channel": "text",
+            "voice_calls_scope": "future_phase",
+            "recommended_first_live_channels": ["/dev_chat_ui", "Telegram text", "WhatsApp text"],
+        },
+        "onboarding": {
+            "google_connected": bool(onboarding.get("google_connected")),
+            "calendar_selected": bool(onboarding.get("calendar_selected")),
+            "calendar_id": onboarding.get("calendar_id"),
+            "onboarding_completed_effective": bool(onboarding.get("onboarding_completed")),
+            "persisted_onboarding_completed": bool(onboarding.get("persisted_onboarding_completed")),
+            "persisted_state_matches_effective": bool(onboarding.get("persisted_state_matches_effective")),
+            "effective_completion_source": onboarding.get("effective_completion_source"),
+            "next_step": onboarding.get("next_step"),
+        },
+        "calendar_ui": {
+            "status": "ready" if onboarding.get("calendar_selected") else "attention",
+            "selected_calendar_id": onboarding.get("calendar_id"),
+            "google_calendars_ui": url(f"/google/calendars/ui?tenant_id={tenant_id_clean}"),
+            "note": "If Google returns an empty calendar list but a selected calendar is saved, the UI should show the saved calendar instead of looking blocked.",
+        },
+        "setup_gates": {
+            "tenant_ready": bool(tenant_status.get("ready")),
+            "tenant_admin_ready": bool(admin_status.get("safe_to_demo")),
+            "tenant_config_ui_ready": bool(ui_status.get("safe_to_demo")),
+            "launch_readiness_locked": bool(launch_status.get("launch_ready_for_demo")),
+            "protected_regression_baseline": "50/50",
+        },
+        "blocking": blocking,
+        "warnings": warnings,
+        "pilot_setup_checklist": [
+            "Create a separate tenant for each pilot client; keep clinic_demo as demo/template tenant.",
+            "Set business name, timezone, work hours, services, and business memory.",
+            "Connect or configure Google Calendar and verify one selected calendar_id.",
+            "Run /dialogue/qa before the pilot demo.",
+            "Run one live text smoke: booking, side question, reschedule, cancel.",
+            "Do not position voice/calls as current launch scope.",
+        ],
+        "safe_links": {
+            "dashboard": url(f"/dashboard?tenant_id={tenant_id_clean}"),
+            "tenant_config_ui": url(f"/tenant/config/ui?tenant_id={tenant_id_clean}"),
+            "onboarding_status": url(f"/onboarding/status?tenant_id={tenant_id_clean}"),
+            "google_calendars_ui": url(f"/google/calendars/ui?tenant_id={tenant_id_clean}"),
+            "launch_readiness": url(f"/launch/readiness?tenant_id={tenant_id_clean}"),
+            "demo_script": url(f"/demo/script?tenant_id={tenant_id_clean}"),
+            "dev_chat": url(f"/dev_chat_ui?tenant_id={tenant_id_clean}"),
+        },
+        "note": "Readiness metadata only. This endpoint does not call LLMs, change tenant config, mutate conversations, or create/update/delete calendar events.",
     }
 
 def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) -> Dict[str, Any]:
@@ -10523,6 +10675,7 @@ def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) ->
         },
         "client_demo_script": stage53_client_demo_script_payload(requested_tenant_id),
         "launch_readiness_lock": stage54_launch_readiness_lock_payload(requested_tenant_id),
+        "pilot_setup_readiness": stage55_pilot_setup_readiness_payload(requested_tenant_id),
         "tenant_admin_config": tenant_admin_config_readiness_payload(tenant) if tenant_status.get("tenant_id") else {
             "stage": "51",
             "status": "blocked",
@@ -10553,6 +10706,11 @@ def demo_script(tenant_id: str = TENANT_ID_DEFAULT):
 @app.get("/launch/readiness")
 def launch_readiness(tenant_id: str = TENANT_ID_DEFAULT):
     return stage54_launch_readiness_lock_payload(tenant_id=tenant_id)
+
+
+@app.get("/pilot/setup/readiness")
+def pilot_setup_readiness(tenant_id: str = TENANT_ID_DEFAULT):
+    return stage55_pilot_setup_readiness_payload(tenant_id=tenant_id)
 
 
 # -------------------------
@@ -10864,6 +11022,8 @@ def onboarding_status_payload(tenant: Dict[str, Any]) -> Dict[str, Any]:
         "calendar_id": calendar_id or None,
         "onboarding_completed": onboarding_completed,
         "persisted_onboarding_completed": persisted_onboarding_completed,
+        "persisted_state_matches_effective": bool(persisted_onboarding_completed == onboarding_completed),
+        "effective_completion_source": "persisted" if persisted_onboarding_completed else ("google_calendar_runtime" if onboarding_completed else "incomplete"),
         "subscription_status": tenant.get("subscription_status"),
         "plan": tenant.get("plan"),
         "next_step": next_step,
@@ -12319,6 +12479,7 @@ summary { cursor:pointer; font-weight:800; }
         <button class="secondary" onclick="openPath('/dev_chat_ui?tenant_id='+encodeURIComponent(currentTenant()))">Dev chat</button>
         <button class="secondary" onclick="openPath('/demo/script?tenant_id='+encodeURIComponent(currentTenant()))">Demo script</button>
         <button class="secondary" onclick="openPath('/launch/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Launch readiness</button>
+        <button class="secondary" onclick="openPath('/pilot/setup/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Pilot setup</button>
       </div>
     </div>
     <div style="min-width:260px;">
@@ -12419,6 +12580,7 @@ summary { cursor:pointer; font-weight:800; }
       <a id="lnk_devchat" href="#">Dev chat</a>
       <a id="lnk_demo_script" href="#">Demo script</a>
       <a id="lnk_launch" href="#">Launch readiness</a>
+      <a id="lnk_pilot" href="#">Pilot setup</a>
       <a id="lnk_routes" href="#">Phone routes</a>
       <a id="lnk_bookings" href="#">Bookings</a>
       <a id="lnk_conv" href="#">Conversations</a>
@@ -12441,6 +12603,7 @@ function setLinks(tid){
   document.getElementById('lnk_devchat').href = '/dev_chat_ui?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_demo_script').href = '/demo/script?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_launch').href = '/launch/readiness?tenant_id=' + encodeURIComponent(tid);
+  document.getElementById('lnk_pilot').href = '/pilot/setup/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_routes').href = '/tenant/routes?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_bookings').href = '/bookings?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_conv').href = '/conversations?tenant_id=' + encodeURIComponent(tid);

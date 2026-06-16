@@ -260,3 +260,12 @@ If a price question is asked inside an active booking flow and the current langu
 - Launch readiness may summarize demo status, tenant/admin readiness, safe config UI, protected regression baseline, manual live smoke status, known limitations, and post-MVP backlog.
 - Current protected baseline remains `/dialogue/qa = 50/50 passed`.
 - If launch/demo/pilot validation fails, handle it as a separate stage using exact endpoint output, live transcript, channel, tenant id, and observed calendar result.
+
+## Stage 55 — Pilot Client Setup / Tenant Onboarding Polish Rules
+- Stage 55 may add read-only pilot setup readiness metadata, onboarding status clarity, and admin/setup UI links only.
+- Do not change receptionist behavior, booking routing, slot generation, date/time parsing, side-question handling, cancellation, reschedule, Google Calendar runtime create/update/delete behavior, or regression evaluator rules.
+- `/pilot/setup/readiness` must not call LLMs, create tenants, mutate tenant config, mutate conversation state, or create/update/delete Google Calendar events.
+- The active MVP remains text-first receptionist. Voice/calls remain future scope and must not be positioned as current pilot scope.
+- Onboarding status may distinguish effective runtime completion from persisted onboarding flags so pilot/admin screens are not confusing.
+- Google calendars UI should not look blocked when a selected `calendar_id` already exists even if the OAuth calendar-list endpoint returns no items.
+- Current protected baseline remains `/dialogue/qa = 50/50 passed`.

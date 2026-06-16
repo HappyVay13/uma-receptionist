@@ -313,3 +313,14 @@ Stage 36 adds a deterministic recovery layer inside active booking flows. It is 
 - The new endpoint is read-only. It does not call LLMs, run demo flows, mutate conversations, change tenant config, or create/update/delete calendar events.
 - Current protected regression baseline remains `/dialogue/qa = 50/50 passed`.
 - If production `/launch/readiness` returns `status=locked` and `/dialogue/qa` remains 50/50, Repliq can be treated as text MVP demo/pilot candidate.
+
+## Stage 55 — Pilot Client Setup / Tenant Onboarding Polish
+- Stage 55 is a pilot setup/readiness hardening stage after confirmed Stage 54 launch readiness lock.
+- No receptionist core behavior is changed: booking, price side-questions, slot confirmation, cancellation, reschedule, date parsing, slot generation, regression evaluator, and Google Calendar create/update/delete paths remain untouched.
+- Adds `GET /pilot/setup/readiness?tenant_id=...` as a read-only pilot setup summary endpoint.
+- `/internal/readiness` now includes `pilot_setup_readiness` for the requested tenant.
+- `/onboarding/status` now makes effective vs persisted onboarding completion explicit with `persisted_state_matches_effective` and `effective_completion_source`.
+- `/google/calendars` now returns selected-calendar metadata, and `/google/calendars/ui` no longer looks blocked when Google returns an empty calendar list but a selected calendar is already saved.
+- `/tenant/config/ui` now links to Pilot setup from the header and quick links.
+- Stage 55 keeps the active MVP scope text-first; voice/calls remain future scope.
+- Expected production baseline remains `/dialogue/qa = 50/50 passed`.
