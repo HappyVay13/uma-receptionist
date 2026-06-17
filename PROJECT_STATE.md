@@ -1,6 +1,6 @@
 # Repliq Project State
 
-Current stage: Stage 56 — Business Memory / FAQ Admin Polish.
+Current stage: Stage 57 — Basic Analytics / Usage Visibility.
 
 Production regression baseline before Stage 40:
 - Stage 39 was deployed and confirmed by user: `/dialogue/qa` = 15/15 passed.
@@ -61,6 +61,7 @@ Protected baseline:
 - Stage 54 launch readiness lock
 - Stage 55 pilot client setup / tenant onboarding polish
 - Stage 56 business memory / FAQ admin polish
+- Stage 57 basic analytics / usage visibility
 
 ## Stage 36 — Advanced Conversation Recovery
 
@@ -336,6 +337,19 @@ Stage 36 adds a deterministic recovery layer inside active booking flows. It is 
 - `/tenant/config` and `/tenant/config/update` responses now include `business_memory_admin` metadata so the admin UI can show memory readiness without exposing secrets.
 - `/tenant/config/ui` now links to Memory readiness and shows a business-memory readiness panel with LV/RU/EN line and price-fact counts.
 - Stage 56 checks whether business memory is configured per language, whether each client-facing service appears in the relevant memory text, and whether useful price/address/hours facts are present as guidance.
+- The new endpoint is read-only. It does not call LLMs, mutate tenant config, mutate conversations, or create/update/delete Google Calendar events.
+- Active MVP scope remains text-first receptionist. Voice/calls remain future scope.
+- Expected production baseline remains `/dialogue/qa = 50/50 passed`.
+
+
+## Stage 57 — Basic Analytics / Usage Visibility
+- Stage 57 is an analytics/readiness and admin visibility stage after confirmed Stage 56 production `/dialogue/qa = 50/50 passed`.
+- No receptionist core behavior is changed: booking, price side-questions, slot confirmation, cancellation, reschedule, date parsing, slot generation, regression evaluator, and Google Calendar create/update/delete runtime paths remain untouched.
+- Adds `GET /usage/readiness?tenant_id=...` and alias `GET /analytics/readiness?tenant_id=...` as read-only usage/analytics readiness endpoints.
+- `/internal/readiness` now includes `usage_analytics_readiness` for the requested tenant.
+- `/tenant/config` and `/tenant/config/update` responses now include `usage_analytics_readiness` metadata so admin surfaces can show analytics visibility status without mutating anything.
+- `/tenant/config/ui` now links to Usage readiness; the dashboard JSON links also expose usage readiness.
+- Stage 57 summarizes existing dashboard/usage visibility: analytics totals, window usage, channels, top services, plan/limit usage, usage events breakdown, table checks, and safe links.
 - The new endpoint is read-only. It does not call LLMs, mutate tenant config, mutate conversations, or create/update/delete Google Calendar events.
 - Active MVP scope remains text-first receptionist. Voice/calls remain future scope.
 - Expected production baseline remains `/dialogue/qa = 50/50 passed`.

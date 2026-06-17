@@ -10677,6 +10677,214 @@ def stage56_business_memory_admin_readiness_payload(tenant_id: str = TENANT_ID_D
         "note": "Readiness metadata only. This endpoint does not call LLMs, change tenant config, mutate conversations, or create/update/delete calendar events.",
     }
 
+
+def _stage57_usage_events_breakdown(tenant_id: str, days: int = 14) -> Dict[str, Any]:
+    days = max(1, min(int(days or 14), 60))
+    since_ts = now_ts() - timedelta(days=days)
+    try:
+        ensure_usage_events_table()
+        with engine.connect() as conn:
+            total_units = conn.execute(
+                text(
+                    """
+                    SELECT COALESCE(SUM(usage_units), 0)
+                    FROM usage_events
+                    WHERE tenant_id=:tenant_id
+                      AND created_at >= :since_ts
+                    """
+                ),
+                {"tenant_id": tenant_id, "since_ts": since_ts},
+            ).scalar() or 0
+            billable_units = conn.execute(
+                text(
+                    """
+                    SELECT COALESCE(SUM(usage_units), 0)
+                    FROM usage_events
+                    WHERE tenant_id=:tenant_id
+                      AND billable=TRUE
+                      AND created_at >= :since_ts
+                    """
+                ),
+                {"tenant_id": tenant_id, "since_ts": since_ts},
+            ).scalar() or 0
+            by_type_rows = conn.execute(
+                text(
+                    """
+                    SELECT COALESCE(NULLIF(TRIM(usage_type), ''), 'unknown') AS usage_type,
+                           COALESCE(SUM(usage_units), 0) AS units
+                    FROM usage_events
+                    WHERE tenant_id=:tenant_id
+                      AND created_at >= :since_ts
+                    GROUP BY COALESCE(NULLIF(TRIM(usage_type), ''), 'unknown')
+                    ORDER BY units DESC, usage_type ASC
+                    LIMIT 20
+                    """
+                ),
+                {"tenant_id": tenant_id, "since_ts": since_ts},
+            ).fetchall()
+            by_channel_rows = conn.execute(
+                text(
+                    """
+                    SELECT COALESCE(NULLIF(TRIM(channel), ''), 'unknown') AS channel,
+                           COALESCE(SUM(usage_units), 0) AS units
+                    FROM usage_events
+                    WHERE tenant_id=:tenant_id
+                      AND created_at >= :since_ts
+                    GROUP BY COALESCE(NULLIF(TRIM(channel), ''), 'unknown')
+                    ORDER BY units DESC, channel ASC
+                    LIMIT 20
+                    """
+                ),
+                {"tenant_id": tenant_id, "since_ts": since_ts},
+            ).fetchall()
+        return {
+            "ok": True,
+            "window_days": days,
+            "total_units": int(total_units or 0),
+            "billable_units": int(billable_units or 0),
+            "non_billable_units": max(0, int(total_units or 0) - int(billable_units or 0)),
+            "by_type": [{"usage_type": str(r[0] or "unknown"), "units": int(r[1] or 0)} for r in by_type_rows],
+            "by_channel": [{"channel": str(r[0] or "unknown"), "units": int(r[1] or 0)} for r in by_channel_rows],
+        }
+    except Exception as e:
+        log.error("stage57_usage_events_breakdown_failed tenant_id=%s err=%s", tenant_id, e)
+        return {"ok": False, "error": e.__class__.__name__, "window_days": days}
+
+
+def stage57_usage_analytics_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14) -> Dict[str, Any]:
+    """Read-only analytics and usage visibility readiness for the text-first MVP.
+
+    Stage 57 must not call LLMs, mutate tenant config, mutate conversations, or
+    create/update/delete Google Calendar events. It only summarizes existing
+    dashboard/usage data and exposes pilot/admin visibility gates.
+    """
+    tid = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    days = max(1, min(int(days or 14), 60))
+    base = (SERVER_BASE_URL or "").rstrip("/")
+
+    def url(path: str) -> str:
+        return base + path if base else path
+
+    tenant = get_existing_tenant(tid)
+    if not tenant.get("_id"):
+        return {
+            "stage": "57",
+            "purpose": "basic analytics and usage visibility readiness",
+            "tenant_id": tid,
+            "status": "blocked",
+            "usage_visibility_ready": False,
+            "blocking": ["tenant_not_found"],
+            "warnings": [],
+            "note": "Readiness metadata only. This endpoint does not call LLMs or mutate data.",
+        }
+
+    tenant = normalize_tenant_saas_fields(tenant)
+    tenant_id_clean = str(tenant.get("_id") or tenant.get("id") or tid).strip()
+
+    table_checks = {
+        name: _stage43a_table_check(name)
+        for name in ("call_logs", "usage_events", "dialogue_audit_events")
+    }
+
+    blocking: List[str] = []
+    warnings: List[str] = []
+    for table_name, table_status in table_checks.items():
+        if not table_status.get("ok"):
+            blocking.append(f"table_missing_or_unreadable:{table_name}")
+
+    analytics_summary: Dict[str, Any] = {}
+    usage_window: Dict[str, Any] = {}
+    chart_preview: Dict[str, Any] = {}
+    usage_events = {"ok": False}
+    if not blocking:
+        try:
+            analytics_summary = dashboard_analytics(tenant_id_clean)
+            usage_window = dashboard_usage_summary(tenant_id_clean, days=days)
+            chart_preview = {
+                "daily_points": len(usage_window.get("daily") or []),
+                "channels_count": len(usage_window.get("channels") or []),
+                "top_services_count": len(usage_window.get("top_services") or []),
+            }
+            usage_events = _stage57_usage_events_breakdown(tenant_id_clean, days=days)
+            if not usage_events.get("ok"):
+                warnings.append("usage_events_summary_unavailable")
+        except Exception as e:
+            log.error("stage57_usage_analytics_summary_failed tenant_id=%s err=%s", tenant_id_clean, e)
+            blocking.append(f"analytics_query_failed:{e.__class__.__name__}")
+
+    total_requests = int((analytics_summary or {}).get("total_requests") or 0)
+    if not blocking and total_requests <= 0:
+        warnings.append("no_call_log_activity_yet")
+
+    current_usage = tenant_usage_snapshot(tenant, channel="runtime", source="runtime", projected_units=0)
+    plan_meta = tenant_plan_meta(tenant)
+    ready = not blocking
+
+    return {
+        "stage": "57",
+        "purpose": "basic analytics and usage visibility readiness",
+        "tenant_id": tenant_id_clean,
+        "status": "ready" if ready else "blocked",
+        "usage_visibility_ready": bool(ready),
+        "current_mvp_scope": {
+            "channel": "text",
+            "voice_calls_scope": "future_phase",
+            "used_for": [
+                "pilot usage visibility",
+                "client-facing dashboard sanity checks",
+                "booking/reschedule/cancel activity overview",
+                "plan/limit visibility",
+            ],
+        },
+        "window_days": days,
+        "tables": table_checks,
+        "analytics_summary": analytics_summary,
+        "usage_window": {
+            "total_requests": int((usage_window or {}).get("total_requests") or 0),
+            "total_bookings": int((usage_window or {}).get("total_bookings") or 0),
+            "total_cancelled": int((usage_window or {}).get("total_cancelled") or 0),
+            "total_reschedules": int((usage_window or {}).get("total_reschedules") or 0),
+            "unique_users": int((usage_window or {}).get("unique_users") or 0),
+            "booking_rate": float((usage_window or {}).get("booking_rate") or 0.0),
+            "channels": (usage_window or {}).get("channels") or [],
+            "top_services": (usage_window or {}).get("top_services") or [],
+            "daily_points": chart_preview.get("daily_points", 0),
+        },
+        "usage_events": usage_events,
+        "plan_usage": {
+            "plan": plan_meta.get("plan"),
+            "subscription_status": plan_meta.get("subscription_status"),
+            "dialogs_per_month": int((plan_meta.get("limits") or {}).get("dialogs_per_month") or 0),
+            "dialogs_current_month": int(((plan_meta.get("usage") or {}).get("dialogs_current_month")) or 0),
+            "dialogs_remaining": int(((plan_meta.get("usage") or {}).get("dialogs_remaining")) or 0),
+            "usage_current": int(current_usage.get("usage_current") or 0),
+            "usage_limit": int(current_usage.get("usage_limit") or 0),
+            "percent_used": float(current_usage.get("percent_used") or 0.0),
+            "near_limit": bool(current_usage.get("near_limit")),
+            "limit_reached": bool(current_usage.get("limit_reached")),
+        },
+        "visible_surfaces": {
+            "dashboard": url(f"/dashboard?tenant_id={tenant_id_clean}"),
+            "analytics_json": url(f"/analytics?tenant_id={tenant_id_clean}"),
+            "usage_json": url(f"/usage?tenant_id={tenant_id_clean}&days={days}"),
+            "chart_data": url(f"/dashboard/chart-data?tenant_id={tenant_id_clean}&days={days}"),
+            "bookings": url(f"/bookings?tenant_id={tenant_id_clean}"),
+            "conversations": url(f"/conversations?tenant_id={tenant_id_clean}"),
+            "activity": url(f"/activity?tenant_id={tenant_id_clean}"),
+            "usage_readiness": url(f"/usage/readiness?tenant_id={tenant_id_clean}&days={days}"),
+        },
+        "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
+        "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
+        "admin_guidance": [
+            "Use /dashboard for a visual pilot overview and /usage for JSON-level checks.",
+            "Use /usage/readiness before a pilot review to verify tables and basic visibility are available.",
+            "Treat dev/test traffic as useful smoke data, not client billing proof.",
+            "Voice/calls are future phase; current analytics readiness focuses on text receptionist usage.",
+        ],
+        "note": "Readiness metadata only. This endpoint does not call LLMs, mutate tenant config, mutate conversations, or create/update/delete calendar events.",
+    }
+
+
 def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) -> Dict[str, Any]:
     requested_tenant_id = (tenant_id or "").strip() or TENANT_ID_DEFAULT
     db_check = _stage43a_database_check()
@@ -10810,6 +11018,7 @@ def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) ->
         "launch_readiness_lock": stage54_launch_readiness_lock_payload(requested_tenant_id),
         "pilot_setup_readiness": stage55_pilot_setup_readiness_payload(requested_tenant_id),
         "business_memory_admin": stage56_business_memory_admin_readiness_payload(requested_tenant_id),
+        "usage_analytics_readiness": stage57_usage_analytics_readiness_payload(requested_tenant_id),
         "tenant_admin_config": tenant_admin_config_readiness_payload(tenant) if tenant_status.get("tenant_id") else {
             "stage": "51",
             "status": "blocked",
@@ -10850,6 +11059,12 @@ def pilot_setup_readiness(tenant_id: str = TENANT_ID_DEFAULT):
 @app.get("/business-memory/readiness")
 def business_memory_readiness(tenant_id: str = TENANT_ID_DEFAULT):
     return stage56_business_memory_admin_readiness_payload(tenant_id=tenant_id)
+
+
+@app.get("/usage/readiness")
+@app.get("/analytics/readiness")
+def usage_readiness(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    return stage57_usage_analytics_readiness_payload(tenant_id=tenant_id, days=days)
 
 
 # -------------------------
@@ -12197,6 +12412,7 @@ def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
       <div class="muted nav-links">JSON endpoints:
         <a id="lnk_analytics" href="#">analytics</a> ·
         <a id="lnk_usage" href="#">usage</a> ·
+        <a id="lnk_usage_ready" href="#">usage readiness</a> ·
         <a id="lnk_activity" href="#">activity</a> ·
         <a id="lnk_chart_data" href="#">chart data</a> ·
         <a id="lnk_bookings" href="#">bookings</a> ·
@@ -12620,6 +12836,7 @@ summary { cursor:pointer; font-weight:800; }
         <button class="secondary" onclick="openPath('/launch/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Launch readiness</button>
         <button class="secondary" onclick="openPath('/pilot/setup/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Pilot setup</button>
         <button class="secondary" onclick="openPath('/business-memory/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Memory readiness</button>
+        <button class="secondary" onclick="openPath('/usage/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Usage readiness</button>
       </div>
     </div>
     <div style="min-width:260px;">
@@ -12729,6 +12946,7 @@ summary { cursor:pointer; font-weight:800; }
       <a id="lnk_launch" href="#">Launch readiness</a>
       <a id="lnk_pilot" href="#">Pilot setup</a>
       <a id="lnk_memory" href="#">Memory readiness</a>
+      <a id="lnk_usage_ready" href="#">Usage readiness</a>
       <a id="lnk_routes" href="#">Phone routes</a>
       <a id="lnk_bookings" href="#">Bookings</a>
       <a id="lnk_conv" href="#">Conversations</a>
@@ -12753,6 +12971,7 @@ function setLinks(tid){
   document.getElementById('lnk_launch').href = '/launch/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_pilot').href = '/pilot/setup/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_memory').href = '/business-memory/readiness?tenant_id=' + encodeURIComponent(tid);
+  document.getElementById('lnk_usage_ready').href = '/usage/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_routes').href = '/tenant/routes?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_bookings').href = '/bookings?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_conv').href = '/conversations?tenant_id=' + encodeURIComponent(tid);
@@ -13265,6 +13484,7 @@ def tenant_config(tenant_id: str = TENANT_ID_DEFAULT):
         "readiness": tenant_ready_status_payload(tenant),
         "admin_readiness": tenant_admin_config_readiness_payload(tenant),
         "business_memory_admin": stage56_business_memory_admin_readiness_payload(str(tenant.get("_id") or tenant_id)),
+        "usage_analytics_readiness": stage57_usage_analytics_readiness_payload(str(tenant.get("_id") or tenant_id)),
         "config_ui_hardening": tenant_config_ui_readiness_payload(tenant),
         "plan_meta": tenant_plan_meta(tenant),
         "links": onboarding_links_payload(str(tenant.get("_id") or tenant_id)),
@@ -13374,6 +13594,7 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
         "readiness": tenant_ready_status_payload(updated),
         "admin_readiness": tenant_admin_config_readiness_payload(updated),
         "business_memory_admin": stage56_business_memory_admin_readiness_payload(tenant_id),
+        "usage_analytics_readiness": stage57_usage_analytics_readiness_payload(tenant_id),
         "config_ui_hardening": tenant_config_ui_readiness_payload(updated),
         "plan_meta": tenant_plan_meta(updated),
         "links": onboarding_links_payload(tenant_id),

@@ -279,3 +279,13 @@ If a price question is asked inside an active booking flow and the current langu
 - Business memory UI polish may show guidance and readiness summaries, but saving behavior must remain compatible with existing `/tenant/config/update`.
 - The active MVP remains text-first receptionist. Voice/calls remain future scope and must not be positioned as current pilot scope.
 - Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+
+
+## Stage 57 — Basic Analytics / Usage Visibility Rules
+- Stage 57 may add read-only analytics/usage visibility metadata, dashboard links, and documentation only.
+- Do not change receptionist behavior, booking routing, slot generation, date/time parsing, side-question handling, cancellation, reschedule, Google Calendar runtime create/update/delete behavior, or regression evaluator rules.
+- `/usage/readiness` and `/analytics/readiness` must not call LLMs, mutate tenant config, mutate conversation state, or create/update/delete Google Calendar events.
+- Usage/analytics readiness may inspect existing `call_logs`, `usage_events`, and `dialogue_audit_events` tables and summarize safe counts for pilot/admin visibility.
+- Treat dev/test traffic as smoke/visibility data, not billing proof.
+- The active MVP remains text-first receptionist. Voice/calls remain future scope and must not be positioned as current pilot scope.
+- Current protected baseline remains `/dialogue/qa = 50/50 passed`.
