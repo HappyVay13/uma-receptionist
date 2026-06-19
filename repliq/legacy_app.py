@@ -10885,6 +10885,158 @@ def stage57_usage_analytics_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT
     }
 
 
+def stage58_access_boundaries_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) -> Dict[str, Any]:
+    """Read-only access-boundary audit for admin/internal surfaces.
+
+    Stage 58 intentionally does not enforce new auth yet because that would be a
+    behavior/ops change that could break the confirmed text MVP demo baseline.
+    It makes the current access model explicit and separates private-demo safety
+    from public SaaS readiness.
+    """
+    tid = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    base = (SERVER_BASE_URL or "").rstrip("/")
+
+    def url(path: str) -> str:
+        return base + path if base else path
+
+    tenant = get_existing_tenant(tid)
+    tenant_found = bool(tenant.get("_id"))
+    tenant_id_clean = str(tenant.get("_id") or tenant.get("id") or tid).strip()
+
+    admin_auth_token_configured = _stage43a_env_flag(
+        os.getenv("REPLIQ_ADMIN_TOKEN")
+        or os.getenv("ADMIN_ACCESS_TOKEN")
+        or os.getenv("ADMIN_TOKEN")
+    )
+    admin_auth_enforced = False
+    tenant_ownership_guard_enforced = False
+    public_saas_ready = bool(admin_auth_enforced and tenant_ownership_guard_enforced)
+
+    ui_status: Dict[str, Any] = {}
+    launch_status: Dict[str, Any] = {}
+    pilot_status: Dict[str, Any] = {}
+    usage_status: Dict[str, Any] = {}
+    blocking: List[str] = []
+    warnings: List[str] = []
+
+    if not tenant_found:
+        blocking.append("tenant_not_found")
+    else:
+        try:
+            ui_status = tenant_config_ui_readiness_payload(tenant)
+            launch_status = stage54_launch_readiness_lock_payload(tenant_id_clean)
+            pilot_status = stage55_pilot_setup_readiness_payload(tenant_id_clean)
+            usage_status = stage57_usage_analytics_readiness_payload(tenant_id_clean)
+        except Exception as e:
+            log.error("stage58_access_boundaries_readiness_failed tenant_id=%s err=%s", tenant_id_clean, e)
+            blocking.append(f"readiness_dependency_error:{e.__class__.__name__}")
+
+    if ui_status.get("secrets_exposed_by_config_api"):
+        blocking.append("config_api_secrets_exposed")
+    if ALLOW_DEFAULT_TENANT_FALLBACK:
+        warnings.append("default_tenant_fallback_enabled")
+    if not admin_auth_token_configured:
+        warnings.append("admin_auth_token_not_configured")
+    if not admin_auth_enforced:
+        warnings.append("admin_surfaces_not_auth_enforced")
+    if not tenant_ownership_guard_enforced:
+        warnings.append("tenant_id_only_boundary_not_sufficient_for_public_saas")
+
+    private_demo_ready = bool(
+        tenant_found
+        and not ui_status.get("secrets_exposed_by_config_api")
+        and launch_status.get("launch_ready_for_demo", False)
+        and pilot_status.get("pilot_setup_ready", False)
+        and usage_status.get("usage_visibility_ready", False)
+    )
+
+    admin_surfaces = [
+        {"path": "/tenant/config/ui", "classification": "admin_demo_ui", "current_access": "unguarded_url_with_tenant_id", "client_demo_safe": bool(ui_status.get("safe_to_demo")), "public_saas_ready": False},
+        {"path": "/tenant/config", "classification": "admin_config_json", "current_access": "unguarded_url_with_tenant_id", "client_demo_safe": bool(not ui_status.get("secrets_exposed_by_config_api")), "public_saas_ready": False},
+        {"path": "/tenant/config/update", "classification": "admin_write_endpoint", "current_access": "unguarded_post_with_tenant_id", "client_demo_safe": False, "public_saas_ready": False},
+        {"path": "/internal/readiness", "classification": "internal_readiness", "current_access": "unguarded_url_with_tenant_id", "client_demo_safe": True, "public_saas_ready": False},
+        {"path": "/launch/readiness", "classification": "read_only_launch_metadata", "current_access": "unguarded_url_with_tenant_id", "client_demo_safe": True, "public_saas_ready": False},
+        {"path": "/pilot/setup/readiness", "classification": "read_only_pilot_metadata", "current_access": "unguarded_url_with_tenant_id", "client_demo_safe": True, "public_saas_ready": False},
+        {"path": "/business-memory/readiness", "classification": "read_only_memory_metadata", "current_access": "unguarded_url_with_tenant_id", "client_demo_safe": True, "public_saas_ready": False},
+        {"path": "/usage/readiness", "classification": "read_only_usage_metadata", "current_access": "unguarded_url_with_tenant_id", "client_demo_safe": True, "public_saas_ready": False},
+        {"path": "/dashboard", "classification": "admin_dashboard", "current_access": "unguarded_url_with_tenant_id", "client_demo_safe": True, "public_saas_ready": False},
+        {"path": "/dev_chat_ui", "classification": "dev_demo_channel", "current_access": "unguarded_url_with_tenant_id", "client_demo_safe": True, "public_saas_ready": False},
+        {"path": "/dev_chat", "classification": "dev_demo_channel_api", "current_access": "unguarded_post_with_tenant_id", "client_demo_safe": False, "public_saas_ready": False},
+        {"path": "/tenants/ui", "classification": "multi_tenant_admin_ui", "current_access": "unguarded", "client_demo_safe": False, "public_saas_ready": False},
+        {"path": "/tenants", "classification": "multi_tenant_admin_json", "current_access": "unguarded", "client_demo_safe": False, "public_saas_ready": False},
+    ]
+
+    blocking = list(dict.fromkeys([str(x) for x in blocking if str(x)]))
+    warnings = list(dict.fromkeys([str(x) for x in warnings if str(x)]))
+    return {
+        "stage": "58",
+        "purpose": "auth and access boundaries readiness for admin surfaces",
+        "tenant_id": tenant_id_clean,
+        "status": "attention" if (warnings or not public_saas_ready) else "ready",
+        "access_boundary_audit_ready": bool(tenant_found and not blocking),
+        "private_demo_ready": bool(private_demo_ready),
+        "public_saas_ready": bool(public_saas_ready),
+        "production_auth_enforced": bool(admin_auth_enforced),
+        "current_mvp_scope": {
+            "channel": "text",
+            "voice_calls_scope": "future_phase",
+            "admin_surfaces_scope": "private_demo_or_internal_pilot_only_until_auth_is_added",
+        },
+        "current_access_model": {
+            "admin_auth_token_configured": bool(admin_auth_token_configured),
+            "admin_auth_enforced": bool(admin_auth_enforced),
+            "tenant_ownership_guard_enforced": bool(tenant_ownership_guard_enforced),
+            "tenant_id_parameter_is_not_auth": True,
+            "default_tenant_fallback_enabled": bool(ALLOW_DEFAULT_TENANT_FALLBACK),
+            "config_api_secrets_exposed": bool(ui_status.get("secrets_exposed_by_config_api")),
+            "twilio_signature_validation": bool(TWILIO_VALIDATE_SIGNATURE),
+            "service_account_editing": "paste_to_replace_only",
+        },
+        "admin_surface_matrix": admin_surfaces,
+        "safe_for_private_demo": [
+            "/tenant/config/ui",
+            "/launch/readiness",
+            "/pilot/setup/readiness",
+            "/business-memory/readiness",
+            "/usage/readiness",
+            "/dashboard",
+            "/demo/script",
+            "/dev_chat_ui",
+        ],
+        "do_not_expose_publicly_yet": [
+            "/tenant/config/update",
+            "/tenants",
+            "/tenants/ui",
+            "/internal/readiness",
+            "/dev_chat",
+            "/dev_reset",
+            "/dev_understand",
+            "/dev_focus_test",
+            "/dev_logs",
+            "/dialogue/audit",
+        ],
+        "required_before_public_saas": [
+            "Add real admin authentication/session or signed admin token checks.",
+            "Add tenant ownership/role checks instead of tenant_id-only access.",
+            "Protect write endpoints such as /tenant/config/update and /tenant/change_plan.",
+            "Hide or restrict multi-tenant list endpoints from client-facing access.",
+            "Keep secret redaction checks in /tenant/config and admin UI.",
+            "Retest /dialogue/qa after auth middleware because it may affect dev/admin routes.",
+        ],
+        "blocking": blocking,
+        "warnings": warnings,
+        "links": {
+            "tenant_config_ui": url(f"/tenant/config/ui?tenant_id={tenant_id_clean}"),
+            "launch_readiness": url(f"/launch/readiness?tenant_id={tenant_id_clean}"),
+            "pilot_setup": url(f"/pilot/setup/readiness?tenant_id={tenant_id_clean}"),
+            "usage_readiness": url(f"/usage/readiness?tenant_id={tenant_id_clean}"),
+            "access_readiness": url(f"/access/readiness?tenant_id={tenant_id_clean}"),
+            "dashboard": url(f"/dashboard?tenant_id={tenant_id_clean}"),
+        },
+        "note": "Readiness metadata only. Stage 58 audits access boundaries but does not enforce new auth, call LLMs, mutate tenant config, mutate conversations, or create/update/delete calendar events.",
+    }
+
+
 def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) -> Dict[str, Any]:
     requested_tenant_id = (tenant_id or "").strip() or TENANT_ID_DEFAULT
     db_check = _stage43a_database_check()
@@ -11019,6 +11171,7 @@ def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) ->
         "pilot_setup_readiness": stage55_pilot_setup_readiness_payload(requested_tenant_id),
         "business_memory_admin": stage56_business_memory_admin_readiness_payload(requested_tenant_id),
         "usage_analytics_readiness": stage57_usage_analytics_readiness_payload(requested_tenant_id),
+        "access_boundaries_readiness": stage58_access_boundaries_readiness_payload(requested_tenant_id),
         "tenant_admin_config": tenant_admin_config_readiness_payload(tenant) if tenant_status.get("tenant_id") else {
             "stage": "51",
             "status": "blocked",
@@ -11065,6 +11218,12 @@ def business_memory_readiness(tenant_id: str = TENANT_ID_DEFAULT):
 @app.get("/analytics/readiness")
 def usage_readiness(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
     return stage57_usage_analytics_readiness_payload(tenant_id=tenant_id, days=days)
+
+
+@app.get("/access/readiness")
+@app.get("/admin/access/readiness")
+def access_readiness(tenant_id: str = TENANT_ID_DEFAULT):
+    return stage58_access_boundaries_readiness_payload(tenant_id=tenant_id)
 
 
 # -------------------------
@@ -12413,6 +12572,7 @@ def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
         <a id="lnk_analytics" href="#">analytics</a> ·
         <a id="lnk_usage" href="#">usage</a> ·
         <a id="lnk_usage_ready" href="#">usage readiness</a> ·
+        <a id="lnk_access_ready" href="#">access readiness</a> ·
         <a id="lnk_activity" href="#">activity</a> ·
         <a id="lnk_chart_data" href="#">chart data</a> ·
         <a id="lnk_bookings" href="#">bookings</a> ·
@@ -12682,6 +12842,8 @@ async function loadAll() {{
   setText('usage_badge', `${{days}} day window`, 'Selected window');
   el('lnk_analytics').href = `/dashboard/analytics?tenant_id=${{encodeURIComponent(tenant)}}`;
   el('lnk_usage').href = `/dashboard/usage?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
+  el('lnk_usage_ready').href = `/usage/readiness?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
+  el('lnk_access_ready').href = `/access/readiness?tenant_id=${{encodeURIComponent(tenant)}}`;
   el('lnk_activity').href = `/dashboard/activity?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
   el('lnk_chart_data').href = `/dashboard/chart-data?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
   el('lnk_bookings').href = `/dashboard/bookings?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
@@ -12837,6 +12999,7 @@ summary { cursor:pointer; font-weight:800; }
         <button class="secondary" onclick="openPath('/pilot/setup/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Pilot setup</button>
         <button class="secondary" onclick="openPath('/business-memory/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Memory readiness</button>
         <button class="secondary" onclick="openPath('/usage/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Usage readiness</button>
+        <button class="secondary" onclick="openPath('/access/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Access readiness</button>
       </div>
     </div>
     <div style="min-width:260px;">
@@ -12947,6 +13110,7 @@ summary { cursor:pointer; font-weight:800; }
       <a id="lnk_pilot" href="#">Pilot setup</a>
       <a id="lnk_memory" href="#">Memory readiness</a>
       <a id="lnk_usage_ready" href="#">Usage readiness</a>
+      <a id="lnk_access_ready" href="#">Access readiness</a>
       <a id="lnk_routes" href="#">Phone routes</a>
       <a id="lnk_bookings" href="#">Bookings</a>
       <a id="lnk_conv" href="#">Conversations</a>
@@ -12972,6 +13136,7 @@ function setLinks(tid){
   document.getElementById('lnk_pilot').href = '/pilot/setup/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_memory').href = '/business-memory/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_usage_ready').href = '/usage/readiness?tenant_id=' + encodeURIComponent(tid);
+  document.getElementById('lnk_access_ready').href = '/access/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_routes').href = '/tenant/routes?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_bookings').href = '/bookings?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_conv').href = '/conversations?tenant_id=' + encodeURIComponent(tid);
@@ -13485,6 +13650,7 @@ def tenant_config(tenant_id: str = TENANT_ID_DEFAULT):
         "admin_readiness": tenant_admin_config_readiness_payload(tenant),
         "business_memory_admin": stage56_business_memory_admin_readiness_payload(str(tenant.get("_id") or tenant_id)),
         "usage_analytics_readiness": stage57_usage_analytics_readiness_payload(str(tenant.get("_id") or tenant_id)),
+        "access_boundaries_readiness": stage58_access_boundaries_readiness_payload(str(tenant.get("_id") or tenant_id)),
         "config_ui_hardening": tenant_config_ui_readiness_payload(tenant),
         "plan_meta": tenant_plan_meta(tenant),
         "links": onboarding_links_payload(str(tenant.get("_id") or tenant_id)),
@@ -13595,6 +13761,7 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
         "admin_readiness": tenant_admin_config_readiness_payload(updated),
         "business_memory_admin": stage56_business_memory_admin_readiness_payload(tenant_id),
         "usage_analytics_readiness": stage57_usage_analytics_readiness_payload(tenant_id),
+        "access_boundaries_readiness": stage58_access_boundaries_readiness_payload(tenant_id),
         "config_ui_hardening": tenant_config_ui_readiness_payload(updated),
         "plan_meta": tenant_plan_meta(updated),
         "links": onboarding_links_payload(tenant_id),

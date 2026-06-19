@@ -289,3 +289,15 @@ If a price question is asked inside an active booking flow and the current langu
 - Treat dev/test traffic as smoke/visibility data, not billing proof.
 - The active MVP remains text-first receptionist. Voice/calls remain future scope and must not be positioned as current pilot scope.
 - Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+
+## Stage 58 — Auth / Access Boundaries for Admin Surfaces Rules
+- Stage 58 may add read-only access-boundary audit/readiness metadata, admin UI links, and documentation only.
+- Do not change receptionist behavior, booking routing, slot generation, date/time parsing, side-question handling, cancellation, reschedule, Google Calendar runtime create/update/delete behavior, or regression evaluator rules.
+- `/access/readiness` and `/admin/access/readiness` must not call LLMs, mutate tenant config, mutate conversation state, or create/update/delete Google Calendar events.
+- Stage 58 must be factual about access boundaries: URL `tenant_id` is not authentication.
+- Do not silently claim public SaaS security readiness if admin auth and tenant ownership checks are not enforced.
+- Current admin/demo surfaces may be marked private-demo/internal-pilot ready, but public SaaS readiness must remain false until auth enforcement is implemented.
+- `/tenant/config` and admin UI must keep hiding service account JSON, private keys, OAuth tokens, and client secrets.
+- Any actual auth enforcement, middleware, session handling, admin token verification, or tenant ownership restriction must be a separate stage because it may affect dashboard/dev/admin routes and regression execution.
+- The active MVP remains text-first receptionist. Voice/calls remain future scope and must not be positioned as current pilot scope.
+- Current protected baseline remains `/dialogue/qa = 50/50 passed`.

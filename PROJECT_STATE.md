@@ -353,3 +353,16 @@ Stage 36 adds a deterministic recovery layer inside active booking flows. It is 
 - The new endpoint is read-only. It does not call LLMs, mutate tenant config, mutate conversations, or create/update/delete Google Calendar events.
 - Active MVP scope remains text-first receptionist. Voice/calls remain future scope.
 - Expected production baseline remains `/dialogue/qa = 50/50 passed`.
+
+## Stage 58 — Auth / Access Boundaries for Admin Surfaces
+- Stage 58 is a read-only access-boundary audit/readiness stage after confirmed Stage 57 production `/dialogue/qa = 50/50 passed`.
+- No receptionist core behavior is changed: booking, price side-questions, slot confirmation, cancellation, reschedule, date parsing, slot generation, regression evaluator, and Google Calendar create/update/delete runtime paths remain untouched.
+- Adds `GET /access/readiness?tenant_id=...` and alias `GET /admin/access/readiness?tenant_id=...` as read-only admin/access boundary readiness endpoints.
+- `/internal/readiness` now includes `access_boundaries_readiness` for the requested tenant.
+- `/tenant/config` and `/tenant/config/update` responses now include `access_boundaries_readiness` metadata.
+- `/tenant/config/ui` and `/dashboard` now link to Access readiness.
+- Stage 58 intentionally does not enforce auth yet. It documents that current admin/demo surfaces are private-demo/internal-pilot only until real admin authentication and tenant ownership checks are added.
+- Expected `/access/readiness.status` is `attention`, with `private_demo_ready=true` and `public_saas_ready=false` until auth is implemented.
+- The endpoint is read-only. It does not call LLMs, mutate tenant config, mutate conversations, or create/update/delete Google Calendar events.
+- Active MVP scope remains text-first receptionist. Voice/calls remain future scope.
+- Expected production baseline remains `/dialogue/qa = 50/50 passed`.
