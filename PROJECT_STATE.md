@@ -366,3 +366,15 @@ Stage 36 adds a deterministic recovery layer inside active booking flows. It is 
 - The endpoint is read-only. It does not call LLMs, mutate tenant config, mutate conversations, or create/update/delete Google Calendar events.
 - Active MVP scope remains text-first receptionist. Voice/calls remain future scope.
 - Expected production baseline remains `/dialogue/qa = 50/50 passed`.
+
+## Stage 59 — Telegram Text Channel Smoke Readiness
+- Stage 59 is a read-only Telegram text-channel readiness/smoke stage after confirmed Stage 58 production `/dialogue/qa = 50/50 passed`.
+- No receptionist core behavior is changed: booking, price side-questions, slot confirmation, cancellation, reschedule, date parsing, slot generation, regression evaluator, and Google Calendar create/update/delete runtime paths remain untouched.
+- Adds `GET /telegram/readiness?tenant_id=...` and alias `GET /channels/telegram/readiness?tenant_id=...`.
+- `/internal/readiness` now includes `telegram_text_channel_readiness` for the requested tenant.
+- `/tenant/config` and `/tenant/config/update` responses now include `telegram_text_channel_readiness` metadata.
+- `/tenant/config/ui` and `/dashboard` now link to Telegram readiness.
+- Stage 59 treats Telegram as an external text channel only. Voice/calls remain future scope.
+- The readiness endpoint checks Telegram configuration flags, webhook-secret presence, tenant readiness, usage visibility, and manual smoke steps without exposing token/secret values.
+- The endpoint is read-only. It does not call Telegram APIs, set webhooks, call LLMs, mutate tenant config, mutate conversations, or create/update/delete Google Calendar events.
+- Expected production baseline remains `/dialogue/qa = 50/50 passed`.

@@ -11037,6 +11037,225 @@ def stage58_access_boundaries_readiness_payload(tenant_id: str = TENANT_ID_DEFAU
     }
 
 
+
+def _stage59_channel_usage_counts(tenant_id: str, channel: str = "telegram", days: int = 14) -> Dict[str, Any]:
+    """Read-only channel usage summary for Stage 59 readiness."""
+    tid = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    channel_name = (channel or "telegram").strip().lower() or "telegram"
+    days = max(1, min(int(days or 14), 60))
+    since_ts = datetime.utcnow() - timedelta(days=days)
+    result: Dict[str, Any] = {
+        "ok": True,
+        "channel": channel_name,
+        "window_days": days,
+        "usage_events_units": 0,
+        "usage_events_count": 0,
+        "call_logs_count": 0,
+    }
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT COALESCE(SUM(usage_units), 0) AS units,
+                           COUNT(*) AS events_count
+                    FROM usage_events
+                    WHERE tenant_id=:tenant_id
+                      AND LOWER(COALESCE(channel, ''))=:channel
+                      AND created_at >= :since_ts
+                    """
+                ),
+                {"tenant_id": tid, "channel": channel_name, "since_ts": since_ts},
+            ).fetchone()
+            if row:
+                result["usage_events_units"] = int(row[0] or 0)
+                result["usage_events_count"] = int(row[1] or 0)
+    except Exception as e:
+        log.error("stage59_usage_event_count_failed tenant_id=%s channel=%s err=%s", tid, channel_name, e)
+        result["ok"] = False
+        result["usage_events_error"] = e.__class__.__name__
+
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM call_logs
+                    WHERE tenant_id=:tenant_id
+                      AND LOWER(COALESCE(channel, ''))=:channel
+                      AND created_at >= :since_ts
+                    """
+                ),
+                {"tenant_id": tid, "channel": channel_name, "since_ts": since_ts},
+            ).fetchone()
+            if row:
+                result["call_logs_count"] = int(row[0] or 0)
+    except Exception as e:
+        log.error("stage59_call_log_count_failed tenant_id=%s channel=%s err=%s", tid, channel_name, e)
+        result["ok"] = False
+        result["call_logs_error"] = e.__class__.__name__
+    return result
+
+
+def stage59_telegram_text_channel_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14) -> Dict[str, Any]:
+    """Read-only Telegram text channel smoke readiness for the text-first MVP.
+
+    Stage 59 does not call Telegram, does not set webhooks, does not call LLMs,
+    does not mutate tenant config/conversation state, and does not touch Google
+    Calendar. It only exposes whether the existing Telegram text channel wiring
+    is ready to be smoke-tested for a controlled pilot.
+    """
+    tid = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    days = max(1, min(int(days or 14), 60))
+    base = (SERVER_BASE_URL or "").rstrip("/")
+
+    def url(path: str) -> str:
+        return base + path if base else path
+
+    tenant = get_existing_tenant(tid)
+    tenant_found = bool(tenant.get("_id"))
+    tenant_id_clean = str(tenant.get("_id") or tenant.get("id") or tid).strip()
+    tenant_status = tenant_ready_status_payload(tenant) if tenant_found else {"ready": False, "missing": ["tenant_not_found"]}
+
+    telegram_default_tenant_id = (os.getenv("TELEGRAM_DEFAULT_TENANT_ID", "").strip() or TENANT_ID_DEFAULT).strip()
+    telegram_status = telegram_config_status(
+        default_tenant_id=telegram_default_tenant_id,
+        server_base_url=SERVER_BASE_URL,
+    )
+
+    webhook_url_for_tenant = url(f"/telegram/webhook?tenant_id={tenant_id_clean}")
+    status_url = url("/telegram/status")
+    set_webhook_url = url(f"/telegram/set-webhook?tenant_id={tenant_id_clean}")
+    readiness_url = url(f"/telegram/readiness?tenant_id={tenant_id_clean}&days={days}")
+
+    table_checks = {
+        name: _stage43a_table_check(name)
+        for name in ("call_logs", "usage_events", "dialogue_audit_events")
+    }
+    channel_usage = _stage59_channel_usage_counts(tenant_id_clean, "telegram", days=days) if tenant_found else {"ok": False, "channel": "telegram", "window_days": days}
+
+    blocking: List[str] = []
+    warnings: List[str] = []
+    if not tenant_found:
+        blocking.append("tenant_not_found")
+    if tenant_found and not tenant_status.get("ready"):
+        blocking.append("tenant_not_ready")
+    for table_name, table_status in table_checks.items():
+        if not table_status.get("ok"):
+            warnings.append(f"table_missing_or_unreadable:{table_name}")
+    if not telegram_status.get("has_bot_token"):
+        warnings.append("telegram_bot_token_missing")
+    if not telegram_status.get("has_webhook_secret"):
+        warnings.append("telegram_webhook_secret_missing")
+    if not SERVER_BASE_URL:
+        warnings.append("server_base_url_missing_for_webhook_url")
+    if telegram_default_tenant_id != tenant_id_clean:
+        warnings.append("telegram_default_tenant_differs_from_requested_tenant")
+    if not channel_usage.get("ok"):
+        warnings.append("telegram_usage_counts_partial")
+
+    configured = bool(telegram_status.get("has_bot_token"))
+    secure_webhook = bool(telegram_status.get("has_webhook_secret"))
+    webhook_can_be_set = bool(configured and SERVER_BASE_URL)
+    private_pilot_ready = bool(tenant_found and tenant_status.get("ready") and configured and secure_webhook and not blocking)
+
+    return {
+        "stage": "59",
+        "purpose": "Telegram text channel smoke readiness for the text-first MVP",
+        "tenant_id": tenant_id_clean,
+        "status": "ready" if private_pilot_ready and not warnings else "attention" if not blocking else "blocked",
+        "telegram_text_ready": bool(private_pilot_ready),
+        "private_pilot_ready": bool(private_pilot_ready),
+        "public_saas_ready": False,
+        "current_mvp_scope": {
+            "channel": "text",
+            "selected_external_channel": "Telegram text",
+            "voice_calls_scope": "future_phase",
+            "note": "Telegram is treated as a text channel only. Voice/calls are not part of the current launch scope.",
+        },
+        "telegram_config": {
+            "configured": bool(telegram_status.get("configured")),
+            "has_bot_token": bool(telegram_status.get("has_bot_token")),
+            "has_webhook_secret": bool(telegram_status.get("has_webhook_secret")),
+            "webhook_secret_header_supported": True,
+            "default_tenant_id": telegram_status.get("default_tenant_id"),
+            "requested_tenant_id": tenant_id_clean,
+            "default_tenant_matches_requested": bool(telegram_default_tenant_id == tenant_id_clean),
+            "recommended_webhook_url": webhook_url_for_tenant,
+            "status_endpoint": status_url,
+            "set_webhook_endpoint": set_webhook_url,
+        },
+        "tenant_gate": {
+            "tenant_found": bool(tenant_found),
+            "tenant_ready": bool(tenant_status.get("ready")),
+            "calendar_selected": bool((tenant_status or {}).get("calendar_selected")),
+            "has_service_catalog": bool((tenant_status or {}).get("has_service_catalog")),
+        },
+        "channel_routes": {
+            "status": "/telegram/status",
+            "set_webhook": "/telegram/set-webhook",
+            "webhook": "/telegram/webhook",
+            "readiness": "/telegram/readiness",
+            "webhook_method": "POST",
+            "set_webhook_method": "POST",
+        },
+        "smoke_script": {
+            "setup_steps": [
+                "Open /telegram/status and confirm bot token and webhook secret are configured.",
+                "Set the webhook with POST /telegram/set-webhook?tenant_id=clinic_demo, or provide an explicit URL ending in /telegram/webhook?tenant_id=clinic_demo.",
+                "Open the Telegram bot and send /start.",
+                "Run one booking → price side-question → slot confirmation → reschedule → cancel flow.",
+                "Verify the same Google Calendar expectations as dev chat: one created event, reschedule updates the same event, cancel removes it.",
+            ],
+            "ru_messages": [
+                "Хочу записаться на консультацию завтра вечером",
+                "Сколько это стоит?",
+                "2",
+                "Да",
+                "Хочу перенести запись",
+                "Послезавтра вечером",
+                "2",
+                "Да",
+                "Отменить запись",
+            ],
+            "lv_messages": [
+                "Gribu pierakstīties uz konsultāciju rīt vakarā",
+                "Cik tas maksā?",
+                "2",
+                "Jā",
+                "Gribu pārcelt pierakstu",
+                "Parīt vakarā",
+                "2",
+                "Jā",
+                "Atcelt pierakstu",
+            ],
+            "expected_calendar_checks": [
+                "After booking: exactly one new calendar event exists.",
+                "After reschedule: the same event is updated to the new time; no duplicate is created.",
+                "After cancel: the event is removed or no longer active.",
+            ],
+        },
+        "usage_probe": {
+            "window_days": days,
+            "tables": table_checks,
+            "telegram_channel_activity": channel_usage,
+            "note": "Zero Telegram activity is acceptable before the first smoke test; it should increase after live Telegram messages.",
+        },
+        "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
+        "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
+        "links": {
+            "telegram_status": status_url,
+            "telegram_set_webhook": set_webhook_url,
+            "telegram_readiness": readiness_url,
+            "tenant_config_ui": url(f"/tenant/config/ui?tenant_id={tenant_id_clean}"),
+            "dashboard": url(f"/dashboard?tenant_id={tenant_id_clean}"),
+            "dev_chat": url(f"/dev_chat_ui?tenant_id={tenant_id_clean}"),
+            "launch_readiness": url(f"/launch/readiness?tenant_id={tenant_id_clean}"),
+        },
+        "note": "Readiness metadata only. This endpoint does not call Telegram APIs, set webhooks, call LLMs, mutate tenant config, mutate conversations, or create/update/delete calendar events.",
+    }
+
 def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) -> Dict[str, Any]:
     requested_tenant_id = (tenant_id or "").strip() or TENANT_ID_DEFAULT
     db_check = _stage43a_database_check()
@@ -11172,6 +11391,7 @@ def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) ->
         "business_memory_admin": stage56_business_memory_admin_readiness_payload(requested_tenant_id),
         "usage_analytics_readiness": stage57_usage_analytics_readiness_payload(requested_tenant_id),
         "access_boundaries_readiness": stage58_access_boundaries_readiness_payload(requested_tenant_id),
+        "telegram_text_channel_readiness": stage59_telegram_text_channel_readiness_payload(requested_tenant_id),
         "tenant_admin_config": tenant_admin_config_readiness_payload(tenant) if tenant_status.get("tenant_id") else {
             "stage": "51",
             "status": "blocked",
@@ -11224,6 +11444,12 @@ def usage_readiness(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
 @app.get("/admin/access/readiness")
 def access_readiness(tenant_id: str = TENANT_ID_DEFAULT):
     return stage58_access_boundaries_readiness_payload(tenant_id=tenant_id)
+
+
+@app.get("/telegram/readiness")
+@app.get("/channels/telegram/readiness")
+def telegram_text_readiness(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    return stage59_telegram_text_channel_readiness_payload(tenant_id=tenant_id, days=days)
 
 
 # -------------------------
@@ -12573,6 +12799,7 @@ def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
         <a id="lnk_usage" href="#">usage</a> ·
         <a id="lnk_usage_ready" href="#">usage readiness</a> ·
         <a id="lnk_access_ready" href="#">access readiness</a> ·
+        <a id="lnk_telegram_ready" href="#">telegram readiness</a> ·
         <a id="lnk_activity" href="#">activity</a> ·
         <a id="lnk_chart_data" href="#">chart data</a> ·
         <a id="lnk_bookings" href="#">bookings</a> ·
@@ -12844,6 +13071,7 @@ async function loadAll() {{
   el('lnk_usage').href = `/dashboard/usage?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
   el('lnk_usage_ready').href = `/usage/readiness?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
   el('lnk_access_ready').href = `/access/readiness?tenant_id=${{encodeURIComponent(tenant)}}`;
+  el('lnk_telegram_ready').href = `/telegram/readiness?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
   el('lnk_activity').href = `/dashboard/activity?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
   el('lnk_chart_data').href = `/dashboard/chart-data?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
   el('lnk_bookings').href = `/dashboard/bookings?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
@@ -13000,6 +13228,7 @@ summary { cursor:pointer; font-weight:800; }
         <button class="secondary" onclick="openPath('/business-memory/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Memory readiness</button>
         <button class="secondary" onclick="openPath('/usage/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Usage readiness</button>
         <button class="secondary" onclick="openPath('/access/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Access readiness</button>
+        <button class="secondary" onclick="openPath('/telegram/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Telegram readiness</button>
       </div>
     </div>
     <div style="min-width:260px;">
@@ -13111,6 +13340,7 @@ summary { cursor:pointer; font-weight:800; }
       <a id="lnk_memory" href="#">Memory readiness</a>
       <a id="lnk_usage_ready" href="#">Usage readiness</a>
       <a id="lnk_access_ready" href="#">Access readiness</a>
+      <a id="lnk_telegram_ready" href="#">Telegram readiness</a>
       <a id="lnk_routes" href="#">Phone routes</a>
       <a id="lnk_bookings" href="#">Bookings</a>
       <a id="lnk_conv" href="#">Conversations</a>
@@ -13137,6 +13367,7 @@ function setLinks(tid){
   document.getElementById('lnk_memory').href = '/business-memory/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_usage_ready').href = '/usage/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_access_ready').href = '/access/readiness?tenant_id=' + encodeURIComponent(tid);
+  document.getElementById('lnk_telegram_ready').href = '/telegram/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_routes').href = '/tenant/routes?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_bookings').href = '/bookings?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_conv').href = '/conversations?tenant_id=' + encodeURIComponent(tid);
@@ -13651,6 +13882,7 @@ def tenant_config(tenant_id: str = TENANT_ID_DEFAULT):
         "business_memory_admin": stage56_business_memory_admin_readiness_payload(str(tenant.get("_id") or tenant_id)),
         "usage_analytics_readiness": stage57_usage_analytics_readiness_payload(str(tenant.get("_id") or tenant_id)),
         "access_boundaries_readiness": stage58_access_boundaries_readiness_payload(str(tenant.get("_id") or tenant_id)),
+        "telegram_text_channel_readiness": stage59_telegram_text_channel_readiness_payload(str(tenant.get("_id") or tenant_id)),
         "config_ui_hardening": tenant_config_ui_readiness_payload(tenant),
         "plan_meta": tenant_plan_meta(tenant),
         "links": onboarding_links_payload(str(tenant.get("_id") or tenant_id)),
@@ -13762,6 +13994,7 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
         "business_memory_admin": stage56_business_memory_admin_readiness_payload(tenant_id),
         "usage_analytics_readiness": stage57_usage_analytics_readiness_payload(tenant_id),
         "access_boundaries_readiness": stage58_access_boundaries_readiness_payload(tenant_id),
+        "telegram_text_channel_readiness": stage59_telegram_text_channel_readiness_payload(tenant_id),
         "config_ui_hardening": tenant_config_ui_readiness_payload(updated),
         "plan_meta": tenant_plan_meta(updated),
         "links": onboarding_links_payload(tenant_id),

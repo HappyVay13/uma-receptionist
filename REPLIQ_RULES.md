@@ -301,3 +301,12 @@ If a price question is asked inside an active booking flow and the current langu
 - Any actual auth enforcement, middleware, session handling, admin token verification, or tenant ownership restriction must be a separate stage because it may affect dashboard/dev/admin routes and regression execution.
 - The active MVP remains text-first receptionist. Voice/calls remain future scope and must not be positioned as current pilot scope.
 - Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+
+## Stage 59 — Telegram Text Channel Smoke Readiness Rules
+- Stage 59 may add read-only Telegram text-channel readiness metadata, smoke checklist links, and documentation only.
+- Do not change receptionist behavior, booking routing, slot generation, date/time parsing, side-question handling, cancellation, reschedule, Google Calendar runtime create/update/delete behavior, or regression evaluator rules.
+- `/telegram/readiness` and `/channels/telegram/readiness` must not call Telegram APIs, set webhooks, call LLMs, mutate tenant config, mutate conversation state, or create/update/delete Google Calendar events.
+- Telegram token and webhook secret values must never be exposed; only boolean configured flags may be shown.
+- Telegram is current-scope only as a text channel. Voice/calls remain future scope and must not be positioned as part of this stage.
+- If Telegram env config is missing, report `attention` with warnings instead of claiming pilot readiness.
+- Current protected baseline remains `/dialogue/qa = 50/50 passed`.

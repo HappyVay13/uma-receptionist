@@ -20,3 +20,9 @@ After deploy:
 
 Telegram flow:
 Telegram -> /telegram/webhook -> handle_user_text_with_logging -> Telegram sendMessage
+
+Stage 59 readiness:
+- GET /telegram/readiness?tenant_id=clinic_demo
+- GET /channels/telegram/readiness?tenant_id=clinic_demo
+
+The readiness endpoint is read-only. It does not call Telegram APIs or set webhooks. It reports whether Telegram text channel config is ready for a controlled pilot smoke test.
