@@ -357,6 +357,14 @@ def _safe_compose_text(value: Any, max_len: int = 900) -> str:
     return txt[:max_len]
 
 
+def _looks_like_internal_prompt_leak(text_value: Any) -> bool:
+    """Guard customer replies from leaking internal prompt/config labels."""
+    low = str(text_value or "").strip().lower()
+    if not low:
+        return False
+    return bool(re.search(r"\b(business_memory(?:_[a-z]{2})?|faq(?:_[a-z]{2})?|booking_rules(?:_[a-z]{2})?|env_memory)\s*:", low))
+
+
 def _composer_allowed_for_result(result: Dict[str, Any]) -> bool:
     status = str((result or {}).get("status") or "").strip().lower()
     if not status:
@@ -457,6 +465,8 @@ def ai_response_composer(
         composed = str((raw or {}).get("msg_out") or "").strip()
         composed = re.sub(r"\s+\n", "\n", composed).strip()
         if not composed:
+            return result
+        if _looks_like_internal_prompt_leak(composed):
             return result
         if len(composed) > 500:
             return result
@@ -11161,8 +11171,8 @@ def stage59_telegram_text_channel_readiness_payload(tenant_id: str = TENANT_ID_D
     private_pilot_ready = bool(tenant_found and tenant_status.get("ready") and configured and secure_webhook and not blocking)
 
     return {
-        "stage": "59",
-        "purpose": "Telegram text channel smoke readiness for the text-first MVP",
+        "stage": "59.1",
+        "purpose": "Telegram text channel smoke readiness and language/menu hardening for the text-first MVP",
         "tenant_id": tenant_id_clean,
         "status": "ready" if private_pilot_ready and not warnings else "attention" if not blocking else "blocked",
         "telegram_text_ready": bool(private_pilot_ready),
@@ -11173,6 +11183,14 @@ def stage59_telegram_text_channel_readiness_payload(tenant_id: str = TENANT_ID_D
             "selected_external_channel": "Telegram text",
             "voice_calls_scope": "future_phase",
             "note": "Telegram is treated as a text channel only. Voice/calls are not part of the current launch scope.",
+        },
+        "stage59_1_hardening": {
+            "legacy_reply_keyboard_disabled": True,
+            "free_text_channel_policy": True,
+            "neutral_short_reply_language_preserved_by_core": True,
+            "raw_business_memory_leak_guard_enabled": True,
+            "start_command_shows_text_instructions_only": True,
+            "old_lv_menu_buttons_are_not_required_for_mvp": True,
         },
         "telegram_config": {
             "configured": bool(telegram_status.get("configured")),
@@ -11204,8 +11222,8 @@ def stage59_telegram_text_channel_readiness_payload(tenant_id: str = TENANT_ID_D
             "setup_steps": [
                 "Open /telegram/status and confirm bot token and webhook secret are configured.",
                 "Set the webhook with POST /telegram/set-webhook?tenant_id=clinic_demo, or provide an explicit URL ending in /telegram/webhook?tenant_id=clinic_demo.",
-                "Open the Telegram bot and send /start.",
-                "Run one booking → price side-question → slot confirmation → reschedule → cancel flow.",
+                "Open the Telegram bot and send /start; the bot should show text instructions and remove the old persistent menu.",
+                "Run one free-text booking → price side-question → slot confirmation → reschedule → cancel flow.",
                 "Verify the same Google Calendar expectations as dev chat: one created event, reschedule updates the same event, cancel removes it.",
             ],
             "ru_messages": [
@@ -11477,6 +11495,25 @@ def telegram_set_webhook(url: str = "", tenant_id: str = ""):
     return result
 
 
+def stage591_reset_telegram_conversation_context(tenant_id: str, user_key: str) -> None:
+    """Reset Telegram text conversation context without touching receptionist core logic."""
+    tid = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    try:
+        existing = db_get_or_create_conversation(tid, user_key, "lv") or {}
+        lang = get_lang(existing.get("lang") or "lv")
+    except Exception:
+        lang = "lv"
+    db_save_conversation(tid, user_key, {
+        "lang": lang,
+        "state": "NEW",
+        "service": None,
+        "name": None,
+        "datetime_iso": None,
+        "time_text": None,
+        "pending": None,
+    })
+
+
 @app.post("/telegram/webhook")
 async def telegram_webhook(request: Request, tenant_id: str = ""):
     default_tenant_id = (tenant_id or os.getenv("TELEGRAM_DEFAULT_TENANT_ID", "").strip() or TENANT_ID_DEFAULT).strip()
@@ -11489,6 +11526,7 @@ async def telegram_webhook(request: Request, tenant_id: str = ""):
         handle_user_text_with_logging=handle_user_text_with_logging,
         detect_language_func=detect_language,
         unavailable_text_func=lambda lang: t(lang, "service_unavailable_text"),
+        reset_conversation_func=stage591_reset_telegram_conversation_context,
     )
 
 

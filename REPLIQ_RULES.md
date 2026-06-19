@@ -310,3 +310,14 @@ If a price question is asked inside an active booking flow and the current langu
 - Telegram is current-scope only as a text channel. Voice/calls remain future scope and must not be positioned as part of this stage.
 - If Telegram env config is missing, report `attention` with warnings instead of claiming pilot readiness.
 - Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+
+## Stage 59.1 — Telegram Text Channel Language/Menu Hardening Rules
+- Stage 59.1 may change only Telegram channel adapter behavior and safe prompt-leak guardrails needed to stabilize Telegram text smoke.
+- Do not change core receptionist orchestration: booking routing, slot generation, date/time parsing, price side-question handling, cancellation, reschedule, Google Calendar runtime create/update/delete behavior, or regression evaluator rules.
+- Telegram MVP policy is free-text first. Do not reintroduce persistent Telegram reply keyboards until menu state, language, and appointment-list flows are implemented as a separate tested product layer.
+- `/start` should show text instructions and remove old keyboards; it should not present a persistent LV-only menu.
+- Short neutral replies in Telegram must not force Latvian if the active conversation is Russian or English.
+- Customer-facing Telegram messages must not expose internal labels such as `business_memory_lv:`, `faq_ru:`, `booking_rules_en:`, or `env_memory:`.
+- `/telegram/readiness` may expose only safe boolean/status metadata. Token/secret values must never be exposed.
+- The active MVP remains text-first receptionist. Voice/calls remain future scope.
+- Current protected baseline remains `/dialogue/qa = 50/50 passed`.

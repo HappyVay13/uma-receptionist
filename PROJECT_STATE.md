@@ -378,3 +378,16 @@ Stage 36 adds a deterministic recovery layer inside active booking flows. It is 
 - The readiness endpoint checks Telegram configuration flags, webhook-secret presence, tenant readiness, usage visibility, and manual smoke steps without exposing token/secret values.
 - The endpoint is read-only. It does not call Telegram APIs, set webhooks, call LLMs, mutate tenant config, mutate conversations, or create/update/delete Google Calendar events.
 - Expected production baseline remains `/dialogue/qa = 50/50 passed`.
+
+## Stage 59.1 — Telegram Text Channel Language/Menu Hardening
+- Stage 59.1 is a targeted Telegram text-channel hardening stage after live Telegram smoke revealed channel-level UX bugs.
+- Factual trigger: webhook worked and Telegram responded, but RU free-text flow switched to LV after short slot/confirmation replies, and the old persistent LV Telegram menu created state/menu-routing issues.
+- Receptionist core behavior remains unchanged: booking routing, slot generation, date/time parsing, price side-question handling, cancellation, reschedule, Google Calendar runtime actions, and regression evaluator logic are not changed.
+- Telegram is kept as a free-text text channel for the MVP. The old persistent LV reply keyboard is disabled/removed by sending `remove_keyboard` instead of a custom menu.
+- `/start` and help now show simple text instructions and remove the old keyboard.
+- Short neutral Telegram replies such as `2`, `10:00`, `да`, `jā`, and `ok` no longer force LV as `lang_hint`; the core can preserve the active conversation language.
+- Old LV menu button text is handled defensively, but menu buttons are no longer required for the MVP flow.
+- Telegram outgoing text is guarded against accidental internal prompt/memory labels such as `business_memory_lv:`.
+- `/telegram/readiness` now reports `stage = 59.1` and includes `stage59_1_hardening` metadata.
+- Active MVP scope remains text-first receptionist. Voice/calls remain future scope.
+- Expected production baseline remains `/dialogue/qa = 50/50 passed`.

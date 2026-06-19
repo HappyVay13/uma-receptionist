@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 from typing import Any, Callable, Dict, Optional
 
 import requests
@@ -8,6 +9,44 @@ from fastapi import HTTPException, Request
 log = logging.getLogger("repliq.telegram")
 
 TELEGRAM_API_BASE = "https://api.telegram.org"
+
+
+TELEGRAM_REMOVE_KEYBOARD = {"remove_keyboard": True}
+
+
+def _telegram_outgoing_text_without_internal_leaks(text: str) -> str:
+    """Strip accidental internal prompt/memory labels from Telegram-visible text.
+
+    Stage 59.1 guard: Telegram must never expose fields such as
+    business_memory_lv:... to the customer. If a model/rewrite layer leaks an
+    internal label before the actual follow-up question, keep the follow-up
+    question and drop the leaked prefix.
+    """
+    body = str(text or "").strip()
+    if not body:
+        return body
+
+    leak_pattern = re.compile(
+        r"\b(?:business_memory(?:_[a-z]{2})?|faq(?:_[a-z]{2})?|booking_rules(?:_[a-z]{2})?|env_memory)\s*:",
+        flags=re.IGNORECASE,
+    )
+    if not leak_pattern.search(body):
+        return body
+
+    # If the leaked memory prefix is followed by a normal next-question prompt,
+    # preserve the next question and remove everything before it.
+    prompt_markers = [
+        "Uz kuru", "Kuru", "Pasakiet", "Labi", "Skaidrs",
+        "На какой", "Какой", "Подскажите", "Хорошо", "Понял",
+        "Which", "What day", "What date", "Sure", "Okay",
+    ]
+    marker_positions = [body.find(marker) for marker in prompt_markers if body.find(marker) > 0]
+    if marker_positions:
+        return body[min(marker_positions):].strip()
+
+    cleaned = leak_pattern.sub("", body)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" :-\n\t")
+    return cleaned
 
 
 def telegram_bot_token() -> str:
@@ -50,7 +89,7 @@ def telegram_send_message(chat_id: Any, text: str, reply_markup: Optional[Dict[s
         log.error("telegram_send_message_failed reason=missing_token chat_id=%s", chat_id)
         return {"ok": False, "error": "TELEGRAM_BOT_TOKEN is not configured"}
 
-    body = (text or "").strip()
+    body = _telegram_outgoing_text_without_internal_leaks(text)
     if not body:
         body = "..."
 
@@ -82,34 +121,60 @@ def telegram_send_message(chat_id: Any, text: str, reply_markup: Optional[Dict[s
 
 
 
-TELEGRAM_MAIN_MENU = {
-    "keyboard": [
-        [{"text": "📅 Jauns pieraksts"}, {"text": "📋 Mani pieraksti"}],
-        [{"text": "🔄 Pārcelt pierakstu"}, {"text": "❌ Atcelt pierakstu"}],
-        [{"text": "ℹ️ Palīdzība"}],
-    ],
-    "resize_keyboard": True,
-    "one_time_keyboard": False,
-    "is_persistent": True,
-}
+# Stage 59.1: keep Telegram as a free-text channel for MVP.
+# The old persistent LV reply keyboard is intentionally removed because it
+# created a separate menu-routing layer and caused language/state drift.
+TELEGRAM_MAIN_MENU = TELEGRAM_REMOVE_KEYBOARD
 
 
-def telegram_send_main_menu(chat_id: Any, text: str = "Izvēlieties darbību:") -> Dict[str, Any]:
-    return telegram_send_message(chat_id, text, reply_markup=TELEGRAM_MAIN_MENU)
+def telegram_send_main_menu(chat_id: Any, text: str = "Rakstiet brīvā tekstā, ko vēlaties izdarīt.") -> Dict[str, Any]:
+    return telegram_send_message(chat_id, text, reply_markup=TELEGRAM_REMOVE_KEYBOARD)
+
+
+def _telegram_help_text(lang: str = "") -> str:
+    lang = (lang or "").strip().lower()
+    if lang == "ru":
+        return (
+            "Repliq работает как текстовый администратор. Напишите обычным текстом, например: "
+            "«Хочу записаться на консультацию завтра вечером»."
+        )
+    if lang == "en":
+        return (
+            "Repliq works as a text receptionist. Just write naturally, for example: "
+            "I want to book a consultation tomorrow evening."
+        )
+    return (
+        "Repliq darbojas kā teksta administrators. Rakstiet brīvā tekstā, piemēram: "
+        "“Gribu pierakstīties uz konsultāciju rīt vakarā”."
+        "\n\nМожно писать по-русски: «Хочу записаться на консультацию завтра вечером»."
+    )
 
 
 def _normalize_command_text(text: str) -> str:
     return " ".join(str(text or "").strip().lower().split())
 
 
+def _is_start_text(text: str) -> bool:
+    return _normalize_command_text(text) in {"/start", "start"}
+
+
 def _is_restart_text(text: str) -> bool:
     low = _normalize_command_text(text)
     return low in {
-        "/start", "/reset", "reset", "restart",
+        "/reset", "reset", "restart",
         "📅 jauns pieraksts", "jauns pieraksts", "sākt jaunu pierakstu", "sakt jaunu pierakstu",
         "gribu jaunu pierakstu", "vēlos pierakstīties", "velos pierakstities",
         "новая запись", "хочу записаться", "записаться", "new booking", "book appointment",
     }
+
+
+def _canonical_restart_message(text: str, lang_hint: str = "") -> str:
+    low = _normalize_command_text(text)
+    if low in {"новая запись", "хочу записаться", "записаться"}:
+        return "хочу записаться"
+    if low in {"new booking", "book appointment"}:
+        return "i want to book an appointment"
+    return "gribu pierakstīties"
 
 
 def _is_help_text(text: str) -> bool:
@@ -134,8 +199,13 @@ def _is_cancel_text(text: str) -> bool:
 
 def _telegram_lang_hint(text: str, detect_language_func: Callable[[str], str]) -> str:
     low = _normalize_command_text(text)
-    # Short acknowledgements like OK are language-neutral. Let the core keep the existing conversation language.
+    # Short acknowledgements, slot numbers and bare times are language-neutral.
+    # Let the core keep the existing conversation language.
     if low in {"ok", "okay", "okej", "labi", "der", "jā", "ja", "да", "ага", "yes"}:
+        return ""
+    if low.isdigit() and len(low) <= 2:
+        return ""
+    if re.fullmatch(r"\d{1,2}[:.]\d{2}", low):
         return ""
     return detect_language_func(text)
 
@@ -257,20 +327,24 @@ async def handle_telegram_incoming(
 
     text_in = _extract_text(message)
     if not text_in:
-        telegram_send_message(chat_id, "Lūdzu, atsūtiet ziņu tekstā.")
+        telegram_send_message(chat_id, "Lūdzu, atsūtiet ziņu tekstā.", reply_markup=TELEGRAM_REMOVE_KEYBOARD)
         return {"ok": True, "ignored": True, "reason": "empty_text"}
 
     tenant_id = (default_tenant_id or "").strip()
     tenant = get_tenant(tenant_id) if tenant_id else {}
-    lang = _telegram_lang_hint(text_in, detect_language_func) or "lv"
+    # Stage 59.1: do not force LV for neutral short replies such as "2" or "да".
+    # Empty lang hint lets the core preserve the existing conversation language.
+    lang = _telegram_lang_hint(text_in, detect_language_func)
     user_key = _extract_user_key(message, chat_id)
 
-    if _is_help_text(text_in):
-        telegram_send_main_menu(
-            chat_id,
-            "Es varu palīdzēt pierakstīties, pārcelt vai atcelt pierakstu. Izvēlieties darbību vai vienkārši uzrakstiet, ko vēlaties."
-        )
-        return {"ok": True, "tenant_id": tenant_id or None, "status": "menu_help"}
+    if _is_start_text(text_in) or _is_help_text(text_in):
+        if _is_start_text(text_in) and reset_conversation_func and tenant_id:
+            try:
+                reset_conversation_func(tenant_id, user_key)
+            except Exception as exc:
+                log.error("telegram_start_reset_failed tenant_id=%s user_key=%s err=%s", tenant_id, user_key, exc)
+        telegram_send_message(chat_id, _telegram_help_text(lang), reply_markup=TELEGRAM_REMOVE_KEYBOARD)
+        return {"ok": True, "tenant_id": tenant_id or None, "status": "text_help"}
 
     if _is_restart_text(text_in):
         if reset_conversation_func and tenant_id:
@@ -278,12 +352,16 @@ async def handle_telegram_incoming(
                 reset_conversation_func(tenant_id, user_key)
             except Exception as exc:
                 log.error("telegram_reset_failed tenant_id=%s user_key=%s err=%s", tenant_id, user_key, exc)
-        telegram_send_main_menu(chat_id, "Sākam jaunu pierakstu. Uz kādu pakalpojumu vēlaties pierakstīties?")
-        return {"ok": True, "tenant_id": tenant_id or None, "status": "reset_started"}
+        text_in = _canonical_restart_message(text_in, lang)
+        lang = _telegram_lang_hint(text_in, detect_language_func)
 
     if _is_my_bookings_text(text_in):
-        text_in = "mani pieraksti"
-        lang = "lv"
+        telegram_send_message(
+            chat_id,
+            "Šajā MVP varu palīdzēt ar jaunu pierakstu, pārcelšanu vai atcelšanu. Rakstiet brīvā tekstā, ko vēlaties izdarīt.",
+            reply_markup=TELEGRAM_REMOVE_KEYBOARD,
+        )
+        return {"ok": True, "tenant_id": tenant_id or None, "status": "my_bookings_not_supported_text_mvp"}
     elif _is_reschedule_text(text_in):
         text_in = "vēlos pārcelt pierakstu"
         lang = "lv"
@@ -292,7 +370,7 @@ async def handle_telegram_incoming(
         lang = "lv"
 
     if not tenant_is_resolved(tenant):
-        telegram_send_message(chat_id, unavailable_text_func(lang))
+        telegram_send_message(chat_id, unavailable_text_func(lang or "lv"), reply_markup=TELEGRAM_REMOVE_KEYBOARD)
         return {"ok": True, "tenant_id": tenant_id or None, "status": "unavailable"}
 
     try:
@@ -306,25 +384,25 @@ async def handle_telegram_incoming(
         )
     except Exception as exc:
         log.exception("telegram_core_failed tenant_id=%s chat_id=%s", tenant_id, chat_id)
-        telegram_send_message(chat_id, unavailable_text_func(lang))
+        telegram_send_message(chat_id, unavailable_text_func(lang or "lv"), reply_markup=TELEGRAM_REMOVE_KEYBOARD)
         return {"ok": True, "tenant_id": tenant_id, "status": "core_error", "error": str(exc)}
 
     reply = str(result.get("msg_out") or result.get("reply_voice") or "").strip()
     if not reply:
-        reply = unavailable_text_func(result.get("lang") or lang)
+        reply = unavailable_text_func(result.get("lang") or lang or "lv")
 
     if str(result.get("status") or "").strip().lower() in {"booked", "cancelled"}:
-        telegram_send_main_menu(chat_id, reply)
+        telegram_send_message(chat_id, reply, reply_markup=TELEGRAM_REMOVE_KEYBOARD)
         if reset_conversation_func and tenant_id:
             try:
                 reset_conversation_func(tenant.get("_id") or tenant_id, user_key)
             except Exception as exc:
                 log.error("telegram_auto_reset_after_done_failed tenant_id=%s user_key=%s err=%s", tenant_id, user_key, exc)
     else:
-        telegram_send_message(chat_id, reply, reply_markup=TELEGRAM_MAIN_MENU)
+        telegram_send_message(chat_id, reply, reply_markup=TELEGRAM_REMOVE_KEYBOARD)
 
     try:
-        settings = tenant_settings_func(tenant, result.get("lang") or lang)
+        settings = tenant_settings_func(tenant, result.get("lang") or lang or "lv")
         business_name = settings.get("biz_name")
     except Exception:
         business_name = None

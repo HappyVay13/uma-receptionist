@@ -21,8 +21,15 @@ After deploy:
 Telegram flow:
 Telegram -> /telegram/webhook -> handle_user_text_with_logging -> Telegram sendMessage
 
-Stage 59 readiness:
+Stage 59.1 MVP policy:
+- Telegram is a free-text channel first.
+- The old persistent LV reply keyboard is disabled/removed for MVP stability.
+- /start sends text instructions and remove_keyboard.
+- Short neutral replies such as 2, 10:00, ok, jā, да do not force Latvian; the core should preserve the active conversation language.
+- Customer replies must not expose internal labels such as business_memory_lv: or faq_ru:.
+
+Readiness:
 - GET /telegram/readiness?tenant_id=clinic_demo
 - GET /channels/telegram/readiness?tenant_id=clinic_demo
 
-The readiness endpoint is read-only. It does not call Telegram APIs or set webhooks. It reports whether Telegram text channel config is ready for a controlled pilot smoke test.
+The readiness endpoint is read-only. It does not call Telegram APIs or set webhooks. It reports whether Telegram text channel config is ready for a controlled pilot smoke test and includes Stage 59.1 hardening metadata.
