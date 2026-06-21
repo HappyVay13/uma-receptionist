@@ -344,3 +344,11 @@ If a price question is asked inside an active booking flow and the current langu
 - `/google/callback` must remain available for OAuth redirect flow.
 - Stage 61 must not claim public SaaS readiness. Shared admin token protection is only an MVP/private-admin layer until per-user auth, tenant ownership, role separation, and CSRF/session hardening are implemented.
 - Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+
+
+## Stage 62 admin session rules
+- Protected admin/internal surfaces remain protected by Stage 61 access enforcement.
+- Browser admin use should prefer `/admin/login` and the signed `repliq_admin_session` cookie instead of repeatedly passing `admin_token` in URLs.
+- Stage 62 is not final public SaaS authentication; per-owner identity, tenant ownership, role checks, and CSRF remain future stages.
+- Do not expose admin token values in responses, logs, screenshots, or documentation.
+- Do not change receptionist core behavior while adding auth/session UI.

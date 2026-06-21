@@ -1,6 +1,6 @@
 # Repliq Project State
 
-Current stage: Stage 57 — Basic Analytics / Usage Visibility.
+Current stage: Stage 62 — Admin Login / Session Layer.
 
 Production regression baseline before Stage 40:
 - Stage 39 was deployed and confirmed by user: `/dialogue/qa` = 15/15 passed.
@@ -62,6 +62,12 @@ Protected baseline:
 - Stage 55 pilot client setup / tenant onboarding polish
 - Stage 56 business memory / FAQ admin polish
 - Stage 57 basic analytics / usage visibility
+- Stage 58 auth/access boundaries readiness
+- Stage 59 Telegram text channel smoke readiness
+- Stage 59.1 Telegram language/menu hardening
+- Stage 60 Telegram live smoke lock
+- Stage 61 admin access enforcement
+- Stage 62 admin login / session layer
 
 ## Stage 36 — Advanced Conversation Recovery
 
@@ -418,3 +424,8 @@ Stage 36 adds a deterministic recovery layer inside active booking flows. It is 
 - This is not final public SaaS auth: public SaaS still requires per-user login/session, tenant ownership checks, role separation, and CSRF/session hardening.
 - Receptionist core behavior is unchanged: booking, side-questions, confirmation, cancellation, reschedule, slot generation, date parsing, Google Calendar runtime actions, Telegram webhook handling, and regression evaluator are not changed.
 - Expected production baseline remains `/dialogue/qa = 50/50 passed`.
+
+
+## Stage 62 — Admin Login / Session Layer
+
+Stage 62 adds a browser login/session layer over Stage 61 protected admin surfaces. `/admin/login` accepts the configured `REPLIQ_ADMIN_TOKEN` and sets a signed HttpOnly `repliq_admin_session` cookie. `/admin/logout` clears admin cookies. `/admin/session` reports current browser auth status. `/admin/session/readiness` and `/internal/readiness` expose Stage 62 readiness metadata. This does not change receptionist core behavior or Telegram/Calendar runtime.

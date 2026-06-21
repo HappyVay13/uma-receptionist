@@ -2,6 +2,8 @@ import os
 import json
 import re
 import hmac
+import hashlib
+import urllib.parse
 import ast
 import base64
 import uuid
@@ -151,12 +153,19 @@ app.add_middleware(
 
 
 # -------------------------
-# STAGE 61: ADMIN ACCESS ENFORCEMENT
+# STAGE 61/62: ADMIN ACCESS ENFORCEMENT + ADMIN SESSION LAYER
 # -------------------------
 STAGE61_ADMIN_TOKEN_ENV_NAMES = ("REPLIQ_ADMIN_TOKEN", "ADMIN_ACCESS_TOKEN", "ADMIN_TOKEN")
 STAGE61_ADMIN_COOKIE_NAME = "repliq_admin_token"
 STAGE61_ADMIN_QUERY_KEYS = ("admin_token", "repliq_admin_token", "access_token")
 STAGE61_ADMIN_HEADER_KEYS = ("x-repliq-admin-token", "x-admin-token")
+
+# Stage 62 introduces a signed browser session cookie so admin operators no longer
+# need to keep passing ?admin_token=... in every URL. The shared token remains the
+# credential for this MVP/private-admin layer; public SaaS still needs per-user auth.
+STAGE62_ADMIN_SESSION_COOKIE_NAME = "repliq_admin_session"
+STAGE62_ADMIN_SESSION_MAX_AGE_SECONDS = 60 * 60 * 8
+STAGE62_ADMIN_SESSION_VERSION = 1
 
 STAGE61_PROTECTED_EXACT_PATHS = {
     "/internal/readiness",
@@ -170,6 +179,7 @@ STAGE61_PROTECTED_EXACT_PATHS = {
     "/admin/access/readiness",
     "/admin/access/enforcement",
     "/admin/access/enforcement/readiness",
+    "/admin/session/readiness",
     "/telegram/status",
     "/telegram/set-webhook",
     "/telegram/readiness",
@@ -249,6 +259,8 @@ def stage61_request_token(request: Request) -> str:
     auth = (request.headers.get("authorization") or "").strip()
     if auth.lower().startswith("bearer "):
         return auth[7:].strip()
+    # Legacy Stage 61 cookie remains accepted for backwards compatibility, but
+    # Stage 62 browser login writes a signed session cookie instead of the raw token.
     cookie_value = (request.cookies.get(STAGE61_ADMIN_COOKIE_NAME) or "").strip()
     if cookie_value:
         return cookie_value
@@ -265,20 +277,134 @@ def stage61_token_valid(candidate: str) -> bool:
         return False
 
 
+def stage62_session_max_age_seconds() -> int:
+    raw = (os.getenv("REPLIQ_ADMIN_SESSION_MAX_AGE_SECONDS", "") or "").strip()
+    if raw:
+        try:
+            return max(300, min(int(raw), 60 * 60 * 24 * 14))
+        except Exception:
+            pass
+    return STAGE62_ADMIN_SESSION_MAX_AGE_SECONDS
+
+
+def stage62_session_secret() -> str:
+    # The shared admin token is the root secret for the MVP admin session layer.
+    # A separate REPLIQ_ADMIN_SESSION_SECRET may be added later without changing callers.
+    return (os.getenv("REPLIQ_ADMIN_SESSION_SECRET", "") or stage61_admin_token_value() or "").strip()
+
+
+def stage62_b64url_encode(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+
+def stage62_b64url_decode(value: str) -> bytes:
+    value = (value or "").strip()
+    value += "=" * ((4 - len(value) % 4) % 4)
+    return base64.urlsafe_b64decode(value.encode("ascii"))
+
+
+def stage62_session_signature(payload_b64: str) -> str:
+    secret = stage62_session_secret()
+    if not secret:
+        return ""
+    return hmac.new(secret.encode("utf-8"), payload_b64.encode("ascii"), hashlib.sha256).hexdigest()
+
+
+def stage62_make_admin_session_cookie(tenant_id: str = TENANT_ID_DEFAULT) -> str:
+    now = int(datetime.utcnow().timestamp())
+    max_age = stage62_session_max_age_seconds()
+    payload = {
+        "v": STAGE62_ADMIN_SESSION_VERSION,
+        "type": "admin_session",
+        "tenant_id": (tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT,
+        "iat": now,
+        "exp": now + max_age,
+    }
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    payload_b64 = stage62_b64url_encode(raw)
+    sig = stage62_session_signature(payload_b64)
+    return f"{payload_b64}.{sig}" if sig else ""
+
+
+def stage62_parse_admin_session_cookie(raw_cookie: str) -> Optional[Dict[str, Any]]:
+    raw_cookie = (raw_cookie or "").strip()
+    if not raw_cookie or "." not in raw_cookie:
+        return None
+    payload_b64, sig = raw_cookie.rsplit(".", 1)
+    expected = stage62_session_signature(payload_b64)
+    if not expected or not hmac.compare_digest(sig, expected):
+        return None
+    try:
+        payload = json.loads(stage62_b64url_decode(payload_b64).decode("utf-8"))
+    except Exception:
+        return None
+    if payload.get("type") != "admin_session":
+        return None
+    try:
+        exp = int(payload.get("exp") or 0)
+    except Exception:
+        return None
+    if exp < int(datetime.utcnow().timestamp()):
+        return None
+    return payload
+
+
+def stage62_request_session_payload(request: Request) -> Optional[Dict[str, Any]]:
+    return stage62_parse_admin_session_cookie(request.cookies.get(STAGE62_ADMIN_SESSION_COOKIE_NAME) or "")
+
+
+def stage62_request_has_valid_session(request: Request) -> bool:
+    return bool(stage62_request_session_payload(request))
+
+
+def stage62_set_admin_session_cookie(response: Response, tenant_id: str = TENANT_ID_DEFAULT) -> None:
+    session_value = stage62_make_admin_session_cookie(tenant_id=tenant_id)
+    if not session_value:
+        return
+    response.set_cookie(
+        key=STAGE62_ADMIN_SESSION_COOKIE_NAME,
+        value=session_value,
+        httponly=True,
+        secure=bool(str(SERVER_BASE_URL or "").lower().startswith("https://")),
+        samesite="lax",
+        max_age=stage62_session_max_age_seconds(),
+    )
+    # Remove legacy raw-token cookie if it exists. Header/query auth remains supported.
+    response.delete_cookie(key=STAGE61_ADMIN_COOKIE_NAME)
+
+
+def stage62_clear_admin_session_cookies(response: Response) -> None:
+    response.delete_cookie(key=STAGE62_ADMIN_SESSION_COOKIE_NAME)
+    response.delete_cookie(key=STAGE61_ADMIN_COOKIE_NAME)
+
+
+def stage62_safe_local_path(path: str, tenant_id: str = TENANT_ID_DEFAULT) -> str:
+    candidate = (path or "").strip()
+    if not candidate.startswith("/") or candidate.startswith("//"):
+        return f"/tenant/config/ui?tenant_id={urllib.parse.quote((tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT)}"
+    # Prevent redirecting to webhook/callback or other public machine endpoints.
+    blocked_prefixes = ("/telegram/webhook", "/google/callback")
+    if any(candidate.startswith(prefix) for prefix in blocked_prefixes):
+        return f"/tenant/config/ui?tenant_id={urllib.parse.quote((tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT)}"
+    return candidate
+
+
 def stage61_admin_auth_error(status_code: int, detail: str) -> JSONResponse:
     return JSONResponse(
         status_code=status_code,
         content={
             "ok": False,
-            "stage": "61",
+            "stage": "62",
             "error": detail,
-            "auth_model": "shared_admin_token_mvp",
+            "auth_model": "admin_session_or_shared_token_mvp",
             "accepted": {
+                "login_page": "/admin/login",
                 "headers": ["X-Repliq-Admin-Token", "Authorization: Bearer <token>"],
                 "query": ["admin_token=<token>"],
-                "cookie": STAGE61_ADMIN_COOKIE_NAME,
+                "session_cookie": STAGE62_ADMIN_SESSION_COOKIE_NAME,
+                "legacy_cookie": STAGE61_ADMIN_COOKIE_NAME,
             },
-            "note": "Admin surfaces are protected by Stage 61. Do not paste the token into chat logs.",
+            "note": "Admin surfaces are protected by Stage 62 admin session / Stage 61 shared token. Do not paste the token into chat logs.",
         },
         headers={"Cache-Control": "no-store"},
     )
@@ -294,19 +420,14 @@ async def stage61_admin_access_middleware(request: Request, call_next):
         if not stage61_admin_token_configured():
             return stage61_admin_auth_error(503, "admin_token_not_configured")
         candidate = stage61_request_token(request)
-        if not stage61_token_valid(candidate):
+        token_ok = stage61_token_valid(candidate)
+        session_ok = stage62_request_has_valid_session(request)
+        if not (token_ok or session_ok):
             return stage61_admin_auth_error(401, "admin_token_required")
 
     response = await call_next(request)
     if query_token_valid:
-        response.set_cookie(
-            key=STAGE61_ADMIN_COOKIE_NAME,
-            value=token_from_query,
-            httponly=True,
-            secure=bool(str(SERVER_BASE_URL or "").lower().startswith("https://")),
-            samesite="lax",
-            max_age=60 * 60 * 8,
-        )
+        stage62_set_admin_session_cookie(response, tenant_id=(request.query_params.get("tenant_id") or TENANT_ID_DEFAULT))
     return response
 
 # -------------------------
@@ -11315,6 +11436,104 @@ def stage61_admin_access_enforcement_payload(tenant_id: str = TENANT_ID_DEFAULT)
 
 
 
+def stage62_admin_session_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) -> Dict[str, Any]:
+    """Read-only Stage 62 admin login/session readiness for self-serve transition."""
+    tid = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    base = (SERVER_BASE_URL or "").rstrip("/")
+
+    def url(path: str) -> str:
+        return base + path if base else path
+
+    tenant = get_existing_tenant(tid)
+    tenant_found = bool(tenant.get("_id"))
+    tenant_id_clean = str(tenant.get("_id") or tenant.get("id") or tid).strip()
+    token_configured = stage61_admin_token_configured()
+    enforcement_enabled = stage61_admin_access_enforcement_enabled()
+    session_secret_configured = bool(stage62_session_secret())
+    session_ready = bool(token_configured and enforcement_enabled and session_secret_configured)
+
+    blocking: List[str] = []
+    warnings: List[str] = []
+    if not token_configured:
+        blocking.append("admin_token_not_configured")
+    if not enforcement_enabled:
+        blocking.append("admin_access_enforcement_disabled")
+    if not session_secret_configured:
+        blocking.append("admin_session_secret_not_configured")
+    if not tenant_found:
+        warnings.append("tenant_not_found_for_requested_tenant")
+    warnings.extend([
+        "admin_session_uses_shared_admin_token_for_mvp_login",
+        "tenant_owner_identity_not_db_backed_yet",
+        "public_saas_requires_per_user_owner_accounts",
+    ])
+
+    return {
+        "stage": "62",
+        "purpose": "admin login and signed browser session layer for protected admin surfaces",
+        "tenant_id": tenant_id_clean,
+        "status": "ready" if session_ready else "blocked",
+        "admin_session_layer_ready": bool(session_ready),
+        "admin_access_enforced": bool(token_configured and enforcement_enabled),
+        "private_admin_ready": bool(session_ready),
+        "public_saas_ready": False,
+        "current_mvp_scope": {
+            "channel": "text",
+            "voice_calls_scope": "future_phase",
+            "auth_scope": "single shared admin-token login creates signed browser session",
+        },
+        "session_model": {
+            "type": "signed_admin_session_cookie",
+            "login_page": "/admin/login",
+            "login_endpoint": "POST /admin/login",
+            "logout_endpoint": "/admin/logout",
+            "session_status_endpoint": "/admin/session",
+            "session_readiness_endpoint": "/admin/session/readiness",
+            "session_cookie": STAGE62_ADMIN_SESSION_COOKIE_NAME,
+            "legacy_token_cookie": STAGE61_ADMIN_COOKIE_NAME,
+            "max_age_seconds": stage62_session_max_age_seconds(),
+            "httponly": True,
+            "secure_on_https": bool(str(SERVER_BASE_URL or "").lower().startswith("https://")),
+            "samesite": "lax",
+            "token_value_exposed": False,
+        },
+        "accepted_for_transition": {
+            "browser_login": "/admin/login?tenant_id=<tenant_id>&next=<local_path>",
+            "api_headers": ["X-Repliq-Admin-Token", "Authorization: Bearer <token>"],
+            "query_token_still_supported_for_bootstrap": "admin_token=<token>",
+            "preferred_browser_flow": "Use /admin/login once, then rely on HttpOnly session cookie.",
+        },
+        "protected_surfaces": sorted(STAGE61_PROTECTED_EXACT_PATHS),
+        "explicitly_not_protected": [
+            "/admin/login",
+            "/admin/session",
+            "/admin/logout",
+            "/dialogue/qa",
+            "/telegram/webhook",
+            "/google/callback",
+            "/health",
+        ],
+        "required_before_public_saas": [
+            "Replace shared admin-token login with per-owner email/magic-link accounts.",
+            "Persist tenant owner identity and role mappings in database.",
+            "Add tenant ownership checks so owner A cannot access tenant B.",
+            "Add CSRF protection for browser write endpoints before broad public launch.",
+        ],
+        "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
+        "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
+        "links": {
+            "admin_login": url(f"/admin/login?tenant_id={tenant_id_clean}&next=/tenant/config/ui?tenant_id={tenant_id_clean}"),
+            "admin_session": url("/admin/session"),
+            "admin_logout": url("/admin/logout"),
+            "tenant_config_ui": url(f"/tenant/config/ui?tenant_id={tenant_id_clean}"),
+            "dashboard": url(f"/dashboard?tenant_id={tenant_id_clean}"),
+            "internal_readiness": url(f"/internal/readiness?tenant_id={tenant_id_clean}"),
+        },
+        "note": "Readiness metadata only. Stage 62 adds browser login/session UX over Stage 61 shared-token enforcement. It does not call LLMs, mutate tenant config, mutate conversations, or create/update/delete calendar events.",
+    }
+
+
+
 def _stage59_channel_usage_counts(tenant_id: str, channel: str = "telegram", days: int = 14) -> Dict[str, Any]:
     """Read-only channel usage summary for Stage 59 readiness."""
     tid = (tenant_id or "").strip() or TENANT_ID_DEFAULT
@@ -11831,6 +12050,7 @@ def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) ->
         "usage_analytics_readiness": stage57_usage_analytics_readiness_payload(requested_tenant_id),
         "access_boundaries_readiness": stage58_access_boundaries_readiness_payload(requested_tenant_id),
         "admin_access_enforcement": stage61_admin_access_enforcement_payload(requested_tenant_id),
+        "admin_session_readiness": stage62_admin_session_readiness_payload(requested_tenant_id),
         "telegram_text_channel_readiness": stage59_telegram_text_channel_readiness_payload(requested_tenant_id),
         "telegram_live_smoke_lock": stage60_telegram_live_smoke_lock_payload(requested_tenant_id),
         "tenant_admin_config": tenant_admin_config_readiness_payload(tenant) if tenant_status.get("tenant_id") else {
@@ -11892,6 +12112,139 @@ def access_readiness(tenant_id: str = TENANT_ID_DEFAULT):
 def admin_access_enforcement_readiness(tenant_id: str = TENANT_ID_DEFAULT):
     return stage61_admin_access_enforcement_payload(tenant_id=tenant_id)
 
+
+
+
+@app.get("/admin/login", response_class=HTMLResponse)
+def admin_login_ui(tenant_id: str = TENANT_ID_DEFAULT, next: str = ""):
+    tenant_id_clean = (tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
+    next_path = stage62_safe_local_path(next or f"/tenant/config/ui?tenant_id={tenant_id_clean}", tenant_id_clean)
+    tenant_id_json = json.dumps(tenant_id_clean, ensure_ascii=False)
+    next_json = json.dumps(next_path, ensure_ascii=False)
+    html = """
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Repliq Admin Login</title>
+<style>
+body { font-family: Inter, Arial, sans-serif; background:#f6f7fb; color:#111827; margin:0; padding:24px; }
+.wrap { max-width:520px; margin:8vh auto; }
+.card { background:#fff; border:1px solid #e5e7eb; border-radius:18px; padding:24px; box-shadow:0 12px 32px rgba(15,23,42,.08); }
+h1 { margin:0; font-size:30px; letter-spacing:-.03em; }
+.sub { color:#6b7280; font-size:14px; margin:8px 0 18px; line-height:1.45; }
+label { display:block; font-size:13px; font-weight:700; margin:14px 0 6px; }
+input { width:100%; box-sizing:border-box; border:1px solid #d1d5db; border-radius:12px; padding:12px; font-size:14px; }
+button { width:100%; border:0; background:#111827; color:#fff; padding:12px 16px; border-radius:12px; font-weight:800; margin-top:16px; cursor:pointer; }
+.notice { border-radius:12px; padding:10px 12px; margin-top:14px; font-size:13px; display:none; }
+.notice.ok { display:block; background:#ecfdf5; color:#065f46; border:1px solid #a7f3d0; }
+.notice.err { display:block; background:#fef2f2; color:#991b1b; border:1px solid #fecaca; }
+.small { color:#6b7280; font-size:12px; margin-top:12px; line-height:1.45; }
+code { background:#f3f4f6; padding:2px 5px; border-radius:6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <h1>Repliq Admin Login</h1>
+    <div class="sub">Stage 62 admin session login for protected admin surfaces. Use the Render <code>REPLIQ_ADMIN_TOKEN</code>; do not paste it into chat logs.</div>
+    <label>Tenant</label>
+    <input id="tenant_id" />
+    <label>Admin token</label>
+    <input id="admin_token" type="password" autocomplete="current-password" autofocus />
+    <button onclick="login()">Login</button>
+    <div id="msg" class="notice"></div>
+    <div class="small">After successful login Repliq stores an HttpOnly signed session cookie. The raw token is not displayed by this page.</div>
+  </div>
+</div>
+<script>
+const DEFAULT_TENANT_ID = __TENANT_ID_JSON__;
+const NEXT_PATH = __NEXT_PATH_JSON__;
+document.getElementById('tenant_id').value = DEFAULT_TENANT_ID || 'clinic_demo';
+function setMsg(kind, text){ const el=document.getElementById('msg'); el.className='notice '+kind; el.textContent=text; }
+async function login(){
+  const tenant_id = (document.getElementById('tenant_id').value || '').trim() || DEFAULT_TENANT_ID || 'clinic_demo';
+  const admin_token = document.getElementById('admin_token').value || '';
+  if(!admin_token.trim()){ setMsg('err','Admin token is required.'); return; }
+  setMsg('ok','Checking…');
+  const r = await fetch('/admin/login', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tenant_id, admin_token, next:NEXT_PATH})});
+  const data = await r.json().catch(()=>({}));
+  if(!r.ok || !data.ok){ setMsg('err', data.error || data.detail || 'Login failed'); return; }
+  setMsg('ok','Login OK. Opening admin surface…');
+  window.location = data.redirect_url || ('/tenant/config/ui?tenant_id=' + encodeURIComponent(tenant_id));
+}
+document.addEventListener('keydown', e => { if(e.key === 'Enter') login(); });
+</script>
+</body>
+</html>
+    """.replace("__TENANT_ID_JSON__", tenant_id_json).replace("__NEXT_PATH_JSON__", next_json)
+    return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/admin/login")
+async def admin_login_submit(request: Request):
+    try:
+        data = await request.json()
+    except Exception:
+        raw = (await request.body()).decode("utf-8", errors="ignore")
+        data = {k: v[-1] if v else "" for k, v in urllib.parse.parse_qs(raw).items()}
+    token = str((data or {}).get("admin_token") or (data or {}).get("token") or "").strip()
+    tenant_id = str((data or {}).get("tenant_id") or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
+    next_path = stage62_safe_local_path(str((data or {}).get("next") or ""), tenant_id)
+    if not stage61_admin_token_configured():
+        return JSONResponse(status_code=503, content={"ok": False, "stage": "62", "error": "admin_token_not_configured"}, headers={"Cache-Control": "no-store"})
+    if not stage61_token_valid(token):
+        return JSONResponse(status_code=401, content={"ok": False, "stage": "62", "error": "invalid_admin_token"}, headers={"Cache-Control": "no-store"})
+    response = JSONResponse(content={
+        "ok": True,
+        "stage": "62",
+        "auth_model": "signed_admin_session_cookie",
+        "tenant_id": tenant_id,
+        "redirect_url": next_path,
+        "session_cookie": STAGE62_ADMIN_SESSION_COOKIE_NAME,
+        "max_age_seconds": stage62_session_max_age_seconds(),
+        "token_value_exposed": False,
+    }, headers={"Cache-Control": "no-store"})
+    stage62_set_admin_session_cookie(response, tenant_id=tenant_id)
+    return response
+
+
+@app.get("/admin/logout", response_class=HTMLResponse)
+def admin_logout_ui():
+    html = """<!doctype html><html><head><meta charset='utf-8'/><title>Repliq Admin Logout</title></head><body style='font-family:Arial,sans-serif;padding:24px;'><h2>Logged out</h2><p>Repliq admin session cookies were cleared.</p><p><a href='/admin/login'>Open admin login</a></p></body></html>"""
+    response = HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
+    stage62_clear_admin_session_cookies(response)
+    return response
+
+
+@app.post("/admin/logout")
+def admin_logout_api():
+    response = JSONResponse(content={"ok": True, "stage": "62", "logged_out": True}, headers={"Cache-Control": "no-store"})
+    stage62_clear_admin_session_cookies(response)
+    return response
+
+
+@app.get("/admin/session")
+def admin_session_status(request: Request):
+    session = stage62_request_session_payload(request)
+    legacy_token_ok = stage61_token_valid(stage61_request_token(request))
+    authenticated = bool(session or legacy_token_ok)
+    return {
+        "ok": True,
+        "stage": "62",
+        "authenticated": authenticated,
+        "auth_model": "signed_admin_session_cookie" if session else ("legacy_shared_admin_token" if legacy_token_ok else "none"),
+        "tenant_id": session.get("tenant_id") if session else None,
+        "expires_at": datetime.utcfromtimestamp(int(session.get("exp"))).isoformat() + "Z" if session and session.get("exp") else None,
+        "session_cookie": STAGE62_ADMIN_SESSION_COOKIE_NAME,
+        "token_value_exposed": False,
+    }
+
+
+@app.get("/admin/session/readiness")
+def admin_session_readiness(tenant_id: str = TENANT_ID_DEFAULT):
+    return stage62_admin_session_readiness_payload(tenant_id=tenant_id)
 
 @app.get("/telegram/readiness")
 @app.get("/channels/telegram/readiness")
@@ -13266,6 +13619,8 @@ def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
           <button class="secondary" onclick="openPath('/tenants/ui')">Tenants</button>
           <button class="secondary" onclick="openPath('/onboarding/ui?tenant_id='+encodeURIComponent(currentTenant()))">Onboarding</button>
           <button class="secondary" onclick="openPath('/tenant/config/ui?tenant_id='+encodeURIComponent(currentTenant()))">Tenant config</button>
+          <button class="secondary" onclick="openPath('/admin/session/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Admin session</button>
+          <button class="secondary" onclick="openPath('/admin/logout')">Logout</button>
         </div>
       </div>
       <div class="muted nav-links">JSON endpoints:
@@ -13274,6 +13629,8 @@ def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
         <a id="lnk_usage_ready" href="#">usage readiness</a> ·
         <a id="lnk_access_ready" href="#">access readiness</a> ·
         <a id="lnk_admin_access" href="#">admin access enforcement</a> ·
+        <a id="lnk_admin_session" href="#">admin session</a> ·
+        <a href="/admin/logout">logout</a> ·
         <a id="lnk_telegram_ready" href="#">telegram readiness</a> ·
         <a id="lnk_telegram_smoke" href="#">telegram smoke lock</a> ·
         <a id="lnk_activity" href="#">activity</a> ·
@@ -13548,6 +13905,7 @@ async function loadAll() {{
   el('lnk_usage_ready').href = `/usage/readiness?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
   el('lnk_access_ready').href = `/access/readiness?tenant_id=${{encodeURIComponent(tenant)}}`;
   el('lnk_admin_access').href = `/admin/access/enforcement/readiness?tenant_id=${{encodeURIComponent(tenant)}}`;
+  el('lnk_admin_session').href = `/admin/session/readiness?tenant_id=${{encodeURIComponent(tenant)}}`;
   el('lnk_telegram_ready').href = `/telegram/readiness?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
   el('lnk_telegram_smoke').href = `/telegram/live-smoke/readiness?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
   el('lnk_activity').href = `/dashboard/activity?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
@@ -13707,6 +14065,8 @@ summary { cursor:pointer; font-weight:800; }
         <button class="secondary" onclick="openPath('/usage/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Usage readiness</button>
         <button class="secondary" onclick="openPath('/access/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Access readiness</button>
         <button class="secondary" onclick="openPath('/admin/access/enforcement/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Admin access</button>
+        <button class="secondary" onclick="openPath('/admin/session/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Admin session</button>
+        <button class="secondary" onclick="openPath('/admin/logout')">Logout</button>
         <button class="secondary" onclick="openPath('/telegram/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Telegram readiness</button>
         <button class="secondary" onclick="openPath('/telegram/live-smoke/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Telegram smoke lock</button>
       </div>
@@ -13821,6 +14181,8 @@ summary { cursor:pointer; font-weight:800; }
       <a id="lnk_usage_ready" href="#">Usage readiness</a>
       <a id="lnk_access_ready" href="#">Access readiness</a>
       <a id="lnk_admin_access" href="#">Admin access enforcement</a>
+      <a id="lnk_admin_session" href="#">Admin session</a>
+      <a id="lnk_admin_logout" href="/admin/logout">Logout</a>
       <a id="lnk_telegram_ready" href="#">Telegram readiness</a>
       <a id="lnk_telegram_smoke" href="#">Telegram smoke lock</a>
       <a id="lnk_routes" href="#">Phone routes</a>
@@ -13850,6 +14212,7 @@ function setLinks(tid){
   document.getElementById('lnk_usage_ready').href = '/usage/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_access_ready').href = '/access/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_admin_access').href = '/admin/access/enforcement/readiness?tenant_id=' + encodeURIComponent(tid);
+  document.getElementById('lnk_admin_session').href = '/admin/session/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_telegram_ready').href = '/telegram/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_telegram_smoke').href = '/telegram/live-smoke/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_routes').href = '/tenant/routes?tenant_id=' + encodeURIComponent(tid);
@@ -14367,6 +14730,7 @@ def tenant_config(tenant_id: str = TENANT_ID_DEFAULT):
         "usage_analytics_readiness": stage57_usage_analytics_readiness_payload(str(tenant.get("_id") or tenant_id)),
         "access_boundaries_readiness": stage58_access_boundaries_readiness_payload(str(tenant.get("_id") or tenant_id)),
         "admin_access_enforcement": stage61_admin_access_enforcement_payload(str(tenant.get("_id") or tenant_id)),
+        "admin_session_readiness": stage62_admin_session_readiness_payload(str(tenant.get("_id") or tenant_id)),
         "telegram_text_channel_readiness": stage59_telegram_text_channel_readiness_payload(str(tenant.get("_id") or tenant_id)),
         "telegram_live_smoke_lock": stage60_telegram_live_smoke_lock_payload(str(tenant.get("_id") or tenant_id)),
         "config_ui_hardening": tenant_config_ui_readiness_payload(tenant),
