@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import hmac
 import ast
 import base64
 import uuid
@@ -14,7 +15,7 @@ from contextvars import ContextVar
 import requests
 from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel
-from fastapi.responses import Response, StreamingResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import Response, StreamingResponse, HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from twilio.twiml.voice_response import VoiceResponse, Gather
 from twilio.jwt.access_token import AccessToken
@@ -147,6 +148,166 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# -------------------------
+# STAGE 61: ADMIN ACCESS ENFORCEMENT
+# -------------------------
+STAGE61_ADMIN_TOKEN_ENV_NAMES = ("REPLIQ_ADMIN_TOKEN", "ADMIN_ACCESS_TOKEN", "ADMIN_TOKEN")
+STAGE61_ADMIN_COOKIE_NAME = "repliq_admin_token"
+STAGE61_ADMIN_QUERY_KEYS = ("admin_token", "repliq_admin_token", "access_token")
+STAGE61_ADMIN_HEADER_KEYS = ("x-repliq-admin-token", "x-admin-token")
+
+STAGE61_PROTECTED_EXACT_PATHS = {
+    "/internal/readiness",
+    "/demo/script",
+    "/launch/readiness",
+    "/pilot/setup/readiness",
+    "/business-memory/readiness",
+    "/usage/readiness",
+    "/analytics/readiness",
+    "/access/readiness",
+    "/admin/access/readiness",
+    "/admin/access/enforcement",
+    "/admin/access/enforcement/readiness",
+    "/telegram/status",
+    "/telegram/set-webhook",
+    "/telegram/readiness",
+    "/channels/telegram/readiness",
+    "/telegram/live-smoke/readiness",
+    "/telegram/smoke/readiness",
+    "/channels/telegram/live-smoke/readiness",
+    "/tenant/admin/readiness",
+    "/tenant/config",
+    "/tenant/config/update",
+    "/tenant/config/ui",
+    "/tenant/routes",
+    "/tenant/overview",
+    "/tenant/change_plan",
+    "/dashboard",
+    "/dashboard/bookings",
+    "/dashboard/conversations",
+    "/dashboard/analytics",
+    "/dashboard/usage",
+    "/dashboard/activity",
+    "/dashboard/chart-data",
+    "/analytics",
+    "/usage",
+    "/bookings",
+    "/conversations",
+    "/activity",
+    "/tenants",
+    "/tenants/ui",
+    "/dev_chat",
+    "/dev_chat_ui",
+    "/dev_rules",
+    "/dev_logs",
+    "/onboarding/status",
+    "/onboarding/finish",
+    "/onboarding/ui",
+    "/onboarding/create_tenant",
+}
+
+
+def stage61_admin_token_value() -> str:
+    for name in STAGE61_ADMIN_TOKEN_ENV_NAMES:
+        value = (os.getenv(name, "") or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def stage61_admin_token_configured() -> bool:
+    return bool(stage61_admin_token_value())
+
+
+def stage61_admin_access_enforcement_enabled() -> bool:
+    # Stage 61 deliberately defaults to enforced mode. If the token is missing,
+    # protected admin surfaces fail closed with a clear 503 instead of staying public.
+    raw = (os.getenv("REPLIQ_ADMIN_ACCESS_ENFORCEMENT", "true") or "true").strip().lower()
+    return raw not in {"0", "false", "no", "off", "disabled", "report_only"}
+
+
+def stage61_path_requires_admin(path: str) -> bool:
+    clean = (path or "").rstrip("/") or "/"
+    return clean in STAGE61_PROTECTED_EXACT_PATHS
+
+
+def stage61_query_token(request: Request) -> str:
+    for key in STAGE61_ADMIN_QUERY_KEYS:
+        value = (request.query_params.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def stage61_request_token(request: Request) -> str:
+    for key in STAGE61_ADMIN_HEADER_KEYS:
+        value = (request.headers.get(key) or "").strip()
+        if value:
+            return value
+    auth = (request.headers.get("authorization") or "").strip()
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    cookie_value = (request.cookies.get(STAGE61_ADMIN_COOKIE_NAME) or "").strip()
+    if cookie_value:
+        return cookie_value
+    return stage61_query_token(request)
+
+
+def stage61_token_valid(candidate: str) -> bool:
+    expected = stage61_admin_token_value()
+    if not expected or not candidate:
+        return False
+    try:
+        return hmac.compare_digest(str(candidate), str(expected))
+    except Exception:
+        return False
+
+
+def stage61_admin_auth_error(status_code: int, detail: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "ok": False,
+            "stage": "61",
+            "error": detail,
+            "auth_model": "shared_admin_token_mvp",
+            "accepted": {
+                "headers": ["X-Repliq-Admin-Token", "Authorization: Bearer <token>"],
+                "query": ["admin_token=<token>"],
+                "cookie": STAGE61_ADMIN_COOKIE_NAME,
+            },
+            "note": "Admin surfaces are protected by Stage 61. Do not paste the token into chat logs.",
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.middleware("http")
+async def stage61_admin_access_middleware(request: Request, call_next):
+    path = (request.url.path or "").rstrip("/") or "/"
+    token_from_query = stage61_query_token(request)
+    query_token_valid = stage61_token_valid(token_from_query)
+
+    if stage61_admin_access_enforcement_enabled() and stage61_path_requires_admin(path):
+        if not stage61_admin_token_configured():
+            return stage61_admin_auth_error(503, "admin_token_not_configured")
+        candidate = stage61_request_token(request)
+        if not stage61_token_valid(candidate):
+            return stage61_admin_auth_error(401, "admin_token_required")
+
+    response = await call_next(request)
+    if query_token_valid:
+        response.set_cookie(
+            key=STAGE61_ADMIN_COOKIE_NAME,
+            value=token_from_query,
+            httponly=True,
+            secure=bool(str(SERVER_BASE_URL or "").lower().startswith("https://")),
+            samesite="lax",
+            max_age=60 * 60 * 8,
+        )
+    return response
 
 # -------------------------
 # HUMAN RESPONSE LAYER (2.6)
@@ -10913,12 +11074,8 @@ def stage58_access_boundaries_readiness_payload(tenant_id: str = TENANT_ID_DEFAU
     tenant_found = bool(tenant.get("_id"))
     tenant_id_clean = str(tenant.get("_id") or tenant.get("id") or tid).strip()
 
-    admin_auth_token_configured = _stage43a_env_flag(
-        os.getenv("REPLIQ_ADMIN_TOKEN")
-        or os.getenv("ADMIN_ACCESS_TOKEN")
-        or os.getenv("ADMIN_TOKEN")
-    )
-    admin_auth_enforced = False
+    admin_auth_token_configured = _stage43a_env_flag(stage61_admin_token_value())
+    admin_auth_enforced = bool(stage61_admin_access_enforcement_enabled() and admin_auth_token_configured)
     tenant_ownership_guard_enforced = False
     public_saas_ready = bool(admin_auth_enforced and tenant_ownership_guard_enforced)
 
@@ -10961,19 +11118,19 @@ def stage58_access_boundaries_readiness_payload(tenant_id: str = TENANT_ID_DEFAU
     )
 
     admin_surfaces = [
-        {"path": "/tenant/config/ui", "classification": "admin_demo_ui", "current_access": "unguarded_url_with_tenant_id", "client_demo_safe": bool(ui_status.get("safe_to_demo")), "public_saas_ready": False},
-        {"path": "/tenant/config", "classification": "admin_config_json", "current_access": "unguarded_url_with_tenant_id", "client_demo_safe": bool(not ui_status.get("secrets_exposed_by_config_api")), "public_saas_ready": False},
-        {"path": "/tenant/config/update", "classification": "admin_write_endpoint", "current_access": "unguarded_post_with_tenant_id", "client_demo_safe": False, "public_saas_ready": False},
-        {"path": "/internal/readiness", "classification": "internal_readiness", "current_access": "unguarded_url_with_tenant_id", "client_demo_safe": True, "public_saas_ready": False},
-        {"path": "/launch/readiness", "classification": "read_only_launch_metadata", "current_access": "unguarded_url_with_tenant_id", "client_demo_safe": True, "public_saas_ready": False},
-        {"path": "/pilot/setup/readiness", "classification": "read_only_pilot_metadata", "current_access": "unguarded_url_with_tenant_id", "client_demo_safe": True, "public_saas_ready": False},
-        {"path": "/business-memory/readiness", "classification": "read_only_memory_metadata", "current_access": "unguarded_url_with_tenant_id", "client_demo_safe": True, "public_saas_ready": False},
-        {"path": "/usage/readiness", "classification": "read_only_usage_metadata", "current_access": "unguarded_url_with_tenant_id", "client_demo_safe": True, "public_saas_ready": False},
-        {"path": "/dashboard", "classification": "admin_dashboard", "current_access": "unguarded_url_with_tenant_id", "client_demo_safe": True, "public_saas_ready": False},
-        {"path": "/dev_chat_ui", "classification": "dev_demo_channel", "current_access": "unguarded_url_with_tenant_id", "client_demo_safe": True, "public_saas_ready": False},
-        {"path": "/dev_chat", "classification": "dev_demo_channel_api", "current_access": "unguarded_post_with_tenant_id", "client_demo_safe": False, "public_saas_ready": False},
-        {"path": "/tenants/ui", "classification": "multi_tenant_admin_ui", "current_access": "unguarded", "client_demo_safe": False, "public_saas_ready": False},
-        {"path": "/tenants", "classification": "multi_tenant_admin_json", "current_access": "unguarded", "client_demo_safe": False, "public_saas_ready": False},
+        {"path": "/tenant/config/ui", "classification": "admin_demo_ui", "current_access": "stage61_admin_token_required", "client_demo_safe": bool(ui_status.get("safe_to_demo")), "public_saas_ready": False},
+        {"path": "/tenant/config", "classification": "admin_config_json", "current_access": "stage61_admin_token_required", "client_demo_safe": bool(not ui_status.get("secrets_exposed_by_config_api")), "public_saas_ready": False},
+        {"path": "/tenant/config/update", "classification": "admin_write_endpoint", "current_access": "stage61_admin_token_required", "client_demo_safe": False, "public_saas_ready": False},
+        {"path": "/internal/readiness", "classification": "internal_readiness", "current_access": "stage61_admin_token_required", "client_demo_safe": True, "public_saas_ready": False},
+        {"path": "/launch/readiness", "classification": "read_only_launch_metadata", "current_access": "stage61_admin_token_required", "client_demo_safe": True, "public_saas_ready": False},
+        {"path": "/pilot/setup/readiness", "classification": "read_only_pilot_metadata", "current_access": "stage61_admin_token_required", "client_demo_safe": True, "public_saas_ready": False},
+        {"path": "/business-memory/readiness", "classification": "read_only_memory_metadata", "current_access": "stage61_admin_token_required", "client_demo_safe": True, "public_saas_ready": False},
+        {"path": "/usage/readiness", "classification": "read_only_usage_metadata", "current_access": "stage61_admin_token_required", "client_demo_safe": True, "public_saas_ready": False},
+        {"path": "/dashboard", "classification": "admin_dashboard", "current_access": "stage61_admin_token_required", "client_demo_safe": True, "public_saas_ready": False},
+        {"path": "/dev_chat_ui", "classification": "dev_demo_channel", "current_access": "stage61_admin_token_required", "client_demo_safe": True, "public_saas_ready": False},
+        {"path": "/dev_chat", "classification": "dev_demo_channel_api", "current_access": "stage61_admin_token_required", "client_demo_safe": False, "public_saas_ready": False},
+        {"path": "/tenants/ui", "classification": "multi_tenant_admin_ui", "current_access": "stage61_admin_token_required", "client_demo_safe": False, "public_saas_ready": False},
+        {"path": "/tenants", "classification": "multi_tenant_admin_json", "current_access": "stage61_admin_token_required", "client_demo_safe": False, "public_saas_ready": False},
     ]
 
     blocking = list(dict.fromkeys([str(x) for x in blocking if str(x)]))
@@ -10990,7 +11147,7 @@ def stage58_access_boundaries_readiness_payload(tenant_id: str = TENANT_ID_DEFAU
         "current_mvp_scope": {
             "channel": "text",
             "voice_calls_scope": "future_phase",
-            "admin_surfaces_scope": "private_demo_or_internal_pilot_only_until_auth_is_added",
+            "admin_surfaces_scope": "shared_admin_token_protected_mvp_layer",
         },
         "current_access_model": {
             "admin_auth_token_configured": bool(admin_auth_token_configured),
@@ -11026,10 +11183,9 @@ def stage58_access_boundaries_readiness_payload(tenant_id: str = TENANT_ID_DEFAU
             "/dialogue/audit",
         ],
         "required_before_public_saas": [
-            "Add real admin authentication/session or signed admin token checks.",
+            "Replace shared admin token with per-user admin sessions before public SaaS.",
             "Add tenant ownership/role checks instead of tenant_id-only access.",
-            "Protect write endpoints such as /tenant/config/update and /tenant/change_plan.",
-            "Hide or restrict multi-tenant list endpoints from client-facing access.",
+            "Hide or restrict multi-tenant list endpoints from client-facing access when roles are introduced.",
             "Keep secret redaction checks in /tenant/config and admin UI.",
             "Retest /dialogue/qa after auth middleware because it may affect dev/admin routes.",
         ],
@@ -11044,6 +11200,117 @@ def stage58_access_boundaries_readiness_payload(tenant_id: str = TENANT_ID_DEFAU
             "dashboard": url(f"/dashboard?tenant_id={tenant_id_clean}"),
         },
         "note": "Readiness metadata only. Stage 58 audits access boundaries but does not enforce new auth, call LLMs, mutate tenant config, mutate conversations, or create/update/delete calendar events.",
+    }
+
+
+
+def stage61_admin_access_enforcement_payload(tenant_id: str = TENANT_ID_DEFAULT) -> Dict[str, Any]:
+    """Read-only Stage 61 access-enforcement status for protected admin surfaces."""
+    tid = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    base = (SERVER_BASE_URL or "").rstrip("/")
+
+    def url(path: str) -> str:
+        return base + path if base else path
+
+    token_configured = stage61_admin_token_configured()
+    enforcement_enabled = stage61_admin_access_enforcement_enabled()
+    shared_token_enforced = bool(token_configured and enforcement_enabled)
+    tenant = get_existing_tenant(tid)
+    tenant_found = bool(tenant.get("_id"))
+    tenant_id_clean = str(tenant.get("_id") or tenant.get("id") or tid).strip()
+
+    blocking: List[str] = []
+    warnings: List[str] = []
+    if not token_configured:
+        blocking.append("admin_token_not_configured")
+    if not enforcement_enabled:
+        blocking.append("admin_access_enforcement_disabled")
+    if not tenant_found:
+        warnings.append("tenant_not_found_for_requested_tenant")
+    warnings.extend([
+        "shared_admin_token_is_mvp_access_layer_not_full_login",
+        "tenant_ownership_guard_not_implemented_yet",
+        "public_saas_requires_per_user_auth_sessions",
+    ])
+
+    protected_surfaces = [
+        "/tenant/config/ui",
+        "/tenant/config",
+        "/tenant/config/update",
+        "/tenant/admin/readiness",
+        "/internal/readiness",
+        "/launch/readiness",
+        "/pilot/setup/readiness",
+        "/business-memory/readiness",
+        "/usage/readiness",
+        "/access/readiness",
+        "/telegram/readiness",
+        "/telegram/live-smoke/readiness",
+        "/telegram/status",
+        "/telegram/set-webhook",
+        "/dashboard",
+        "/dashboard/analytics",
+        "/analytics",
+        "/usage",
+        "/bookings",
+        "/conversations",
+        "/activity",
+        "/tenants",
+        "/tenants/ui",
+        "/dev_chat",
+        "/dev_chat_ui",
+        "/onboarding/ui",
+        "/onboarding/status",
+    ]
+
+    status = "ready" if shared_token_enforced else "blocked"
+    return {
+        "stage": "61",
+        "purpose": "admin access enforcement for internal/admin/demo surfaces",
+        "tenant_id": tenant_id_clean,
+        "status": status,
+        "admin_access_enforced": bool(shared_token_enforced),
+        "shared_admin_token_configured": bool(token_configured),
+        "enforcement_enabled": bool(enforcement_enabled),
+        "private_demo_ready": bool(shared_token_enforced),
+        "public_saas_ready": False,
+        "auth_model": {
+            "type": "shared_admin_token_mvp",
+            "accepted_headers": ["X-Repliq-Admin-Token", "Authorization: Bearer <token>"],
+            "accepted_query_param": "admin_token",
+            "browser_cookie": STAGE61_ADMIN_COOKIE_NAME,
+            "token_env_names": list(STAGE61_ADMIN_TOKEN_ENV_NAMES),
+            "secret_value_exposed": False,
+        },
+        "protected_surface_count": len(protected_surfaces),
+        "protected_surfaces": protected_surfaces,
+        "explicitly_not_protected_by_stage61": [
+            "/dialogue/qa",
+            "/telegram/webhook",
+            "/google/callback",
+            "/health",
+        ],
+        "required_before_public_saas": [
+            "Replace shared admin token with real owner login/session or magic-link auth.",
+            "Add tenant ownership checks so owner A cannot open tenant B.",
+            "Separate super-admin surfaces from client-owner surfaces.",
+            "Add CSRF/session hardening for browser-based write endpoints.",
+        ],
+        "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
+        "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
+        "links": {
+            "internal_readiness": url(f"/internal/readiness?tenant_id={tenant_id_clean}"),
+            "tenant_config_ui": url(f"/tenant/config/ui?tenant_id={tenant_id_clean}"),
+            "dashboard": url(f"/dashboard?tenant_id={tenant_id_clean}"),
+            "access_enforcement": url(f"/admin/access/enforcement/readiness?tenant_id={tenant_id_clean}"),
+        },
+        "operator_instructions": [
+            "Set REPLIQ_ADMIN_TOKEN in Render before opening protected admin surfaces.",
+            "Use header X-Repliq-Admin-Token for API/curl checks.",
+            "For browser checks, open a protected page once with ?admin_token=<token>; Stage 61 stores an HttpOnly browser cookie for subsequent admin UI fetches.",
+            "Do not paste the token into chat logs or screenshots.",
+        ],
+        "note": "Readiness metadata only. This endpoint reports Stage 61 access enforcement status and does not call LLMs, mutate tenant config, mutate conversations, or create/update/delete calendar events.",
     }
 
 
@@ -11563,6 +11830,7 @@ def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) ->
         "business_memory_admin": stage56_business_memory_admin_readiness_payload(requested_tenant_id),
         "usage_analytics_readiness": stage57_usage_analytics_readiness_payload(requested_tenant_id),
         "access_boundaries_readiness": stage58_access_boundaries_readiness_payload(requested_tenant_id),
+        "admin_access_enforcement": stage61_admin_access_enforcement_payload(requested_tenant_id),
         "telegram_text_channel_readiness": stage59_telegram_text_channel_readiness_payload(requested_tenant_id),
         "telegram_live_smoke_lock": stage60_telegram_live_smoke_lock_payload(requested_tenant_id),
         "tenant_admin_config": tenant_admin_config_readiness_payload(tenant) if tenant_status.get("tenant_id") else {
@@ -11617,6 +11885,12 @@ def usage_readiness(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
 @app.get("/admin/access/readiness")
 def access_readiness(tenant_id: str = TENANT_ID_DEFAULT):
     return stage58_access_boundaries_readiness_payload(tenant_id=tenant_id)
+
+
+@app.get("/admin/access/enforcement")
+@app.get("/admin/access/enforcement/readiness")
+def admin_access_enforcement_readiness(tenant_id: str = TENANT_ID_DEFAULT):
+    return stage61_admin_access_enforcement_payload(tenant_id=tenant_id)
 
 
 @app.get("/telegram/readiness")
@@ -12999,6 +13273,7 @@ def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
         <a id="lnk_usage" href="#">usage</a> ·
         <a id="lnk_usage_ready" href="#">usage readiness</a> ·
         <a id="lnk_access_ready" href="#">access readiness</a> ·
+        <a id="lnk_admin_access" href="#">admin access enforcement</a> ·
         <a id="lnk_telegram_ready" href="#">telegram readiness</a> ·
         <a id="lnk_telegram_smoke" href="#">telegram smoke lock</a> ·
         <a id="lnk_activity" href="#">activity</a> ·
@@ -13272,6 +13547,7 @@ async function loadAll() {{
   el('lnk_usage').href = `/dashboard/usage?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
   el('lnk_usage_ready').href = `/usage/readiness?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
   el('lnk_access_ready').href = `/access/readiness?tenant_id=${{encodeURIComponent(tenant)}}`;
+  el('lnk_admin_access').href = `/admin/access/enforcement/readiness?tenant_id=${{encodeURIComponent(tenant)}}`;
   el('lnk_telegram_ready').href = `/telegram/readiness?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
   el('lnk_telegram_smoke').href = `/telegram/live-smoke/readiness?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
   el('lnk_activity').href = `/dashboard/activity?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
@@ -13430,6 +13706,7 @@ summary { cursor:pointer; font-weight:800; }
         <button class="secondary" onclick="openPath('/business-memory/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Memory readiness</button>
         <button class="secondary" onclick="openPath('/usage/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Usage readiness</button>
         <button class="secondary" onclick="openPath('/access/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Access readiness</button>
+        <button class="secondary" onclick="openPath('/admin/access/enforcement/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Admin access</button>
         <button class="secondary" onclick="openPath('/telegram/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Telegram readiness</button>
         <button class="secondary" onclick="openPath('/telegram/live-smoke/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Telegram smoke lock</button>
       </div>
@@ -13543,6 +13820,7 @@ summary { cursor:pointer; font-weight:800; }
       <a id="lnk_memory" href="#">Memory readiness</a>
       <a id="lnk_usage_ready" href="#">Usage readiness</a>
       <a id="lnk_access_ready" href="#">Access readiness</a>
+      <a id="lnk_admin_access" href="#">Admin access enforcement</a>
       <a id="lnk_telegram_ready" href="#">Telegram readiness</a>
       <a id="lnk_telegram_smoke" href="#">Telegram smoke lock</a>
       <a id="lnk_routes" href="#">Phone routes</a>
@@ -13571,6 +13849,7 @@ function setLinks(tid){
   document.getElementById('lnk_memory').href = '/business-memory/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_usage_ready').href = '/usage/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_access_ready').href = '/access/readiness?tenant_id=' + encodeURIComponent(tid);
+  document.getElementById('lnk_admin_access').href = '/admin/access/enforcement/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_telegram_ready').href = '/telegram/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_telegram_smoke').href = '/telegram/live-smoke/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_routes').href = '/tenant/routes?tenant_id=' + encodeURIComponent(tid);
@@ -14087,6 +14366,7 @@ def tenant_config(tenant_id: str = TENANT_ID_DEFAULT):
         "business_memory_admin": stage56_business_memory_admin_readiness_payload(str(tenant.get("_id") or tenant_id)),
         "usage_analytics_readiness": stage57_usage_analytics_readiness_payload(str(tenant.get("_id") or tenant_id)),
         "access_boundaries_readiness": stage58_access_boundaries_readiness_payload(str(tenant.get("_id") or tenant_id)),
+        "admin_access_enforcement": stage61_admin_access_enforcement_payload(str(tenant.get("_id") or tenant_id)),
         "telegram_text_channel_readiness": stage59_telegram_text_channel_readiness_payload(str(tenant.get("_id") or tenant_id)),
         "telegram_live_smoke_lock": stage60_telegram_live_smoke_lock_payload(str(tenant.get("_id") or tenant_id)),
         "config_ui_hardening": tenant_config_ui_readiness_payload(tenant),
@@ -14200,6 +14480,7 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
         "business_memory_admin": stage56_business_memory_admin_readiness_payload(tenant_id),
         "usage_analytics_readiness": stage57_usage_analytics_readiness_payload(tenant_id),
         "access_boundaries_readiness": stage58_access_boundaries_readiness_payload(tenant_id),
+        "admin_access_enforcement": stage61_admin_access_enforcement_payload(tenant_id),
         "telegram_text_channel_readiness": stage59_telegram_text_channel_readiness_payload(tenant_id),
         "telegram_live_smoke_lock": stage60_telegram_live_smoke_lock_payload(tenant_id),
         "config_ui_hardening": tenant_config_ui_readiness_payload(updated),

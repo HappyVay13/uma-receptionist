@@ -405,3 +405,16 @@ Stage 36 adds a deterministic recovery layer inside active booking flows. It is 
 - The endpoint is read-only. It does not call Telegram APIs, set webhooks, call LLMs, mutate tenant config, mutate conversations, or create/update/delete Google Calendar events.
 - Active MVP scope remains text-first receptionist. Voice/calls remain future scope.
 - Expected production baseline remains `/dialogue/qa = 50/50 passed`.
+
+## Stage 61 — Admin Access Enforcement
+- Stage 61 adds a minimal shared-admin-token access layer for internal/admin/demo surfaces after Telegram text was locked as the first external text channel.
+- Enforcement is enabled by default and reads the admin token from `REPLIQ_ADMIN_TOKEN`, `ADMIN_ACCESS_TOKEN`, or `ADMIN_TOKEN`.
+- Protected surfaces accept `X-Repliq-Admin-Token`, `Authorization: Bearer <token>`, `?admin_token=<token>` for browser bootstrap, or the HttpOnly `repliq_admin_token` cookie set after valid query-token entry.
+- Adds `GET /admin/access/enforcement/readiness?tenant_id=...` and alias `GET /admin/access/enforcement?tenant_id=...`.
+- `/internal/readiness`, `/tenant/config`, and `/tenant/config/update` responses now include `admin_access_enforcement` metadata.
+- `/tenant/config/ui` and `/dashboard` now link to Admin access enforcement readiness.
+- Protected surfaces include config UI/JSON/update, internal/readiness, launch/pilot/memory/usage/access/Telegram readiness, dashboard/analytics/usage/bookings/conversations/activity, tenant list/admin surfaces, dev chat/dev logs, and onboarding admin screens.
+- `/dialogue/qa` remains unprotected for production regression checks. `/telegram/webhook` remains unprotected by the admin-token layer because it is the Telegram callback and is protected by Telegram secret-token validation. `/google/callback` remains available for OAuth redirect flow.
+- This is not final public SaaS auth: public SaaS still requires per-user login/session, tenant ownership checks, role separation, and CSRF/session hardening.
+- Receptionist core behavior is unchanged: booking, side-questions, confirmation, cancellation, reschedule, slot generation, date parsing, Google Calendar runtime actions, Telegram webhook handling, and regression evaluator are not changed.
+- Expected production baseline remains `/dialogue/qa = 50/50 passed`.

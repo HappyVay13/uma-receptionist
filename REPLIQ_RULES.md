@@ -331,3 +331,16 @@ If a price question is asked inside an active booking flow and the current langu
 - Telegram is current-scope only as a text channel. Voice/calls remain future scope and must not be positioned as part of this stage.
 - Public SaaS readiness remains false until real admin auth, self-serve onboarding, tenant isolation, and billing are implemented.
 - Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+
+## Stage 61 — Admin Access Enforcement Rules
+- Stage 61 may add a minimal shared-admin-token access middleware for admin/internal/demo surfaces.
+- Do not change receptionist behavior, booking routing, slot generation, date/time parsing, side-question handling, cancellation, reschedule, Google Calendar runtime create/update/delete behavior, Telegram webhook handling, or regression evaluator rules.
+- Stage 61 must fail closed for protected admin surfaces when enforcement is enabled but no admin token is configured.
+- The admin token value must never be logged, returned by endpoints, exposed in UI, or included in documentation examples.
+- Protected API checks may use `X-Repliq-Admin-Token` or `Authorization: Bearer <token>`.
+- Browser checks may use `?admin_token=<token>` only as a bootstrap path; the server should set an HttpOnly cookie for subsequent same-origin admin UI fetches.
+- `/dialogue/qa` must remain available for production regression checks.
+- `/telegram/webhook` must not be protected by the shared admin token because Telegram must be able to call it; it remains protected by Telegram webhook secret validation.
+- `/google/callback` must remain available for OAuth redirect flow.
+- Stage 61 must not claim public SaaS readiness. Shared admin token protection is only an MVP/private-admin layer until per-user auth, tenant ownership, role separation, and CSRF/session hardening are implemented.
+- Current protected baseline remains `/dialogue/qa = 50/50 passed`.
