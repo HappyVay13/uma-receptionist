@@ -391,3 +391,17 @@ Stage 36 adds a deterministic recovery layer inside active booking flows. It is 
 - `/telegram/readiness` now reports `stage = 59.1` and includes `stage59_1_hardening` metadata.
 - Active MVP scope remains text-first receptionist. Voice/calls remain future scope.
 - Expected production baseline remains `/dialogue/qa = 50/50 passed`.
+
+
+## Stage 60 — Telegram Live Smoke Lock
+- Stage 60 is a read-only Telegram live-smoke lock stage after Stage 59.1 was verified by the user in production.
+- User-reported factual trigger: Telegram text flow works after Stage 59.1; RU short replies no longer switch to LV, old LV menu no longer breaks the flow, and raw business-memory labels no longer leak.
+- No receptionist core behavior is changed: booking routing, slot generation, date/time parsing, price side-question handling, confirmation, cancellation, reschedule, Google Calendar runtime actions, and regression evaluator logic are not changed.
+- Adds `GET /telegram/live-smoke/readiness?tenant_id=...` with aliases `GET /telegram/smoke/readiness?tenant_id=...` and `GET /channels/telegram/live-smoke/readiness?tenant_id=...`.
+- `/internal/readiness` now includes `telegram_live_smoke_lock` for the requested tenant.
+- `/tenant/config` and `/tenant/config/update` responses now include `telegram_live_smoke_lock` metadata.
+- `/tenant/config/ui` and `/dashboard` now link to Telegram smoke lock.
+- Stage 60 locks Telegram as the first external text channel for controlled pilot use, while public SaaS readiness remains false until auth/self-serve stages are implemented.
+- The endpoint is read-only. It does not call Telegram APIs, set webhooks, call LLMs, mutate tenant config, mutate conversations, or create/update/delete Google Calendar events.
+- Active MVP scope remains text-first receptionist. Voice/calls remain future scope.
+- Expected production baseline remains `/dialogue/qa = 50/50 passed`.

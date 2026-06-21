@@ -33,3 +33,13 @@ Readiness:
 - GET /channels/telegram/readiness?tenant_id=clinic_demo
 
 The readiness endpoint is read-only. It does not call Telegram APIs or set webhooks. It reports whether Telegram text channel config is ready for a controlled pilot smoke test and includes Stage 59.1 hardening metadata.
+
+
+Stage 60 live smoke lock:
+- GET /telegram/live-smoke/readiness?tenant_id=clinic_demo
+- GET /telegram/smoke/readiness?tenant_id=clinic_demo
+- GET /channels/telegram/live-smoke/readiness?tenant_id=clinic_demo
+
+Stage 60 records the production Telegram smoke result after Stage 59.1 hardening was verified. It expects Telegram to stay as a free-text channel, preserve RU after short replies, keep the old LV reply keyboard disabled, and prevent raw business_memory labels from leaking.
+
+The live-smoke lock endpoint is read-only. It does not call Telegram APIs, set webhooks, call LLMs, mutate tenant config, mutate conversations, or create/update/delete Google Calendar events.

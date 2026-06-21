@@ -11266,11 +11266,165 @@ def stage59_telegram_text_channel_readiness_payload(tenant_id: str = TENANT_ID_D
             "telegram_status": status_url,
             "telegram_set_webhook": set_webhook_url,
             "telegram_readiness": readiness_url,
+            "telegram_live_smoke_lock": url(f"/telegram/live-smoke/readiness?tenant_id={tenant_id_clean}&days={days}"),
             "tenant_config_ui": url(f"/tenant/config/ui?tenant_id={tenant_id_clean}"),
             "dashboard": url(f"/dashboard?tenant_id={tenant_id_clean}"),
             "dev_chat": url(f"/dev_chat_ui?tenant_id={tenant_id_clean}"),
             "launch_readiness": url(f"/launch/readiness?tenant_id={tenant_id_clean}"),
         },
+        "note": "Readiness metadata only. This endpoint does not call Telegram APIs, set webhooks, call LLMs, mutate tenant config, mutate conversations, or create/update/delete calendar events.",
+    }
+
+
+def stage60_telegram_live_smoke_lock_payload(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14) -> Dict[str, Any]:
+    """Read-only Telegram live smoke lock for the text-first MVP.
+
+    Stage 60 records the verified Telegram text smoke gate after Stage 59.1.
+    It does not call Telegram APIs, set webhooks, call LLMs, mutate tenant
+    config, mutate conversation state, or create/update/delete Google Calendar
+    events. It only summarizes the Telegram channel state, the user-reported
+    live smoke result, and the checks required before a controlled pilot.
+    """
+    tid = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    days = max(1, min(int(days or 14), 60))
+    base = (SERVER_BASE_URL or "").rstrip("/")
+
+    def url(path: str) -> str:
+        return base + path if base else path
+
+    telegram_status = stage59_telegram_text_channel_readiness_payload(tid, days=days)
+    tenant_id_clean = str(telegram_status.get("tenant_id") or tid)
+    telegram_config = telegram_status.get("telegram_config") or {}
+    tenant_gate = telegram_status.get("tenant_gate") or {}
+    usage_probe = telegram_status.get("usage_probe") or {}
+    channel_activity = usage_probe.get("telegram_channel_activity") or {}
+    stage59_hardening = telegram_status.get("stage59_1_hardening") or {}
+
+    channel_activity_count = int(
+        channel_activity.get("usage_events_count")
+        or channel_activity.get("usage_events_units")
+        or channel_activity.get("call_logs_count")
+        or 0
+    )
+
+    gate = {
+        "stage59_1_ready": bool(telegram_status.get("status") == "ready" and telegram_status.get("telegram_text_ready")),
+        "webhook_configured": bool(telegram_config.get("has_bot_token") and telegram_config.get("has_webhook_secret")),
+        "webhook_secret_header_supported": bool(telegram_config.get("webhook_secret_header_supported")),
+        "tenant_ready": bool(tenant_gate.get("tenant_ready")),
+        "calendar_selected": bool(tenant_gate.get("calendar_selected")),
+        "service_catalog_ready": bool(tenant_gate.get("has_service_catalog")),
+        "legacy_reply_keyboard_disabled": bool(stage59_hardening.get("legacy_reply_keyboard_disabled")),
+        "neutral_short_reply_language_preserved_by_core": bool(stage59_hardening.get("neutral_short_reply_language_preserved_by_core")),
+        "raw_business_memory_leak_guard_enabled": bool(stage59_hardening.get("raw_business_memory_leak_guard_enabled")),
+        "telegram_activity_seen": bool(channel_activity_count > 0),
+        "user_reported_ru_live_smoke_passed_after_stage59_1": True,
+        "user_reported_menu_issue_resolved_after_stage59_1": True,
+        "user_reported_raw_memory_labels_no_longer_leak_after_stage59_1": True,
+    }
+
+    blocking: List[str] = []
+    warnings: List[str] = []
+    for key in (
+        "stage59_1_ready",
+        "webhook_configured",
+        "tenant_ready",
+        "calendar_selected",
+        "service_catalog_ready",
+        "legacy_reply_keyboard_disabled",
+        "neutral_short_reply_language_preserved_by_core",
+        "raw_business_memory_leak_guard_enabled",
+    ):
+        if not gate.get(key):
+            blocking.append(f"telegram_live_smoke_gate_failed:{key}")
+    if not gate.get("telegram_activity_seen"):
+        warnings.append("telegram_activity_not_visible_in_usage_window")
+
+    locked = bool(not blocking)
+
+    return {
+        "stage": "60",
+        "purpose": "Telegram live smoke lock for the text-first MVP",
+        "tenant_id": tenant_id_clean,
+        "status": "locked" if locked and not warnings else "attention" if locked else "blocked",
+        "telegram_live_smoke_locked": bool(locked),
+        "telegram_pilot_ready": bool(locked),
+        "private_pilot_ready": bool(locked),
+        "public_saas_ready": False,
+        "current_mvp_scope": {
+            "channel": "text",
+            "selected_external_channel": "Telegram text",
+            "voice_calls_scope": "future_phase",
+            "note": "Stage 60 locks Telegram as the first external text channel for controlled pilot usage. Voice/calls remain future scope.",
+        },
+        "live_smoke_source": {
+            "source": "user_reported_after_stage59_1",
+            "reported_result": "passed",
+            "covered_paths": [
+                "RU Telegram booking",
+                "RU price side-question during booking",
+                "slot selection with short reply 2",
+                "confirmation with short reply Да",
+                "reschedule same event",
+                "cancel active appointment",
+            ],
+            "reported_language_result": "RU flow stayed RU after short replies",
+            "reported_menu_result": "old LV persistent menu no longer breaks the flow",
+            "reported_leak_result": "raw business_memory labels no longer leak",
+        },
+        "live_smoke_gate": gate,
+        "telegram_readiness_dependency": {
+            "stage": telegram_status.get("stage"),
+            "status": telegram_status.get("status"),
+            "telegram_text_ready": bool(telegram_status.get("telegram_text_ready")),
+            "private_pilot_ready": bool(telegram_status.get("private_pilot_ready")),
+            "warnings": telegram_status.get("warnings") or [],
+            "blocking": telegram_status.get("blocking") or [],
+        },
+        "usage_probe": {
+            "window_days": days,
+            "telegram_channel_activity": channel_activity,
+            "note": "Telegram activity should be greater than zero after live smoke. Zero activity is attention, not a core receptionist blocker, because logs can be outside the selected window or environment-specific.",
+        },
+        "google_calendar_expected_checks": [
+            "After booking: exactly one new calendar event exists.",
+            "After reschedule: the same event is updated to the new time; no duplicate is created.",
+            "After cancel: the event is removed or no longer active.",
+        ],
+        "locked_pilot_smoke_script": {
+            "ru_messages": [
+                "Хочу записаться на консультацию завтра вечером",
+                "Сколько это стоит?",
+                "2",
+                "Да",
+                "Хочу перенести запись",
+                "Послезавтра вечером",
+                "2",
+                "Да",
+                "Отменить запись",
+            ],
+            "acceptance_criteria": [
+                "Bot answers in Russian after short replies 2 and Да when the conversation started in Russian.",
+                "Old LV menu does not appear as a persistent reply keyboard and does not hijack the flow.",
+                "No raw internal labels such as business_memory_lv appear in customer-facing text.",
+                "Booking creates one Google Calendar event.",
+                "Reschedule updates the same event without duplicates.",
+                "Cancel removes or deactivates the event.",
+            ],
+        },
+        "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
+        "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
+        "links": {
+            "telegram_readiness": url(f"/telegram/readiness?tenant_id={tenant_id_clean}&days={days}"),
+            "telegram_live_smoke_lock": url(f"/telegram/live-smoke/readiness?tenant_id={tenant_id_clean}&days={days}"),
+            "telegram_status": url("/telegram/status"),
+            "dashboard": url(f"/dashboard?tenant_id={tenant_id_clean}"),
+            "tenant_config_ui": url(f"/tenant/config/ui?tenant_id={tenant_id_clean}"),
+            "usage_readiness": url(f"/usage/readiness?tenant_id={tenant_id_clean}&days={days}"),
+            "access_readiness": url(f"/access/readiness?tenant_id={tenant_id_clean}"),
+            "launch_readiness": url(f"/launch/readiness?tenant_id={tenant_id_clean}"),
+        },
+        "next_recommended_stage": "Stage 61 — Admin Access Enforcement",
         "note": "Readiness metadata only. This endpoint does not call Telegram APIs, set webhooks, call LLMs, mutate tenant config, mutate conversations, or create/update/delete calendar events.",
     }
 
@@ -11410,6 +11564,7 @@ def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) ->
         "usage_analytics_readiness": stage57_usage_analytics_readiness_payload(requested_tenant_id),
         "access_boundaries_readiness": stage58_access_boundaries_readiness_payload(requested_tenant_id),
         "telegram_text_channel_readiness": stage59_telegram_text_channel_readiness_payload(requested_tenant_id),
+        "telegram_live_smoke_lock": stage60_telegram_live_smoke_lock_payload(requested_tenant_id),
         "tenant_admin_config": tenant_admin_config_readiness_payload(tenant) if tenant_status.get("tenant_id") else {
             "stage": "51",
             "status": "blocked",
@@ -11468,6 +11623,13 @@ def access_readiness(tenant_id: str = TENANT_ID_DEFAULT):
 @app.get("/channels/telegram/readiness")
 def telegram_text_readiness(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
     return stage59_telegram_text_channel_readiness_payload(tenant_id=tenant_id, days=days)
+
+
+@app.get("/telegram/live-smoke/readiness")
+@app.get("/telegram/smoke/readiness")
+@app.get("/channels/telegram/live-smoke/readiness")
+def telegram_live_smoke_readiness(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    return stage60_telegram_live_smoke_lock_payload(tenant_id=tenant_id, days=days)
 
 
 # -------------------------
@@ -12838,6 +13000,7 @@ def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
         <a id="lnk_usage_ready" href="#">usage readiness</a> ·
         <a id="lnk_access_ready" href="#">access readiness</a> ·
         <a id="lnk_telegram_ready" href="#">telegram readiness</a> ·
+        <a id="lnk_telegram_smoke" href="#">telegram smoke lock</a> ·
         <a id="lnk_activity" href="#">activity</a> ·
         <a id="lnk_chart_data" href="#">chart data</a> ·
         <a id="lnk_bookings" href="#">bookings</a> ·
@@ -13110,6 +13273,7 @@ async function loadAll() {{
   el('lnk_usage_ready').href = `/usage/readiness?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
   el('lnk_access_ready').href = `/access/readiness?tenant_id=${{encodeURIComponent(tenant)}}`;
   el('lnk_telegram_ready').href = `/telegram/readiness?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
+  el('lnk_telegram_smoke').href = `/telegram/live-smoke/readiness?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
   el('lnk_activity').href = `/dashboard/activity?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
   el('lnk_chart_data').href = `/dashboard/chart-data?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
   el('lnk_bookings').href = `/dashboard/bookings?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
@@ -13267,6 +13431,7 @@ summary { cursor:pointer; font-weight:800; }
         <button class="secondary" onclick="openPath('/usage/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Usage readiness</button>
         <button class="secondary" onclick="openPath('/access/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Access readiness</button>
         <button class="secondary" onclick="openPath('/telegram/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Telegram readiness</button>
+        <button class="secondary" onclick="openPath('/telegram/live-smoke/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Telegram smoke lock</button>
       </div>
     </div>
     <div style="min-width:260px;">
@@ -13379,6 +13544,7 @@ summary { cursor:pointer; font-weight:800; }
       <a id="lnk_usage_ready" href="#">Usage readiness</a>
       <a id="lnk_access_ready" href="#">Access readiness</a>
       <a id="lnk_telegram_ready" href="#">Telegram readiness</a>
+      <a id="lnk_telegram_smoke" href="#">Telegram smoke lock</a>
       <a id="lnk_routes" href="#">Phone routes</a>
       <a id="lnk_bookings" href="#">Bookings</a>
       <a id="lnk_conv" href="#">Conversations</a>
@@ -13406,6 +13572,7 @@ function setLinks(tid){
   document.getElementById('lnk_usage_ready').href = '/usage/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_access_ready').href = '/access/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_telegram_ready').href = '/telegram/readiness?tenant_id=' + encodeURIComponent(tid);
+  document.getElementById('lnk_telegram_smoke').href = '/telegram/live-smoke/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_routes').href = '/tenant/routes?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_bookings').href = '/bookings?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_conv').href = '/conversations?tenant_id=' + encodeURIComponent(tid);
@@ -13921,6 +14088,7 @@ def tenant_config(tenant_id: str = TENANT_ID_DEFAULT):
         "usage_analytics_readiness": stage57_usage_analytics_readiness_payload(str(tenant.get("_id") or tenant_id)),
         "access_boundaries_readiness": stage58_access_boundaries_readiness_payload(str(tenant.get("_id") or tenant_id)),
         "telegram_text_channel_readiness": stage59_telegram_text_channel_readiness_payload(str(tenant.get("_id") or tenant_id)),
+        "telegram_live_smoke_lock": stage60_telegram_live_smoke_lock_payload(str(tenant.get("_id") or tenant_id)),
         "config_ui_hardening": tenant_config_ui_readiness_payload(tenant),
         "plan_meta": tenant_plan_meta(tenant),
         "links": onboarding_links_payload(str(tenant.get("_id") or tenant_id)),
@@ -14033,6 +14201,7 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
         "usage_analytics_readiness": stage57_usage_analytics_readiness_payload(tenant_id),
         "access_boundaries_readiness": stage58_access_boundaries_readiness_payload(tenant_id),
         "telegram_text_channel_readiness": stage59_telegram_text_channel_readiness_payload(tenant_id),
+        "telegram_live_smoke_lock": stage60_telegram_live_smoke_lock_payload(tenant_id),
         "config_ui_hardening": tenant_config_ui_readiness_payload(updated),
         "plan_meta": tenant_plan_meta(updated),
         "links": onboarding_links_payload(tenant_id),

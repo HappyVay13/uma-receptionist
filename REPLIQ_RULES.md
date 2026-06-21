@@ -321,3 +321,13 @@ If a price question is asked inside an active booking flow and the current langu
 - `/telegram/readiness` may expose only safe boolean/status metadata. Token/secret values must never be exposed.
 - The active MVP remains text-first receptionist. Voice/calls remain future scope.
 - Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+
+
+## Stage 60 — Telegram Live Smoke Lock Rules
+- Stage 60 may add read-only Telegram live-smoke lock metadata, smoke acceptance criteria, admin UI links, and documentation only.
+- Do not change receptionist behavior, booking routing, slot generation, date/time parsing, side-question handling, cancellation, reschedule, Google Calendar runtime create/update/delete behavior, or regression evaluator rules.
+- `/telegram/live-smoke/readiness`, `/telegram/smoke/readiness`, and `/channels/telegram/live-smoke/readiness` must not call Telegram APIs, set webhooks, call LLMs, mutate tenant config, mutate conversation state, or create/update/delete Google Calendar events.
+- Stage 60 may record the user-reported live smoke result after Stage 59.1, but it must still expose factual readiness gates and dependencies.
+- Telegram is current-scope only as a text channel. Voice/calls remain future scope and must not be positioned as part of this stage.
+- Public SaaS readiness remains false until real admin auth, self-serve onboarding, tenant isolation, and billing are implemented.
+- Current protected baseline remains `/dialogue/qa = 50/50 passed`.
