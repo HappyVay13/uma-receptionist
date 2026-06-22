@@ -445,3 +445,18 @@ Added:
 - Stage 61/62 protection coverage for `POST /tenant/create`
 
 Public SaaS readiness remains false until owner identity, tenant ownership, billing, and public signup abuse protection are implemented.
+
+## Stage 64 — Self-Serve Onboarding Wizard
+
+Status: implemented locally in this archive, pending deploy verification.
+
+Added protected onboarding wizard/readiness layer:
+- `/onboarding/wizard`
+- `/onboarding/wizard/ui`
+- `/onboarding/wizard/readiness`
+- `/onboarding/checklist/readiness`
+- `/self-serve/onboarding/readiness`
+
+Wizard checklist covers business profile, services, prices, business memory/FAQ, Google Calendar connection, calendar selection, Telegram text channel, and final Telegram smoke lock.
+
+Receptionist core was not changed. Voice/calls remain future phase.

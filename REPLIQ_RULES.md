@@ -360,3 +360,11 @@ If a price question is asked inside an active booking flow and the current langu
 - Tenant slug creation must validate length, allowed characters, reserved words, and collisions.
 - Stage 63 must not change receptionist core behavior: booking, cancel, reschedule, price side-questions, Telegram webhook, Google Calendar event runtime, and regression evaluator are out of scope.
 - `public_saas_ready` must remain false for this stage.
+
+## Stage 64 rules — Self-Serve Onboarding Wizard
+
+- Stage 64 is a protected admin/session onboarding wizard layer, not a dialogue-core change.
+- Do not expose the wizard publicly without future owner auth, tenant ownership, billing, CSRF, and rate-limit stages.
+- `/onboarding/wizard*` and `/self-serve/onboarding/readiness` must remain protected by Stage 61/62 admin auth.
+- The wizard may show incomplete steps as `attention`; this is not a regression failure if the tenant still needs Google Calendar, prices, memory, or channel setup.
+- Do not modify booking, cancellation, rescheduling, Telegram webhook, Google Calendar event runtime, or regression QA for wizard-only changes.

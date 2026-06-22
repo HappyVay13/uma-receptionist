@@ -17,3 +17,13 @@ Protected self-serve foundation endpoints:
 - `GET /tenant/creation/readiness?tenant_id=clinic_demo`
 
 Tenant creation is protected by the Stage 61/62 admin token/session layer. This stage prepares the SaaS tenant creation flow but does not yet make Repliq public self-serve SaaS.
+
+## Stage 64 — Self-Serve Onboarding Wizard
+
+Stage 64 adds a protected self-serve onboarding wizard:
+
+- `/onboarding/wizard?tenant_id=clinic_demo`
+- `/onboarding/wizard/readiness?tenant_id=clinic_demo`
+- `/self-serve/onboarding/readiness?tenant_id=clinic_demo`
+
+The wizard is part of the self-serve SaaS path and summarizes business profile, services, prices, business memory/FAQ, Google Calendar, Telegram, and final smoke-lock readiness. It remains protected by the Stage 61/62 admin session/token layer.

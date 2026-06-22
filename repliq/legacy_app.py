@@ -182,10 +182,15 @@ STAGE61_PROTECTED_EXACT_PATHS = {
     "/admin/session/readiness",
     "/tenant/creation/readiness",
     "/signup/readiness",
+    "/onboarding/wizard/readiness",
+    "/onboarding/checklist/readiness",
+    "/self-serve/onboarding/readiness",
     "/signup",
     "/signup/ui",
     "/tenant/create",
     "/tenant/create/ui",
+    "/onboarding/wizard",
+    "/onboarding/wizard/ui",
     "/telegram/status",
     "/telegram/set-webhook",
     "/telegram/readiness",
@@ -12060,6 +12065,7 @@ def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) ->
         "admin_access_enforcement": stage61_admin_access_enforcement_payload(requested_tenant_id),
         "admin_session_readiness": stage62_admin_session_readiness_payload(requested_tenant_id),
         "tenant_creation_readiness": stage63_tenant_creation_readiness_payload(requested_tenant_id),
+        "onboarding_wizard_readiness": stage64_onboarding_wizard_readiness_payload(requested_tenant_id),
         "telegram_text_channel_readiness": stage59_telegram_text_channel_readiness_payload(requested_tenant_id),
         "telegram_live_smoke_lock": stage60_telegram_live_smoke_lock_payload(requested_tenant_id),
         "tenant_admin_config": tenant_admin_config_readiness_payload(tenant) if tenant_status.get("tenant_id") else {
@@ -12260,6 +12266,13 @@ def admin_session_readiness(tenant_id: str = TENANT_ID_DEFAULT):
 @app.get("/signup/readiness")
 def tenant_creation_readiness(tenant_id: str = TENANT_ID_DEFAULT):
     return stage63_tenant_creation_readiness_payload(tenant_id=tenant_id)
+
+
+@app.get("/onboarding/wizard/readiness")
+@app.get("/onboarding/checklist/readiness")
+@app.get("/self-serve/onboarding/readiness")
+def onboarding_wizard_readiness(tenant_id: str = TENANT_ID_DEFAULT):
+    return stage64_onboarding_wizard_readiness_payload(tenant_id=tenant_id)
 
 @app.get("/telegram/readiness")
 @app.get("/channels/telegram/readiness")
@@ -12745,6 +12758,164 @@ def stage63_tenant_creation_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT
     }
 
 
+
+
+# -------------------------
+# STAGE 64: SELF-SERVE ONBOARDING WIZARD
+# -------------------------
+def stage64_text_lines(value: Any) -> List[str]:
+    text_value = str(value or "").strip()
+    if not text_value:
+        return []
+    return [line.strip() for line in re.split(r"[\r\n]+", text_value) if line.strip()]
+
+
+def stage64_price_line_count(value: Any) -> int:
+    price_pattern = re.compile(r"(€|\beur\b|\beuro\b|\beiro\b|\bcena\b|\bcost\b|\bprice\b|\bmaksa\b|\bmaksā\b|\d+\s*(?:€|eur|euro|eiro))", re.I)
+    return sum(1 for line in stage64_text_lines(value) if price_pattern.search(line))
+
+
+def stage64_service_language_items(tenant: Dict[str, Any], lang: str) -> List[str]:
+    raw = str((tenant or {}).get(f"services_{lang}") or "").strip()
+    return [x.strip() for x in raw.split(",") if x.strip()]
+
+
+def stage64_business_memory_summary(tenant: Dict[str, Any]) -> Dict[str, Any]:
+    summary: Dict[str, Any] = {}
+    for lang in ("lv", "ru", "en"):
+        value = (tenant or {}).get(f"business_memory_{lang}") or ""
+        lines = stage64_text_lines(value)
+        price_lines = stage64_price_line_count(value)
+        summary[lang] = {
+            "configured": bool(lines),
+            "line_count": len(lines),
+            "price_line_count": int(price_lines),
+        }
+    return summary
+
+
+def stage64_catalog_summary(tenant: Dict[str, Any]) -> Dict[str, Any]:
+    tenant = tenant or {}
+    catalog = tenant_service_catalog(tenant)
+    explicit_catalog = []
+    for key in ("service_catalog_json", "service_catalog", "services_catalog", "services_json"):
+        explicit_catalog = parse_service_catalog(tenant.get(key))
+        if explicit_catalog:
+            break
+    return {
+        "count": len(catalog),
+        "explicit_catalog_count": len(explicit_catalog),
+        "fallback_used": bool(catalog and not explicit_catalog),
+        "items": [
+            {
+                "key": item.get("key"),
+                "name_lv": item.get("name_lv"),
+                "name_ru": item.get("name_ru"),
+                "name_en": item.get("name_en"),
+                "duration_min": item.get("duration_min"),
+            }
+            for item in catalog[:12]
+        ],
+    }
+
+
+def stage64_onboarding_steps_payload(tenant: Dict[str, Any], tenant_id: str) -> List[Dict[str, Any]]:
+    tenant = normalize_tenant_saas_fields(tenant or {})
+    tid = str(tenant.get("_id") or tenant.get("id") or tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
+    onboarding = onboarding_status_payload(tenant)
+    catalog = stage64_catalog_summary(tenant)
+    memory = stage64_business_memory_summary(tenant)
+    telegram = stage59_telegram_text_channel_readiness_payload(tid)
+    telegram_smoke = stage60_telegram_live_smoke_lock_payload(tid)
+    business_fields = {
+        "business_name": bool(str(tenant.get("business_name") or "").strip()),
+        "language": bool(str(tenant.get("language") or "").strip()),
+        "timezone": bool(str(tenant.get("timezone") or "").strip()),
+        "work_start": bool(str(tenant.get("work_start") or "").strip()),
+        "work_end": bool(str(tenant.get("work_end") or "").strip()),
+    }
+    services_by_lang = {lang: stage64_service_language_items(tenant, lang) for lang in ("lv", "ru", "en")}
+    prices_ready = any((memory.get(lang) or {}).get("price_line_count", 0) > 0 for lang in ("lv", "ru", "en"))
+    memory_ready = any((memory.get(lang) or {}).get("configured") for lang in ("lv", "ru", "en"))
+    return [
+        {"id": "business_profile", "title": "Business profile", "status": "complete" if all(business_fields.values()) else "attention", "complete": all(business_fields.values()), "checks": business_fields, "action_url": f"/tenant/config/ui?tenant_id={tid}"},
+        {"id": "services", "title": "Services", "status": "complete" if catalog.get("count", 0) > 0 and any(services_by_lang.values()) else "attention", "complete": bool(catalog.get("count", 0) > 0 and any(services_by_lang.values())), "catalog_count": catalog.get("count", 0), "explicit_catalog_count": catalog.get("explicit_catalog_count", 0), "services_by_language_count": {lang: len(items) for lang, items in services_by_lang.items()}, "action_url": f"/tenant/config/ui?tenant_id={tid}#services"},
+        {"id": "prices", "title": "Prices / FAQ price facts", "status": "complete" if prices_ready else "attention", "complete": bool(prices_ready), "price_line_count": sum(int((memory.get(lang) or {}).get("price_line_count", 0)) for lang in ("lv", "ru", "en")), "action_url": f"/tenant/config/ui?tenant_id={tid}#business-memory"},
+        {"id": "business_memory", "title": "Business memory / FAQ", "status": "complete" if memory_ready else "attention", "complete": bool(memory_ready), "language_coverage": memory, "action_url": f"/tenant/config/ui?tenant_id={tid}#business-memory"},
+        {"id": "google_calendar_connect", "title": "Google Calendar connection", "status": "complete" if onboarding.get("google_connected") else "attention", "complete": bool(onboarding.get("google_connected")), "google_connected": bool(onboarding.get("google_connected")), "action_url": f"/google/connect?tenant_id={tid}"},
+        {"id": "google_calendar_select", "title": "Working calendar selection", "status": "complete" if onboarding.get("calendar_selected") else "attention", "complete": bool(onboarding.get("calendar_selected")), "calendar_id": onboarding.get("calendar_id"), "action_url": f"/google/calendars/ui?tenant_id={tid}"},
+        {"id": "telegram_text_channel", "title": "Telegram text channel", "status": "complete" if telegram.get("telegram_text_ready") else "attention", "complete": bool(telegram.get("telegram_text_ready")), "telegram_status": telegram.get("status"), "action_url": f"/telegram/readiness?tenant_id={tid}"},
+        {"id": "final_smoke_lock", "title": "Final text smoke lock", "status": "complete" if telegram_smoke.get("telegram_live_smoke_locked") else "attention", "complete": bool(telegram_smoke.get("telegram_live_smoke_locked")), "telegram_pilot_ready": bool(telegram_smoke.get("telegram_pilot_ready")), "action_url": f"/telegram/live-smoke/readiness?tenant_id={tid}"},
+    ]
+
+
+def stage64_onboarding_wizard_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) -> Dict[str, Any]:
+    tid = (tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
+    tenant = get_existing_tenant(tid)
+    tenant_found = bool(tenant.get("_id"))
+    tenant_id_clean = str(tenant.get("_id") or tenant.get("id") or tid).strip() or tid
+    base = (SERVER_BASE_URL or "").rstrip("/")
+    def url(path: str) -> str:
+        return base + path if base else path
+    blocking: List[str] = []
+    warnings: List[str] = []
+    if not tenant_found:
+        blocking.append("tenant_not_found")
+    if not stage61_admin_token_configured():
+        blocking.append("admin_token_not_configured")
+    if not stage62_session_secret():
+        blocking.append("admin_session_secret_not_configured")
+    required_paths = ["/onboarding/wizard", "/onboarding/wizard/ui", "/onboarding/wizard/readiness", "/self-serve/onboarding/readiness"]
+    missing_protection = [path for path in required_paths if path not in STAGE61_PROTECTED_EXACT_PATHS]
+    if missing_protection:
+        blocking.append("onboarding_wizard_paths_not_protected")
+    steps: List[Dict[str, Any]] = []
+    complete_count = 0
+    if tenant_found:
+        steps = stage64_onboarding_steps_payload(tenant, tenant_id_clean)
+        complete_count = sum(1 for step in steps if step.get("complete"))
+        for step in steps:
+            if not step.get("complete"):
+                warnings.append(f"onboarding_step_attention:{step.get('id')}")
+    ready = bool(not blocking)
+    wizard_complete = bool(steps and complete_count == len(steps))
+    status = "ready" if ready and wizard_complete else "attention" if ready else "blocked"
+    return {
+        "stage": "64",
+        "purpose": "self-serve onboarding wizard readiness and checklist",
+        "tenant_id": tenant_id_clean,
+        "status": status,
+        "onboarding_wizard_ready": bool(ready),
+        "onboarding_wizard_complete": bool(wizard_complete),
+        "self_serve_onboarding_ready": bool(ready),
+        "private_admin_ready": bool(ready),
+        "public_saas_ready": False,
+        "auth_model": "admin_session_or_shared_token_mvp",
+        "step_count": len(steps),
+        "complete_step_count": complete_count,
+        "steps": steps,
+        "protected_paths": required_paths,
+        "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
+        "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
+        "links": {
+            "wizard_ui": url(f"/onboarding/wizard?tenant_id={tenant_id_clean}"),
+            "wizard_readiness": url(f"/onboarding/wizard/readiness?tenant_id={tenant_id_clean}"),
+            "tenant_config_ui": url(f"/tenant/config/ui?tenant_id={tenant_id_clean}"),
+            "dashboard": url(f"/dashboard?tenant_id={tenant_id_clean}"),
+            "google_connect": url(f"/google/connect?tenant_id={tenant_id_clean}"),
+            "google_calendars_ui": url(f"/google/calendars/ui?tenant_id={tenant_id_clean}"),
+            "telegram_readiness": url(f"/telegram/readiness?tenant_id={tenant_id_clean}"),
+            "telegram_smoke_lock": url(f"/telegram/live-smoke/readiness?tenant_id={tenant_id_clean}"),
+        },
+        "required_before_public_saas": [
+            "Replace admin-token/session with per-owner auth and tenant ownership checks.",
+            "Add billing/subscription gating before public signup.",
+            "Add CSRF/rate-limits for public browser write endpoints.",
+            "Add production email/magic-link delivery for owner login.",
+        ],
+        "note": "Stage 64 adds a protected self-serve onboarding wizard/checklist. It does not call LLMs, mutate conversations, or create/update/delete calendar events.",
+    }
+
 def onboarding_links_payload(tenant_id: str) -> Dict[str, str]:
     base = SERVER_BASE_URL or ""
     return {
@@ -12757,6 +12928,8 @@ def onboarding_links_payload(tenant_id: str) -> Dict[str, str]:
         "google_calendars_ui_url": f"{base}/google/calendars/ui?tenant_id={tenant_id}",
         "tenant_creation_ui_url": f"{base}/signup/ui",
         "tenant_creation_readiness_url": f"{base}/tenant/creation/readiness?tenant_id={tenant_id}",
+        "onboarding_wizard_url": f"{base}/onboarding/wizard?tenant_id={tenant_id}",
+        "onboarding_wizard_readiness_url": f"{base}/onboarding/wizard/readiness?tenant_id={tenant_id}",
     }
 
 
@@ -13150,6 +13323,64 @@ def tenant_overview(tenant_id: str = TENANT_ID_DEFAULT):
     tenant = get_tenant_or_404((tenant_id or "").strip() or TENANT_ID_DEFAULT)
     tenant = sync_tenant_onboarding_state(tenant["_id"])
     return tenant_overview_payload(tenant)
+
+@app.get("/onboarding/wizard", response_class=HTMLResponse)
+@app.get("/onboarding/wizard/ui", response_class=HTMLResponse)
+def onboarding_wizard_ui(tenant_id: str = TENANT_ID_DEFAULT):
+    tenant_id_clean = (tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
+    tenant_id_json = json.dumps(tenant_id_clean, ensure_ascii=False)
+    html = """
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Repliq Onboarding Wizard</title>
+<style>
+body{font-family:Inter,Arial,sans-serif;background:#f6f7fb;color:#111827;margin:0;padding:24px}.wrap{max-width:1120px;margin:0 auto}.hero{background:#111827;color:white;border-radius:22px;padding:24px;margin-bottom:16px}.hero h1{margin:0;font-size:32px}.hero p{color:#d1d5db;margin:8px 0 0}.toolbar,.card{background:white;border:1px solid #e5e7eb;border-radius:18px;padding:16px;margin-bottom:14px;box-shadow:0 8px 24px rgba(15,23,42,.06)}.toolbar{display:flex;gap:10px;align-items:end;flex-wrap:wrap}.toolbar label{display:block;font-size:12px;color:#6b7280;margin-bottom:4px}.toolbar input{padding:10px 12px;border:1px solid #d1d5db;border-radius:10px}button{border:0;border-radius:10px;padding:10px 14px;background:#111827;color:white;font-weight:700;cursor:pointer}button.secondary{background:white;color:#111827;border:1px solid #d1d5db}.steps{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.step{background:white;border:1px solid #e5e7eb;border-radius:18px;padding:16px}.step.complete{border-color:#a7f3d0;background:#f0fdf4}.step.attention{border-color:#fde68a;background:#fffbeb}.badge{display:inline-block;border-radius:999px;padding:5px 9px;font-size:12px;border:1px solid #e5e7eb;background:#f3f4f6}.badge.ok{background:#ecfdf5;color:#065f46;border-color:#a7f3d0}.badge.warn{background:#fffbeb;color:#92400e;border-color:#fde68a}.muted{color:#6b7280;font-size:13px}.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.kpi{background:#fafafa;border:1px solid #e5e7eb;border-radius:14px;padding:12px}.kpi .num{font-size:24px;font-weight:800;margin-top:4px}.links a{margin-right:10px}.raw{white-space:pre-wrap;max-height:340px;overflow:auto;background:#0b1020;color:#d1d5db;border-radius:14px;padding:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}@media(max-width:850px){.steps,.grid{grid-template-columns:1fr}body{padding:14px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hero"><h1>Self-Serve Onboarding Wizard</h1><p>Stage 64 checklist for turning a created tenant into a usable Repliq text receptionist.</p></div>
+  <div class="toolbar">
+    <div><label>Tenant</label><input id="tenant_id" value=""/></div>
+    <button onclick="loadWizard()">Refresh</button>
+    <button class="secondary" onclick="openPath('/tenant/config/ui?tenant_id='+encodeURIComponent(currentTenant()))">Tenant config</button>
+    <button class="secondary" onclick="openPath('/dashboard?tenant_id='+encodeURIComponent(currentTenant()))">Dashboard</button>
+    <button class="secondary" onclick="openPath('/signup/ui')">Create tenant</button>
+    <button class="secondary" onclick="openPath('/admin/logout')">Logout</button>
+  </div>
+  <div class="card">
+    <div class="grid">
+      <div class="kpi"><div>Status</div><div class="num" id="k_status">-</div></div>
+      <div class="kpi"><div>Complete</div><div class="num" id="k_complete">-</div></div>
+      <div class="kpi"><div>Private admin</div><div class="num" id="k_private">-</div></div>
+      <div class="kpi"><div>Public SaaS</div><div class="num" id="k_public">false</div></div>
+    </div>
+    <div class="muted" id="summary" style="margin-top:12px;">Loading…</div>
+  </div>
+  <div class="steps" id="steps"></div>
+  <div class="card links" id="links"></div>
+  <div class="card"><h3>Raw readiness</h3><div class="raw" id="raw"></div></div>
+</div>
+<script>
+const DEFAULT_TENANT_ID = __TENANT_ID_JSON__;
+document.getElementById('tenant_id').value = DEFAULT_TENANT_ID || 'clinic_demo';
+function currentTenant(){ return (document.getElementById('tenant_id').value || '').trim() || DEFAULT_TENANT_ID || 'clinic_demo'; }
+function openPath(path){ window.location = path; }
+function esc(v){ return v === null || v === undefined ? '' : String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('\"','&quot;').replaceAll("'",'&#39;'); }
+function badge(ok){ return `<span class="badge ${ok ? 'ok':'warn'}">${ok ? 'complete':'attention'}</span>`; }
+function renderLinks(links){ const box=document.getElementById('links'); const items=links||{}; box.innerHTML='<h3>Quick links</h3>'+Object.entries(items).map(([k,v])=>`<a href="${esc(v)}">${esc(k)}</a>`).join(''); }
+function renderSteps(steps){ const root=document.getElementById('steps'); root.innerHTML=(steps||[]).map(step=>`<div class="step ${step.complete?'complete':'attention'}"><div style="display:flex;justify-content:space-between;gap:12px;align-items:center"><h3 style="margin:0">${esc(step.title||step.id)}</h3>${badge(!!step.complete)}</div><div class="muted" style="margin-top:8px">${esc(step.id||'')}</div><div style="margin-top:12px"><a href="${esc(step.action_url||'#')}"><button class="secondary">Open step</button></a></div></div>`).join(''); }
+async function loadWizard(){ const tid=currentTenant(); const r=await fetch('/onboarding/wizard/readiness?tenant_id='+encodeURIComponent(tid)); const data=await r.json(); document.getElementById('raw').textContent=JSON.stringify(data,null,2); if(!r.ok){document.getElementById('summary').textContent=data.error||data.detail||'Failed';return;} document.getElementById('k_status').textContent=data.status||'-'; document.getElementById('k_complete').textContent=(data.complete_step_count||0)+'/'+(data.step_count||0); document.getElementById('k_private').textContent=String(!!data.private_admin_ready); document.getElementById('k_public').textContent=String(!!data.public_saas_ready); document.getElementById('summary').innerHTML = data.onboarding_wizard_complete ? '<span class="badge ok">onboarding complete</span>' : '<span class="badge warn">some steps need attention</span>'; renderSteps(data.steps||[]); renderLinks(data.links||{}); }
+loadWizard();
+</script>
+</body>
+</html>
+    """.replace("__TENANT_ID_JSON__", tenant_id_json)
+    return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
+
 
 @app.get("/signup", response_class=HTMLResponse)
 @app.get("/signup/ui", response_class=HTMLResponse)
@@ -13833,6 +14064,7 @@ def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
           <button class="secondary" onclick="openPath('/tenants/ui')">Tenants</button>
           <button class="secondary" onclick="openPath('/signup/ui')">Create tenant</button>
           <button class="secondary" onclick="openPath('/onboarding/ui?tenant_id='+encodeURIComponent(currentTenant()))">Onboarding</button>
+          <button class="secondary" onclick="openPath('/onboarding/wizard?tenant_id='+encodeURIComponent(currentTenant()))">Wizard</button>
           <button class="secondary" onclick="openPath('/tenant/config/ui?tenant_id='+encodeURIComponent(currentTenant()))">Tenant config</button>
           <button class="secondary" onclick="openPath('/admin/session/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Admin session</button>
           <button class="secondary" onclick="openPath('/admin/logout')">Logout</button>
@@ -13846,6 +14078,7 @@ def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
         <a id="lnk_admin_access" href="#">admin access enforcement</a> ·
         <a id="lnk_admin_session" href="#">admin session</a> ·
         <a id="lnk_tenant_creation" href="/tenant/creation/readiness">tenant creation</a> ·
+        <a id="lnk_onboarding_wizard" href="#">onboarding wizard</a> ·
         <a href="/signup/ui">create tenant</a> ·
         <a href="/admin/logout">logout</a> ·
         <a id="lnk_telegram_ready" href="#">telegram readiness</a> ·
@@ -14123,6 +14356,7 @@ async function loadAll() {{
   el('lnk_access_ready').href = `/access/readiness?tenant_id=${{encodeURIComponent(tenant)}}`;
   el('lnk_admin_access').href = `/admin/access/enforcement/readiness?tenant_id=${{encodeURIComponent(tenant)}}`;
   el('lnk_admin_session').href = `/admin/session/readiness?tenant_id=${{encodeURIComponent(tenant)}}`;
+  const wizardLink = el('lnk_onboarding_wizard'); if(wizardLink) wizardLink.href = `/onboarding/wizard/readiness?tenant_id=${{encodeURIComponent(tenant)}}`;
   el('lnk_telegram_ready').href = `/telegram/readiness?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
   el('lnk_telegram_smoke').href = `/telegram/live-smoke/readiness?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
   el('lnk_activity').href = `/dashboard/activity?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
@@ -14401,6 +14635,7 @@ summary { cursor:pointer; font-weight:800; }
       <a id="lnk_admin_access" href="#">Admin access enforcement</a>
       <a id="lnk_admin_session" href="#">Admin session</a>
       <a id="lnk_tenant_creation" href="#">Tenant creation</a>
+      <a id="lnk_onboarding_wizard" href="#">Onboarding wizard</a>
       <a id="lnk_signup" href="/signup/ui">Create tenant</a>
       <a id="lnk_admin_logout" href="/admin/logout">Logout</a>
       <a id="lnk_telegram_ready" href="#">Telegram readiness</a>
@@ -14434,6 +14669,7 @@ function setLinks(tid){
   document.getElementById('lnk_admin_access').href = '/admin/access/enforcement/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_admin_session').href = '/admin/session/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_tenant_creation').href = '/tenant/creation/readiness?tenant_id=' + encodeURIComponent(tid);
+  const wiz = document.getElementById('lnk_onboarding_wizard'); if(wiz) wiz.href = '/onboarding/wizard/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_telegram_ready').href = '/telegram/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_telegram_smoke').href = '/telegram/live-smoke/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_routes').href = '/tenant/routes?tenant_id=' + encodeURIComponent(tid);
@@ -14953,6 +15189,7 @@ def tenant_config(tenant_id: str = TENANT_ID_DEFAULT):
         "admin_access_enforcement": stage61_admin_access_enforcement_payload(str(tenant.get("_id") or tenant_id)),
         "admin_session_readiness": stage62_admin_session_readiness_payload(str(tenant.get("_id") or tenant_id)),
         "tenant_creation_readiness": stage63_tenant_creation_readiness_payload(str(tenant.get("_id") or tenant_id)),
+        "onboarding_wizard_readiness": stage64_onboarding_wizard_readiness_payload(str(tenant.get("_id") or tenant_id)),
         "telegram_text_channel_readiness": stage59_telegram_text_channel_readiness_payload(str(tenant.get("_id") or tenant_id)),
         "telegram_live_smoke_lock": stage60_telegram_live_smoke_lock_payload(str(tenant.get("_id") or tenant_id)),
         "config_ui_hardening": tenant_config_ui_readiness_payload(tenant),
@@ -15067,6 +15304,9 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
         "usage_analytics_readiness": stage57_usage_analytics_readiness_payload(tenant_id),
         "access_boundaries_readiness": stage58_access_boundaries_readiness_payload(tenant_id),
         "admin_access_enforcement": stage61_admin_access_enforcement_payload(tenant_id),
+        "admin_session_readiness": stage62_admin_session_readiness_payload(tenant_id),
+        "tenant_creation_readiness": stage63_tenant_creation_readiness_payload(tenant_id),
+        "onboarding_wizard_readiness": stage64_onboarding_wizard_readiness_payload(tenant_id),
         "telegram_text_channel_readiness": stage59_telegram_text_channel_readiness_payload(tenant_id),
         "telegram_live_smoke_lock": stage60_telegram_live_smoke_lock_payload(tenant_id),
         "config_ui_hardening": tenant_config_ui_readiness_payload(updated),
