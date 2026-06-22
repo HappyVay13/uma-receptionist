@@ -352,3 +352,11 @@ If a price question is asked inside an active booking flow and the current langu
 - Stage 62 is not final public SaaS authentication; per-owner identity, tenant ownership, role checks, and CSRF remain future stages.
 - Do not expose admin token values in responses, logs, screenshots, or documentation.
 - Do not change receptionist core behavior while adding auth/session UI.
+
+## Stage 63 rules — Tenant creation / signup foundation
+
+- Tenant creation routes must stay protected by Stage 61/62 admin session/token until public SaaS auth, owner identity, tenant ownership checks, billing, CSRF, and rate limits exist.
+- `/tenant/create` and `/onboarding/create_tenant` must not become public unauthenticated write endpoints.
+- Tenant slug creation must validate length, allowed characters, reserved words, and collisions.
+- Stage 63 must not change receptionist core behavior: booking, cancel, reschedule, price side-questions, Telegram webhook, Google Calendar event runtime, and regression evaluator are out of scope.
+- `public_saas_ready` must remain false for this stage.

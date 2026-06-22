@@ -180,6 +180,12 @@ STAGE61_PROTECTED_EXACT_PATHS = {
     "/admin/access/enforcement",
     "/admin/access/enforcement/readiness",
     "/admin/session/readiness",
+    "/tenant/creation/readiness",
+    "/signup/readiness",
+    "/signup",
+    "/signup/ui",
+    "/tenant/create",
+    "/tenant/create/ui",
     "/telegram/status",
     "/telegram/set-webhook",
     "/telegram/readiness",
@@ -10420,6 +10426,8 @@ async def google_select_calendar(request: Request):
     tenant = sync_tenant_onboarding_state(tenant_id)
     return {
         "status": "ok",
+        "stage": "63",
+        "tenant_creation_ready": True,
         "tenant_id": tenant_id,
         "calendar_id": calendar_id,
         "onboarding": onboarding_status_payload(tenant),
@@ -12051,6 +12059,7 @@ def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) ->
         "access_boundaries_readiness": stage58_access_boundaries_readiness_payload(requested_tenant_id),
         "admin_access_enforcement": stage61_admin_access_enforcement_payload(requested_tenant_id),
         "admin_session_readiness": stage62_admin_session_readiness_payload(requested_tenant_id),
+        "tenant_creation_readiness": stage63_tenant_creation_readiness_payload(requested_tenant_id),
         "telegram_text_channel_readiness": stage59_telegram_text_channel_readiness_payload(requested_tenant_id),
         "telegram_live_smoke_lock": stage60_telegram_live_smoke_lock_payload(requested_tenant_id),
         "tenant_admin_config": tenant_admin_config_readiness_payload(tenant) if tenant_status.get("tenant_id") else {
@@ -12245,6 +12254,12 @@ def admin_session_status(request: Request):
 @app.get("/admin/session/readiness")
 def admin_session_readiness(tenant_id: str = TENANT_ID_DEFAULT):
     return stage62_admin_session_readiness_payload(tenant_id=tenant_id)
+
+
+@app.get("/tenant/creation/readiness")
+@app.get("/signup/readiness")
+def tenant_creation_readiness(tenant_id: str = TENANT_ID_DEFAULT):
+    return stage63_tenant_creation_readiness_payload(tenant_id=tenant_id)
 
 @app.get("/telegram/readiness")
 @app.get("/channels/telegram/readiness")
@@ -12545,6 +12560,191 @@ def default_onboarding_service_catalog(business_type: str = "barbershop") -> Lis
     ]
 
 
+
+# -------------------------
+# STAGE 63: TENANT CREATION / SIGNUP FLOW FOUNDATION
+# -------------------------
+STAGE63_ALLOWED_BUSINESS_TYPES = {
+    "barbershop", "salon", "clinic", "dentistry", "auto_service", "restaurant", "beauty", "other"
+}
+STAGE63_RESERVED_TENANT_SLUGS = {
+    "admin", "api", "app", "auth", "billing", "dashboard", "default", "demo", "google", "health",
+    "internal", "login", "logout", "onboarding", "repliq", "signup", "static", "support", "system",
+    "telegram", "tenant", "tenants", "webhook", "www",
+}
+
+
+def stage63_normalize_business_type(value: Any) -> str:
+    raw = str(value or "barbershop").strip().lower().replace("-", "_")
+    aliases = {
+        "barber": "barbershop",
+        "hairdresser": "salon",
+        "beauty_salon": "salon",
+        "medical": "clinic",
+        "dental": "dentistry",
+        "stomatology": "dentistry",
+        "autoservice": "auto_service",
+        "auto": "auto_service",
+        "cafe": "restaurant",
+    }
+    raw = aliases.get(raw, raw)
+    return raw if raw in STAGE63_ALLOWED_BUSINESS_TYPES else "other"
+
+
+def stage63_slugify_tenant_id(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    raw = unicodedata.normalize("NFKD", raw).encode("ascii", "ignore").decode("ascii")
+    raw = re.sub(r"[^a-z0-9_\-]+", "_", raw)
+    raw = re.sub(r"[_\-]{2,}", "_", raw).strip("_-")
+    if raw and raw[0].isdigit():
+        raw = f"tenant_{raw}"
+    raw = raw[:48].strip("_-")
+    return raw
+
+
+def stage63_tenant_exists(tenant_id: str) -> bool:
+    tid = (tenant_id or "").strip()
+    if not tid:
+        return False
+    try:
+        return bool(get_existing_tenant(tid).get("_id"))
+    except Exception:
+        return False
+
+
+def stage63_unique_tenant_id(base_slug: str) -> str:
+    base = stage63_slugify_tenant_id(base_slug) or f"tenant_{uuid.uuid4().hex[:8]}"
+    if base in STAGE63_RESERVED_TENANT_SLUGS:
+        base = f"{base}_business"
+    if not stage63_tenant_exists(base):
+        return base
+    for _ in range(24):
+        candidate = f"{base[:43].rstrip('_-')}_{uuid.uuid4().hex[:4]}"
+        if not stage63_tenant_exists(candidate):
+            return candidate
+    return f"tenant_{uuid.uuid4().hex[:12]}"
+
+
+def stage63_clean_tenant_creation_payload(payload: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
+    payload = payload or {}
+    errors: List[str] = []
+    business_name = str(payload.get("business_name") or "").strip()
+    if not business_name:
+        errors.append("business_name_required")
+    if business_name and len(business_name) > 120:
+        errors.append("business_name_too_long")
+
+    requested_slug = stage63_slugify_tenant_id(payload.get("tenant_slug") or payload.get("tenant_id") or payload.get("slug") or "")
+    if requested_slug and requested_slug in STAGE63_RESERVED_TENANT_SLUGS:
+        errors.append("tenant_slug_reserved")
+    if requested_slug and len(requested_slug) < 3:
+        errors.append("tenant_slug_too_short")
+    if requested_slug and stage63_tenant_exists(requested_slug):
+        errors.append("tenant_slug_already_exists")
+
+    owner_email = str(payload.get("owner_email") or "").strip().lower()
+    if owner_email and not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", owner_email):
+        errors.append("owner_email_invalid")
+
+    timezone_value = str(payload.get("timezone") or "Europe/Riga").strip() or "Europe/Riga"
+    if len(timezone_value) > 80:
+        errors.append("timezone_too_long")
+
+    work_start_value = str(payload.get("work_start") or WORK_START_HHMM_DEFAULT).strip() or WORK_START_HHMM_DEFAULT
+    work_end_value = str(payload.get("work_end") or WORK_END_HHMM_DEFAULT).strip() or WORK_END_HHMM_DEFAULT
+    if _parse_hhmm(work_start_value) is None:
+        errors.append("work_start_invalid")
+    if _parse_hhmm(work_end_value) is None:
+        errors.append("work_end_invalid")
+
+    phone_number = normalize_incoming_to_number(payload.get("phone_number") or "")
+    business_type = stage63_normalize_business_type(payload.get("business_type") or "barbershop")
+    language_value = get_lang(str(payload.get("language") or "lv").strip())
+
+    return {
+        "business_name": business_name,
+        "tenant_slug": requested_slug,
+        "owner_email": owner_email,
+        "phone_number": phone_number,
+        "business_type": business_type,
+        "timezone": timezone_value,
+        "language": language_value,
+        "work_start": work_start_value,
+        "work_end": work_end_value,
+        "min_notice_minutes": _safe_int(payload.get("min_notice_minutes"), 0),
+        "buffer_minutes": _safe_int(payload.get("buffer_minutes"), 0),
+    }, list(dict.fromkeys(errors))
+
+
+def stage63_tenant_creation_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) -> Dict[str, Any]:
+    tid = (tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
+    cols = tenants_columns()
+    col_names = {c.get("name") for c in cols}
+    required_insert_any = bool({"id", "tenant_id"} & col_names)
+    recommended_columns = [
+        "business_name", "owner_email", "business_type", "language", "timezone", "work_start", "work_end",
+        "services_lv", "services_ru", "services_en", "service_catalog_json", "business_memory_lv",
+        "business_memory_ru", "business_memory_en", "plan", "subscription_status", "onboarding_completed",
+    ]
+    missing_recommended = [c for c in recommended_columns if c not in col_names]
+    blocking: List[str] = []
+    warnings: List[str] = []
+    if not required_insert_any:
+        blocking.append("tenant_primary_key_column_missing")
+    if not stage61_admin_access_enforcement_enabled():
+        warnings.append("admin_access_enforcement_disabled")
+    if not stage61_admin_token_configured():
+        blocking.append("admin_token_not_configured")
+    if "tenant_id" not in col_names and "id" not in col_names:
+        blocking.append("tenant_id_or_id_missing")
+    if "service_catalog_json" not in col_names and "service_catalog" not in col_names:
+        warnings.append("service_catalog_json_column_missing")
+    if "/tenant/create" not in STAGE61_PROTECTED_EXACT_PATHS:
+        blocking.append("tenant_create_endpoint_not_protected")
+    if missing_recommended:
+        warnings.append("some_optional_tenant_columns_missing")
+    ready = not blocking
+    return {
+        "stage": "63",
+        "purpose": "tenant creation / signup flow foundation readiness",
+        "tenant_id": tid,
+        "status": "ready" if ready and not warnings else "attention" if ready else "blocked",
+        "tenant_creation_ready": bool(ready),
+        "self_serve_foundation_ready": bool(ready),
+        "public_saas_ready": False,
+        "auth_model": "admin_session_or_shared_token_mvp",
+        "create_endpoints": {
+            "ui": ["/signup/ui", "/tenant/create/ui", "/onboarding/ui"],
+            "api": ["POST /tenant/create", "POST /onboarding/create_tenant"],
+            "readiness": ["/tenant/creation/readiness", "/signup/readiness"],
+            "protected_by_admin_session": True,
+        },
+        "slug_policy": {
+            "allowed_chars": "a-z, 0-9, underscore, hyphen",
+            "min_length": 3,
+            "max_length": 48,
+            "reserved_count": len(STAGE63_RESERVED_TENANT_SLUGS),
+            "collision_policy": "explicit tenant_slug must be unique; generated slugs receive a safe suffix if needed",
+        },
+        "default_templates": sorted(STAGE63_ALLOWED_BUSINESS_TYPES),
+        "schema": {
+            "tenants_columns_detected": sorted([str(c) for c in col_names if c]),
+            "missing_recommended_columns": missing_recommended,
+            "has_id_column": "id" in col_names,
+            "has_tenant_id_column": "tenant_id" in col_names,
+        },
+        "blocking": blocking,
+        "warnings": warnings,
+        "next_stages_before_public_saas": [
+            "owner identity and tenant ownership checks",
+            "Google Calendar OAuth self-serve hardening",
+            "billing/subscription lifecycle",
+            "CSRF/rate-limit protection for public signup",
+        ],
+        "note": "Stage 63 creates the tenant creation foundation while keeping creation protected by admin session/token until public SaaS auth, billing, rate limits, and tenant ownership are implemented.",
+    }
+
+
 def onboarding_links_payload(tenant_id: str) -> Dict[str, str]:
     base = SERVER_BASE_URL or ""
     return {
@@ -12555,6 +12755,8 @@ def onboarding_links_payload(tenant_id: str) -> Dict[str, str]:
         "onboarding_status_url": f"{base}/onboarding/status?tenant_id={tenant_id}",
         "google_connect_url": f"{base}/google/connect?tenant_id={tenant_id}",
         "google_calendars_ui_url": f"{base}/google/calendars/ui?tenant_id={tenant_id}",
+        "tenant_creation_ui_url": f"{base}/signup/ui",
+        "tenant_creation_readiness_url": f"{base}/tenant/creation/readiness?tenant_id={tenant_id}",
     }
 
 
@@ -12949,6 +13151,9 @@ def tenant_overview(tenant_id: str = TENANT_ID_DEFAULT):
     tenant = sync_tenant_onboarding_state(tenant["_id"])
     return tenant_overview_payload(tenant)
 
+@app.get("/signup", response_class=HTMLResponse)
+@app.get("/signup/ui", response_class=HTMLResponse)
+@app.get("/tenant/create/ui", response_class=HTMLResponse)
 @app.get("/onboarding/ui", response_class=HTMLResponse)
 def onboarding_ui(tenant_id: str = ""):
     tenant_id = (tenant_id or "").strip()
@@ -12995,7 +13200,8 @@ ul.links li {{ margin:6px 0; }}
   <div class="card">
     <h2>Business setup</h2>
     <div class="grid">
-      <div><label>Business name</label><input id="business_name" placeholder="Barbershop Riga"/></div>
+      <div><label>Business name</label><input id="business_name" placeholder="Barbershop Riga" oninput="suggestSlug()"/></div>
+      <div><label>Tenant slug <span class="small">optional</span></label><input id="tenant_slug" placeholder="barbershop_riga"/></div>
       <div><label>Owner email (optional)</label><input id="owner_email" placeholder="owner@business.com"/></div>
       <div><label>Phone number (optional)</label><input id="phone_number" placeholder="+37120000000"/></div>
       <div><label>Business type</label>
@@ -13073,9 +13279,19 @@ function fillResult(data) {{
   document.getElementById('r_calendars_ui').href = links.google_calendars_ui_url || '#';
   document.getElementById('raw_response').textContent = JSON.stringify(data, null, 2);
 }}
+function slugifyTenant(value) {{
+  return String(value || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9_-]+/g,'_').replace(/[_-]{{2,}}/g,'_').replace(/^[_-]+|[_-]+$/g,'').slice(0,48);
+}}
+function suggestSlug() {{
+  const slugEl = document.getElementById('tenant_slug');
+  if (!slugEl || slugEl.dataset.touched === '1') return;
+  slugEl.value = slugifyTenant(document.getElementById('business_name').value || '');
+}}
+document.addEventListener('input', e => {{ if(e.target && e.target.id === 'tenant_slug') e.target.dataset.touched = '1'; }});
 async function createTenant() {{
   const payload = {{
     business_name: document.getElementById('business_name').value.trim(),
+    tenant_slug: document.getElementById('tenant_slug').value.trim() || null,
     owner_email: document.getElementById('owner_email').value.trim() || null,
     phone_number: document.getElementById('phone_number').value.trim() || null,
     business_type: document.getElementById('business_type').value,
@@ -13104,7 +13320,7 @@ async function createTenant() {{
     fillResult(data);
   }} else {{
     st.className = 'small err';
-    st.textContent = data.detail || JSON.stringify(data, null, 2);
+    st.textContent = (typeof data.detail === 'string') ? data.detail : JSON.stringify(data.detail || data, null, 2);
   }}
 }}
 function openNewDashboard() {{
@@ -13133,24 +13349,22 @@ async function copyTenantId() {{
 @app.post("/onboarding/create_tenant")
 @app.post("/tenant/create")
 def onboarding_create_tenant(payload: dict = Body(...)):
-    business_name = (payload.get("business_name") or "").strip()
-    owner_email = (payload.get("owner_email") or "").strip()
-    phone_number = normalize_incoming_to_number(payload.get("phone_number") or "")
-    business_type = (payload.get("business_type") or "barbershop").strip()
-    timezone_value = (payload.get("timezone") or "Europe/Riga").strip()
-    language_value = get_lang((payload.get("language") or "lv").strip())
-    work_start_value = str(payload.get("work_start") or WORK_START_HHMM_DEFAULT).strip()
-    work_end_value = str(payload.get("work_end") or WORK_END_HHMM_DEFAULT).strip()
-    min_notice_minutes = _safe_int(payload.get("min_notice_minutes"), 0)
-    buffer_minutes = _safe_int(payload.get("buffer_minutes"), 0)
+    clean_payload, errors = stage63_clean_tenant_creation_payload(payload or {})
+    if errors:
+        raise HTTPException(status_code=400, detail={"stage": "63", "errors": errors})
 
-    if not business_name:
-        raise HTTPException(status_code=400, detail="business_name required")
+    business_name = clean_payload["business_name"]
+    owner_email = clean_payload["owner_email"]
+    phone_number = clean_payload["phone_number"]
+    business_type = clean_payload["business_type"]
+    timezone_value = clean_payload["timezone"]
+    language_value = clean_payload["language"]
+    work_start_value = clean_payload["work_start"]
+    work_end_value = clean_payload["work_end"]
+    min_notice_minutes = clean_payload["min_notice_minutes"]
+    buffer_minutes = clean_payload["buffer_minutes"]
 
-    tenant_id = re.sub(r"[^a-zA-Z0-9_]+", "_", business_name.lower()).strip("_")
-    if not tenant_id:
-        tenant_id = "tenant_" + uuid.uuid4().hex[:8]
-    tenant_id = tenant_id + "_" + uuid.uuid4().hex[:4]
+    tenant_id = clean_payload.get("tenant_slug") or stage63_unique_tenant_id(business_name)
 
     cols = tenants_columns()
     col_names = {c["name"] for c in cols}
@@ -13617,6 +13831,7 @@ def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
         <div style="display:flex; gap:12px; align-items:end; margin-left:auto; flex-wrap:wrap;">
           <button onclick="loadAll()">Refresh</button>
           <button class="secondary" onclick="openPath('/tenants/ui')">Tenants</button>
+          <button class="secondary" onclick="openPath('/signup/ui')">Create tenant</button>
           <button class="secondary" onclick="openPath('/onboarding/ui?tenant_id='+encodeURIComponent(currentTenant()))">Onboarding</button>
           <button class="secondary" onclick="openPath('/tenant/config/ui?tenant_id='+encodeURIComponent(currentTenant()))">Tenant config</button>
           <button class="secondary" onclick="openPath('/admin/session/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Admin session</button>
@@ -13630,6 +13845,8 @@ def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
         <a id="lnk_access_ready" href="#">access readiness</a> ·
         <a id="lnk_admin_access" href="#">admin access enforcement</a> ·
         <a id="lnk_admin_session" href="#">admin session</a> ·
+        <a id="lnk_tenant_creation" href="/tenant/creation/readiness">tenant creation</a> ·
+        <a href="/signup/ui">create tenant</a> ·
         <a href="/admin/logout">logout</a> ·
         <a id="lnk_telegram_ready" href="#">telegram readiness</a> ·
         <a id="lnk_telegram_smoke" href="#">telegram smoke lock</a> ·
@@ -14057,6 +14274,7 @@ summary { cursor:pointer; font-weight:800; }
         <input id="tenant_id" style="min-width:280px; max-width:420px;" />
         <button onclick="loadConfig()">Load</button>
         <button class="secondary" onclick="openPath('/dashboard?tenant_id='+encodeURIComponent(currentTenant()))">Dashboard</button>
+        <button class="secondary" onclick="openPath('/signup/ui')">Create tenant</button>
         <button class="secondary" onclick="openPath('/dev_chat_ui?tenant_id='+encodeURIComponent(currentTenant()))">Dev chat</button>
         <button class="secondary" onclick="openPath('/demo/script?tenant_id='+encodeURIComponent(currentTenant()))">Demo script</button>
         <button class="secondary" onclick="openPath('/launch/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Launch readiness</button>
@@ -14182,6 +14400,8 @@ summary { cursor:pointer; font-weight:800; }
       <a id="lnk_access_ready" href="#">Access readiness</a>
       <a id="lnk_admin_access" href="#">Admin access enforcement</a>
       <a id="lnk_admin_session" href="#">Admin session</a>
+      <a id="lnk_tenant_creation" href="#">Tenant creation</a>
+      <a id="lnk_signup" href="/signup/ui">Create tenant</a>
       <a id="lnk_admin_logout" href="/admin/logout">Logout</a>
       <a id="lnk_telegram_ready" href="#">Telegram readiness</a>
       <a id="lnk_telegram_smoke" href="#">Telegram smoke lock</a>
@@ -14213,6 +14433,7 @@ function setLinks(tid){
   document.getElementById('lnk_access_ready').href = '/access/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_admin_access').href = '/admin/access/enforcement/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_admin_session').href = '/admin/session/readiness?tenant_id=' + encodeURIComponent(tid);
+  document.getElementById('lnk_tenant_creation').href = '/tenant/creation/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_telegram_ready').href = '/telegram/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_telegram_smoke').href = '/telegram/live-smoke/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_routes').href = '/tenant/routes?tenant_id=' + encodeURIComponent(tid);
@@ -14731,6 +14952,7 @@ def tenant_config(tenant_id: str = TENANT_ID_DEFAULT):
         "access_boundaries_readiness": stage58_access_boundaries_readiness_payload(str(tenant.get("_id") or tenant_id)),
         "admin_access_enforcement": stage61_admin_access_enforcement_payload(str(tenant.get("_id") or tenant_id)),
         "admin_session_readiness": stage62_admin_session_readiness_payload(str(tenant.get("_id") or tenant_id)),
+        "tenant_creation_readiness": stage63_tenant_creation_readiness_payload(str(tenant.get("_id") or tenant_id)),
         "telegram_text_channel_readiness": stage59_telegram_text_channel_readiness_payload(str(tenant.get("_id") or tenant_id)),
         "telegram_live_smoke_lock": stage60_telegram_live_smoke_lock_payload(str(tenant.get("_id") or tenant_id)),
         "config_ui_hardening": tenant_config_ui_readiness_payload(tenant),

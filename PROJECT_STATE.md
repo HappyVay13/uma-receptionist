@@ -429,3 +429,19 @@ Stage 36 adds a deterministic recovery layer inside active booking flows. It is 
 ## Stage 62 — Admin Login / Session Layer
 
 Stage 62 adds a browser login/session layer over Stage 61 protected admin surfaces. `/admin/login` accepts the configured `REPLIQ_ADMIN_TOKEN` and sets a signed HttpOnly `repliq_admin_session` cookie. `/admin/logout` clears admin cookies. `/admin/session` reports current browser auth status. `/admin/session/readiness` and `/internal/readiness` expose Stage 62 readiness metadata. This does not change receptionist core behavior or Telegram/Calendar runtime.
+
+## Stage 63 — Tenant Creation / Signup Flow Foundation
+
+Status: implemented in archive, pending deploy verification.
+
+Stage 63 starts the self-serve SaaS transition by hardening tenant creation and exposing a protected signup/create-tenant UI. The receptionist runtime is unchanged.
+
+Added:
+- `/tenant/creation/readiness` and `/signup/readiness`
+- `/signup`, `/signup/ui`, `/tenant/create/ui` aliases for the existing onboarding create UI
+- `tenant_slug` support with validation/reserved slugs/collision checks
+- Stage 63 readiness in `/internal/readiness` and `/tenant/config`
+- Create tenant links in `/dashboard` and `/tenant/config/ui`
+- Stage 61/62 protection coverage for `POST /tenant/create`
+
+Public SaaS readiness remains false until owner identity, tenant ownership, billing, and public signup abuse protection are implemented.

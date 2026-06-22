@@ -6,3 +6,14 @@ Stage 62 adds `/admin/login`, `/admin/logout`, `/admin/session`, and `/admin/ses
 ## Stage 61 — Admin Access Enforcement
 
 Stage 61 adds a minimal shared admin-token protection layer for internal/admin/demo surfaces. Set `REPLIQ_ADMIN_TOKEN` in the deployment environment before opening protected admin pages. Use `X-Repliq-Admin-Token` or `Authorization: Bearer <token>` for API checks; for browser checks open a protected page once with `?admin_token=<token>` to set the HttpOnly admin cookie. This is an MVP/private-admin access layer, not final public SaaS authentication.
+
+## Stage 63 — Tenant Creation / Signup Flow Foundation
+
+Protected self-serve foundation endpoints:
+
+- `GET /signup/ui`
+- `GET /tenant/create/ui`
+- `POST /tenant/create`
+- `GET /tenant/creation/readiness?tenant_id=clinic_demo`
+
+Tenant creation is protected by the Stage 61/62 admin token/session layer. This stage prepares the SaaS tenant creation flow but does not yet make Repliq public self-serve SaaS.
