@@ -378,3 +378,13 @@ If a price question is asked inside an active booking flow and the current langu
 - Stage 65 must not change receptionist core behavior: booking, cancellation, rescheduling, side-question handling, Telegram webhook, Google Calendar event create/update/delete runtime, and regression QA are out of scope.
 - `public_saas_ready` must remain false for this stage until owner auth, tenant ownership checks, billing, CSRF, and public rate limits exist.
 - Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+
+## Stage 66 rules — Service Catalog Builder
+
+- Stage 66 may add protected service catalog builder/readiness/admin UI only.
+- `/service-catalog/builder`, `/tenant/service-catalog`, and `POST /tenant/service-catalog/update` must remain protected by Stage 61/62 admin session/token.
+- Service catalog updates may write tenant config fields only: service catalog JSON, `services_lv/services_ru/services_en`, and a managed service-price block in business memory.
+- Do not expose secrets or admin token values in builder/readiness responses.
+- Do not change receptionist core orchestration: booking, cancellation, rescheduling, date/time parsing, slot generation, Telegram webhook, Google Calendar event create/update/delete runtime, and regression QA remain out of scope.
+- `public_saas_ready` must remain false for this stage until owner auth, tenant ownership checks, billing, CSRF, and public rate limits exist.
+- Current protected baseline remains `/dialogue/qa = 50/50 passed`.

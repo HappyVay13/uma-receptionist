@@ -37,3 +37,14 @@ Stage 65 adds a protected Google Calendar self-serve readiness layer:
 - `/calendar/self-serve/readiness?tenant_id=clinic_demo`
 
 The Google setup flow is now part of the protected admin/session self-serve path: `/google/connect`, `/google/calendars`, `/google/calendars/ui`, and `POST /google/select_calendar` require Stage 61/62 admin auth. `/google/callback` remains available for the Google OAuth redirect.
+
+## Stage 66 — Service Catalog Builder
+
+Stage 66 adds a protected service catalog builder/readiness layer:
+
+- `/service-catalog/builder?tenant_id=clinic_demo`
+- `/tenant/service-catalog?tenant_id=clinic_demo`
+- `/service-catalog/readiness?tenant_id=clinic_demo`
+- `POST /tenant/service-catalog/update`
+
+The builder lets the admin manage service names LV/RU/EN, duration, price, currency, aliases, and active/inactive state. Saving syncs service names into the tenant service fields and can sync a managed price block into business memory for FAQ/price side-questions. The flow remains protected by Stage 61/62 admin session/token and does not make Repliq public SaaS yet.

@@ -476,3 +476,21 @@ Added:
 - Stage 61/62 protection coverage for `/google/connect`, `/google/calendars`, `/google/calendars/ui`, and `POST /google/select_calendar`
 
 `/google/callback` remains available for Google OAuth redirect. Public SaaS readiness remains false until owner auth, tenant ownership, billing, CSRF, and public abuse protection are implemented.
+
+## Stage 66 — Service Catalog Builder
+
+Status: implemented locally in this archive, pending deploy verification.
+
+Stage 66 adds a protected self-serve service catalog builder so an admin can manage services without editing raw tenant JSON. Receptionist runtime orchestration remains unchanged.
+
+Added:
+- `/service-catalog/builder` and `/service-catalog/builder/ui`
+- `/tenant/service-catalog` JSON preview
+- `POST /tenant/service-catalog/update`
+- `/service-catalog/readiness`, `/tenant/service-catalog/readiness`, and `/services/readiness`
+- Stage 66 readiness metadata in `/internal/readiness`, `/tenant/config`, and `/tenant/config/update`
+- Service catalog links in onboarding links, dashboard, tenant config UI, and onboarding wizard service/prices steps
+
+Builder saves normalized catalog data to the tenant service catalog column, syncs `services_lv/services_ru/services_en`, and can update a managed service-price block in business memory so price side-questions stay grounded.
+
+Public SaaS readiness remains false until owner auth, tenant ownership, billing, CSRF, and public rate limits exist.

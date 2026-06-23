@@ -29,6 +29,15 @@ def _ensure_list(value: Any) -> List[str]:
         pass
     return [x.strip() for x in txt.split(",") if x.strip()]
 
+def _catalog_item_active(item: Dict[str, Any]) -> bool:
+    raw = item.get("active", item.get("enabled", True))
+    if isinstance(raw, bool):
+        return raw
+    if raw is None:
+        return True
+    return str(raw).strip().lower() not in {"0", "false", "no", "off", "disabled", "inactive"}
+
+
 def parse_service_catalog(value: Any) -> List[Dict[str, Any]]:
     if value is None:
         return []
@@ -48,6 +57,8 @@ def parse_service_catalog(value: Any) -> List[Dict[str, Any]]:
     for item in parsed:
         if not isinstance(item, dict):
             continue
+        if not _catalog_item_active(item):
+            continue
         base_name = str(item.get("name") or item.get("name_lv") or item.get("display_name") or item.get("key") or "").strip()
         if not base_name:
             continue
@@ -66,8 +77,11 @@ def parse_service_catalog(value: Any) -> List[Dict[str, Any]]:
             aliases_ru = aliases[:]
         if not aliases_en and aliases:
             aliases_en = aliases[:]
-        out.append({
+        price_value = str(item.get("price") or item.get("price_eur") or item.get("price_value") or "").strip()
+        currency_value = str(item.get("currency") or "EUR").strip().upper() or "EUR"
+        normalized_item: Dict[str, Any] = {
             "key": key,
+            "active": True,
             "name_lv": str(item.get("name_lv") or base_name).strip(),
             "name_ru": str(item.get("name_ru") or item.get("name") or base_name).strip(),
             "name_en": str(item.get("name_en") or item.get("name") or base_name).strip(),
@@ -75,7 +89,15 @@ def parse_service_catalog(value: Any) -> List[Dict[str, Any]]:
             "aliases_lv": aliases_lv,
             "aliases_ru": aliases_ru,
             "aliases_en": aliases_en,
-        })
+        }
+        if price_value:
+            normalized_item["price"] = price_value
+            normalized_item["currency"] = currency_value
+        for lang_key in ("lv", "ru", "en"):
+            desc = str(item.get(f"description_{lang_key}") or "").strip()
+            if desc:
+                normalized_item[f"description_{lang_key}"] = desc
+        out.append(normalized_item)
     return out
 
 def fallback_service_catalog(tenant: Dict[str, Any]) -> List[Dict[str, Any]]:

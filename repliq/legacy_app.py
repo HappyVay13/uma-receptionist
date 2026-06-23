@@ -188,6 +188,15 @@ STAGE61_PROTECTED_EXACT_PATHS = {
     "/google/self-serve/readiness",
     "/google/calendar/self-serve/readiness",
     "/calendar/self-serve/readiness",
+    "/service-catalog/readiness",
+    "/tenant/service-catalog/readiness",
+    "/services/readiness",
+    "/service-catalog/builder",
+    "/service-catalog/builder/ui",
+    "/tenant/service-catalog",
+    "/tenant/service-catalog/builder",
+    "/tenant/service-catalog/update",
+    "/service-catalog/update",
     "/google/connect",
     "/google/calendars",
     "/google/calendars/ui",
@@ -4056,6 +4065,15 @@ def _ensure_list(value: Any) -> List[str]:
     return [x.strip() for x in txt.split(",") if x.strip()]
 
 
+def _stage66_catalog_item_is_active(item: Dict[str, Any]) -> bool:
+    raw = item.get("active", item.get("enabled", True))
+    if isinstance(raw, bool):
+        return raw
+    if raw is None:
+        return True
+    return str(raw).strip().lower() not in {"0", "false", "no", "off", "disabled", "inactive"}
+
+
 def parse_service_catalog(value: Any) -> List[Dict[str, Any]]:
     if value is None:
         return []
@@ -4075,6 +4093,8 @@ def parse_service_catalog(value: Any) -> List[Dict[str, Any]]:
     for item in parsed:
         if not isinstance(item, dict):
             continue
+        if not _stage66_catalog_item_is_active(item):
+            continue
         base_name = str(item.get("name") or item.get("name_lv") or item.get("display_name") or item.get("key") or "").strip()
         if not base_name:
             continue
@@ -4093,8 +4113,11 @@ def parse_service_catalog(value: Any) -> List[Dict[str, Any]]:
             aliases_ru = aliases[:]
         if not aliases_en and aliases:
             aliases_en = aliases[:]
-        out.append({
+        price_value = str(item.get("price") or item.get("price_eur") or item.get("price_value") or "").strip()
+        currency_value = str(item.get("currency") or "EUR").strip().upper() or "EUR"
+        normalized_item: Dict[str, Any] = {
             "key": key,
+            "active": True,
             "name_lv": str(item.get("name_lv") or base_name).strip(),
             "name_ru": str(item.get("name_ru") or item.get("name") or base_name).strip(),
             "name_en": str(item.get("name_en") or item.get("name") or base_name).strip(),
@@ -4102,9 +4125,16 @@ def parse_service_catalog(value: Any) -> List[Dict[str, Any]]:
             "aliases_lv": aliases_lv,
             "aliases_ru": aliases_ru,
             "aliases_en": aliases_en,
-        })
+        }
+        if price_value:
+            normalized_item["price"] = price_value
+            normalized_item["currency"] = currency_value
+        for lang_key in ("lv", "ru", "en"):
+            desc = str(item.get(f"description_{lang_key}") or "").strip()
+            if desc:
+                normalized_item[f"description_{lang_key}"] = desc
+        out.append(normalized_item)
     return out
-
 
 def fallback_service_catalog(tenant: Dict[str, Any]) -> List[Dict[str, Any]]:
     names: Dict[str, List[str]] = {
@@ -12095,6 +12125,7 @@ def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) ->
         "tenant_creation_readiness": stage63_tenant_creation_readiness_payload(requested_tenant_id),
         "onboarding_wizard_readiness": stage64_onboarding_wizard_readiness_payload(requested_tenant_id),
         "google_calendar_self_serve_readiness": stage65_google_calendar_self_serve_readiness_payload(requested_tenant_id),
+        "service_catalog_builder_readiness": stage66_service_catalog_readiness_payload(requested_tenant_id),
         "telegram_text_channel_readiness": stage59_telegram_text_channel_readiness_payload(requested_tenant_id),
         "telegram_live_smoke_lock": stage60_telegram_live_smoke_lock_payload(requested_tenant_id),
         "tenant_admin_config": tenant_admin_config_readiness_payload(tenant) if tenant_status.get("tenant_id") else {
@@ -12309,6 +12340,127 @@ def onboarding_wizard_readiness(tenant_id: str = TENANT_ID_DEFAULT):
 @app.get("/calendar/self-serve/readiness")
 def google_calendar_self_serve_readiness(tenant_id: str = TENANT_ID_DEFAULT):
     return stage65_google_calendar_self_serve_readiness_payload(tenant_id=tenant_id)
+
+
+@app.get("/service-catalog/readiness")
+@app.get("/tenant/service-catalog/readiness")
+@app.get("/services/readiness")
+def service_catalog_builder_readiness(tenant_id: str = TENANT_ID_DEFAULT):
+    return stage66_service_catalog_readiness_payload(tenant_id=tenant_id)
+
+
+@app.get("/tenant/service-catalog")
+def tenant_service_catalog_json(tenant_id: str = TENANT_ID_DEFAULT):
+    tenant = get_tenant_or_404((tenant_id or "").strip() or TENANT_ID_DEFAULT)
+    source, items, source_valid = stage66_service_catalog_source(tenant)
+    return {
+        "stage": "66",
+        "tenant_id": str(tenant.get("_id") or tenant_id),
+        "source": source,
+        "source_valid": bool(source_valid),
+        "items": items,
+        "runtime_items": stage66_runtime_catalog_from_builder_items(items),
+        "readiness": stage66_service_catalog_readiness_payload(str(tenant.get("_id") or tenant_id)),
+    }
+
+
+@app.get("/service-catalog/builder", response_class=HTMLResponse)
+@app.get("/service-catalog/builder/ui", response_class=HTMLResponse)
+@app.get("/tenant/service-catalog/builder", response_class=HTMLResponse)
+def service_catalog_builder_ui(tenant_id: str = TENANT_ID_DEFAULT):
+    tenant_id_clean = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    tenant_id_json = json.dumps(tenant_id_clean, ensure_ascii=False)
+    html = """
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Repliq Service Catalog Builder</title>
+<style>
+body{font-family:Inter,Arial,sans-serif;background:#f6f7fb;color:#111827;margin:0;padding:24px}.wrap{max-width:1220px;margin:0 auto}.hero,.card{background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:18px;margin-bottom:14px;box-shadow:0 8px 24px rgba(15,23,42,.06)}.hero{background:#111827;color:white}.hero p{color:#d1d5db}.toolbar{display:flex;gap:10px;align-items:end;flex-wrap:wrap}label{display:block;font-size:12px;color:#6b7280;margin-bottom:4px}input,textarea,select{width:100%;box-sizing:border-box;border:1px solid #d1d5db;border-radius:10px;padding:9px 10px;background:#fff;color:#111827}textarea{min-height:70px}button{border:0;border-radius:10px;padding:10px 14px;background:#111827;color:white;font-weight:700;cursor:pointer}button.secondary{background:white;color:#111827;border:1px solid #d1d5db}.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.row{border:1px solid #e5e7eb;border-radius:14px;padding:14px;margin-bottom:12px;background:#fff}.row.off{opacity:.65;background:#f9fafb}.badge{display:inline-block;border-radius:999px;padding:4px 8px;font-size:12px;border:1px solid #e5e7eb;background:#f3f4f6}.ok{color:#065f46;background:#ecfdf5;border-color:#a7f3d0}.warn{color:#92400e;background:#fffbeb;border-color:#fde68a}.err{color:#991b1b;background:#fef2f2;border-color:#fecaca}.muted{color:#6b7280;font-size:13px}.raw{white-space:pre-wrap;max-height:320px;overflow:auto;background:#0b1020;color:#d1d5db;border-radius:14px;padding:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}@media(max-width:900px){.grid{grid-template-columns:1fr}body{padding:12px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hero"><h1>Service Catalog Builder</h1><p>Stage 66 self-serve editor for services, durations, aliases and price facts.</p></div>
+  <div class="card toolbar">
+    <div><label>Tenant</label><input id="tenant_id" value=""/></div>
+    <button onclick="loadCatalog()">Refresh</button>
+    <button onclick="addService()">Add service</button>
+    <button onclick="saveCatalog()">Save catalog</button>
+    <button class="secondary" onclick="openPath('/onboarding/wizard?tenant_id='+encodeURIComponent(currentTenant()))">Wizard</button>
+    <button class="secondary" onclick="openPath('/tenant/config/ui?tenant_id='+encodeURIComponent(currentTenant()))">Tenant config</button>
+    <button class="secondary" onclick="openPath('/dashboard?tenant_id='+encodeURIComponent(currentTenant()))">Dashboard</button>
+    <button class="secondary" onclick="openPath('/admin/logout')">Logout</button>
+  </div>
+  <div class="card"><div id="status" class="muted">Loading…</div><div style="margin-top:8px"><label><input type="checkbox" id="sync_memory" checked style="width:auto"> Sync service names and managed price facts into receptionist memory</label></div></div>
+  <div id="services"></div>
+  <div class="card"><h3>Readiness</h3><div class="raw" id="raw"></div></div>
+</div>
+<script>
+const DEFAULT_TENANT_ID = __TENANT_ID_JSON__;
+let catalog = [];
+document.getElementById('tenant_id').value = DEFAULT_TENANT_ID || 'clinic_demo';
+function currentTenant(){return (document.getElementById('tenant_id').value||'').trim()||DEFAULT_TENANT_ID||'clinic_demo';}
+function openPath(path){window.location=path;}
+function esc(v){return v===null||v===undefined?'':String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;');}
+function slug(v){return String(v||'').trim().toLowerCase().replace(/[^a-z0-9а-яёāēīūčšžģķļņ]+/gi,'_').replace(/^_+|_+$/g,'') || ('service_'+Math.random().toString(16).slice(2,8));}
+function setStatus(msg, cls='muted'){const el=document.getElementById('status'); el.className=cls; el.textContent=msg;}
+function activeItems(){return catalog.filter(x=>x.active!==false);}
+function render(){
+  const root=document.getElementById('services');
+  root.innerHTML = catalog.map((item,i)=>`<div class="row ${item.active===false?'off':''}">
+    <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:10px"><strong>${esc(item.key||('service_'+(i+1)))}</strong><span class="badge ${item.active===false?'warn':'ok'}">${item.active===false?'inactive':'active'}</span></div>
+    <div class="grid">
+      <div><label>Active</label><select onchange="catalog[${i}].active=this.value==='true';render()"><option value="true" ${item.active!==false?'selected':''}>active</option><option value="false" ${item.active===false?'selected':''}>inactive</option></select></div>
+      <div><label>Key</label><input value="${esc(item.key||'')}" oninput="catalog[${i}].key=this.value"/></div>
+      <div><label>Duration min</label><input type="number" min="5" value="${esc(item.duration_min||30)}" oninput="catalog[${i}].duration_min=parseInt(this.value||'30',10)"/></div>
+      <div><label>Price</label><input value="${esc(item.price||'')}" placeholder="10" oninput="catalog[${i}].price=this.value"/></div>
+      <div><label>Name LV</label><input value="${esc(item.name_lv||'')}" oninput="catalog[${i}].name_lv=this.value;if(!catalog[${i}].key)catalog[${i}].key=slug(this.value);"/></div>
+      <div><label>Name RU</label><input value="${esc(item.name_ru||'')}" oninput="catalog[${i}].name_ru=this.value"/></div>
+      <div><label>Name EN</label><input value="${esc(item.name_en||'')}" oninput="catalog[${i}].name_en=this.value"/></div>
+      <div><label>Currency</label><input value="${esc(item.currency||'EUR')}" oninput="catalog[${i}].currency=this.value"/></div>
+      <div><label>Aliases LV</label><input value="${esc((item.aliases_lv||[]).join(', '))}" oninput="catalog[${i}].aliases_lv=this.value.split(',').map(x=>x.trim()).filter(Boolean)"/></div>
+      <div><label>Aliases RU</label><input value="${esc((item.aliases_ru||[]).join(', '))}" oninput="catalog[${i}].aliases_ru=this.value.split(',').map(x=>x.trim()).filter(Boolean)"/></div>
+      <div><label>Aliases EN</label><input value="${esc((item.aliases_en||[]).join(', '))}" oninput="catalog[${i}].aliases_en=this.value.split(',').map(x=>x.trim()).filter(Boolean)"/></div>
+      <div><label>Actions</label><button class="secondary" onclick="catalog.splice(${i},1);render()">Remove</button></div>
+    </div>
+  </div>`).join('') || '<div class="card muted">No services yet. Click Add service.</div>';
+}
+function addService(){catalog.push({key:'',active:true,name_lv:'',name_ru:'',name_en:'',duration_min:30,price:'',currency:'EUR',aliases_lv:[],aliases_ru:[],aliases_en:[]});render();}
+async function loadCatalog(){
+  setStatus('Loading…');
+  const tid=currentTenant();
+  const r=await fetch('/tenant/service-catalog?tenant_id='+encodeURIComponent(tid));
+  const data=await r.json();
+  document.getElementById('raw').textContent=JSON.stringify(data.readiness||data,null,2);
+  if(!r.ok){setStatus(data.detail||data.error||'Failed','err');return;}
+  catalog = data.items || [];
+  render();
+  const ready=data.readiness||{};
+  setStatus(`Loaded ${catalog.length} services · active ${activeItems().length} · status ${ready.status||'-'}`, ready.status==='blocked'?'err':ready.status==='attention'?'warn':'ok');
+}
+async function saveCatalog(){
+  try{
+    const tid=currentTenant();
+    const payload={tenant_id:tid, services:catalog, sync_services_fields:true, sync_business_memory_prices:document.getElementById('sync_memory').checked};
+    setStatus('Saving…');
+    const r=await fetch('/tenant/service-catalog/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const data=await r.json();
+    document.getElementById('raw').textContent=JSON.stringify(data.readiness||data,null,2);
+    if(!r.ok){throw new Error(data.detail || data.error || JSON.stringify(data));}
+    catalog = (data.service_catalog && data.service_catalog.items) || catalog;
+    render();
+    setStatus('Saved. Receptionist catalog/memory sync updated.', 'ok');
+  }catch(e){setStatus(e.message||String(e),'err');}
+}
+loadCatalog();
+</script>
+</body>
+</html>
+    """.replace("__TENANT_ID_JSON__", tenant_id_json)
+    return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/telegram/readiness")
@@ -12954,6 +13106,255 @@ def stage65_google_calendar_self_serve_readiness_payload(tenant_id: str = TENANT
 
 
 
+# -------------------------
+# STAGE 66: SERVICE CATALOG BUILDER
+# -------------------------
+STAGE66_SERVICE_PRICE_BLOCK_START = "# Repliq service catalog prices"
+STAGE66_SERVICE_PRICE_BLOCK_END = "# /Repliq service catalog prices"
+
+
+def stage66_service_catalog_source(tenant: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]], bool]:
+    tenant = tenant or {}
+    for key in ("service_catalog_json", "service_catalog", "services_catalog", "services_json"):
+        raw = tenant.get(key)
+        if raw is None or str(raw).strip() == "":
+            continue
+        try:
+            parsed = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            return key, [], False
+        if isinstance(parsed, list):
+            return key, stage66_normalize_service_catalog_items(parsed, include_inactive=True), True
+        return key, [], False
+    env_catalog = parse_service_catalog(os.getenv("BIZ_SERVICE_CATALOG", "").strip())
+    if env_catalog:
+        return "env:BIZ_SERVICE_CATALOG", stage66_normalize_service_catalog_items(env_catalog, include_inactive=True), True
+    return "fallback:services_by_language", stage66_normalize_service_catalog_items(fallback_service_catalog(tenant), include_inactive=True), True
+
+
+def stage66_normalize_price(value: Any) -> str:
+    txt = str(value or "").strip()
+    if not txt:
+        return ""
+    # Keep values user-friendly while preventing multiline memory injection.
+    txt = re.sub(r"[\r\n]+", " ", txt)
+    txt = re.sub(r"\s+", " ", txt).strip()
+    return txt[:80]
+
+
+def stage66_normalize_service_catalog_items(items: Any, include_inactive: bool = True) -> List[Dict[str, Any]]:
+    if isinstance(items, str):
+        try:
+            items = json.loads(items)
+        except Exception:
+            return []
+    if not isinstance(items, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    used_keys: Dict[str, int] = {}
+    for raw_item in items:
+        if not isinstance(raw_item, dict):
+            continue
+        active = _stage66_catalog_item_is_active(raw_item)
+        if not include_inactive and not active:
+            continue
+        base_name = str(raw_item.get("name_lv") or raw_item.get("name") or raw_item.get("name_ru") or raw_item.get("name_en") or raw_item.get("key") or "").strip()
+        if not base_name:
+            continue
+        base_key = str(raw_item.get("key") or _slugify_service_key(base_name)).strip() or _slugify_service_key(base_name)
+        safe_key = _slugify_service_key(base_key)
+        if safe_key in used_keys:
+            used_keys[safe_key] += 1
+            safe_key = f"{safe_key}_{used_keys[safe_key]}"
+        else:
+            used_keys[safe_key] = 1
+        try:
+            duration_min = max(5, int(raw_item.get("duration_min") or APPT_MINUTES))
+        except Exception:
+            duration_min = APPT_MINUTES
+        aliases = _ensure_list(raw_item.get("aliases"))
+        aliases_lv = _ensure_list(raw_item.get("aliases_lv")) or aliases[:]
+        aliases_ru = _ensure_list(raw_item.get("aliases_ru")) or aliases[:]
+        aliases_en = _ensure_list(raw_item.get("aliases_en")) or aliases[:]
+        name_lv = str(raw_item.get("name_lv") or base_name).strip()
+        name_ru = str(raw_item.get("name_ru") or raw_item.get("name") or name_lv).strip()
+        name_en = str(raw_item.get("name_en") or raw_item.get("name") or name_lv).strip()
+        item: Dict[str, Any] = {
+            "key": safe_key,
+            "active": bool(active),
+            "name_lv": name_lv,
+            "name_ru": name_ru,
+            "name_en": name_en,
+            "duration_min": duration_min,
+            "price": stage66_normalize_price(raw_item.get("price") or raw_item.get("price_eur") or raw_item.get("price_value")),
+            "currency": str(raw_item.get("currency") or "EUR").strip().upper() or "EUR",
+            "aliases_lv": aliases_lv,
+            "aliases_ru": aliases_ru,
+            "aliases_en": aliases_en,
+            "description_lv": str(raw_item.get("description_lv") or "").strip()[:500],
+            "description_ru": str(raw_item.get("description_ru") or "").strip()[:500],
+            "description_en": str(raw_item.get("description_en") or "").strip()[:500],
+        }
+        out.append(item)
+    return out
+
+
+def stage66_runtime_catalog_from_builder_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [dict(item) for item in stage66_normalize_service_catalog_items(items, include_inactive=False)]
+
+
+def stage66_services_by_language(items: List[Dict[str, Any]], lang: str) -> str:
+    lang = get_lang(lang)
+    names = [str(item.get(f"name_{lang}") or item.get("name_lv") or "").strip() for item in items if item.get("active", True)]
+    return ", ".join([name for name in names if name])
+
+
+def stage66_price_display_for_lang(price: str, currency: str, lang: str) -> str:
+    price = stage66_normalize_price(price)
+    if not price:
+        return ""
+    currency = (currency or "EUR").strip().upper() or "EUR"
+    if re.search(r"(€|eur|euro|eiro|евро)", price, flags=re.I):
+        return text_mvp_localized_price(price, lang)
+    if lang == "ru":
+        return f"{price} евро" if currency == "EUR" else f"{price} {currency}"
+    if lang == "lv":
+        return f"{price} eiro" if currency == "EUR" else f"{price} {currency}"
+    return f"{price} EUR" if currency == "EUR" else f"{price} {currency}"
+
+
+def stage66_price_lines_for_lang(items: List[Dict[str, Any]], lang: str) -> List[str]:
+    lang = get_lang(lang)
+    lines: List[str] = []
+    for item in items:
+        if not item.get("active", True):
+            continue
+        price_display = stage66_price_display_for_lang(str(item.get("price") or ""), str(item.get("currency") or "EUR"), lang)
+        if not price_display:
+            continue
+        name = str(item.get(f"name_{lang}") or item.get("name_lv") or item.get("key") or "").strip()
+        if name:
+            lines.append(f"{name} - {price_display}")
+    return lines
+
+
+def stage66_replace_managed_price_block(existing: Any, lines: List[str]) -> str:
+    text_value = str(existing or "").strip()
+    pattern = re.compile(
+        re.escape(STAGE66_SERVICE_PRICE_BLOCK_START) + r".*?" + re.escape(STAGE66_SERVICE_PRICE_BLOCK_END),
+        flags=re.S,
+    )
+    cleaned = pattern.sub("", text_value).strip()
+    if not lines:
+        return cleaned
+    block = "\n".join([STAGE66_SERVICE_PRICE_BLOCK_START] + lines + [STAGE66_SERVICE_PRICE_BLOCK_END])
+    return (cleaned + "\n\n" + block).strip() if cleaned else block
+
+
+def stage66_service_catalog_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) -> Dict[str, Any]:
+    tid = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    base = (SERVER_BASE_URL or "").rstrip("/")
+
+    def url(path: str) -> str:
+        return base + path if base else path
+
+    tenant = get_existing_tenant(tid)
+    tenant_found = bool(tenant.get("_id"))
+    tenant_id_clean = str(tenant.get("_id") or tenant.get("id") or tid).strip() or tid
+    source, all_items, source_valid = stage66_service_catalog_source(tenant)
+    runtime_items = stage66_runtime_catalog_from_builder_items(all_items)
+    active_items = [item for item in all_items if item.get("active", True)]
+    price_lines = {lang: stage66_price_lines_for_lang(all_items, lang) for lang in ("lv", "ru", "en")}
+    services_by_language = {lang: stage66_services_by_language(all_items, lang) for lang in ("lv", "ru", "en")}
+
+    warnings: List[str] = []
+    blocking: List[str] = []
+    if not tenant_found:
+        blocking.append("tenant_not_found")
+    if not source_valid:
+        blocking.append("service_catalog_json_invalid")
+    if not active_items:
+        blocking.append("no_active_services")
+    if source.startswith("fallback:"):
+        warnings.append("service_catalog_uses_language_fallback")
+    if not any(price_lines.values()):
+        warnings.append("no_service_price_facts_in_catalog")
+    missing_names: List[str] = []
+    for item in active_items:
+        for lang in ("lv", "ru", "en"):
+            if not str(item.get(f"name_{lang}") or "").strip():
+                missing_names.append(f"{item.get('key')}:{lang}")
+    if missing_names:
+        warnings.append("missing_localized_service_names")
+    required_paths = [
+        "/service-catalog/readiness",
+        "/tenant/service-catalog/readiness",
+        "/services/readiness",
+        "/service-catalog/builder",
+        "/service-catalog/builder/ui",
+        "/tenant/service-catalog",
+        "/tenant/service-catalog/update",
+    ]
+    missing_protection = [path for path in required_paths if path not in STAGE61_PROTECTED_EXACT_PATHS]
+    if missing_protection:
+        blocking.append("service_catalog_builder_paths_not_protected")
+
+    status = "ready" if not blocking else "blocked"
+    if not blocking and warnings:
+        status = "attention"
+    return {
+        "stage": "66",
+        "purpose": "self-serve service catalog builder readiness",
+        "tenant_id": tenant_id_clean,
+        "status": status,
+        "service_catalog_builder_ready": bool(not blocking),
+        "runtime_service_catalog_ready": bool(runtime_items),
+        "private_admin_ready": bool(not blocking),
+        "public_saas_ready": False,
+        "auth_model": "admin_session_or_shared_token_mvp",
+        "source": source,
+        "source_valid": bool(source_valid),
+        "counts": {
+            "items_total": len(all_items),
+            "items_active": len(active_items),
+            "runtime_items": len(runtime_items),
+            "price_fact_lines": {lang: len(price_lines[lang]) for lang in ("lv", "ru", "en")},
+        },
+        "services_by_language": services_by_language,
+        "price_preview": price_lines,
+        "items_preview": [
+            {
+                "key": item.get("key"),
+                "active": bool(item.get("active", True)),
+                "name_lv": item.get("name_lv"),
+                "name_ru": item.get("name_ru"),
+                "name_en": item.get("name_en"),
+                "duration_min": item.get("duration_min"),
+                "price": item.get("price"),
+                "currency": item.get("currency"),
+            }
+            for item in all_items[:20]
+        ],
+        "sync_targets": {
+            "service_catalog_json_or_service_catalog": True,
+            "services_lv_ru_en": True,
+            "business_memory_price_block": True,
+        },
+        "protected_paths": required_paths,
+        "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
+        "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
+        "links": {
+            "builder_ui": url(f"/service-catalog/builder?tenant_id={tenant_id_clean}"),
+            "catalog_json": url(f"/tenant/service-catalog?tenant_id={tenant_id_clean}"),
+            "readiness": url(f"/service-catalog/readiness?tenant_id={tenant_id_clean}"),
+            "tenant_config_ui": url(f"/tenant/config/ui?tenant_id={tenant_id_clean}"),
+            "onboarding_wizard": url(f"/onboarding/wizard?tenant_id={tenant_id_clean}"),
+            "dashboard": url(f"/dashboard?tenant_id={tenant_id_clean}"),
+        },
+        "note": "Stage 66 adds protected service catalog builder/readiness. Runtime booking core is unchanged; saved catalog/services/memory are used by existing receptionist logic.",
+    }
+
+
 def stage64_catalog_summary(tenant: Dict[str, Any]) -> Dict[str, Any]:
     tenant = tenant or {}
     catalog = tenant_service_catalog(tenant)
@@ -13000,8 +13401,8 @@ def stage64_onboarding_steps_payload(tenant: Dict[str, Any], tenant_id: str) -> 
     memory_ready = any((memory.get(lang) or {}).get("configured") for lang in ("lv", "ru", "en"))
     return [
         {"id": "business_profile", "title": "Business profile", "status": "complete" if all(business_fields.values()) else "attention", "complete": all(business_fields.values()), "checks": business_fields, "action_url": f"/tenant/config/ui?tenant_id={tid}"},
-        {"id": "services", "title": "Services", "status": "complete" if catalog.get("count", 0) > 0 and any(services_by_lang.values()) else "attention", "complete": bool(catalog.get("count", 0) > 0 and any(services_by_lang.values())), "catalog_count": catalog.get("count", 0), "explicit_catalog_count": catalog.get("explicit_catalog_count", 0), "services_by_language_count": {lang: len(items) for lang, items in services_by_lang.items()}, "action_url": f"/tenant/config/ui?tenant_id={tid}#services"},
-        {"id": "prices", "title": "Prices / FAQ price facts", "status": "complete" if prices_ready else "attention", "complete": bool(prices_ready), "price_line_count": sum(int((memory.get(lang) or {}).get("price_line_count", 0)) for lang in ("lv", "ru", "en")), "action_url": f"/tenant/config/ui?tenant_id={tid}#business-memory"},
+        {"id": "services", "title": "Services", "status": "complete" if catalog.get("count", 0) > 0 and any(services_by_lang.values()) else "attention", "complete": bool(catalog.get("count", 0) > 0 and any(services_by_lang.values())), "catalog_count": catalog.get("count", 0), "explicit_catalog_count": catalog.get("explicit_catalog_count", 0), "services_by_language_count": {lang: len(items) for lang, items in services_by_lang.items()}, "action_url": f"/service-catalog/builder?tenant_id={tid}"},
+        {"id": "prices", "title": "Prices / FAQ price facts", "status": "complete" if prices_ready else "attention", "complete": bool(prices_ready), "price_line_count": sum(int((memory.get(lang) or {}).get("price_line_count", 0)) for lang in ("lv", "ru", "en")), "action_url": f"/service-catalog/builder?tenant_id={tid}"},
         {"id": "business_memory", "title": "Business memory / FAQ", "status": "complete" if memory_ready else "attention", "complete": bool(memory_ready), "language_coverage": memory, "action_url": f"/tenant/config/ui?tenant_id={tid}#business-memory"},
         {"id": "google_calendar_connect", "title": "Google Calendar connection", "status": "complete" if onboarding.get("google_connected") else "attention", "complete": bool(onboarding.get("google_connected")), "google_connected": bool(onboarding.get("google_connected")), "self_serve_ready": bool(google_self_serve.get("google_calendar_self_serve_ready")), "action_url": f"/google/connect?tenant_id={tid}", "readiness_url": f"/google/self-serve/readiness?tenant_id={tid}"},
         {"id": "google_calendar_select", "title": "Working calendar selection", "status": "complete" if onboarding.get("calendar_selected") else "attention", "complete": bool(onboarding.get("calendar_selected")), "calendar_id": onboarding.get("calendar_id"), "self_serve_setup_complete": bool(google_self_serve.get("google_calendar_setup_complete")), "action_url": f"/google/calendars/ui?tenant_id={tid}", "readiness_url": f"/google/self-serve/readiness?tenant_id={tid}"},
@@ -13093,6 +13494,8 @@ def onboarding_links_payload(tenant_id: str) -> Dict[str, str]:
         "onboarding_wizard_url": f"{base}/onboarding/wizard?tenant_id={tenant_id}",
         "onboarding_wizard_readiness_url": f"{base}/onboarding/wizard/readiness?tenant_id={tenant_id}",
         "google_self_serve_readiness_url": f"{base}/google/self-serve/readiness?tenant_id={tenant_id}",
+        "service_catalog_builder_url": f"{base}/service-catalog/builder?tenant_id={tenant_id}",
+        "service_catalog_readiness_url": f"{base}/service-catalog/readiness?tenant_id={tenant_id}",
     }
 
 
@@ -14228,6 +14631,7 @@ def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
           <button class="secondary" onclick="openPath('/signup/ui')">Create tenant</button>
           <button class="secondary" onclick="openPath('/onboarding/ui?tenant_id='+encodeURIComponent(currentTenant()))">Onboarding</button>
           <button class="secondary" onclick="openPath('/onboarding/wizard?tenant_id='+encodeURIComponent(currentTenant()))">Wizard</button>
+          <button class="secondary" onclick="openPath('/service-catalog/builder?tenant_id='+encodeURIComponent(currentTenant()))">Services</button>
           <button class="secondary" onclick="openPath('/tenant/config/ui?tenant_id='+encodeURIComponent(currentTenant()))">Tenant config</button>
           <button class="secondary" onclick="openPath('/admin/session/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Admin session</button>
           <button class="secondary" onclick="openPath('/admin/logout')">Logout</button>
@@ -14242,6 +14646,7 @@ def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
         <a id="lnk_admin_session" href="#">admin session</a> ·
         <a id="lnk_tenant_creation" href="/tenant/creation/readiness">tenant creation</a> ·
         <a id="lnk_onboarding_wizard" href="#">onboarding wizard</a> ·
+        <a id="lnk_service_catalog" href="#">service catalog</a> ·
         <a href="/signup/ui">create tenant</a> ·
         <a href="/admin/logout">logout</a> ·
         <a id="lnk_telegram_ready" href="#">telegram readiness</a> ·
@@ -14520,6 +14925,7 @@ async function loadAll() {{
   el('lnk_admin_access').href = `/admin/access/enforcement/readiness?tenant_id=${{encodeURIComponent(tenant)}}`;
   el('lnk_admin_session').href = `/admin/session/readiness?tenant_id=${{encodeURIComponent(tenant)}}`;
   const wizardLink = el('lnk_onboarding_wizard'); if(wizardLink) wizardLink.href = `/onboarding/wizard/readiness?tenant_id=${{encodeURIComponent(tenant)}}`;
+  const svcLink = el('lnk_service_catalog'); if(svcLink) svcLink.href = `/service-catalog/readiness?tenant_id=${{encodeURIComponent(tenant)}}`;
   el('lnk_telegram_ready').href = `/telegram/readiness?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
   el('lnk_telegram_smoke').href = `/telegram/live-smoke/readiness?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
   el('lnk_activity').href = `/dashboard/activity?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
@@ -14677,6 +15083,7 @@ summary { cursor:pointer; font-weight:800; }
         <button class="secondary" onclick="openPath('/launch/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Launch readiness</button>
         <button class="secondary" onclick="openPath('/pilot/setup/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Pilot setup</button>
         <button class="secondary" onclick="openPath('/business-memory/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Memory readiness</button>
+        <button class="secondary" onclick="openPath('/service-catalog/builder?tenant_id='+encodeURIComponent(currentTenant()))">Service catalog</button>
         <button class="secondary" onclick="openPath('/usage/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Usage readiness</button>
         <button class="secondary" onclick="openPath('/access/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Access readiness</button>
         <button class="secondary" onclick="openPath('/admin/access/enforcement/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Admin access</button>
@@ -15063,6 +15470,15 @@ class TenantConfigUpdateRequest(BaseModel):
     reset_override: bool = False
 
 
+class ServiceCatalogUpdateRequest(BaseModel):
+    tenant_id: str
+    services: Optional[List[Dict[str, Any]]] = None
+    service_catalog: Optional[List[Dict[str, Any]]] = None
+    service_catalog_json: Optional[str] = None
+    sync_services_fields: bool = True
+    sync_business_memory_prices: bool = True
+
+
 class TenantPlanChangeRequest(BaseModel):
     tenant_id: str
     plan: str
@@ -15354,6 +15770,7 @@ def tenant_config(tenant_id: str = TENANT_ID_DEFAULT):
         "tenant_creation_readiness": stage63_tenant_creation_readiness_payload(str(tenant.get("_id") or tenant_id)),
         "onboarding_wizard_readiness": stage64_onboarding_wizard_readiness_payload(str(tenant.get("_id") or tenant_id)),
         "google_calendar_self_serve_readiness": stage65_google_calendar_self_serve_readiness_payload(str(tenant.get("_id") or tenant_id)),
+        "service_catalog_builder_readiness": stage66_service_catalog_readiness_payload(str(tenant.get("_id") or tenant_id)),
         "telegram_text_channel_readiness": stage59_telegram_text_channel_readiness_payload(str(tenant.get("_id") or tenant_id)),
         "telegram_live_smoke_lock": stage60_telegram_live_smoke_lock_payload(str(tenant.get("_id") or tenant_id)),
         "config_ui_hardening": tenant_config_ui_readiness_payload(tenant),
@@ -15366,6 +15783,85 @@ def tenant_config(tenant_id: str = TENANT_ID_DEFAULT):
 def tenant_admin_readiness(tenant_id: str = TENANT_ID_DEFAULT):
     tenant = get_tenant_or_404((tenant_id or "").strip() or TENANT_ID_DEFAULT)
     return tenant_admin_config_readiness_payload(tenant)
+
+
+@app.post("/tenant/service-catalog/update")
+@app.post("/service-catalog/update")
+def tenant_service_catalog_update(payload: ServiceCatalogUpdateRequest):
+    tenant_id = (payload.tenant_id or "").strip()
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="tenant_id required")
+    tenant = get_tenant(tenant_id)
+    if not tenant.get("_id"):
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    raw_items: Any = payload.services if payload.services is not None else payload.service_catalog
+    if raw_items is None and payload.service_catalog_json is not None:
+        try:
+            raw_items = json.loads(payload.service_catalog_json or "[]")
+        except Exception:
+            raise HTTPException(status_code=400, detail="service_catalog_json invalid")
+    if raw_items is None:
+        _, current_items, _ = stage66_service_catalog_source(tenant)
+        raw_items = current_items
+
+    all_items = stage66_normalize_service_catalog_items(raw_items, include_inactive=True)
+    active_items = stage66_runtime_catalog_from_builder_items(all_items)
+    if not active_items:
+        raise HTTPException(status_code=400, detail="At least one active service is required")
+
+    cols = tenants_columns()
+    pk = tenants_pk(cols)
+    col_names = {c["name"] for c in cols}
+    updates: List[str] = []
+    params: Dict[str, Any] = {"tid": tenant_id}
+
+    catalog_json = json.dumps(all_items, ensure_ascii=False, indent=2)
+    if "service_catalog_json" in col_names:
+        updates.append("service_catalog_json=:service_catalog_json")
+        params["service_catalog_json"] = catalog_json
+    elif "service_catalog" in col_names:
+        updates.append("service_catalog=:service_catalog")
+        params["service_catalog"] = catalog_json
+    else:
+        raise HTTPException(status_code=500, detail="No service catalog column available")
+
+    if payload.sync_services_fields:
+        for lang in ("lv", "ru", "en"):
+            field = f"services_{lang}"
+            if field in col_names:
+                updates.append(f"{field}=:{field}")
+                params[field] = stage66_services_by_language(all_items, lang)
+
+    if payload.sync_business_memory_prices:
+        for lang in ("lv", "ru", "en"):
+            field = f"business_memory_{lang}"
+            if field in col_names:
+                existing_value = tenant.get(field)
+                lines = stage66_price_lines_for_lang(all_items, lang)
+                updates.append(f"{field}=:{field}")
+                params[field] = stage66_replace_managed_price_block(existing_value, lines)
+
+    if "updated_at" in col_names:
+        updates.append("updated_at=NOW()")
+
+    with engine.begin() as conn:
+        conn.execute(text(f"UPDATE tenants SET {', '.join(updates)} WHERE {pk}=:tid"), params)
+
+    updated = get_tenant(tenant_id)
+    return {
+        "status": "ok",
+        "stage": "66",
+        "tenant_id": tenant_id,
+        "service_catalog": {
+            "items": stage66_normalize_service_catalog_items(all_items, include_inactive=True),
+            "runtime_items": tenant_service_catalog(updated),
+        },
+        "readiness": stage66_service_catalog_readiness_payload(tenant_id),
+        "onboarding_wizard_readiness": stage64_onboarding_wizard_readiness_payload(tenant_id),
+        "tenant_config_link": f"/tenant/config/ui?tenant_id={tenant_id}",
+        "builder_link": f"/service-catalog/builder?tenant_id={tenant_id}",
+    }
 
 
 @app.post("/tenant/config/update")
@@ -15472,6 +15968,7 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
         "tenant_creation_readiness": stage63_tenant_creation_readiness_payload(tenant_id),
         "onboarding_wizard_readiness": stage64_onboarding_wizard_readiness_payload(tenant_id),
         "google_calendar_self_serve_readiness": stage65_google_calendar_self_serve_readiness_payload(tenant_id),
+        "service_catalog_builder_readiness": stage66_service_catalog_readiness_payload(tenant_id),
         "telegram_text_channel_readiness": stage59_telegram_text_channel_readiness_payload(tenant_id),
         "telegram_live_smoke_lock": stage60_telegram_live_smoke_lock_payload(tenant_id),
         "config_ui_hardening": tenant_config_ui_readiness_payload(updated),
