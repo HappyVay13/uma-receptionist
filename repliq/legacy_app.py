@@ -173,6 +173,15 @@ STAGE61_PROTECTED_EXACT_PATHS = {
     "/launch/readiness",
     "/pilot/setup/readiness",
     "/business-memory/readiness",
+    "/business-memory/builder/readiness",
+    "/tenant/business-memory/readiness",
+    "/faq/readiness",
+    "/business-memory/builder",
+    "/business-memory/builder/ui",
+    "/tenant/business-memory",
+    "/tenant/business-memory/builder",
+    "/tenant/business-memory/update",
+    "/business-memory/update",
     "/usage/readiness",
     "/analytics/readiness",
     "/access/readiness",
@@ -11357,6 +11366,15 @@ def stage58_access_boundaries_readiness_payload(tenant_id: str = TENANT_ID_DEFAU
             "/launch/readiness",
             "/pilot/setup/readiness",
             "/business-memory/readiness",
+    "/business-memory/builder/readiness",
+    "/tenant/business-memory/readiness",
+    "/faq/readiness",
+    "/business-memory/builder",
+    "/business-memory/builder/ui",
+    "/tenant/business-memory",
+    "/tenant/business-memory/builder",
+    "/tenant/business-memory/update",
+    "/business-memory/update",
             "/usage/readiness",
             "/dashboard",
             "/demo/script",
@@ -11434,6 +11452,15 @@ def stage61_admin_access_enforcement_payload(tenant_id: str = TENANT_ID_DEFAULT)
         "/launch/readiness",
         "/pilot/setup/readiness",
         "/business-memory/readiness",
+    "/business-memory/builder/readiness",
+    "/tenant/business-memory/readiness",
+    "/faq/readiness",
+    "/business-memory/builder",
+    "/business-memory/builder/ui",
+    "/tenant/business-memory",
+    "/tenant/business-memory/builder",
+    "/tenant/business-memory/update",
+    "/business-memory/update",
         "/usage/readiness",
         "/access/readiness",
         "/telegram/readiness",
@@ -12118,6 +12145,7 @@ def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) ->
         "launch_readiness_lock": stage54_launch_readiness_lock_payload(requested_tenant_id),
         "pilot_setup_readiness": stage55_pilot_setup_readiness_payload(requested_tenant_id),
         "business_memory_admin": stage56_business_memory_admin_readiness_payload(requested_tenant_id),
+        "business_memory_faq_builder_readiness": stage67_business_memory_builder_readiness_payload(requested_tenant_id),
         "usage_analytics_readiness": stage57_usage_analytics_readiness_payload(requested_tenant_id),
         "access_boundaries_readiness": stage58_access_boundaries_readiness_payload(requested_tenant_id),
         "admin_access_enforcement": stage61_admin_access_enforcement_payload(requested_tenant_id),
@@ -12166,8 +12194,11 @@ def pilot_setup_readiness(tenant_id: str = TENANT_ID_DEFAULT):
 
 
 @app.get("/business-memory/readiness")
+@app.get("/business-memory/builder/readiness")
+@app.get("/tenant/business-memory/readiness")
+@app.get("/faq/readiness")
 def business_memory_readiness(tenant_id: str = TENANT_ID_DEFAULT):
-    return stage56_business_memory_admin_readiness_payload(tenant_id=tenant_id)
+    return stage67_business_memory_builder_readiness_payload(tenant_id=tenant_id)
 
 
 @app.get("/usage/readiness")
@@ -12340,6 +12371,132 @@ def onboarding_wizard_readiness(tenant_id: str = TENANT_ID_DEFAULT):
 @app.get("/calendar/self-serve/readiness")
 def google_calendar_self_serve_readiness(tenant_id: str = TENANT_ID_DEFAULT):
     return stage65_google_calendar_self_serve_readiness_payload(tenant_id=tenant_id)
+
+
+
+
+@app.get("/tenant/business-memory")
+def tenant_business_memory_json(tenant_id: str = TENANT_ID_DEFAULT):
+    return stage67_tenant_business_memory_payload(tenant_id=tenant_id)
+
+
+@app.post("/tenant/business-memory/update")
+@app.post("/business-memory/update")
+def tenant_business_memory_update(payload: Dict[str, Any]):
+    payload = payload or {}
+    tenant_id = (payload.get("tenant_id") or "").strip()
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="tenant_id required")
+    tenant = get_tenant(tenant_id)
+    if not tenant.get("_id"):
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    cols = tenants_columns()
+    pk = tenants_pk(cols)
+    col_names = {c["name"] for c in cols}
+    updates: List[str] = []
+    params: Dict[str, Any] = {"tid": tenant_id}
+
+    for field in (
+        "business_memory_lv", "business_memory_ru", "business_memory_en",
+        "faq_lv", "faq_ru", "faq_en",
+        "booking_rules_lv", "booking_rules_ru", "booking_rules_en",
+        "business_memory", "faq", "booking_rules", "policies",
+    ):
+        value = payload.get(field)
+        if field in col_names and value is not None:
+            updates.append(f"{field}=:{field}")
+            params[field] = str(value or "").strip()
+
+    if "updated_at" in col_names:
+        updates.append("updated_at=NOW()")
+
+    if not updates:
+        raise HTTPException(status_code=400, detail="No editable business memory fields available or provided")
+
+    with engine.begin() as conn:
+        conn.execute(text(f"UPDATE tenants SET {', '.join(updates)} WHERE {pk}=:tid"), params)
+
+    return {
+        "status": "ok",
+        "stage": "67",
+        "tenant_id": tenant_id,
+        "business_memory": stage67_tenant_business_memory_payload(tenant_id),
+        "readiness": stage67_business_memory_builder_readiness_payload(tenant_id),
+        "onboarding_wizard_readiness": stage64_onboarding_wizard_readiness_payload(tenant_id),
+        "tenant_config_link": f"/tenant/config/ui?tenant_id={tenant_id}",
+        "builder_link": f"/business-memory/builder?tenant_id={tenant_id}",
+    }
+
+
+@app.get("/business-memory/builder", response_class=HTMLResponse)
+@app.get("/business-memory/builder/ui", response_class=HTMLResponse)
+@app.get("/tenant/business-memory/builder", response_class=HTMLResponse)
+def business_memory_builder_ui(tenant_id: str = TENANT_ID_DEFAULT):
+    tenant_id_clean = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    tenant_id_json = json.dumps(tenant_id_clean, ensure_ascii=False)
+    html = """
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Repliq Business Memory / FAQ Builder</title>
+<style>
+body{font-family:Inter,Arial,sans-serif;background:#f6f7fb;color:#111827;margin:0;padding:24px}.wrap{max-width:1180px;margin:0 auto}.hero,.card{background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:18px;margin-bottom:14px;box-shadow:0 8px 24px rgba(15,23,42,.06)}.hero{background:#111827;color:white}.hero p{color:#d1d5db}.toolbar{display:flex;gap:10px;align-items:end;flex-wrap:wrap}label{display:block;font-size:12px;color:#6b7280;margin-bottom:4px}input,textarea,select{width:100%;box-sizing:border-box;border:1px solid #d1d5db;border-radius:10px;padding:9px 10px;background:#fff;color:#111827}textarea{min-height:180px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.lang-card{border:1px solid #e5e7eb;border-radius:14px;padding:14px;background:#fff}button{border:0;border-radius:10px;padding:10px 14px;background:#111827;color:white;font-weight:700;cursor:pointer}button.secondary{background:white;color:#111827;border:1px solid #d1d5db}.badge{display:inline-block;border-radius:999px;padding:4px 8px;font-size:12px;border:1px solid #e5e7eb;background:#f3f4f6}.ok{color:#065f46;background:#ecfdf5;border-color:#a7f3d0}.warn{color:#92400e;background:#fffbeb;border-color:#fde68a}.err{color:#991b1b;background:#fef2f2;border-color:#fecaca}.muted{color:#6b7280;font-size:13px}.raw{white-space:pre-wrap;max-height:340px;overflow:auto;background:#0b1020;color:#d1d5db;border-radius:14px;padding:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}.hint{background:#f9fafb;border:1px dashed #d1d5db;border-radius:12px;padding:10px;margin:8px 0 12px;color:#4b5563;font-size:13px}@media(max-width:950px){.grid{grid-template-columns:1fr}body{padding:12px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hero"><h1>Business Memory / FAQ Builder</h1><p>Stage 67 self-serve editor for address, rules, FAQ facts, and multilingual receptionist memory.</p></div>
+  <div class="card toolbar">
+    <div><label>Tenant</label><input id="tenant_id" value=""/></div>
+    <button onclick="loadMemory()">Refresh</button>
+    <button onclick="saveMemory()">Save memory</button>
+    <button class="secondary" onclick="openPath('/service-catalog/builder?tenant_id='+encodeURIComponent(currentTenant()))">Services</button>
+    <button class="secondary" onclick="openPath('/onboarding/wizard?tenant_id='+encodeURIComponent(currentTenant()))">Wizard</button>
+    <button class="secondary" onclick="openPath('/tenant/config/ui?tenant_id='+encodeURIComponent(currentTenant()))">Tenant config</button>
+    <button class="secondary" onclick="openPath('/dashboard?tenant_id='+encodeURIComponent(currentTenant()))">Dashboard</button>
+    <button class="secondary" onclick="openPath('/admin/logout')">Logout</button>
+  </div>
+  <div class="card"><div id="status" class="muted">Loading…</div><div class="hint">Use one fact per line. Good examples: service price, address, working hours, cancellation rules. Do not paste secrets, API keys, or private client data.</div></div>
+  <div class="grid">
+    <div class="lang-card"><h3>Latvian</h3><label>business_memory_lv</label><textarea id="business_memory_lv"></textarea><label>faq_lv</label><textarea id="faq_lv"></textarea><label>booking_rules_lv</label><textarea id="booking_rules_lv"></textarea></div>
+    <div class="lang-card"><h3>Russian</h3><label>business_memory_ru</label><textarea id="business_memory_ru"></textarea><label>faq_ru</label><textarea id="faq_ru"></textarea><label>booking_rules_ru</label><textarea id="booking_rules_ru"></textarea></div>
+    <div class="lang-card"><h3>English</h3><label>business_memory_en</label><textarea id="business_memory_en"></textarea><label>faq_en</label><textarea id="faq_en"></textarea><label>booking_rules_en</label><textarea id="booking_rules_en"></textarea></div>
+  </div>
+  <div class="card"><h3>Generic optional fields</h3><div class="grid"><div><label>business_memory</label><textarea id="business_memory"></textarea></div><div><label>faq</label><textarea id="faq"></textarea></div><div><label>policies</label><textarea id="policies"></textarea></div></div></div>
+  <div class="card"><h3>Readiness / preview</h3><div class="raw" id="raw"></div></div>
+</div>
+<script>
+const DEFAULT_TENANT_ID = __TENANT_ID_JSON__;
+const fields = ['business_memory_lv','business_memory_ru','business_memory_en','faq_lv','faq_ru','faq_en','booking_rules_lv','booking_rules_ru','booking_rules_en','business_memory','faq','policies'];
+document.getElementById('tenant_id').value = DEFAULT_TENANT_ID || 'clinic_demo';
+function currentTenant(){return (document.getElementById('tenant_id').value||'').trim()||DEFAULT_TENANT_ID||'clinic_demo';}
+function openPath(path){window.location=path;}
+function setStatus(msg, cls='muted'){const el=document.getElementById('status'); el.className=cls; el.textContent=msg;}
+async function loadMemory(){
+  const tid=currentTenant(); setStatus('Loading…');
+  const r=await fetch('/tenant/business-memory?tenant_id='+encodeURIComponent(tid));
+  const data=await r.json(); document.getElementById('raw').textContent=JSON.stringify(data.readiness||data,null,2);
+  if(!r.ok){setStatus(data.detail||data.error||'Failed','err');return;}
+  const f=data.fields||{}; fields.forEach(k=>{const el=document.getElementById(k); if(el) el.value=f[k]||'';});
+  const ready=data.readiness||{}; setStatus(`Loaded memory · status ${ready.status||'-'} · languages ${ready.configured_language_count||0}/3`, ready.status==='blocked'?'err':ready.status==='attention'?'warn':'ok');
+}
+async function saveMemory(){
+  const tid=currentTenant(); const payload={tenant_id:tid}; fields.forEach(k=>{const el=document.getElementById(k); if(el) payload[k]=el.value;});
+  setStatus('Saving…');
+  const r=await fetch('/tenant/business-memory/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  const data=await r.json(); document.getElementById('raw').textContent=JSON.stringify(data.readiness||data,null,2);
+  if(!r.ok){setStatus(data.detail||data.error||'Save failed','err');return;}
+  setStatus('Saved. Receptionist will use updated memory/FAQ facts.','ok');
+}
+document.addEventListener('DOMContentLoaded', loadMemory);
+</script>
+</body>
+</html>
+    """.replace("__TENANT_ID_JSON__", tenant_id_json)
+    return HTMLResponse(content=html)
 
 
 @app.get("/service-catalog/readiness")
@@ -13355,6 +13512,176 @@ def stage66_service_catalog_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT
     }
 
 
+
+def stage67_text_lines(value: Any) -> List[str]:
+    return [line.strip() for line in str(value or "").splitlines() if line.strip()]
+
+
+def stage67_memory_field_payload(tenant: Dict[str, Any], field: str) -> Dict[str, Any]:
+    value = str((tenant or {}).get(field) or "")
+    lines = stage67_text_lines(value)
+    price_lines = [line for line in lines if _STAGE56_PRICE_RE.search(line)]
+    address_lines = [line for line in lines if _STAGE56_ADDRESS_RE.search(line)]
+    return {
+        "field": field,
+        "configured": bool(lines),
+        "chars": len(value),
+        "line_count": len(lines),
+        "price_line_count": len(price_lines),
+        "address_line_count": len(address_lines),
+        "sample_lines": lines[:4],
+    }
+
+
+def stage67_language_memory_payload(tenant: Dict[str, Any], lang: str) -> Dict[str, Any]:
+    lang = get_lang(lang)
+    memory_field = f"business_memory_{lang}"
+    faq_field = f"faq_{lang}"
+    rules_field = f"booking_rules_{lang}"
+    memory = stage67_memory_field_payload(tenant, memory_field)
+    faq = stage67_memory_field_payload(tenant, faq_field)
+    booking_rules = stage67_memory_field_payload(tenant, rules_field)
+    total_lines = int(memory.get("line_count") or 0) + int(faq.get("line_count") or 0) + int(booking_rules.get("line_count") or 0)
+    return {
+        "lang": lang,
+        "configured": bool(total_lines > 0),
+        "total_line_count": total_lines,
+        "business_memory": memory,
+        "faq": faq,
+        "booking_rules": booking_rules,
+        "runtime_memory_preview": str(tenant_business_memory(tenant or {}, lang) or "")[:900],
+    }
+
+
+def stage67_business_memory_builder_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) -> Dict[str, Any]:
+    tid = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    base = (SERVER_BASE_URL or "").rstrip("/")
+
+    def url(path: str) -> str:
+        return base + path if base else path
+
+    tenant = get_existing_tenant(tid)
+    tenant_found = bool(tenant.get("_id"))
+    tenant_id_clean = str(tenant.get("_id") or tenant.get("id") or tid).strip() or tid
+    blocking: List[str] = []
+    warnings: List[str] = []
+    suggestions: List[str] = []
+
+    if not tenant_found:
+        blocking.append("tenant_not_found")
+    if not stage61_admin_token_configured():
+        blocking.append("admin_token_not_configured")
+    if not stage62_session_secret():
+        blocking.append("admin_session_secret_not_configured")
+
+    required_paths = [
+        "/business-memory/readiness",
+        "/business-memory/builder/readiness",
+        "/tenant/business-memory/readiness",
+        "/business-memory/builder",
+        "/business-memory/builder/ui",
+        "/tenant/business-memory",
+        "/tenant/business-memory/update",
+    ]
+    missing_protection = [path for path in required_paths if path not in STAGE61_PROTECTED_EXACT_PATHS]
+    if missing_protection:
+        blocking.append("business_memory_builder_paths_not_protected")
+
+    cols = tenants_columns() if tenant_found else []
+    col_names = {c.get("name") for c in cols if c.get("name")}
+    editable_columns = [
+        field for field in (
+            "business_memory_lv", "business_memory_ru", "business_memory_en",
+            "faq_lv", "faq_ru", "faq_en",
+            "booking_rules_lv", "booking_rules_ru", "booking_rules_en",
+            "business_memory", "faq", "booking_rules", "policies",
+        )
+        if field in col_names
+    ]
+    if tenant_found and not editable_columns:
+        blocking.append("no_business_memory_columns_available")
+
+    language_coverage: Dict[str, Any] = {}
+    configured_languages = 0
+    if tenant_found:
+        tenant = normalize_tenant_saas_fields(tenant)
+        for lang in ("lv", "ru", "en"):
+            payload = stage67_language_memory_payload(tenant, lang)
+            language_coverage[lang] = payload
+            if payload.get("configured"):
+                configured_languages += 1
+            else:
+                warnings.append(f"business_memory_{lang}_missing_or_empty")
+            memory_status = payload.get("business_memory") or {}
+            if memory_status.get("configured") and int(memory_status.get("price_line_count") or 0) == 0:
+                suggestions.append(f"business_memory_{lang}_has_no_price_lines")
+            if memory_status.get("configured") and int(memory_status.get("address_line_count") or 0) == 0:
+                suggestions.append(f"business_memory_{lang}_address_optional_missing")
+
+    builder_ready = bool(not blocking)
+    content_ready = bool(configured_languages > 0 and not blocking)
+    status = "ready" if builder_ready and configured_languages >= 3 else "attention" if builder_ready else "blocked"
+
+    return {
+        "stage": "67",
+        "purpose": "Business Memory / FAQ self-serve builder readiness",
+        "tenant_id": tenant_id_clean,
+        "status": status,
+        "business_memory_faq_builder_ready": bool(builder_ready),
+        "business_memory_content_ready": bool(content_ready),
+        "private_admin_ready": bool(builder_ready),
+        "public_saas_ready": False,
+        "auth_model": "admin_session_or_shared_token_mvp",
+        "language_coverage": language_coverage,
+        "configured_language_count": configured_languages,
+        "editable_columns": editable_columns,
+        "protected_paths": required_paths,
+        "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
+        "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
+        "suggestions": list(dict.fromkeys([str(x) for x in suggestions if str(x)])),
+        "recommended_line_formats": {
+            "lv": ["Konsultācija - 10 eiro", "Adrese: Rēzekne", "Darba laiks: 09:00-18:00", "Atcelšana: vismaz 2 stundas iepriekš"],
+            "ru": ["Консультация - 10 евро", "Адрес: Резекне", "Время работы: 09:00-18:00", "Отмена: минимум за 2 часа"],
+            "en": ["Consultation - 10 euro", "Address: Rezekne", "Working hours: 09:00-18:00", "Cancellation: at least 2 hours before"],
+        },
+        "links": {
+            "builder_ui": url(f"/business-memory/builder?tenant_id={tenant_id_clean}"),
+            "memory_json": url(f"/tenant/business-memory?tenant_id={tenant_id_clean}"),
+            "readiness": url(f"/business-memory/readiness?tenant_id={tenant_id_clean}"),
+            "service_catalog_builder": url(f"/service-catalog/builder?tenant_id={tenant_id_clean}"),
+            "business_memory_builder": url(f"/business-memory/builder?tenant_id={tenant_id_clean}"),
+            "business_memory_readiness": url(f"/business-memory/readiness?tenant_id={tenant_id_clean}"),
+            "onboarding_wizard": url(f"/onboarding/wizard?tenant_id={tenant_id_clean}"),
+            "tenant_config_ui": url(f"/tenant/config/ui?tenant_id={tenant_id_clean}"),
+            "dashboard": url(f"/dashboard?tenant_id={tenant_id_clean}"),
+        },
+        "stage56_memory_admin_dependency": stage56_business_memory_admin_readiness_payload(tenant_id_clean) if tenant_found else None,
+        "note": "Stage 67 adds protected self-serve Business Memory / FAQ builder/readiness. Runtime FAQ/side-question logic is unchanged; saved memory fields are used by the existing receptionist flow.",
+    }
+
+
+def stage67_tenant_business_memory_payload(tenant_id: str = TENANT_ID_DEFAULT) -> Dict[str, Any]:
+    tid = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    tenant = get_tenant_or_404(tid)
+    tenant_id_clean = str(tenant.get("_id") or tenant.get("id") or tid).strip() or tid
+    fields = {}
+    for field in (
+        "business_memory_lv", "business_memory_ru", "business_memory_en",
+        "faq_lv", "faq_ru", "faq_en",
+        "booking_rules_lv", "booking_rules_ru", "booking_rules_en",
+        "business_memory", "faq", "booking_rules", "policies",
+    ):
+        if field in tenant:
+            fields[field] = str(tenant.get(field) or "")
+    return {
+        "stage": "67",
+        "tenant_id": tenant_id_clean,
+        "fields": fields,
+        "language_payload": {lang: stage67_language_memory_payload(tenant, lang) for lang in ("lv", "ru", "en")},
+        "readiness": stage67_business_memory_builder_readiness_payload(tenant_id_clean),
+    }
+
+
 def stage64_catalog_summary(tenant: Dict[str, Any]) -> Dict[str, Any]:
     tenant = tenant or {}
     catalog = tenant_service_catalog(tenant)
@@ -13403,7 +13730,7 @@ def stage64_onboarding_steps_payload(tenant: Dict[str, Any], tenant_id: str) -> 
         {"id": "business_profile", "title": "Business profile", "status": "complete" if all(business_fields.values()) else "attention", "complete": all(business_fields.values()), "checks": business_fields, "action_url": f"/tenant/config/ui?tenant_id={tid}"},
         {"id": "services", "title": "Services", "status": "complete" if catalog.get("count", 0) > 0 and any(services_by_lang.values()) else "attention", "complete": bool(catalog.get("count", 0) > 0 and any(services_by_lang.values())), "catalog_count": catalog.get("count", 0), "explicit_catalog_count": catalog.get("explicit_catalog_count", 0), "services_by_language_count": {lang: len(items) for lang, items in services_by_lang.items()}, "action_url": f"/service-catalog/builder?tenant_id={tid}"},
         {"id": "prices", "title": "Prices / FAQ price facts", "status": "complete" if prices_ready else "attention", "complete": bool(prices_ready), "price_line_count": sum(int((memory.get(lang) or {}).get("price_line_count", 0)) for lang in ("lv", "ru", "en")), "action_url": f"/service-catalog/builder?tenant_id={tid}"},
-        {"id": "business_memory", "title": "Business memory / FAQ", "status": "complete" if memory_ready else "attention", "complete": bool(memory_ready), "language_coverage": memory, "action_url": f"/tenant/config/ui?tenant_id={tid}#business-memory"},
+        {"id": "business_memory", "title": "Business memory / FAQ", "status": "complete" if memory_ready else "attention", "complete": bool(memory_ready), "language_coverage": memory, "action_url": f"/business-memory/builder?tenant_id={tid}", "readiness_url": f"/business-memory/readiness?tenant_id={tid}"},
         {"id": "google_calendar_connect", "title": "Google Calendar connection", "status": "complete" if onboarding.get("google_connected") else "attention", "complete": bool(onboarding.get("google_connected")), "google_connected": bool(onboarding.get("google_connected")), "self_serve_ready": bool(google_self_serve.get("google_calendar_self_serve_ready")), "action_url": f"/google/connect?tenant_id={tid}", "readiness_url": f"/google/self-serve/readiness?tenant_id={tid}"},
         {"id": "google_calendar_select", "title": "Working calendar selection", "status": "complete" if onboarding.get("calendar_selected") else "attention", "complete": bool(onboarding.get("calendar_selected")), "calendar_id": onboarding.get("calendar_id"), "self_serve_setup_complete": bool(google_self_serve.get("google_calendar_setup_complete")), "action_url": f"/google/calendars/ui?tenant_id={tid}", "readiness_url": f"/google/self-serve/readiness?tenant_id={tid}"},
         {"id": "telegram_text_channel", "title": "Telegram text channel", "status": "complete" if telegram.get("telegram_text_ready") else "attention", "complete": bool(telegram.get("telegram_text_ready")), "telegram_status": telegram.get("status"), "action_url": f"/telegram/readiness?tenant_id={tid}"},
@@ -13467,6 +13794,8 @@ def stage64_onboarding_wizard_readiness_payload(tenant_id: str = TENANT_ID_DEFAU
             "google_connect": url(f"/google/connect?tenant_id={tenant_id_clean}"),
             "google_calendars_ui": url(f"/google/calendars/ui?tenant_id={tenant_id_clean}"),
             "google_self_serve_readiness": url(f"/google/self-serve/readiness?tenant_id={tenant_id_clean}"),
+            "business_memory_builder": url(f"/business-memory/builder?tenant_id={tenant_id_clean}"),
+            "business_memory_readiness": url(f"/business-memory/readiness?tenant_id={tenant_id_clean}"),
             "telegram_readiness": url(f"/telegram/readiness?tenant_id={tenant_id_clean}"),
             "telegram_smoke_lock": url(f"/telegram/live-smoke/readiness?tenant_id={tenant_id_clean}"),
         },
@@ -13495,6 +13824,8 @@ def onboarding_links_payload(tenant_id: str) -> Dict[str, str]:
         "onboarding_wizard_readiness_url": f"{base}/onboarding/wizard/readiness?tenant_id={tenant_id}",
         "google_self_serve_readiness_url": f"{base}/google/self-serve/readiness?tenant_id={tenant_id}",
         "service_catalog_builder_url": f"{base}/service-catalog/builder?tenant_id={tenant_id}",
+        "business_memory_builder_url": f"{base}/business-memory/builder?tenant_id={tenant_id}",
+        "business_memory_readiness_url": f"{base}/business-memory/readiness?tenant_id={tenant_id}",
         "service_catalog_readiness_url": f"{base}/service-catalog/readiness?tenant_id={tenant_id}",
     }
 
@@ -14632,6 +14963,7 @@ def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
           <button class="secondary" onclick="openPath('/onboarding/ui?tenant_id='+encodeURIComponent(currentTenant()))">Onboarding</button>
           <button class="secondary" onclick="openPath('/onboarding/wizard?tenant_id='+encodeURIComponent(currentTenant()))">Wizard</button>
           <button class="secondary" onclick="openPath('/service-catalog/builder?tenant_id='+encodeURIComponent(currentTenant()))">Services</button>
+          <button class="secondary" onclick="openPath('/business-memory/builder?tenant_id='+encodeURIComponent(currentTenant()))">Memory</button>
           <button class="secondary" onclick="openPath('/tenant/config/ui?tenant_id='+encodeURIComponent(currentTenant()))">Tenant config</button>
           <button class="secondary" onclick="openPath('/admin/session/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Admin session</button>
           <button class="secondary" onclick="openPath('/admin/logout')">Logout</button>
@@ -14647,6 +14979,7 @@ def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
         <a id="lnk_tenant_creation" href="/tenant/creation/readiness">tenant creation</a> ·
         <a id="lnk_onboarding_wizard" href="#">onboarding wizard</a> ·
         <a id="lnk_service_catalog" href="#">service catalog</a> ·
+        <a id="lnk_business_memory" href="#">business memory</a> ·
         <a href="/signup/ui">create tenant</a> ·
         <a href="/admin/logout">logout</a> ·
         <a id="lnk_telegram_ready" href="#">telegram readiness</a> ·
@@ -14926,6 +15259,7 @@ async function loadAll() {{
   el('lnk_admin_session').href = `/admin/session/readiness?tenant_id=${{encodeURIComponent(tenant)}}`;
   const wizardLink = el('lnk_onboarding_wizard'); if(wizardLink) wizardLink.href = `/onboarding/wizard/readiness?tenant_id=${{encodeURIComponent(tenant)}}`;
   const svcLink = el('lnk_service_catalog'); if(svcLink) svcLink.href = `/service-catalog/readiness?tenant_id=${{encodeURIComponent(tenant)}}`;
+  const memLink = el('lnk_business_memory'); if(memLink) memLink.href = `/business-memory/readiness?tenant_id=${{encodeURIComponent(tenant)}}`;
   el('lnk_telegram_ready').href = `/telegram/readiness?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
   el('lnk_telegram_smoke').href = `/telegram/live-smoke/readiness?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
   el('lnk_activity').href = `/dashboard/activity?tenant_id=${{encodeURIComponent(tenant)}}&limit=${{encodeURIComponent(limit)}}`;
@@ -15083,6 +15417,7 @@ summary { cursor:pointer; font-weight:800; }
         <button class="secondary" onclick="openPath('/launch/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Launch readiness</button>
         <button class="secondary" onclick="openPath('/pilot/setup/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Pilot setup</button>
         <button class="secondary" onclick="openPath('/business-memory/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Memory readiness</button>
+        <button class="secondary" onclick="openPath('/business-memory/builder?tenant_id='+encodeURIComponent(currentTenant()))">Memory builder</button>
         <button class="secondary" onclick="openPath('/service-catalog/builder?tenant_id='+encodeURIComponent(currentTenant()))">Service catalog</button>
         <button class="secondary" onclick="openPath('/usage/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Usage readiness</button>
         <button class="secondary" onclick="openPath('/access/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Access readiness</button>
@@ -15200,6 +15535,7 @@ summary { cursor:pointer; font-weight:800; }
       <a id="lnk_launch" href="#">Launch readiness</a>
       <a id="lnk_pilot" href="#">Pilot setup</a>
       <a id="lnk_memory" href="#">Memory readiness</a>
+      <a id="lnk_memory_builder" href="#">Memory builder</a>
       <a id="lnk_usage_ready" href="#">Usage readiness</a>
       <a id="lnk_access_ready" href="#">Access readiness</a>
       <a id="lnk_admin_access" href="#">Admin access enforcement</a>
@@ -15234,6 +15570,7 @@ function setLinks(tid){
   document.getElementById('lnk_launch').href = '/launch/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_pilot').href = '/pilot/setup/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_memory').href = '/business-memory/readiness?tenant_id=' + encodeURIComponent(tid);
+  const memBuilder = document.getElementById('lnk_memory_builder'); if(memBuilder) memBuilder.href = '/business-memory/builder?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_usage_ready').href = '/usage/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_access_ready').href = '/access/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_admin_access').href = '/admin/access/enforcement/readiness?tenant_id=' + encodeURIComponent(tid);
@@ -15477,6 +15814,24 @@ class ServiceCatalogUpdateRequest(BaseModel):
     service_catalog_json: Optional[str] = None
     sync_services_fields: bool = True
     sync_business_memory_prices: bool = True
+
+
+
+class BusinessMemoryFaqUpdateRequest(BaseModel):
+    tenant_id: str
+    business_memory_lv: Optional[str] = None
+    business_memory_ru: Optional[str] = None
+    business_memory_en: Optional[str] = None
+    faq_lv: Optional[str] = None
+    faq_ru: Optional[str] = None
+    faq_en: Optional[str] = None
+    booking_rules_lv: Optional[str] = None
+    booking_rules_ru: Optional[str] = None
+    booking_rules_en: Optional[str] = None
+    business_memory: Optional[str] = None
+    faq: Optional[str] = None
+    booking_rules: Optional[str] = None
+    policies: Optional[str] = None
 
 
 class TenantPlanChangeRequest(BaseModel):
@@ -15763,6 +16118,7 @@ def tenant_config(tenant_id: str = TENANT_ID_DEFAULT):
         "readiness": tenant_ready_status_payload(tenant),
         "admin_readiness": tenant_admin_config_readiness_payload(tenant),
         "business_memory_admin": stage56_business_memory_admin_readiness_payload(str(tenant.get("_id") or tenant_id)),
+        "business_memory_faq_builder_readiness": stage67_business_memory_builder_readiness_payload(str(tenant.get("_id") or tenant_id)),
         "usage_analytics_readiness": stage57_usage_analytics_readiness_payload(str(tenant.get("_id") or tenant_id)),
         "access_boundaries_readiness": stage58_access_boundaries_readiness_payload(str(tenant.get("_id") or tenant_id)),
         "admin_access_enforcement": stage61_admin_access_enforcement_payload(str(tenant.get("_id") or tenant_id)),
@@ -15961,6 +16317,7 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
         "readiness": tenant_ready_status_payload(updated),
         "admin_readiness": tenant_admin_config_readiness_payload(updated),
         "business_memory_admin": stage56_business_memory_admin_readiness_payload(tenant_id),
+        "business_memory_faq_builder_readiness": stage67_business_memory_builder_readiness_payload(tenant_id),
         "usage_analytics_readiness": stage57_usage_analytics_readiness_payload(tenant_id),
         "access_boundaries_readiness": stage58_access_boundaries_readiness_payload(tenant_id),
         "admin_access_enforcement": stage61_admin_access_enforcement_payload(tenant_id),

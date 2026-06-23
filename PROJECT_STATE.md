@@ -494,3 +494,20 @@ Added:
 Builder saves normalized catalog data to the tenant service catalog column, syncs `services_lv/services_ru/services_en`, and can update a managed service-price block in business memory so price side-questions stay grounded.
 
 Public SaaS readiness remains false until owner auth, tenant ownership, billing, CSRF, and public rate limits exist.
+
+## Stage 67 — Business Memory / FAQ Builder
+
+Status: implemented in archive, awaiting deploy verification.
+
+Scope:
+- Added protected Business Memory / FAQ builder UI and JSON/update endpoints.
+- Added Stage 67 readiness payload for multilingual memory/FAQ coverage.
+- Added builder links to onboarding/config/dashboard surfaces.
+- Kept receptionist core, Telegram webhook, calendar runtime, regression evaluator, and voice/call runtime unchanged.
+
+Expected verification:
+- `/dialogue/qa` = 50/50 passed.
+- `/business-memory/readiness?tenant_id=clinic_demo` returns `stage=67` and builder readiness.
+- `/business-memory/builder?tenant_id=clinic_demo` opens via admin session.
+- `/tenant/business-memory?tenant_id=clinic_demo` is protected and returns editable memory fields.
+- `/tenant/business-memory/update` saves protected changes.

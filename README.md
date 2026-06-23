@@ -48,3 +48,16 @@ Stage 66 adds a protected service catalog builder/readiness layer:
 - `POST /tenant/service-catalog/update`
 
 The builder lets the admin manage service names LV/RU/EN, duration, price, currency, aliases, and active/inactive state. Saving syncs service names into the tenant service fields and can sync a managed price block into business memory for FAQ/price side-questions. The flow remains protected by Stage 61/62 admin session/token and does not make Repliq public SaaS yet.
+
+## Stage 67 — Business Memory / FAQ Builder
+
+Stage 67 adds a protected self-serve editor for multilingual business memory, FAQ, and booking rules.
+
+New protected surfaces:
+
+- `/business-memory/builder?tenant_id=clinic_demo`
+- `/tenant/business-memory?tenant_id=clinic_demo`
+- `/business-memory/readiness?tenant_id=clinic_demo`
+- `POST /tenant/business-memory/update`
+
+The builder is intended for business facts such as address, working hours, cancellation rules, price clarifications, and FAQ lines. Runtime receptionist logic is unchanged; saved memory fields are consumed by the existing FAQ/side-question flow.

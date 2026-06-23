@@ -388,3 +388,12 @@ If a price question is asked inside an active booking flow and the current langu
 - Do not change receptionist core orchestration: booking, cancellation, rescheduling, date/time parsing, slot generation, Telegram webhook, Google Calendar event create/update/delete runtime, and regression QA remain out of scope.
 - `public_saas_ready` must remain false for this stage until owner auth, tenant ownership checks, billing, CSRF, and public rate limits exist.
 - Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+
+## Stage 67 rules — Business Memory / FAQ Builder
+
+- Business memory / FAQ builder is an admin/self-serve configuration surface only.
+- Do not change booking routing, slot generation, confirmation, cancel, reschedule, Google Calendar event runtime, Telegram webhook handling, or dialogue regression behavior in this stage.
+- Keep all Business Memory / FAQ builder routes protected by Stage 61/62 admin access.
+- Business memory should contain one fact per line for predictable receptionist answers.
+- Do not store secrets, API keys, private calendar credentials, or private client data in business memory or FAQ fields.
+- `public_saas_ready` remains false until owner auth, tenant ownership checks, billing, CSRF/rate limits, and production account controls are implemented.
