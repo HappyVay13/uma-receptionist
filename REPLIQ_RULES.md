@@ -368,3 +368,13 @@ If a price question is asked inside an active booking flow and the current langu
 - `/onboarding/wizard*` and `/self-serve/onboarding/readiness` must remain protected by Stage 61/62 admin auth.
 - The wizard may show incomplete steps as `attention`; this is not a regression failure if the tenant still needs Google Calendar, prices, memory, or channel setup.
 - Do not modify booking, cancellation, rescheduling, Telegram webhook, Google Calendar event runtime, or regression QA for wizard-only changes.
+
+## Stage 65 rules — Google Calendar OAuth Self-Serve
+
+- Stage 65 may harden Google Calendar setup/readiness and protected self-serve setup paths only.
+- `/google/connect`, `/google/calendars`, `/google/calendars/ui`, and `/google/select_calendar` must be protected by Stage 61/62 admin session/token.
+- `/google/callback` must remain available for the Google OAuth redirect flow and must not be protected by the admin-token middleware.
+- Stage 65 readiness may expose safe booleans/status only. It must not expose Google access tokens, refresh tokens, OAuth client secrets, service account JSON, or private keys.
+- Stage 65 must not change receptionist core behavior: booking, cancellation, rescheduling, side-question handling, Telegram webhook, Google Calendar event create/update/delete runtime, and regression QA are out of scope.
+- `public_saas_ready` must remain false for this stage until owner auth, tenant ownership checks, billing, CSRF, and public rate limits exist.
+- Current protected baseline remains `/dialogue/qa = 50/50 passed`.

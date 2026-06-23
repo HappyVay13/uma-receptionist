@@ -185,6 +185,13 @@ STAGE61_PROTECTED_EXACT_PATHS = {
     "/onboarding/wizard/readiness",
     "/onboarding/checklist/readiness",
     "/self-serve/onboarding/readiness",
+    "/google/self-serve/readiness",
+    "/google/calendar/self-serve/readiness",
+    "/calendar/self-serve/readiness",
+    "/google/connect",
+    "/google/calendars",
+    "/google/calendars/ui",
+    "/google/select_calendar",
     "/signup",
     "/signup/ui",
     "/tenant/create",
@@ -1530,6 +1537,26 @@ def upsert_tenant_google_account(
                 "scope": scope,
             },
         )
+
+def tenant_google_accounts_table_exists() -> bool:
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM information_schema.tables
+                        WHERE table_schema='public' AND table_name='tenant_google_accounts'
+                    )
+                    """
+                )
+            ).fetchone()
+        return bool(row and row[0])
+    except Exception as e:
+        log.error("tenant_google_accounts_table_exists failed err=%s", e)
+        return False
+
 
 def get_tenant_google_account(tenant_id: str) -> Dict[str, Any]:
     tenant_id = (tenant_id or "").strip()
@@ -10331,7 +10358,8 @@ button.secondary {{ background:#fff; color:#111827; border:1px solid #d1d5db; }}
     <div style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap;">
       <a href="/google/connect?tenant_id={tenant['_id']}"><button>Connect Google</button></a>
       <a href="/dashboard?tenant_id={tenant['_id']}"><button class="secondary">Open dashboard</button></a>
-      <a href="/onboarding/ui?tenant_id={tenant['_id']}"><button class="secondary">Open onboarding</button></a>
+      <a href="/onboarding/wizard?tenant_id={tenant['_id']}"><button class="secondary">Open onboarding wizard</button></a>
+      <a href="/google/self-serve/readiness?tenant_id={tenant['_id']}"><button class="secondary">Calendar readiness</button></a>
     </div>
   </div>
 
@@ -10431,8 +10459,8 @@ async def google_select_calendar(request: Request):
     tenant = sync_tenant_onboarding_state(tenant_id)
     return {
         "status": "ok",
-        "stage": "63",
-        "tenant_creation_ready": True,
+        "stage": "65",
+        "google_calendar_self_serve_ready": True,
         "tenant_id": tenant_id,
         "calendar_id": calendar_id,
         "onboarding": onboarding_status_payload(tenant),
@@ -12066,6 +12094,7 @@ def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) ->
         "admin_session_readiness": stage62_admin_session_readiness_payload(requested_tenant_id),
         "tenant_creation_readiness": stage63_tenant_creation_readiness_payload(requested_tenant_id),
         "onboarding_wizard_readiness": stage64_onboarding_wizard_readiness_payload(requested_tenant_id),
+        "google_calendar_self_serve_readiness": stage65_google_calendar_self_serve_readiness_payload(requested_tenant_id),
         "telegram_text_channel_readiness": stage59_telegram_text_channel_readiness_payload(requested_tenant_id),
         "telegram_live_smoke_lock": stage60_telegram_live_smoke_lock_payload(requested_tenant_id),
         "tenant_admin_config": tenant_admin_config_readiness_payload(tenant) if tenant_status.get("tenant_id") else {
@@ -12273,6 +12302,14 @@ def tenant_creation_readiness(tenant_id: str = TENANT_ID_DEFAULT):
 @app.get("/self-serve/onboarding/readiness")
 def onboarding_wizard_readiness(tenant_id: str = TENANT_ID_DEFAULT):
     return stage64_onboarding_wizard_readiness_payload(tenant_id=tenant_id)
+
+
+@app.get("/google/self-serve/readiness")
+@app.get("/google/calendar/self-serve/readiness")
+@app.get("/calendar/self-serve/readiness")
+def google_calendar_self_serve_readiness(tenant_id: str = TENANT_ID_DEFAULT):
+    return stage65_google_calendar_self_serve_readiness_payload(tenant_id=tenant_id)
+
 
 @app.get("/telegram/readiness")
 @app.get("/channels/telegram/readiness")
@@ -12794,6 +12831,129 @@ def stage64_business_memory_summary(tenant: Dict[str, Any]) -> Dict[str, Any]:
     return summary
 
 
+def stage65_google_calendar_self_serve_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) -> Dict[str, Any]:
+    """Read-only readiness payload for Google Calendar self-serve setup.
+
+    Stage 65 audits OAuth/calendar setup and protected self-serve paths. It does
+    not create, update, move, or delete booking events.
+    """
+    tid = (tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
+    tenant = get_existing_tenant(tid)
+    tenant_found = bool(tenant.get("_id"))
+    tenant_id_clean = str(tenant.get("_id") or tenant.get("id") or tid).strip() or tid
+    base = (SERVER_BASE_URL or "").rstrip("/")
+
+    def url(path: str) -> str:
+        return base + path if base else path
+
+    blocking: List[str] = []
+    warnings: List[str] = []
+    if not tenant_found:
+        blocking.append("tenant_not_found")
+    if not stage61_admin_token_configured():
+        blocking.append("admin_token_not_configured")
+    if not stage62_session_secret():
+        blocking.append("admin_session_secret_not_configured")
+    if not oauth_ready():
+        blocking.append("google_oauth_env_not_configured")
+    if not tenant_google_accounts_table_exists():
+        blocking.append("tenant_google_accounts_table_missing")
+
+    required_paths = [
+        "/google/connect",
+        "/google/calendars",
+        "/google/calendars/ui",
+        "/google/select_calendar",
+        "/google/self-serve/readiness",
+        "/google/calendar/self-serve/readiness",
+    ]
+    missing_protection = [path for path in required_paths if path not in STAGE61_PROTECTED_EXACT_PATHS]
+    if missing_protection:
+        blocking.append("google_self_serve_paths_not_protected")
+
+    account: Dict[str, Any] = {}
+    onboarding: Dict[str, Any] = {}
+    google_connected = False
+    calendar_selected = False
+    selected_calendar_id = ""
+    if tenant_found:
+        tenant = sync_tenant_onboarding_state(tenant_id_clean)
+        onboarding = onboarding_status_payload(tenant)
+        google_connected = bool(onboarding.get("google_connected"))
+        calendar_selected = bool(onboarding.get("calendar_selected"))
+        selected_calendar_id = str(onboarding.get("calendar_id") or "").strip()
+        account = get_tenant_google_account(tenant_id_clean)
+        if not google_connected:
+            warnings.append("google_account_not_connected")
+        if not calendar_selected:
+            warnings.append("calendar_not_selected")
+        if google_connected and not bool(str(account.get("refresh_token") or "").strip()):
+            warnings.append("google_refresh_token_missing_or_not_returned")
+
+    infrastructure_ready = not blocking
+    self_serve_flow_complete = bool(infrastructure_ready and google_connected and calendar_selected)
+    status = "ready" if self_serve_flow_complete else "attention" if infrastructure_ready else "blocked"
+    return {
+        "stage": "65",
+        "purpose": "Google Calendar OAuth self-serve connection and calendar selection readiness",
+        "tenant_id": tenant_id_clean,
+        "status": status,
+        "google_calendar_self_serve_ready": bool(infrastructure_ready),
+        "google_calendar_setup_complete": bool(self_serve_flow_complete),
+        "calendar_ready": bool(self_serve_flow_complete),
+        "private_admin_ready": bool(infrastructure_ready),
+        "public_saas_ready": False,
+        "auth_model": "admin_session_or_shared_token_mvp",
+        "oauth": {
+            "configured": bool(oauth_ready()),
+            "tenant_google_accounts_table_exists": bool(tenant_google_accounts_table_exists()),
+            "has_client_id": bool(GOOGLE_OAUTH_CLIENT_ID),
+            "has_client_secret": bool(GOOGLE_OAUTH_CLIENT_SECRET),
+            "has_redirect_uri": bool(GOOGLE_OAUTH_REDIRECT_URI),
+            "scope": GOOGLE_OAUTH_SCOPE,
+            "callback_path_public_for_google_redirect": "/google/callback",
+        },
+        "connection": {
+            "google_connected": bool(google_connected),
+            "google_account_saved": bool(account.get("access_token")),
+            "google_email": account.get("google_email"),
+            "has_refresh_token": bool(str(account.get("refresh_token") or "").strip()),
+            "token_expiry": account.get("token_expiry").isoformat() if hasattr(account.get("token_expiry"), "isoformat") else (str(account.get("token_expiry")) if account.get("token_expiry") else None),
+        },
+        "calendar": {
+            "calendar_selected": bool(calendar_selected),
+            "calendar_id": selected_calendar_id or None,
+            "runtime_booking_uses_selected_calendar": bool(calendar_selected),
+        },
+        "protected_paths": required_paths,
+        "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
+        "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
+        "links": {
+            "connect_google": url(f"/google/connect?tenant_id={tenant_id_clean}"),
+            "calendar_picker_ui": url(f"/google/calendars/ui?tenant_id={tenant_id_clean}"),
+            "calendar_list_json": url(f"/google/calendars?tenant_id={tenant_id_clean}"),
+            "readiness": url(f"/google/self-serve/readiness?tenant_id={tenant_id_clean}"),
+            "onboarding_wizard": url(f"/onboarding/wizard?tenant_id={tenant_id_clean}"),
+            "tenant_config_ui": url(f"/tenant/config/ui?tenant_id={tenant_id_clean}"),
+            "dashboard": url(f"/dashboard?tenant_id={tenant_id_clean}"),
+        },
+        "manual_smoke_checklist": [
+            "Open /onboarding/wizard and click Google Calendar connection.",
+            "Complete /google/connect OAuth flow for the tenant.",
+            "Open /google/calendars/ui and select the working calendar.",
+            "Verify /google/self-serve/readiness shows calendar_ready=true.",
+            "Run a Telegram/text booking smoke and confirm the event lands in the selected calendar.",
+        ],
+        "next_stages_before_public_saas": [
+            "per-owner auth and tenant ownership checks",
+            "billing/subscription gating",
+            "CSRF/rate-limits for public browser write endpoints",
+        ],
+        "note": "Stage 65 makes Google Calendar connection/selection self-serve inside the protected admin session. It does not change receptionist core dialogue, slot routing, or calendar event runtime.",
+    }
+
+
+
 def stage64_catalog_summary(tenant: Dict[str, Any]) -> Dict[str, Any]:
     tenant = tenant or {}
     catalog = tenant_service_catalog(tenant)
@@ -12827,6 +12987,7 @@ def stage64_onboarding_steps_payload(tenant: Dict[str, Any], tenant_id: str) -> 
     memory = stage64_business_memory_summary(tenant)
     telegram = stage59_telegram_text_channel_readiness_payload(tid)
     telegram_smoke = stage60_telegram_live_smoke_lock_payload(tid)
+    google_self_serve = stage65_google_calendar_self_serve_readiness_payload(tid)
     business_fields = {
         "business_name": bool(str(tenant.get("business_name") or "").strip()),
         "language": bool(str(tenant.get("language") or "").strip()),
@@ -12842,8 +13003,8 @@ def stage64_onboarding_steps_payload(tenant: Dict[str, Any], tenant_id: str) -> 
         {"id": "services", "title": "Services", "status": "complete" if catalog.get("count", 0) > 0 and any(services_by_lang.values()) else "attention", "complete": bool(catalog.get("count", 0) > 0 and any(services_by_lang.values())), "catalog_count": catalog.get("count", 0), "explicit_catalog_count": catalog.get("explicit_catalog_count", 0), "services_by_language_count": {lang: len(items) for lang, items in services_by_lang.items()}, "action_url": f"/tenant/config/ui?tenant_id={tid}#services"},
         {"id": "prices", "title": "Prices / FAQ price facts", "status": "complete" if prices_ready else "attention", "complete": bool(prices_ready), "price_line_count": sum(int((memory.get(lang) or {}).get("price_line_count", 0)) for lang in ("lv", "ru", "en")), "action_url": f"/tenant/config/ui?tenant_id={tid}#business-memory"},
         {"id": "business_memory", "title": "Business memory / FAQ", "status": "complete" if memory_ready else "attention", "complete": bool(memory_ready), "language_coverage": memory, "action_url": f"/tenant/config/ui?tenant_id={tid}#business-memory"},
-        {"id": "google_calendar_connect", "title": "Google Calendar connection", "status": "complete" if onboarding.get("google_connected") else "attention", "complete": bool(onboarding.get("google_connected")), "google_connected": bool(onboarding.get("google_connected")), "action_url": f"/google/connect?tenant_id={tid}"},
-        {"id": "google_calendar_select", "title": "Working calendar selection", "status": "complete" if onboarding.get("calendar_selected") else "attention", "complete": bool(onboarding.get("calendar_selected")), "calendar_id": onboarding.get("calendar_id"), "action_url": f"/google/calendars/ui?tenant_id={tid}"},
+        {"id": "google_calendar_connect", "title": "Google Calendar connection", "status": "complete" if onboarding.get("google_connected") else "attention", "complete": bool(onboarding.get("google_connected")), "google_connected": bool(onboarding.get("google_connected")), "self_serve_ready": bool(google_self_serve.get("google_calendar_self_serve_ready")), "action_url": f"/google/connect?tenant_id={tid}", "readiness_url": f"/google/self-serve/readiness?tenant_id={tid}"},
+        {"id": "google_calendar_select", "title": "Working calendar selection", "status": "complete" if onboarding.get("calendar_selected") else "attention", "complete": bool(onboarding.get("calendar_selected")), "calendar_id": onboarding.get("calendar_id"), "self_serve_setup_complete": bool(google_self_serve.get("google_calendar_setup_complete")), "action_url": f"/google/calendars/ui?tenant_id={tid}", "readiness_url": f"/google/self-serve/readiness?tenant_id={tid}"},
         {"id": "telegram_text_channel", "title": "Telegram text channel", "status": "complete" if telegram.get("telegram_text_ready") else "attention", "complete": bool(telegram.get("telegram_text_ready")), "telegram_status": telegram.get("status"), "action_url": f"/telegram/readiness?tenant_id={tid}"},
         {"id": "final_smoke_lock", "title": "Final text smoke lock", "status": "complete" if telegram_smoke.get("telegram_live_smoke_locked") else "attention", "complete": bool(telegram_smoke.get("telegram_live_smoke_locked")), "telegram_pilot_ready": bool(telegram_smoke.get("telegram_pilot_ready")), "action_url": f"/telegram/live-smoke/readiness?tenant_id={tid}"},
     ]
@@ -12904,6 +13065,7 @@ def stage64_onboarding_wizard_readiness_payload(tenant_id: str = TENANT_ID_DEFAU
             "dashboard": url(f"/dashboard?tenant_id={tenant_id_clean}"),
             "google_connect": url(f"/google/connect?tenant_id={tenant_id_clean}"),
             "google_calendars_ui": url(f"/google/calendars/ui?tenant_id={tenant_id_clean}"),
+            "google_self_serve_readiness": url(f"/google/self-serve/readiness?tenant_id={tenant_id_clean}"),
             "telegram_readiness": url(f"/telegram/readiness?tenant_id={tenant_id_clean}"),
             "telegram_smoke_lock": url(f"/telegram/live-smoke/readiness?tenant_id={tenant_id_clean}"),
         },
@@ -12930,6 +13092,7 @@ def onboarding_links_payload(tenant_id: str) -> Dict[str, str]:
         "tenant_creation_readiness_url": f"{base}/tenant/creation/readiness?tenant_id={tenant_id}",
         "onboarding_wizard_url": f"{base}/onboarding/wizard?tenant_id={tenant_id}",
         "onboarding_wizard_readiness_url": f"{base}/onboarding/wizard/readiness?tenant_id={tenant_id}",
+        "google_self_serve_readiness_url": f"{base}/google/self-serve/readiness?tenant_id={tenant_id}",
     }
 
 
@@ -15190,6 +15353,7 @@ def tenant_config(tenant_id: str = TENANT_ID_DEFAULT):
         "admin_session_readiness": stage62_admin_session_readiness_payload(str(tenant.get("_id") or tenant_id)),
         "tenant_creation_readiness": stage63_tenant_creation_readiness_payload(str(tenant.get("_id") or tenant_id)),
         "onboarding_wizard_readiness": stage64_onboarding_wizard_readiness_payload(str(tenant.get("_id") or tenant_id)),
+        "google_calendar_self_serve_readiness": stage65_google_calendar_self_serve_readiness_payload(str(tenant.get("_id") or tenant_id)),
         "telegram_text_channel_readiness": stage59_telegram_text_channel_readiness_payload(str(tenant.get("_id") or tenant_id)),
         "telegram_live_smoke_lock": stage60_telegram_live_smoke_lock_payload(str(tenant.get("_id") or tenant_id)),
         "config_ui_hardening": tenant_config_ui_readiness_payload(tenant),
@@ -15307,6 +15471,7 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
         "admin_session_readiness": stage62_admin_session_readiness_payload(tenant_id),
         "tenant_creation_readiness": stage63_tenant_creation_readiness_payload(tenant_id),
         "onboarding_wizard_readiness": stage64_onboarding_wizard_readiness_payload(tenant_id),
+        "google_calendar_self_serve_readiness": stage65_google_calendar_self_serve_readiness_payload(tenant_id),
         "telegram_text_channel_readiness": stage59_telegram_text_channel_readiness_payload(tenant_id),
         "telegram_live_smoke_lock": stage60_telegram_live_smoke_lock_payload(tenant_id),
         "config_ui_hardening": tenant_config_ui_readiness_payload(updated),

@@ -460,3 +460,19 @@ Added protected onboarding wizard/readiness layer:
 Wizard checklist covers business profile, services, prices, business memory/FAQ, Google Calendar connection, calendar selection, Telegram text channel, and final Telegram smoke lock.
 
 Receptionist core was not changed. Voice/calls remain future phase.
+
+## Stage 65 — Google Calendar OAuth Self-Serve
+
+Status: implemented locally in this archive, pending deploy verification.
+
+Stage 65 hardens Google Calendar setup as a protected self-serve flow after the Stage 64 onboarding wizard. The receptionist runtime is unchanged.
+
+Added:
+- `/google/self-serve/readiness`
+- `/google/calendar/self-serve/readiness`
+- `/calendar/self-serve/readiness`
+- Stage 65 readiness metadata in `/internal/readiness`, `/tenant/config`, and `/tenant/config/update`
+- Google self-serve readiness link in onboarding links and Google Calendar UI
+- Stage 61/62 protection coverage for `/google/connect`, `/google/calendars`, `/google/calendars/ui`, and `POST /google/select_calendar`
+
+`/google/callback` remains available for Google OAuth redirect. Public SaaS readiness remains false until owner auth, tenant ownership, billing, CSRF, and public abuse protection are implemented.

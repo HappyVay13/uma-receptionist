@@ -27,3 +27,13 @@ Stage 64 adds a protected self-serve onboarding wizard:
 - `/self-serve/onboarding/readiness?tenant_id=clinic_demo`
 
 The wizard is part of the self-serve SaaS path and summarizes business profile, services, prices, business memory/FAQ, Google Calendar, Telegram, and final smoke-lock readiness. It remains protected by the Stage 61/62 admin session/token layer.
+
+## Stage 65 — Google Calendar OAuth Self-Serve
+
+Stage 65 adds a protected Google Calendar self-serve readiness layer:
+
+- `/google/self-serve/readiness?tenant_id=clinic_demo`
+- `/google/calendar/self-serve/readiness?tenant_id=clinic_demo`
+- `/calendar/self-serve/readiness?tenant_id=clinic_demo`
+
+The Google setup flow is now part of the protected admin/session self-serve path: `/google/connect`, `/google/calendars`, `/google/calendars/ui`, and `POST /google/select_calendar` require Stage 61/62 admin auth. `/google/callback` remains available for the Google OAuth redirect.
