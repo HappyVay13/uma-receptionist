@@ -128,6 +128,7 @@ from integrations.twilio_validation import install_twilio_signature_middleware
 from channels.telegram import (
     handle_telegram_incoming,
     telegram_config_status,
+    telegram_get_webhook_info_request,
     telegram_set_webhook_request,
 )
 
@@ -218,6 +219,16 @@ STAGE61_PROTECTED_EXACT_PATHS = {
     "/onboarding/wizard/ui",
     "/telegram/status",
     "/telegram/set-webhook",
+    "/telegram/setup",
+    "/telegram/setup/ui",
+    "/telegram/setup/readiness",
+    "/telegram/setup/update",
+    "/telegram/setup/set-webhook",
+    "/telegram/webhook/status",
+    "/telegram/bot/setup",
+    "/telegram/bot/setup/ui",
+    "/tenant/telegram/setup",
+    "/tenant/telegram/setup/ui",
     "/telegram/readiness",
     "/channels/telegram/readiness",
     "/telegram/live-smoke/readiness",
@@ -1170,6 +1181,10 @@ def ensure_tenants_lifecycle_columns() -> None:
             conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS plan TEXT"))
             conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS dialogs_per_month INTEGER"))
             conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS trial_end TIMESTAMPTZ"))
+            conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS telegram_bot_token TEXT"))
+            conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS telegram_webhook_secret TEXT"))
+            conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS telegram_webhook_url TEXT"))
+            conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS telegram_webhook_set_at TIMESTAMPTZ"))
     except Exception as e:
         log.error("ensure_tenants_lifecycle_columns_failed err=%s", e)
 def tenants_columns() -> List[Dict[str, Any]]:
@@ -11467,6 +11482,12 @@ def stage61_admin_access_enforcement_payload(tenant_id: str = TENANT_ID_DEFAULT)
         "/telegram/live-smoke/readiness",
         "/telegram/status",
         "/telegram/set-webhook",
+        "/telegram/setup/readiness",
+        "/telegram/setup",
+        "/telegram/setup/ui",
+        "/telegram/setup/update",
+        "/telegram/setup/set-webhook",
+        "/telegram/webhook/status",
         "/dashboard",
         "/dashboard/analytics",
         "/analytics",
@@ -11717,6 +11738,13 @@ def stage59_telegram_text_channel_readiness_payload(tenant_id: str = TENANT_ID_D
         default_tenant_id=telegram_default_tenant_id,
         server_base_url=SERVER_BASE_URL,
     )
+    stage68_effective_token = stage68_effective_telegram_bot_token(tenant_id_clean)
+    stage68_effective_secret = stage68_effective_telegram_webhook_secret(tenant_id_clean)
+    telegram_status["configured"] = bool(stage68_effective_token)
+    telegram_status["has_bot_token"] = bool(stage68_effective_token)
+    telegram_status["has_webhook_secret"] = bool(stage68_effective_secret)
+    telegram_status["bot_token_source"] = stage68_telegram_config_status(tenant_id_clean).get("bot_token_source")
+    telegram_status["webhook_secret_source"] = stage68_telegram_config_status(tenant_id_clean).get("webhook_secret_source")
 
     webhook_url_for_tenant = url(f"/telegram/webhook?tenant_id={tenant_id_clean}")
     status_url = url("/telegram/status")
@@ -11780,6 +11808,8 @@ def stage59_telegram_text_channel_readiness_payload(tenant_id: str = TENANT_ID_D
             "configured": bool(telegram_status.get("configured")),
             "has_bot_token": bool(telegram_status.get("has_bot_token")),
             "has_webhook_secret": bool(telegram_status.get("has_webhook_secret")),
+            "bot_token_source": telegram_status.get("bot_token_source"),
+            "webhook_secret_source": telegram_status.get("webhook_secret_source"),
             "webhook_secret_header_supported": True,
             "default_tenant_id": telegram_status.get("default_tenant_id"),
             "requested_tenant_id": tenant_id_clean,
@@ -12012,6 +12042,243 @@ def stage60_telegram_live_smoke_lock_payload(tenant_id: str = TENANT_ID_DEFAULT,
         "note": "Readiness metadata only. This endpoint does not call Telegram APIs, set webhooks, call LLMs, mutate tenant config, mutate conversations, or create/update/delete calendar events.",
     }
 
+
+# -------------------------
+# STAGE 68: TELEGRAM BOT SELF-SERVE SETUP
+# -------------------------
+def stage68_mask_secret(value: str) -> Optional[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if len(raw) <= 10:
+        return "***"
+    return f"{raw[:4]}…{raw[-4:]}"
+
+
+def stage68_public_webhook_url(tenant_id: str = TENANT_ID_DEFAULT) -> str:
+    tid = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    if not SERVER_BASE_URL:
+        return f"/telegram/webhook?tenant_id={urllib.parse.quote(tid)}"
+    return SERVER_BASE_URL.rstrip("/") + "/telegram/webhook?tenant_id=" + urllib.parse.quote(tid)
+
+
+def stage68_tenant_column_names() -> set:
+    return {c["name"] for c in tenants_columns()}
+
+
+def stage68_tenant_telegram_bot_token(tenant_id: str) -> str:
+    tenant = get_existing_tenant((tenant_id or "").strip())
+    return str((tenant or {}).get("telegram_bot_token") or "").strip()
+
+
+def stage68_tenant_telegram_webhook_secret(tenant_id: str) -> str:
+    tenant = get_existing_tenant((tenant_id or "").strip())
+    return str((tenant or {}).get("telegram_webhook_secret") or "").strip()
+
+
+def stage68_effective_telegram_bot_token(tenant_id: str = "") -> str:
+    tenant_token = stage68_tenant_telegram_bot_token(tenant_id) if (tenant_id or "").strip() else ""
+    return tenant_token or (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+
+
+def stage68_effective_telegram_webhook_secret(tenant_id: str = "") -> str:
+    tenant_secret = stage68_tenant_telegram_webhook_secret(tenant_id) if (tenant_id or "").strip() else ""
+    return tenant_secret or (os.getenv("TELEGRAM_WEBHOOK_SECRET") or "").strip()
+
+
+def stage68_telegram_config_status(tenant_id: str = TENANT_ID_DEFAULT) -> Dict[str, Any]:
+    tid = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    tenant = get_existing_tenant(tid)
+    env_token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+    env_secret = (os.getenv("TELEGRAM_WEBHOOK_SECRET") or "").strip()
+    tenant_token = str((tenant or {}).get("telegram_bot_token") or "").strip()
+    tenant_secret = str((tenant or {}).get("telegram_webhook_secret") or "").strip()
+    effective_token = tenant_token or env_token
+    effective_secret = tenant_secret or env_secret
+    stored_webhook_url = str((tenant or {}).get("telegram_webhook_url") or "").strip()
+    stored_webhook_set_at = (tenant or {}).get("telegram_webhook_set_at")
+    if hasattr(stored_webhook_set_at, "isoformat"):
+        stored_webhook_set_at = stored_webhook_set_at.isoformat()
+    return {
+        "ok": True,
+        "stage": "68",
+        "tenant_id": tid,
+        "channel": "telegram",
+        "configured": bool(effective_token),
+        "has_bot_token": bool(effective_token),
+        "has_webhook_secret": bool(effective_secret),
+        "tenant_has_bot_token": bool(tenant_token),
+        "tenant_has_webhook_secret": bool(tenant_secret),
+        "env_has_bot_token": bool(env_token),
+        "env_has_webhook_secret": bool(env_secret),
+        "bot_token_source": "tenant" if tenant_token else "env" if env_token else "missing",
+        "webhook_secret_source": "tenant" if tenant_secret else "env" if env_secret else "missing",
+        "bot_token_masked": stage68_mask_secret(effective_token),
+        "webhook_secret_masked": stage68_mask_secret(effective_secret),
+        "secret_value_exposed": False,
+        "recommended_webhook_url": stage68_public_webhook_url(tid),
+        "stored_webhook_url": stored_webhook_url or None,
+        "stored_webhook_set_at": stored_webhook_set_at,
+    }
+
+
+def stage68_telegram_setup_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14) -> Dict[str, Any]:
+    tid = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    days = max(1, min(int(days or 14), 60))
+    base = (SERVER_BASE_URL or "").rstrip("/")
+
+    def url(path: str) -> str:
+        return base + path if base else path
+
+    tenant = get_existing_tenant(tid)
+    tenant_found = bool(tenant.get("_id"))
+    tenant_id_clean = str(tenant.get("_id") or tenant.get("id") or tid).strip() or tid
+    config = stage68_telegram_config_status(tenant_id_clean)
+    col_names = stage68_tenant_column_names()
+    required_paths = [
+        "/telegram/setup",
+        "/telegram/setup/ui",
+        "/telegram/setup/readiness",
+        "/telegram/setup/update",
+        "/telegram/setup/set-webhook",
+        "/telegram/webhook/status",
+    ]
+    missing_protection = [path for path in required_paths if path not in STAGE61_PROTECTED_EXACT_PATHS]
+    blocking: List[str] = []
+    warnings: List[str] = []
+    if not tenant_found:
+        blocking.append("tenant_not_found")
+    if missing_protection:
+        blocking.append("telegram_setup_paths_not_protected")
+    if "telegram_bot_token" not in col_names or "telegram_webhook_secret" not in col_names:
+        blocking.append("telegram_tenant_columns_missing")
+    if not SERVER_BASE_URL:
+        warnings.append("server_base_url_missing_for_webhook_url")
+    if not config.get("has_bot_token"):
+        warnings.append("telegram_bot_token_missing")
+    if not config.get("has_webhook_secret"):
+        warnings.append("telegram_webhook_secret_missing")
+    if config.get("bot_token_source") == "env":
+        warnings.append("telegram_bot_token_uses_env_fallback_not_tenant_self_serve")
+    if config.get("webhook_secret_source") == "env":
+        warnings.append("telegram_webhook_secret_uses_env_fallback_not_tenant_self_serve")
+
+    tenant_secret_setup_complete = bool(config.get("tenant_has_bot_token") and config.get("tenant_has_webhook_secret"))
+    effective_runtime_ready = bool(config.get("has_bot_token") and config.get("has_webhook_secret") and SERVER_BASE_URL and not blocking)
+    self_serve_setup_ready = bool(tenant_found and tenant_secret_setup_complete and SERVER_BASE_URL and not blocking)
+    status = "ready" if self_serve_setup_ready and not warnings else "attention" if not blocking else "blocked"
+
+    return {
+        "stage": "68",
+        "purpose": "Telegram bot self-serve setup for tenant-owned Telegram text channel",
+        "tenant_id": tenant_id_clean,
+        "status": status,
+        "telegram_bot_self_serve_ready": bool(self_serve_setup_ready),
+        "telegram_effective_runtime_ready": bool(effective_runtime_ready),
+        "private_admin_ready": bool(not blocking),
+        "public_saas_ready": False,
+        "auth_model": "admin_session_or_shared_token_mvp",
+        "current_mvp_scope": {
+            "channel": "text",
+            "selected_external_channel": "Telegram text",
+            "voice_calls_scope": "future_phase",
+        },
+        "telegram_config": config,
+        "webhook_setup": {
+            "recommended_webhook_url": stage68_public_webhook_url(tenant_id_clean),
+            "set_webhook_endpoint": f"/telegram/setup/set-webhook?tenant_id={tenant_id_clean}",
+            "webhook_status_endpoint": f"/telegram/webhook/status?tenant_id={tenant_id_clean}",
+            "runtime_webhook_endpoint": f"/telegram/webhook?tenant_id={tenant_id_clean}",
+            "uses_secret_token_header": bool(config.get("has_webhook_secret")),
+            "existing_env_runtime_kept_as_fallback": True,
+        },
+        "smoke_checklist": [
+            "Open Telegram setup UI and confirm has_bot_token=true and has_webhook_secret=true without seeing raw secret values.",
+            "Set webhook from the setup UI or POST /telegram/setup/set-webhook.",
+            "Open /telegram/webhook/status and confirm Telegram returns the expected webhook URL.",
+            "Send /start to the tenant bot and confirm free-text instructions are shown without old LV keyboard menu.",
+            "Run booking → price side-question → slot selection → confirmation → reschedule → cancel in Telegram.",
+        ],
+        "security": {
+            "raw_bot_token_exposed": False,
+            "raw_webhook_secret_exposed": False,
+            "config_api_masks_telegram_secrets": True,
+            "setup_routes_protected_by_admin_session_or_token": not bool(missing_protection),
+            "do_not_send_tokens_in_chat": True,
+        },
+        "stage59_telegram_readiness_dependency": stage59_telegram_text_channel_readiness_payload(tenant_id_clean, days=days) if tenant_found else None,
+        "stage60_telegram_live_smoke_dependency": stage60_telegram_live_smoke_lock_payload(tenant_id_clean, days=days) if tenant_found else None,
+        "protected_paths": required_paths,
+        "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
+        "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
+        "links": {
+            "telegram_setup_ui": url(f"/telegram/setup/ui?tenant_id={tenant_id_clean}"),
+            "telegram_setup_readiness": url(f"/telegram/setup/readiness?tenant_id={tenant_id_clean}&days={days}"),
+            "telegram_update": url("/telegram/setup/update"),
+            "telegram_set_webhook": url(f"/telegram/setup/set-webhook?tenant_id={tenant_id_clean}"),
+            "telegram_webhook_status": url(f"/telegram/webhook/status?tenant_id={tenant_id_clean}"),
+            "telegram_text_readiness": url(f"/telegram/readiness?tenant_id={tenant_id_clean}&days={days}"),
+            "telegram_live_smoke_lock": url(f"/telegram/live-smoke/readiness?tenant_id={tenant_id_clean}&days={days}"),
+            "tenant_config_ui": url(f"/tenant/config/ui?tenant_id={tenant_id_clean}"),
+            "dashboard": url(f"/dashboard?tenant_id={tenant_id_clean}"),
+        },
+        "note": "Stage 68 stores tenant Telegram token/secret, masks them in UI/API, sets webhook only on explicit setup action, and keeps env-based Telegram runtime as fallback. Voice/calls remain future scope.",
+    }
+
+
+def stage68_validate_bot_token(value: str) -> str:
+    token = str(value or "").strip()
+    if not token:
+        return ""
+    if any(ch.isspace() for ch in token) or ":" not in token or len(token) < 20:
+        raise HTTPException(status_code=400, detail="invalid_telegram_bot_token_format")
+    return token
+
+
+def stage68_validate_webhook_secret(value: str) -> str:
+    secret = str(value or "").strip()
+    if not secret:
+        return ""
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,256}", secret):
+        raise HTTPException(status_code=400, detail="invalid_telegram_webhook_secret_format")
+    return secret
+
+
+def stage68_generate_webhook_secret() -> str:
+    return base64.urlsafe_b64encode(os.urandom(32)).decode("ascii").rstrip("=")
+
+
+def stage68_update_tenant_telegram_fields(tenant_id: str, fields: Dict[str, Any]) -> None:
+    tid = (tenant_id or "").strip()
+    if not tid:
+        raise HTTPException(status_code=400, detail="tenant_id required")
+    tenant = get_tenant_or_404(tid)
+    col_names = stage68_tenant_column_names()
+    updates: List[str] = []
+    params: Dict[str, Any] = {"tid": tid}
+    for field, value in fields.items():
+        if field not in col_names:
+            continue
+        updates.append(f"{field}=:{field}")
+        params[field] = value
+    if "updated_at" in col_names:
+        updates.append("updated_at=NOW()")
+    if updates:
+        pk = tenants_pk(tenants_columns())
+        with engine.begin() as conn:
+            conn.execute(text(f"UPDATE tenants SET {', '.join(updates)} WHERE {pk}=:tid"), params)
+
+
+def stage68_sanitized_telegram_api_result(result: Dict[str, Any]) -> Dict[str, Any]:
+    result = dict(result or {})
+    if isinstance(result.get("telegram_response"), dict):
+        response = dict(result.get("telegram_response") or {})
+        if isinstance(response.get("result"), dict):
+            response["result"] = dict(response.get("result") or {})
+        result["telegram_response"] = response
+    result["secret_value_exposed"] = False
+    return result
+
 def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) -> Dict[str, Any]:
     requested_tenant_id = (tenant_id or "").strip() or TENANT_ID_DEFAULT
     db_check = _stage43a_database_check()
@@ -12154,6 +12421,7 @@ def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) ->
         "onboarding_wizard_readiness": stage64_onboarding_wizard_readiness_payload(requested_tenant_id),
         "google_calendar_self_serve_readiness": stage65_google_calendar_self_serve_readiness_payload(requested_tenant_id),
         "service_catalog_builder_readiness": stage66_service_catalog_readiness_payload(requested_tenant_id),
+        "telegram_setup_readiness": stage68_telegram_setup_readiness_payload(requested_tenant_id),
         "telegram_text_channel_readiness": stage59_telegram_text_channel_readiness_payload(requested_tenant_id),
         "telegram_live_smoke_lock": stage60_telegram_live_smoke_lock_payload(requested_tenant_id),
         "tenant_admin_config": tenant_admin_config_readiness_payload(tenant) if tenant_status.get("tenant_id") else {
@@ -12620,6 +12888,248 @@ loadCatalog();
     return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
 
 
+@app.get("/telegram/setup/readiness")
+def stage68_telegram_setup_readiness(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    return stage68_telegram_setup_readiness_payload(tenant_id=tenant_id, days=days)
+
+
+@app.get("/telegram/setup")
+@app.get("/telegram/bot/setup")
+@app.get("/tenant/telegram/setup")
+def stage68_telegram_setup_json(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    return stage68_telegram_setup_readiness_payload(tenant_id=tenant_id, days=days)
+
+
+@app.post("/telegram/setup/update")
+def stage68_telegram_setup_update(payload: Dict[str, Any]):
+    payload = dict(payload or {})
+    tenant_id = str(payload.get("tenant_id") or "").strip()
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="tenant_id required")
+    get_tenant_or_404(tenant_id)
+    updates: Dict[str, Any] = {}
+    if bool(payload.get("clear_bot_token")):
+        updates["telegram_bot_token"] = None
+    elif payload.get("bot_token") is not None and str(payload.get("bot_token") or "").strip():
+        updates["telegram_bot_token"] = stage68_validate_bot_token(str(payload.get("bot_token") or ""))
+    if bool(payload.get("clear_webhook_secret")):
+        updates["telegram_webhook_secret"] = None
+    elif bool(payload.get("generate_webhook_secret")):
+        updates["telegram_webhook_secret"] = stage68_generate_webhook_secret()
+    elif payload.get("webhook_secret") is not None and str(payload.get("webhook_secret") or "").strip():
+        updates["telegram_webhook_secret"] = stage68_validate_webhook_secret(str(payload.get("webhook_secret") or ""))
+    if not updates:
+        return {
+            "status": "ok",
+            "stage": "68",
+            "tenant_id": tenant_id,
+            "changed": False,
+            "readiness": stage68_telegram_setup_readiness_payload(tenant_id),
+        }
+    stage68_update_tenant_telegram_fields(tenant_id, updates)
+    return {
+        "status": "ok",
+        "stage": "68",
+        "tenant_id": tenant_id,
+        "changed": True,
+        "updated_fields": [k for k in updates.keys()],
+        "secret_value_exposed": False,
+        "readiness": stage68_telegram_setup_readiness_payload(tenant_id),
+    }
+
+
+@app.post("/telegram/setup/set-webhook")
+def stage68_telegram_setup_set_webhook(payload: Optional[Dict[str, Any]] = None, tenant_id: str = ""):
+    payload = dict(payload or {})
+    tenant_id = str(payload.get("tenant_id") or tenant_id or "").strip() or TENANT_ID_DEFAULT
+    get_tenant_or_404(tenant_id)
+    webhook_url = str(payload.get("url") or "").strip() or stage68_public_webhook_url(tenant_id)
+    if not webhook_url.startswith("https://") and not webhook_url.startswith("http://"):
+        raise HTTPException(status_code=400, detail="absolute_webhook_url_required")
+    bot_token = stage68_effective_telegram_bot_token(tenant_id)
+    webhook_secret = stage68_effective_telegram_webhook_secret(tenant_id)
+    if not bot_token:
+        raise HTTPException(status_code=400, detail="telegram_bot_token_missing")
+    result = telegram_set_webhook_request(webhook_url, bot_token=bot_token, webhook_secret=webhook_secret)
+    clean_result = stage68_sanitized_telegram_api_result(result)
+    if not result.get("ok"):
+        raise HTTPException(status_code=502, detail=clean_result)
+    stage68_update_tenant_telegram_fields(
+        tenant_id,
+        {
+            "telegram_webhook_url": webhook_url,
+            "telegram_webhook_set_at": datetime.now(TZ),
+        },
+    )
+    return {
+        "status": "ok",
+        "stage": "68",
+        "tenant_id": tenant_id,
+        "webhook_url": webhook_url,
+        "uses_secret_token": bool(webhook_secret),
+        "telegram_result": clean_result,
+        "readiness": stage68_telegram_setup_readiness_payload(tenant_id),
+        "secret_value_exposed": False,
+    }
+
+
+@app.get("/telegram/webhook/status")
+def stage68_telegram_webhook_status(tenant_id: str = TENANT_ID_DEFAULT):
+    tenant_id = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    get_tenant_or_404(tenant_id)
+    bot_token = stage68_effective_telegram_bot_token(tenant_id)
+    if not bot_token:
+        return {
+            "ok": False,
+            "stage": "68",
+            "tenant_id": tenant_id,
+            "error": "telegram_bot_token_missing",
+            "secret_value_exposed": False,
+            "readiness": stage68_telegram_setup_readiness_payload(tenant_id),
+        }
+    result = stage68_sanitized_telegram_api_result(telegram_get_webhook_info_request(bot_token=bot_token))
+    return {
+        "ok": bool(result.get("ok")),
+        "stage": "68",
+        "tenant_id": tenant_id,
+        "telegram_webhook_status": result,
+        "expected_webhook_url": stage68_public_webhook_url(tenant_id),
+        "secret_value_exposed": False,
+        "readiness": stage68_telegram_setup_readiness_payload(tenant_id),
+    }
+
+
+@app.get("/telegram/setup/ui")
+@app.get("/telegram/bot/setup/ui")
+@app.get("/tenant/telegram/setup/ui")
+def stage68_telegram_setup_ui(tenant_id: str = TENANT_ID_DEFAULT):
+    tid_json = json.dumps((tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT)
+    html = r'''
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Repliq Telegram Setup</title>
+<style>
+body{font-family:Inter,system-ui,-apple-system,Segoe UI,Arial,sans-serif;background:#f6f7fb;margin:0;padding:24px;color:#121827}.wrap{max-width:1050px;margin:0 auto}.card{background:white;border:1px solid #e5e7eb;border-radius:18px;padding:18px;margin:14px 0;box-shadow:0 8px 25px rgba(17,24,39,.05)}h1{margin:0 0 6px}.sub{color:#64748b;font-size:14px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}label{display:block;font-size:13px;color:#334155;margin-bottom:6px}input{width:100%;box-sizing:border-box;padding:11px;border:1px solid #cbd5e1;border-radius:12px;font-size:14px}button{border:0;border-radius:12px;padding:11px 14px;background:#111827;color:white;font-weight:650;cursor:pointer}.secondary{background:#e5e7eb;color:#111827}.danger{background:#fee2e2;color:#991b1b}.ok{color:#166534}.warn{color:#92400e}.err{color:#991b1b}pre{white-space:pre-wrap;background:#0f172a;color:#e2e8f0;border-radius:14px;padding:14px;max-height:480px;overflow:auto}.badge{display:inline-block;border-radius:999px;padding:5px 9px;background:#e5e7eb;margin:4px 4px 4px 0;font-size:12px}.badge.ok{background:#dcfce7}.badge.warn{background:#fef3c7}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.full{grid-column:1/-1}@media(max-width:800px){.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <h1>Telegram Bot Self-Serve Setup</h1>
+    <div class="sub">Stage 68. Raw bot token and webhook secret are never shown back by this page/API.</div>
+    <div class="actions">
+      <input id="tenant_id" style="max-width:340px"/>
+      <button onclick="loadSetup()">Load</button>
+      <button class="secondary" onclick="go('/tenant/config/ui?tenant_id='+encTenant())">Tenant config</button>
+      <button class="secondary" onclick="go('/dashboard?tenant_id='+encTenant())">Dashboard</button>
+      <button class="secondary" onclick="go('/telegram/readiness?tenant_id='+encTenant())">Telegram readiness</button>
+      <button class="secondary" onclick="go('/telegram/live-smoke/readiness?tenant_id='+encTenant())">Smoke lock</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Status</h2>
+    <div id="badges"></div>
+    <div class="grid">
+      <div><label>Recommended webhook URL</label><input id="webhook_url" class="mono"/></div>
+      <div><label>Masked effective bot token</label><input id="masked_token" class="mono" readonly/></div>
+      <div><label>Token source</label><input id="token_source" readonly/></div>
+      <div><label>Webhook secret source</label><input id="secret_source" readonly/></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Save Telegram secrets</h2>
+    <div class="sub">Paste values only to replace. Empty fields are ignored. Do not paste tokens into chat logs.</div>
+    <div class="grid" style="margin-top:12px">
+      <div><label>Telegram bot token</label><input id="bot_token" type="password" autocomplete="off" placeholder="123456:ABC..."/></div>
+      <div><label>Webhook secret token</label><input id="webhook_secret" type="password" autocomplete="off" placeholder="A-Za-z0-9_- only"/></div>
+    </div>
+    <div class="actions">
+      <button onclick="saveSetup(false)">Save</button>
+      <button class="secondary" onclick="saveSetup(true)">Generate webhook secret + save</button>
+      <button class="danger" onclick="clearSecrets()">Clear tenant Telegram secrets</button>
+    </div>
+    <div id="save_status" class="sub"></div>
+  </div>
+
+  <div class="card">
+    <h2>Webhook</h2>
+    <div class="actions">
+      <button onclick="setWebhook()">Set webhook</button>
+      <button class="secondary" onclick="webhookStatus()">Check webhook status</button>
+    </div>
+    <div id="webhook_status" class="sub"></div>
+  </div>
+
+  <div class="card">
+    <h2>Raw readiness</h2>
+    <pre id="raw">Loading...</pre>
+  </div>
+</div>
+<script>
+const DEFAULT_TENANT_ID=__TENANT_ID_JSON__;
+let latest=null;
+function el(id){return document.getElementById(id)}
+function tenant(){return (el('tenant_id').value||'').trim()||DEFAULT_TENANT_ID||'default'}
+function encTenant(){return encodeURIComponent(tenant())}
+function go(path){window.location=path}
+function esc(v){return v===null||v===undefined?'':String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;')}
+function badge(cls,txt){return `<span class="badge ${cls}">${esc(txt)}</span>`}
+function render(data){
+  latest=data; el('raw').textContent=JSON.stringify(data,null,2);
+  const cfg=data.telegram_config||{};
+  const ready=data.telegram_bot_self_serve_ready===true;
+  const runtime=data.telegram_effective_runtime_ready===true;
+  el('badges').innerHTML=badge(ready?'ok':'warn','self-serve: '+(ready?'ready':'attention'))+badge(runtime?'ok':'warn','runtime: '+(runtime?'ready':'attention'))+badge(data.public_saas_ready?'ok':'warn','public SaaS: '+data.public_saas_ready);
+  el('webhook_url').value=(data.webhook_setup&&data.webhook_setup.recommended_webhook_url)||cfg.recommended_webhook_url||'';
+  el('masked_token').value=cfg.bot_token_masked||'';
+  el('token_source').value=cfg.bot_token_source||'';
+  el('secret_source').value=cfg.webhook_secret_source||'';
+}
+async function loadSetup(){
+  el('tenant_id').value=tenant();
+  const r=await fetch('/telegram/setup/readiness?tenant_id='+encTenant());
+  const data=await r.json(); render(data);
+}
+async function saveSetup(generateSecret){
+  const payload={tenant_id:tenant(), generate_webhook_secret:generateSecret===true};
+  const bot=el('bot_token').value.trim(); const sec=el('webhook_secret').value.trim();
+  if(bot) payload.bot_token=bot; if(sec) payload.webhook_secret=sec;
+  el('save_status').textContent='Saving...';
+  const r=await fetch('/telegram/setup/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  const data=await r.json();
+  if(!r.ok){el('save_status').className='err'; el('save_status').textContent=JSON.stringify(data); return;}
+  el('bot_token').value=''; el('webhook_secret').value=''; el('save_status').className='ok'; el('save_status').textContent='Saved. Raw secrets were not returned.'; render(data.readiness||data);
+}
+async function clearSecrets(){
+  if(!confirm('Clear tenant Telegram bot token and webhook secret? Env fallback, if configured, is not changed.')) return;
+  const payload={tenant_id:tenant(), clear_bot_token:true, clear_webhook_secret:true};
+  const r=await fetch('/telegram/setup/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  const data=await r.json(); render(data.readiness||data);
+}
+async function setWebhook(){
+  el('webhook_status').textContent='Setting webhook...';
+  const payload={tenant_id:tenant(), url:el('webhook_url').value.trim()};
+  const r=await fetch('/telegram/setup/set-webhook',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  const data=await r.json(); el('webhook_status').className=r.ok?'ok':'err'; el('webhook_status').textContent=JSON.stringify(data); if(r.ok) render(data.readiness||latest);
+}
+async function webhookStatus(){
+  el('webhook_status').textContent='Checking webhook status...';
+  const r=await fetch('/telegram/webhook/status?tenant_id='+encTenant());
+  const data=await r.json(); el('webhook_status').className=r.ok?'ok':'err'; el('webhook_status').textContent=JSON.stringify(data); if(data.readiness) render(data.readiness);
+}
+el('tenant_id').value=DEFAULT_TENANT_ID; loadSetup();
+</script>
+</body>
+</html>
+    '''.replace("__TENANT_ID_JSON__", tid_json)
+    return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
+
+
 @app.get("/telegram/readiness")
 @app.get("/channels/telegram/readiness")
 def telegram_text_readiness(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
@@ -12637,11 +13147,29 @@ def telegram_live_smoke_readiness(tenant_id: str = TENANT_ID_DEFAULT, days: int 
 # TELEGRAM CHANNEL (chat-first)
 # -------------------------
 @app.get("/telegram/status")
-def telegram_status():
-    return telegram_config_status(
-        default_tenant_id=os.getenv("TELEGRAM_DEFAULT_TENANT_ID", "").strip() or TENANT_ID_DEFAULT,
+def telegram_status(tenant_id: str = ""):
+    default_tenant_id = (tenant_id or os.getenv("TELEGRAM_DEFAULT_TENANT_ID", "").strip() or TENANT_ID_DEFAULT).strip()
+    base_status = telegram_config_status(
+        default_tenant_id=default_tenant_id,
         server_base_url=SERVER_BASE_URL,
     )
+    stage68_status = stage68_telegram_config_status(default_tenant_id)
+    base_status.update({
+        "stage": "68",
+        "tenant_id": default_tenant_id,
+        "configured": bool(stage68_status.get("configured")),
+        "has_bot_token": bool(stage68_status.get("has_bot_token")),
+        "has_webhook_secret": bool(stage68_status.get("has_webhook_secret")),
+        "bot_token_source": stage68_status.get("bot_token_source"),
+        "webhook_secret_source": stage68_status.get("webhook_secret_source"),
+        "bot_token_masked": stage68_status.get("bot_token_masked"),
+        "webhook_secret_masked": stage68_status.get("webhook_secret_masked"),
+        "secret_value_exposed": False,
+        "recommended_webhook_url": stage68_status.get("recommended_webhook_url"),
+        "setup_readiness": f"/telegram/setup/readiness?tenant_id={default_tenant_id}",
+        "setup_ui": f"/telegram/setup/ui?tenant_id={default_tenant_id}",
+    })
+    return base_status
 
 
 @app.post("/telegram/set-webhook")
@@ -12652,10 +13180,15 @@ def telegram_set_webhook(url: str = "", tenant_id: str = ""):
         if not SERVER_BASE_URL:
             raise HTTPException(status_code=500, detail="SERVER_BASE_URL is required when url is not provided")
         webhook_url = SERVER_BASE_URL.rstrip("/") + "/telegram/webhook?tenant_id=" + default_tenant_id
-    result = telegram_set_webhook_request(webhook_url)
+    result = telegram_set_webhook_request(
+        webhook_url,
+        bot_token=stage68_effective_telegram_bot_token(default_tenant_id),
+        webhook_secret=stage68_effective_telegram_webhook_secret(default_tenant_id),
+    )
+    clean_result = stage68_sanitized_telegram_api_result(result)
     if not result.get("ok"):
-        raise HTTPException(status_code=500, detail=result)
-    return result
+        raise HTTPException(status_code=500, detail=clean_result)
+    return clean_result
 
 
 def stage591_reset_telegram_conversation_context(tenant_id: str, user_key: str) -> None:
@@ -12690,6 +13223,8 @@ async def telegram_webhook(request: Request, tenant_id: str = ""):
         detect_language_func=detect_language,
         unavailable_text_func=lambda lang: t(lang, "service_unavailable_text"),
         reset_conversation_func=stage591_reset_telegram_conversation_context,
+        tenant_bot_token_func=stage68_effective_telegram_bot_token,
+        tenant_webhook_secret_func=stage68_effective_telegram_webhook_secret,
     )
 
 
@@ -13733,7 +14268,7 @@ def stage64_onboarding_steps_payload(tenant: Dict[str, Any], tenant_id: str) -> 
         {"id": "business_memory", "title": "Business memory / FAQ", "status": "complete" if memory_ready else "attention", "complete": bool(memory_ready), "language_coverage": memory, "action_url": f"/business-memory/builder?tenant_id={tid}", "readiness_url": f"/business-memory/readiness?tenant_id={tid}"},
         {"id": "google_calendar_connect", "title": "Google Calendar connection", "status": "complete" if onboarding.get("google_connected") else "attention", "complete": bool(onboarding.get("google_connected")), "google_connected": bool(onboarding.get("google_connected")), "self_serve_ready": bool(google_self_serve.get("google_calendar_self_serve_ready")), "action_url": f"/google/connect?tenant_id={tid}", "readiness_url": f"/google/self-serve/readiness?tenant_id={tid}"},
         {"id": "google_calendar_select", "title": "Working calendar selection", "status": "complete" if onboarding.get("calendar_selected") else "attention", "complete": bool(onboarding.get("calendar_selected")), "calendar_id": onboarding.get("calendar_id"), "self_serve_setup_complete": bool(google_self_serve.get("google_calendar_setup_complete")), "action_url": f"/google/calendars/ui?tenant_id={tid}", "readiness_url": f"/google/self-serve/readiness?tenant_id={tid}"},
-        {"id": "telegram_text_channel", "title": "Telegram text channel", "status": "complete" if telegram.get("telegram_text_ready") else "attention", "complete": bool(telegram.get("telegram_text_ready")), "telegram_status": telegram.get("status"), "action_url": f"/telegram/readiness?tenant_id={tid}"},
+        {"id": "telegram_text_channel", "title": "Telegram text channel", "status": "complete" if telegram.get("telegram_text_ready") else "attention", "complete": bool(telegram.get("telegram_text_ready")), "telegram_status": telegram.get("status"), "action_url": f"/telegram/setup/ui?tenant_id={tid}", "readiness_url": f"/telegram/setup/readiness?tenant_id={tid}"},
         {"id": "final_smoke_lock", "title": "Final text smoke lock", "status": "complete" if telegram_smoke.get("telegram_live_smoke_locked") else "attention", "complete": bool(telegram_smoke.get("telegram_live_smoke_locked")), "telegram_pilot_ready": bool(telegram_smoke.get("telegram_pilot_ready")), "action_url": f"/telegram/live-smoke/readiness?tenant_id={tid}"},
     ]
 
@@ -13796,6 +14331,8 @@ def stage64_onboarding_wizard_readiness_payload(tenant_id: str = TENANT_ID_DEFAU
             "google_self_serve_readiness": url(f"/google/self-serve/readiness?tenant_id={tenant_id_clean}"),
             "business_memory_builder": url(f"/business-memory/builder?tenant_id={tenant_id_clean}"),
             "business_memory_readiness": url(f"/business-memory/readiness?tenant_id={tenant_id_clean}"),
+            "telegram_setup_ui": url(f"/telegram/setup/ui?tenant_id={tenant_id_clean}"),
+            "telegram_setup_readiness": url(f"/telegram/setup/readiness?tenant_id={tenant_id_clean}"),
             "telegram_readiness": url(f"/telegram/readiness?tenant_id={tenant_id_clean}"),
             "telegram_smoke_lock": url(f"/telegram/live-smoke/readiness?tenant_id={tenant_id_clean}"),
         },
@@ -13827,6 +14364,8 @@ def onboarding_links_payload(tenant_id: str) -> Dict[str, str]:
         "business_memory_builder_url": f"{base}/business-memory/builder?tenant_id={tenant_id}",
         "business_memory_readiness_url": f"{base}/business-memory/readiness?tenant_id={tenant_id}",
         "service_catalog_readiness_url": f"{base}/service-catalog/readiness?tenant_id={tenant_id}",
+        "telegram_setup_url": f"{base}/telegram/setup/ui?tenant_id={tenant_id}",
+        "telegram_setup_readiness_url": f"{base}/telegram/setup/readiness?tenant_id={tenant_id}",
     }
 
 
@@ -15424,6 +15963,7 @@ summary { cursor:pointer; font-weight:800; }
         <button class="secondary" onclick="openPath('/admin/access/enforcement/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Admin access</button>
         <button class="secondary" onclick="openPath('/admin/session/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Admin session</button>
         <button class="secondary" onclick="openPath('/admin/logout')">Logout</button>
+        <button class="secondary" onclick="openPath('/telegram/setup/ui?tenant_id='+encodeURIComponent(currentTenant()))">Telegram setup</button>
         <button class="secondary" onclick="openPath('/telegram/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Telegram readiness</button>
         <button class="secondary" onclick="openPath('/telegram/live-smoke/readiness?tenant_id='+encodeURIComponent(currentTenant()))">Telegram smoke lock</button>
       </div>
@@ -15544,6 +16084,7 @@ summary { cursor:pointer; font-weight:800; }
       <a id="lnk_onboarding_wizard" href="#">Onboarding wizard</a>
       <a id="lnk_signup" href="/signup/ui">Create tenant</a>
       <a id="lnk_admin_logout" href="/admin/logout">Logout</a>
+      <a id="lnk_telegram_setup" href="#">Telegram setup</a>
       <a id="lnk_telegram_ready" href="#">Telegram readiness</a>
       <a id="lnk_telegram_smoke" href="#">Telegram smoke lock</a>
       <a id="lnk_routes" href="#">Phone routes</a>
@@ -15577,6 +16118,7 @@ function setLinks(tid){
   document.getElementById('lnk_admin_session').href = '/admin/session/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_tenant_creation').href = '/tenant/creation/readiness?tenant_id=' + encodeURIComponent(tid);
   const wiz = document.getElementById('lnk_onboarding_wizard'); if(wiz) wiz.href = '/onboarding/wizard/readiness?tenant_id=' + encodeURIComponent(tid);
+  const telegramSetup = document.getElementById('lnk_telegram_setup'); if(telegramSetup) telegramSetup.href = '/telegram/setup/ui?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_telegram_ready').href = '/telegram/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_telegram_smoke').href = '/telegram/live-smoke/readiness?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_routes').href = '/tenant/routes?tenant_id=' + encodeURIComponent(tid);
@@ -15834,6 +16376,20 @@ class BusinessMemoryFaqUpdateRequest(BaseModel):
     policies: Optional[str] = None
 
 
+class TelegramBotSetupUpdateRequest(BaseModel):
+    tenant_id: str
+    bot_token: Optional[str] = None
+    webhook_secret: Optional[str] = None
+    generate_webhook_secret: bool = False
+    clear_bot_token: bool = False
+    clear_webhook_secret: bool = False
+
+
+class TelegramSetWebhookRequest(BaseModel):
+    tenant_id: str
+    url: Optional[str] = None
+
+
 class TenantPlanChangeRequest(BaseModel):
     tenant_id: str
     plan: str
@@ -15848,6 +16404,8 @@ TENANT_CONFIG_SECRET_FIELDS = {
     "google_refresh_token",
     "private_key",
     "client_secret",
+    "telegram_bot_token",
+    "telegram_webhook_secret",
 }
 
 
@@ -16326,6 +16884,7 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
         "onboarding_wizard_readiness": stage64_onboarding_wizard_readiness_payload(tenant_id),
         "google_calendar_self_serve_readiness": stage65_google_calendar_self_serve_readiness_payload(tenant_id),
         "service_catalog_builder_readiness": stage66_service_catalog_readiness_payload(tenant_id),
+        "telegram_setup_readiness": stage68_telegram_setup_readiness_payload(tenant_id),
         "telegram_text_channel_readiness": stage59_telegram_text_channel_readiness_payload(tenant_id),
         "telegram_live_smoke_lock": stage60_telegram_live_smoke_lock_payload(tenant_id),
         "config_ui_hardening": tenant_config_ui_readiness_payload(updated),

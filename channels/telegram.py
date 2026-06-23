@@ -1,7 +1,8 @@
 import logging
 import os
 import re
-from typing import Any, Callable, Dict, Optional
+from contextvars import ContextVar
+from typing import Any, Callable, Dict, Optional, Tuple
 
 import requests
 from fastapi import HTTPException, Request
@@ -9,6 +10,23 @@ from fastapi import HTTPException, Request
 log = logging.getLogger("repliq.telegram")
 
 TELEGRAM_API_BASE = "https://api.telegram.org"
+
+# Stage 68: tenant-level Telegram setup can temporarily override the env token/secret
+# for one webhook request. Existing env-based Telegram runtime remains the fallback.
+_TELEGRAM_BOT_TOKEN_OVERRIDE: ContextVar[str] = ContextVar("telegram_bot_token_override", default="")
+_TELEGRAM_WEBHOOK_SECRET_OVERRIDE: ContextVar[str] = ContextVar("telegram_webhook_secret_override", default="")
+
+
+def telegram_set_runtime_config(bot_token: str = "", webhook_secret: str = "") -> Tuple[Any, Any]:
+    bot_ctx = _TELEGRAM_BOT_TOKEN_OVERRIDE.set((bot_token or "").strip())
+    secret_ctx = _TELEGRAM_WEBHOOK_SECRET_OVERRIDE.set((webhook_secret or "").strip())
+    return bot_ctx, secret_ctx
+
+
+def telegram_reset_runtime_config(tokens: Tuple[Any, Any]) -> None:
+    bot_ctx, secret_ctx = tokens
+    _TELEGRAM_BOT_TOKEN_OVERRIDE.reset(bot_ctx)
+    _TELEGRAM_WEBHOOK_SECRET_OVERRIDE.reset(secret_ctx)
 
 
 TELEGRAM_REMOVE_KEYBOARD = {"remove_keyboard": True}
@@ -50,11 +68,13 @@ def _telegram_outgoing_text_without_internal_leaks(text: str) -> str:
 
 
 def telegram_bot_token() -> str:
-    return (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+    override = (_TELEGRAM_BOT_TOKEN_OVERRIDE.get("") or "").strip()
+    return override or (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
 
 
 def telegram_webhook_secret() -> str:
-    return (os.getenv("TELEGRAM_WEBHOOK_SECRET") or "").strip()
+    override = (_TELEGRAM_WEBHOOK_SECRET_OVERRIDE.get("") or "").strip()
+    return override or (os.getenv("TELEGRAM_WEBHOOK_SECRET") or "").strip()
 
 
 def telegram_config_status(default_tenant_id: str = "", server_base_url: str = "") -> Dict[str, Any]:
@@ -76,8 +96,8 @@ def telegram_config_status(default_tenant_id: str = "", server_base_url: str = "
     }
 
 
-def telegram_api_url(method: str) -> str:
-    token = telegram_bot_token()
+def telegram_api_url(method: str, bot_token: str = "") -> str:
+    token = (bot_token or telegram_bot_token()).strip()
     if not token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is not configured")
     return f"{TELEGRAM_API_BASE}/bot{token}/{method}"
@@ -209,8 +229,8 @@ def _telegram_lang_hint(text: str, detect_language_func: Callable[[str], str]) -
         return ""
     return detect_language_func(text)
 
-def telegram_set_webhook_request(webhook_url: str) -> Dict[str, Any]:
-    token = telegram_bot_token()
+def telegram_set_webhook_request(webhook_url: str, bot_token: str = "", webhook_secret: str = "") -> Dict[str, Any]:
+    token = (bot_token or telegram_bot_token()).strip()
     if not token:
         return {"ok": False, "error": "TELEGRAM_BOT_TOKEN is not configured"}
 
@@ -219,12 +239,12 @@ def telegram_set_webhook_request(webhook_url: str) -> Dict[str, Any]:
         "drop_pending_updates": False,
         "allowed_updates": ["message", "edited_message", "callback_query"],
     }
-    secret = telegram_webhook_secret()
+    secret = (webhook_secret or telegram_webhook_secret()).strip()
     if secret:
         payload["secret_token"] = secret
 
     try:
-        response = requests.post(telegram_api_url("setWebhook"), json=payload, timeout=20)
+        response = requests.post(telegram_api_url("setWebhook", bot_token=token), json=payload, timeout=20)
         data = response.json() if response.text else {}
         if response.status_code == 200 and data.get("ok"):
             return {
@@ -240,6 +260,33 @@ def telegram_set_webhook_request(webhook_url: str) -> Dict[str, Any]:
         }
     except Exception as exc:
         log.error("telegram_set_webhook_exception err=%s", exc)
+        return {"ok": False, "error": str(exc)}
+
+
+def telegram_get_webhook_info_request(bot_token: str = "") -> Dict[str, Any]:
+    token = (bot_token or telegram_bot_token()).strip()
+    if not token:
+        return {"ok": False, "error": "TELEGRAM_BOT_TOKEN is not configured"}
+    try:
+        response = requests.get(telegram_api_url("getWebhookInfo", bot_token=token), timeout=20)
+        data = response.json() if response.text else {}
+        if response.status_code == 200 and data.get("ok"):
+            result = data.get("result") if isinstance(data.get("result"), dict) else {}
+            return {
+                "ok": True,
+                "telegram_response": data,
+                "webhook_url": result.get("url"),
+                "pending_update_count": result.get("pending_update_count"),
+                "last_error_date": result.get("last_error_date"),
+                "last_error_message": result.get("last_error_message"),
+            }
+        return {
+            "ok": False,
+            "status_code": response.status_code,
+            "telegram_response": data or response.text[:500],
+        }
+    except Exception as exc:
+        log.error("telegram_get_webhook_info_exception err=%s", exc)
         return {"ok": False, "error": str(exc)}
 
 
@@ -297,6 +344,39 @@ def _extract_text(message: Dict[str, Any]) -> str:
 
 
 async def handle_telegram_incoming(
+    request: Request,
+    default_tenant_id: str,
+    get_tenant: Callable[[str], Dict[str, Any]],
+    tenant_is_resolved: Callable[[Dict[str, Any]], bool],
+    tenant_settings_func: Callable[[Dict[str, Any], str], Dict[str, Any]],
+    handle_user_text_with_logging: Callable[..., Dict[str, Any]],
+    detect_language_func: Callable[[str], str],
+    unavailable_text_func: Callable[[str], str],
+    reset_conversation_func: Optional[Callable[[str, str], None]] = None,
+    tenant_bot_token_func: Optional[Callable[[str], str]] = None,
+    tenant_webhook_secret_func: Optional[Callable[[str], str]] = None,
+) -> Dict[str, Any]:
+    runtime_tenant_id = (default_tenant_id or "").strip()
+    bot_token = tenant_bot_token_func(runtime_tenant_id) if tenant_bot_token_func and runtime_tenant_id else ""
+    webhook_secret = tenant_webhook_secret_func(runtime_tenant_id) if tenant_webhook_secret_func and runtime_tenant_id else ""
+    ctx_tokens = telegram_set_runtime_config(bot_token or "", webhook_secret or "")
+    try:
+        return await _handle_telegram_incoming_with_config(
+            request=request,
+            default_tenant_id=default_tenant_id,
+            get_tenant=get_tenant,
+            tenant_is_resolved=tenant_is_resolved,
+            tenant_settings_func=tenant_settings_func,
+            handle_user_text_with_logging=handle_user_text_with_logging,
+            detect_language_func=detect_language_func,
+            unavailable_text_func=unavailable_text_func,
+            reset_conversation_func=reset_conversation_func,
+        )
+    finally:
+        telegram_reset_runtime_config(ctx_tokens)
+
+
+async def _handle_telegram_incoming_with_config(
     request: Request,
     default_tenant_id: str,
     get_tenant: Callable[[str], Dict[str, Any]],
