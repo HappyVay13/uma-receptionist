@@ -229,6 +229,15 @@ STAGE61_PROTECTED_EXACT_PATHS = {
     "/telegram/bot/setup/ui",
     "/tenant/telegram/setup",
     "/tenant/telegram/setup/ui",
+    "/control-center",
+    "/control-center/ui",
+    "/control-center/readiness",
+    "/self-serve/control-center",
+    "/self-serve/control-center/readiness",
+    "/client/dashboard",
+    "/client/dashboard/ui",
+    "/client/control-center",
+    "/client/control-center/ui",
     "/telegram/readiness",
     "/channels/telegram/readiness",
     "/telegram/live-smoke/readiness",
@@ -11343,6 +11352,8 @@ def stage58_access_boundaries_readiness_payload(tenant_id: str = TENANT_ID_DEFAU
         {"path": "/business-memory/readiness", "classification": "read_only_memory_metadata", "current_access": "stage61_admin_token_required", "client_demo_safe": True, "public_saas_ready": False},
         {"path": "/usage/readiness", "classification": "read_only_usage_metadata", "current_access": "stage61_admin_token_required", "client_demo_safe": True, "public_saas_ready": False},
         {"path": "/dashboard", "classification": "admin_dashboard", "current_access": "stage61_admin_token_required", "client_demo_safe": True, "public_saas_ready": False},
+        {"path": "/control-center/ui", "classification": "client_control_center_ui", "current_access": "stage61_admin_token_required", "client_demo_safe": True, "public_saas_ready": False},
+        {"path": "/control-center/readiness", "classification": "client_control_center_readiness", "current_access": "stage61_admin_token_required", "client_demo_safe": True, "public_saas_ready": False},
         {"path": "/dev_chat_ui", "classification": "dev_demo_channel", "current_access": "stage61_admin_token_required", "client_demo_safe": True, "public_saas_ready": False},
         {"path": "/dev_chat", "classification": "dev_demo_channel_api", "current_access": "stage61_admin_token_required", "client_demo_safe": False, "public_saas_ready": False},
         {"path": "/tenants/ui", "classification": "multi_tenant_admin_ui", "current_access": "stage61_admin_token_required", "client_demo_safe": False, "public_saas_ready": False},
@@ -12279,6 +12290,270 @@ def stage68_sanitized_telegram_api_result(result: Dict[str, Any]) -> Dict[str, A
     result["secret_value_exposed"] = False
     return result
 
+
+# -------------------------
+# STAGE 69: CLIENT DASHBOARD SELF-SERVE CONTROL CENTER
+# -------------------------
+def stage69_step_payload(
+    key: str,
+    label: str,
+    payload: Dict[str, Any],
+    ready: bool,
+    href: str,
+    action_href: str = "",
+    description: str = "",
+) -> Dict[str, Any]:
+    payload = dict(payload or {})
+    blocking = list(payload.get("blocking") or [])
+    warnings = list(payload.get("warnings") or [])
+    status = "ready" if ready and not blocking and not warnings else "attention" if not blocking else "blocked"
+    if payload.get("status") in {"ready", "attention", "blocked"}:
+        status = str(payload.get("status"))
+    return {
+        "key": key,
+        "label": label,
+        "status": status,
+        "ready": bool(ready and not blocking),
+        "href": href,
+        "action_href": action_href or href,
+        "description": description,
+        "blocking": blocking,
+        "warnings": warnings,
+    }
+
+
+def stage69_safe_dependency(name: str, builder) -> Dict[str, Any]:
+    try:
+        data = builder()
+        return data if isinstance(data, dict) else {"status": "attention", "warning": f"{name}_returned_non_dict"}
+    except Exception as e:
+        log.error("stage69_dependency_failed name=%s err=%s", name, e)
+        return {
+            "stage_dependency": name,
+            "status": "blocked",
+            "blocking": [f"{name}_failed:{e.__class__.__name__}"],
+            "warnings": [],
+        }
+
+
+def stage69_client_control_center_payload(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14) -> Dict[str, Any]:
+    """Read-only self-serve control center metadata for the text-first SaaS MVP.
+
+    Stage 69 aggregates existing readiness/builders into a single client/admin
+    surface. It does not call LLMs, mutate conversations, set Telegram webhooks,
+    or create/update/delete Google Calendar events.
+    """
+    tid = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    days = max(1, min(int(days or 14), 60))
+    base = (SERVER_BASE_URL or "").rstrip("/")
+
+    def url(path: str) -> str:
+        return base + path if base else path
+
+    tenant = get_existing_tenant(tid)
+    tenant_found = bool(tenant.get("_id"))
+    tenant_id_clean = str(tenant.get("_id") or tenant.get("id") or tid).strip() or tid
+
+    required_paths = [
+        "/control-center",
+        "/control-center/ui",
+        "/control-center/readiness",
+        "/self-serve/control-center",
+        "/self-serve/control-center/readiness",
+        "/client/dashboard",
+        "/client/dashboard/ui",
+        "/client/control-center",
+        "/client/control-center/ui",
+    ]
+    missing_protection = [path for path in required_paths if path not in STAGE61_PROTECTED_EXACT_PATHS]
+
+    blocking: List[str] = []
+    warnings: List[str] = []
+    if not tenant_found:
+        blocking.append("tenant_not_found")
+    if missing_protection:
+        blocking.append("control_center_paths_not_protected")
+    if not stage61_admin_token_configured():
+        blocking.append("admin_token_not_configured")
+    if not stage62_session_secret():
+        blocking.append("admin_session_secret_not_configured")
+
+    onboarding = onboarding_status_payload(tenant) if tenant_found else {"tenant_id": tenant_id_clean, "next_step": "tenant_not_found"}
+    tenant_ready = tenant_ready_status_payload(tenant) if tenant_found else {"ready": False, "missing": ["tenant_not_found"]}
+    admin_config = tenant_admin_config_readiness_payload(tenant) if tenant_found else {"status": "blocked", "blocking": ["tenant_not_found"]}
+    config_ui = tenant_config_ui_readiness_payload(tenant) if tenant_found else {"status": "blocked", "blocking": ["tenant_not_found"]}
+
+    google = stage69_safe_dependency("google_calendar_self_serve", lambda: stage65_google_calendar_self_serve_readiness_payload(tenant_id_clean))
+    service_catalog = stage69_safe_dependency("service_catalog_builder", lambda: stage66_service_catalog_readiness_payload(tenant_id_clean))
+    business_memory = stage69_safe_dependency("business_memory_faq_builder", lambda: stage67_business_memory_builder_readiness_payload(tenant_id_clean))
+    telegram = stage69_safe_dependency("telegram_setup", lambda: stage68_telegram_setup_readiness_payload(tenant_id_clean, days=days))
+    usage = stage69_safe_dependency("usage_analytics", lambda: stage57_usage_analytics_readiness_payload(tenant_id_clean, days=days))
+    launch = stage69_safe_dependency("launch_readiness", lambda: stage54_launch_readiness_lock_payload(tenant_id_clean))
+    access = stage69_safe_dependency("access_boundaries", lambda: stage58_access_boundaries_readiness_payload(tenant_id_clean))
+
+    profile_ready = bool(tenant_found and str(tenant.get("business_name") or "").strip() and str(tenant.get("timezone") or "").strip())
+    working_hours_ready = bool(tenant_found and str(tenant.get("work_start") or "").strip() and str(tenant.get("work_end") or "").strip())
+    google_ready = bool(google.get("calendar_ready") or google.get("google_calendar_setup_complete"))
+    service_ready = bool(service_catalog.get("runtime_service_catalog_ready") or service_catalog.get("service_catalog_builder_ready"))
+    memory_ready = bool(business_memory.get("business_memory_content_ready") or business_memory.get("business_memory_faq_builder_ready"))
+    telegram_ready = bool(telegram.get("telegram_bot_self_serve_ready") or telegram.get("telegram_effective_runtime_ready"))
+    telegram_smoke_dependency = telegram.get("stage60_telegram_live_smoke_dependency") or {}
+    smoke_ready = bool(telegram_smoke_dependency.get("private_admin_ready") or telegram_smoke_dependency.get("status") == "ready")
+
+    steps = [
+        stage69_step_payload(
+            "business_profile",
+            "Business profile",
+            admin_config,
+            profile_ready and working_hours_ready,
+            url(f"/tenant/config/ui?tenant_id={tenant_id_clean}"),
+            description="Business name, timezone, language, and working hours are configured.",
+        ),
+        stage69_step_payload(
+            "service_catalog",
+            "Services / prices",
+            service_catalog,
+            service_ready,
+            url(f"/service-catalog/readiness?tenant_id={tenant_id_clean}"),
+            url(f"/service-catalog/builder?tenant_id={tenant_id_clean}"),
+            "Self-serve service catalog exists and runtime has active services.",
+        ),
+        stage69_step_payload(
+            "business_memory",
+            "Business Memory / FAQ",
+            business_memory,
+            memory_ready,
+            url(f"/business-memory/readiness?tenant_id={tenant_id_clean}"),
+            url(f"/business-memory/builder?tenant_id={tenant_id_clean}"),
+            "Side-question facts, FAQ, policies, and booking rules are editable by the client/admin.",
+        ),
+        stage69_step_payload(
+            "google_calendar",
+            "Google Calendar",
+            google,
+            google_ready,
+            url(f"/google/self-serve/readiness?tenant_id={tenant_id_clean}"),
+            url(f"/google/calendars/ui?tenant_id={tenant_id_clean}"),
+            "Google account is connected and a working calendar is selected.",
+        ),
+        stage69_step_payload(
+            "telegram",
+            "Telegram bot",
+            telegram,
+            telegram_ready,
+            url(f"/telegram/setup/readiness?tenant_id={tenant_id_clean}"),
+            url(f"/telegram/setup/ui?tenant_id={tenant_id_clean}"),
+            "Tenant Telegram bot token/webhook secret are configured or effective runtime fallback is available.",
+        ),
+        stage69_step_payload(
+            "telegram_smoke",
+            "Telegram smoke lock",
+            telegram_smoke_dependency,
+            smoke_ready,
+            url(f"/telegram/live-smoke/readiness?tenant_id={tenant_id_clean}&days={days}"),
+            description="Manual Telegram smoke checklist is available for the locked external text channel.",
+        ),
+        stage69_step_payload(
+            "usage_visibility",
+            "Usage visibility",
+            usage,
+            bool(usage.get("private_admin_ready") or usage.get("status") == "ready"),
+            url(f"/usage/readiness?tenant_id={tenant_id_clean}&days={days}"),
+            url(f"/dashboard?tenant_id={tenant_id_clean}"),
+            "Dashboard analytics endpoints are available for a client/admin review.",
+        ),
+    ]
+
+    ready_count = sum(1 for step in steps if step.get("ready"))
+    blocked_count = sum(1 for step in steps if step.get("status") == "blocked")
+    attention_count = sum(1 for step in steps if step.get("status") == "attention")
+    if blocked_count:
+        status = "blocked"
+    elif ready_count == len(steps):
+        status = "ready"
+    else:
+        status = "attention"
+
+    if not tenant_ready.get("ready"):
+        for item in tenant_ready.get("missing") or []:
+            warnings.append(f"tenant_missing:{item}")
+    if not launch.get("launch_ready_for_demo"):
+        warnings.append("launch_readiness_not_fully_ready")
+    if access.get("public_saas_ready") is not True:
+        warnings.append("public_saas_ready_false_by_design")
+
+    return {
+        "stage": "69",
+        "purpose": "Client Dashboard Self-Serve Control Center",
+        "tenant_id": tenant_id_clean,
+        "status": status,
+        "control_center_ready": bool(status in {"ready", "attention"} and not blocking),
+        "private_admin_ready": bool(not blocking),
+        "public_saas_ready": False,
+        "auth_model": "admin_session_or_shared_token_mvp",
+        "current_mvp_scope": {
+            "product": "text-first AI receptionist SaaS",
+            "primary_external_channel": "Telegram text",
+            "voice_calls_scope": "future_phase",
+        },
+        "summary": {
+            "ready_steps": ready_count,
+            "total_steps": len(steps),
+            "attention_steps": attention_count,
+            "blocked_steps": blocked_count,
+            "next_step": onboarding.get("next_step") or tenant_ready.get("next_step"),
+        },
+        "tenant": {
+            "tenant_id": tenant_id_clean,
+            "business_name": tenant.get("business_name"),
+            "owner_email": tenant.get("owner_email"),
+            "phone_number": tenant.get("phone_number"),
+            "language": tenant.get("language"),
+            "timezone": tenant.get("timezone"),
+            "plan": tenant_plan_meta(tenant) if tenant_found else {},
+        },
+        "steps": steps,
+        "dependencies": {
+            "onboarding": onboarding,
+            "tenant_ready": tenant_ready,
+            "admin_config": admin_config,
+            "config_ui": config_ui,
+            "google_calendar": google,
+            "service_catalog": service_catalog,
+            "business_memory": business_memory,
+            "telegram_setup": telegram,
+            "usage_analytics": usage,
+            "launch_readiness": launch,
+            "access_boundaries": access,
+        },
+        "protected_paths": required_paths,
+        "security": {
+            "raw_service_account_json_exposed": False,
+            "raw_telegram_bot_token_exposed": False,
+            "raw_telegram_webhook_secret_exposed": False,
+            "control_center_routes_protected_by_admin_session_or_token": not bool(missing_protection),
+            "public_owner_auth_not_implemented_yet": True,
+            "tenant_ownership_checks_not_public_saas_ready_yet": True,
+        },
+        "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
+        "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
+        "links": {
+            "control_center_ui": url(f"/control-center/ui?tenant_id={tenant_id_clean}&days={days}"),
+            "control_center_json": url(f"/control-center?tenant_id={tenant_id_clean}&days={days}"),
+            "control_center_readiness": url(f"/control-center/readiness?tenant_id={tenant_id_clean}&days={days}"),
+            "dashboard": url(f"/dashboard?tenant_id={tenant_id_clean}"),
+            "tenant_config_ui": url(f"/tenant/config/ui?tenant_id={tenant_id_clean}"),
+            "onboarding_wizard": url(f"/onboarding/wizard?tenant_id={tenant_id_clean}"),
+            "service_catalog_builder": url(f"/service-catalog/builder?tenant_id={tenant_id_clean}"),
+            "business_memory_builder": url(f"/business-memory/builder?tenant_id={tenant_id_clean}"),
+            "google_calendar_setup": url(f"/google/calendars/ui?tenant_id={tenant_id_clean}"),
+            "telegram_setup": url(f"/telegram/setup/ui?tenant_id={tenant_id_clean}"),
+            "telegram_smoke_lock": url(f"/telegram/live-smoke/readiness?tenant_id={tenant_id_clean}&days={days}"),
+            "dialogue_qa": url("/dialogue/qa"),
+        },
+        "note": "Stage 69 is an aggregate dashboard/control-center layer only. It does not change receptionist routing, slot generation, price side-questions, Google Calendar event runtime, Telegram webhook runtime, or voice/calls.",
+    }
+
 def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) -> Dict[str, Any]:
     requested_tenant_id = (tenant_id or "").strip() or TENANT_ID_DEFAULT
     db_check = _stage43a_database_check()
@@ -12422,6 +12697,7 @@ def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) ->
         "google_calendar_self_serve_readiness": stage65_google_calendar_self_serve_readiness_payload(requested_tenant_id),
         "service_catalog_builder_readiness": stage66_service_catalog_readiness_payload(requested_tenant_id),
         "telegram_setup_readiness": stage68_telegram_setup_readiness_payload(requested_tenant_id),
+        "client_control_center_readiness": stage69_client_control_center_payload(requested_tenant_id),
         "telegram_text_channel_readiness": stage59_telegram_text_channel_readiness_payload(requested_tenant_id),
         "telegram_live_smoke_lock": stage60_telegram_live_smoke_lock_payload(requested_tenant_id),
         "tenant_admin_config": tenant_admin_config_readiness_payload(tenant) if tenant_status.get("tenant_id") else {
@@ -13127,6 +13403,127 @@ el('tenant_id').value=DEFAULT_TENANT_ID; loadSetup();
 </body>
 </html>
     '''.replace("__TENANT_ID_JSON__", tid_json)
+    return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/control-center/readiness")
+@app.get("/self-serve/control-center/readiness")
+def stage69_control_center_readiness(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    return stage69_client_control_center_payload(tenant_id=tenant_id, days=days)
+
+
+@app.get("/control-center")
+@app.get("/self-serve/control-center")
+@app.get("/client/dashboard")
+@app.get("/client/control-center")
+def stage69_control_center_json(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    return stage69_client_control_center_payload(tenant_id=tenant_id, days=days)
+
+
+@app.get("/control-center/ui", response_class=HTMLResponse)
+@app.get("/client/dashboard/ui", response_class=HTMLResponse)
+@app.get("/client/control-center/ui", response_class=HTMLResponse)
+def stage69_control_center_ui(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    tenant_json = json.dumps((tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT)
+    days_json = json.dumps(max(1, min(int(days or 14), 60)))
+    html = r'''
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Repliq Control Center</title>
+<style>
+body{font-family:Inter,system-ui,-apple-system,Segoe UI,Arial,sans-serif;background:#f6f7fb;color:#111827;margin:0;padding:24px}.wrap{max-width:1180px;margin:0 auto}.hero,.card{background:white;border:1px solid #e5e7eb;border-radius:18px;padding:18px;margin:14px 0;box-shadow:0 8px 25px rgba(17,24,39,.05)}.hero{display:flex;justify-content:space-between;gap:18px;align-items:flex-start}.sub,.muted{color:#64748b;font-size:14px;line-height:1.45}h1{margin:0 0 6px;font-size:32px;letter-spacing:-.03em}h2{margin:0 0 12px}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.steps{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}.tile{border:1px solid #e5e7eb;border-radius:16px;padding:14px;background:#fff}.tile h3{margin:0 0 6px;font-size:17px}.badge{display:inline-block;border-radius:999px;padding:5px 9px;background:#e5e7eb;font-size:12px;font-weight:700;margin:3px 4px 3px 0}.badge.ok{background:#dcfce7;color:#166534}.badge.warn{background:#fef3c7;color:#92400e}.badge.err{background:#fee2e2;color:#991b1b}.num{font-size:28px;font-weight:800;margin-top:6px}button{border:0;border-radius:12px;padding:10px 13px;background:#111827;color:white;font-weight:750;cursor:pointer}.secondary{background:#e5e7eb;color:#111827}input,select{box-sizing:border-box;border:1px solid #cbd5e1;border-radius:12px;padding:10px;font-size:14px}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}a{color:#2563eb;text-decoration:none}pre{background:#0f172a;color:#e2e8f0;border-radius:14px;padding:14px;max-height:520px;overflow:auto;white-space:pre-wrap}.links{display:flex;flex-wrap:wrap;gap:8px}.links a{background:#f1f5f9;border-radius:999px;padding:7px 10px;font-size:13px}@media(max-width:900px){body{padding:12px}.hero{display:block}.grid,.steps{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hero">
+    <div>
+      <h1>Repliq Control Center</h1>
+      <div class="sub">Stage 69 - one protected self-serve overview for tenant setup, channels, readiness, and next actions. Text MVP scope only; voice/calls are future phase.</div>
+      <div class="actions">
+        <input id="tenant_id" style="min-width:280px"/>
+        <select id="days"><option value="7">7 days</option><option value="14">14 days</option><option value="30">30 days</option><option value="60">60 days</option></select>
+        <button onclick="loadCenter()">Load</button>
+        <button class="secondary" onclick="go('/tenant/config/ui?tenant_id='+encTenant())">Tenant config</button>
+        <button class="secondary" onclick="go('/dashboard?tenant_id='+encTenant())">Analytics dashboard</button>
+        <button class="secondary" onclick="go('/onboarding/wizard/ui?tenant_id='+encTenant())">Onboarding</button>
+        <button class="secondary" onclick="go('/admin/logout')">Logout</button>
+      </div>
+    </div>
+    <div style="min-width:250px">
+      <div id="main_badges"></div>
+      <div class="sub" id="tenant_line">Loading...</div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card"><div class="muted">Ready steps</div><div id="m_ready" class="num">-</div><div class="sub">completed setup blocks</div></div>
+    <div class="card"><div class="muted">Attention</div><div id="m_attention" class="num">-</div><div class="sub">non-blocking checks</div></div>
+    <div class="card"><div class="muted">Blocked</div><div id="m_blocked" class="num">-</div><div class="sub">must fix before demo</div></div>
+    <div class="card"><div class="muted">Public SaaS</div><div id="m_public" class="num">false</div><div class="sub">should remain false for now</div></div>
+  </div>
+
+  <div class="card">
+    <h2>Setup steps</h2>
+    <div id="steps" class="steps"></div>
+  </div>
+
+  <div class="card">
+    <h2>Quick actions</h2>
+    <div id="links" class="links"></div>
+  </div>
+
+  <div class="card">
+    <h2>Raw readiness</h2>
+    <pre id="raw">Loading...</pre>
+  </div>
+</div>
+<script>
+const DEFAULT_TENANT_ID=__TENANT_ID_JSON__;
+const DEFAULT_DAYS=__DAYS_JSON__;
+function el(id){return document.getElementById(id)}
+function tenant(){return (el('tenant_id').value||'').trim()||DEFAULT_TENANT_ID||'clinic_demo'}
+function encTenant(){return encodeURIComponent(tenant())}
+function days(){return el('days').value||String(DEFAULT_DAYS||14)}
+function go(path){window.location=path}
+function esc(v){return v===null||v===undefined?'':String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;')}
+function badge(status,label){const cls=status==='ready'||status===true?'ok':status==='blocked'||status===false?'err':'warn';return `<span class="badge ${cls}">${esc(label)}</span>`}
+function setText(id,value){el(id).textContent=(value===null||value===undefined||value==='')?'-':String(value)}
+function stepCard(step){
+  const status=step.status||'attention';
+  const issues=[...(step.blocking||[]),...(step.warnings||[])].slice(0,4);
+  return `<div class="tile"><h3>${esc(step.label||step.key)}</h3><div>${badge(status,status)}${step.ready?badge('ready','ready'):''}</div><div class="sub">${esc(step.description||'')}</div><div class="actions"><button onclick="go('${esc(step.action_href||step.href||'#')}')">Open</button><button class="secondary" onclick="go('${esc(step.href||step.action_href||'#')}')">Readiness</button></div>${issues.length?`<div class="sub" style="margin-top:8px">${esc(issues.join(', '))}</div>`:''}</div>`;
+}
+function render(data){
+  el('raw').textContent=JSON.stringify(data,null,2);
+  const summary=data.summary||{}; const t=data.tenant||{};
+  el('main_badges').innerHTML=badge(data.status||'attention','status: '+(data.status||'attention'))+badge(data.private_admin_ready?'ready':'blocked','private admin: '+data.private_admin_ready)+badge(data.public_saas_ready?'ready':'blocked','public SaaS: '+data.public_saas_ready);
+  setText('tenant_line', `${t.business_name||data.tenant_id||tenant()} · ${t.language||'—'} · ${t.timezone||'—'}`);
+  setText('m_ready', `${summary.ready_steps||0}/${summary.total_steps||0}`);
+  setText('m_attention', summary.attention_steps||0);
+  setText('m_blocked', summary.blocked_steps||0);
+  setText('m_public', String(data.public_saas_ready===true));
+  el('steps').innerHTML=(data.steps||[]).map(stepCard).join('') || '<div class="sub">No setup steps returned.</div>';
+  const links=data.links||{};
+  el('links').innerHTML=Object.keys(links).map(k=>`<a href="${esc(links[k])}">${esc(k)}</a>`).join('');
+}
+async function loadCenter(){
+  el('tenant_id').value=tenant();
+  const r=await fetch('/control-center/readiness?tenant_id='+encTenant()+'&days='+encodeURIComponent(days()));
+  const data=await r.json();
+  if(!r.ok){el('raw').textContent=JSON.stringify(data,null,2);return;}
+  render(data);
+}
+el('tenant_id').value=DEFAULT_TENANT_ID||'clinic_demo';
+el('days').value=String(DEFAULT_DAYS||14);
+loadCenter();
+</script>
+</body>
+</html>
+    '''.replace("__TENANT_ID_JSON__", tenant_json).replace("__DAYS_JSON__", days_json)
     return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
 
 
@@ -14349,6 +14746,8 @@ def onboarding_links_payload(tenant_id: str) -> Dict[str, str]:
     base = SERVER_BASE_URL or ""
     return {
         "dashboard_url": f"{base}/dashboard?tenant_id={tenant_id}",
+        "control_center_url": f"{base}/control-center/ui?tenant_id={tenant_id}",
+        "control_center_readiness_url": f"{base}/control-center/readiness?tenant_id={tenant_id}",
         "config_ui_url": f"{base}/tenant/config/ui?tenant_id={tenant_id}",
         "config_json_url": f"{base}/tenant/config?tenant_id={tenant_id}",
         "routes_url": f"{base}/tenant/routes?tenant_id={tenant_id}",
@@ -15509,6 +15908,7 @@ def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
         </div>
       </div>
       <div class="muted nav-links">JSON endpoints:
+        <a id="lnk_control_center" href="#">control center</a> ·
         <a id="lnk_analytics" href="#">analytics</a> ·
         <a id="lnk_usage" href="#">usage</a> ·
         <a id="lnk_usage_ready" href="#">usage readiness</a> ·
@@ -15790,6 +16190,7 @@ async function loadAll() {{
   const days = el('days')?.value || '14';
   const limit = el('limit')?.value || '20';
   setText('usage_badge', `${{days}} day window`, 'Selected window');
+  const controlCenterLink = el('lnk_control_center'); if(controlCenterLink) controlCenterLink.href = `/control-center/ui?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
   el('lnk_analytics').href = `/dashboard/analytics?tenant_id=${{encodeURIComponent(tenant)}}`;
   el('lnk_usage').href = `/dashboard/usage?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
   el('lnk_usage_ready').href = `/usage/readiness?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
@@ -15949,6 +16350,7 @@ summary { cursor:pointer; font-weight:800; }
       <div class="actions" style="margin-top:14px;">
         <input id="tenant_id" style="min-width:280px; max-width:420px;" />
         <button onclick="loadConfig()">Load</button>
+        <button class="secondary" onclick="openPath('/control-center/ui?tenant_id='+encodeURIComponent(currentTenant()))">Control center</button>
         <button class="secondary" onclick="openPath('/dashboard?tenant_id='+encodeURIComponent(currentTenant()))">Dashboard</button>
         <button class="secondary" onclick="openPath('/signup/ui')">Create tenant</button>
         <button class="secondary" onclick="openPath('/dev_chat_ui?tenant_id='+encodeURIComponent(currentTenant()))">Dev chat</button>
@@ -16069,6 +16471,7 @@ summary { cursor:pointer; font-weight:800; }
     <div class="links">
       <a id="lnk_json" href="#">Safe JSON config</a>
       <a id="lnk_admin" href="#">Admin readiness</a>
+      <a id="lnk_control_center" href="#">Control center</a>
       <a id="lnk_dashboard" href="#">Dashboard</a>
       <a id="lnk_devchat" href="#">Dev chat</a>
       <a id="lnk_demo_script" href="#">Demo script</a>
@@ -16105,6 +16508,7 @@ function badgeText(ok, labelOk, labelBad){ return `<span class="badge ${ok ? 'ok
 function setLinks(tid){
   document.getElementById('lnk_json').href = '/tenant/config?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_admin').href = '/tenant/admin/readiness?tenant_id=' + encodeURIComponent(tid);
+  const controlCenter = document.getElementById('lnk_control_center'); if(controlCenter) controlCenter.href = '/control-center/ui?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_dashboard').href = '/dashboard?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_devchat').href = '/dev_chat_ui?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_demo_script').href = '/demo/script?tenant_id=' + encodeURIComponent(tid);
@@ -16687,6 +17091,7 @@ def tenant_config(tenant_id: str = TENANT_ID_DEFAULT):
         "service_catalog_builder_readiness": stage66_service_catalog_readiness_payload(str(tenant.get("_id") or tenant_id)),
         "telegram_text_channel_readiness": stage59_telegram_text_channel_readiness_payload(str(tenant.get("_id") or tenant_id)),
         "telegram_live_smoke_lock": stage60_telegram_live_smoke_lock_payload(str(tenant.get("_id") or tenant_id)),
+        "client_control_center_readiness": stage69_client_control_center_payload(str(tenant.get("_id") or tenant_id)),
         "config_ui_hardening": tenant_config_ui_readiness_payload(tenant),
         "plan_meta": tenant_plan_meta(tenant),
         "links": onboarding_links_payload(str(tenant.get("_id") or tenant_id)),
@@ -16885,6 +17290,7 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
         "google_calendar_self_serve_readiness": stage65_google_calendar_self_serve_readiness_payload(tenant_id),
         "service_catalog_builder_readiness": stage66_service_catalog_readiness_payload(tenant_id),
         "telegram_setup_readiness": stage68_telegram_setup_readiness_payload(tenant_id),
+        "client_control_center_readiness": stage69_client_control_center_payload(tenant_id),
         "telegram_text_channel_readiness": stage59_telegram_text_channel_readiness_payload(tenant_id),
         "telegram_live_smoke_lock": stage60_telegram_live_smoke_lock_payload(tenant_id),
         "config_ui_hardening": tenant_config_ui_readiness_payload(updated),

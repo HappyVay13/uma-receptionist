@@ -511,3 +511,55 @@ Expected verification:
 - `/business-memory/builder?tenant_id=clinic_demo` opens via admin session.
 - `/tenant/business-memory?tenant_id=clinic_demo` is protected and returns editable memory fields.
 - `/tenant/business-memory/update` saves protected changes.
+
+## Stage 68 — Telegram Bot Self-Serve Setup
+
+Status: closed by deploy verification.
+
+Confirmed after deploy:
+- `/dialogue/qa` = 50/50 passed.
+- Telegram setup UI works.
+- Telegram webhook status is correct.
+- `tenant_id=clinic_demo` webhook is set.
+- Telegram bot answers.
+- Telegram token and webhook secret are not exposed.
+- Readiness/config/UI/security checks passed.
+
+Public self-serve SaaS remains not fully ready yet.
+
+## Stage 69 — Client Dashboard Self-Serve Control Center
+
+Status: implemented locally in this archive, pending deploy verification.
+
+Scope:
+- Added protected control center JSON/readiness/UI endpoints:
+  - `/control-center`
+  - `/control-center/ui`
+  - `/control-center/readiness`
+  - `/self-serve/control-center`
+  - `/self-serve/control-center/readiness`
+  - `/client/dashboard`
+  - `/client/dashboard/ui`
+  - `/client/control-center`
+  - `/client/control-center/ui`
+- Aggregates existing tenant setup/readiness blocks into one protected self-serve control center:
+  - business profile and working hours;
+  - service catalog;
+  - Business Memory / FAQ;
+  - Google Calendar self-serve;
+  - Telegram setup;
+  - Telegram smoke lock;
+  - usage/dashboard visibility;
+  - launch/access readiness references.
+- Added control-center links to onboarding links, dashboard, tenant config UI, `/tenant/config`, `/tenant/config/update`, and `/internal/readiness`.
+- Added Stage 69 paths to Stage 61/62 protected admin surfaces.
+
+Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, dialogue QA evaluator, and voice/calls were not changed.
+
+Expected verification:
+- `/dialogue/qa` = 50/50 passed.
+- `/control-center/ui?tenant_id=clinic_demo` opens after admin login/session.
+- `/control-center/readiness?tenant_id=clinic_demo` returns `stage=69` and `public_saas_ready=false`.
+- `/internal/readiness?tenant_id=clinic_demo` includes `client_control_center_readiness`.
+- `/tenant/config?tenant_id=clinic_demo` includes `client_control_center_readiness` and does not expose secrets.
+- `/tenant/config/ui?tenant_id=clinic_demo` and `/dashboard?tenant_id=clinic_demo` show control-center links.
