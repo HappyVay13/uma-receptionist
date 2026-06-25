@@ -7,6 +7,7 @@ import urllib.parse
 import ast
 import base64
 import uuid
+import secrets
 import logging
 import random
 import unicodedata
@@ -15,7 +16,7 @@ from typing import Dict, Any, Optional, Tuple, List
 from contextvars import ContextVar
 
 import requests
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Body
 from pydantic import BaseModel
 from fastapi.responses import Response, StreamingResponse, HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -168,7 +169,25 @@ STAGE62_ADMIN_SESSION_COOKIE_NAME = "repliq_admin_session"
 STAGE62_ADMIN_SESSION_MAX_AGE_SECONDS = 60 * 60 * 8
 STAGE62_ADMIN_SESSION_VERSION = 1
 
+# Stage 71 introduces a separate signed owner session boundary for client-owner
+# surfaces. It deliberately does not replace the super-admin Stage 61/62 layer.
+STAGE71_OWNER_SESSION_COOKIE_NAME = "repliq_owner_session"
+STAGE71_OWNER_SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7
+STAGE71_OWNER_SESSION_VERSION = 1
+STAGE71_OWNER_PROTECTED_EXACT_PATHS = {
+    "/owner/dashboard",
+    "/owner/dashboard/ui",
+    "/owner/control-center",
+    "/owner/control-center/ui",
+}
+
 STAGE61_PROTECTED_EXACT_PATHS = {
+    "/owner/auth/readiness",
+    "/owner/readiness",
+    "/tenant/owner/readiness",
+    "/owner/accounts",
+    "/owner/accounts/bootstrap",
+    "/tenant/owner/bind",
     "/internal/readiness",
     "/demo/script",
     "/launch/readiness",
@@ -453,6 +472,143 @@ def stage62_safe_local_path(path: str, tenant_id: str = TENANT_ID_DEFAULT) -> st
     return candidate
 
 
+
+def stage71_owner_auth_enforcement_enabled() -> bool:
+    raw = (os.getenv("REPLIQ_OWNER_AUTH_ENFORCEMENT", "true") or "true").strip().lower()
+    return raw not in {"0", "false", "no", "off", "disabled", "report_only"}
+
+
+def stage71_owner_session_max_age_seconds() -> int:
+    raw = (os.getenv("REPLIQ_OWNER_SESSION_MAX_AGE_SECONDS", "") or "").strip()
+    if raw:
+        try:
+            return max(300, min(int(raw), 60 * 60 * 24 * 30))
+        except Exception:
+            pass
+    return STAGE71_OWNER_SESSION_MAX_AGE_SECONDS
+
+
+def stage71_owner_session_secret() -> str:
+    # Dedicated owner secret is preferred. Fallback keeps private-demo deploys
+    # working, but readiness marks that as not public-SaaS final.
+    return (os.getenv("REPLIQ_OWNER_SESSION_SECRET", "") or stage62_session_secret() or "").strip()
+
+
+def stage71_owner_session_signature(payload_b64: str) -> str:
+    secret = stage71_owner_session_secret()
+    if not secret:
+        return ""
+    return hmac.new(secret.encode("utf-8"), payload_b64.encode("ascii"), hashlib.sha256).hexdigest()
+
+
+def stage71_make_owner_session_cookie(owner_email: str, tenant_id: str, role: str = "owner") -> str:
+    now = int(datetime.utcnow().timestamp())
+    payload = {
+        "v": STAGE71_OWNER_SESSION_VERSION,
+        "type": "owner_session",
+        "owner_email": stage71_normalize_email(owner_email),
+        "tenant_id": (tenant_id or "").strip(),
+        "role": (role or "owner").strip() or "owner",
+        "iat": now,
+        "exp": now + stage71_owner_session_max_age_seconds(),
+    }
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    payload_b64 = stage62_b64url_encode(raw)
+    sig = stage71_owner_session_signature(payload_b64)
+    return f"{payload_b64}.{sig}" if sig else ""
+
+
+def stage71_parse_owner_session_cookie(raw_cookie: str) -> Optional[Dict[str, Any]]:
+    raw_cookie = (raw_cookie or "").strip()
+    if not raw_cookie or "." not in raw_cookie:
+        return None
+    payload_b64, sig = raw_cookie.rsplit(".", 1)
+    expected = stage71_owner_session_signature(payload_b64)
+    if not expected or not hmac.compare_digest(sig, expected):
+        return None
+    try:
+        payload = json.loads(stage62_b64url_decode(payload_b64).decode("utf-8"))
+    except Exception:
+        return None
+    if payload.get("type") != "owner_session":
+        return None
+    try:
+        exp = int(payload.get("exp") or 0)
+    except Exception:
+        return None
+    if exp < int(datetime.utcnow().timestamp()):
+        return None
+    email = stage71_normalize_email(payload.get("owner_email") or "")
+    tenant_id = str(payload.get("tenant_id") or "").strip()
+    if not email or not tenant_id:
+        return None
+    payload["owner_email"] = email
+    payload["tenant_id"] = tenant_id
+    return payload
+
+
+def stage71_request_owner_session_payload(request: Request) -> Optional[Dict[str, Any]]:
+    return stage71_parse_owner_session_cookie(request.cookies.get(STAGE71_OWNER_SESSION_COOKIE_NAME) or "")
+
+
+def stage71_set_owner_session_cookie(response: Response, owner_email: str, tenant_id: str, role: str = "owner") -> None:
+    session_value = stage71_make_owner_session_cookie(owner_email=owner_email, tenant_id=tenant_id, role=role)
+    if not session_value:
+        return
+    response.set_cookie(
+        key=STAGE71_OWNER_SESSION_COOKIE_NAME,
+        value=session_value,
+        httponly=True,
+        secure=bool(str(SERVER_BASE_URL or "").lower().startswith("https://")),
+        samesite="lax",
+        max_age=stage71_owner_session_max_age_seconds(),
+    )
+
+
+def stage71_clear_owner_session_cookie(response: Response) -> None:
+    response.delete_cookie(key=STAGE71_OWNER_SESSION_COOKIE_NAME)
+
+
+def stage71_path_requires_owner(path: str) -> bool:
+    clean = (path or "").rstrip("/") or "/"
+    return clean in STAGE71_OWNER_PROTECTED_EXACT_PATHS
+
+
+def stage71_owner_auth_error(status_code: int, detail: str, tenant_id: str = "") -> JSONResponse:
+    tid = (tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "ok": False,
+            "stage": "71",
+            "error": detail,
+            "auth_model": "signed_owner_session_cookie_or_super_admin_session",
+            "tenant_id": tid,
+            "accepted": {
+                "owner_login_page": f"/owner/login?tenant_id={tid}",
+                "owner_session_cookie": STAGE71_OWNER_SESSION_COOKIE_NAME,
+                "super_admin_bypass": "Stage 62 admin session or Stage 61 admin token",
+            },
+            "note": "Owner surfaces require a signed owner session bound to the requested tenant. Do not send owner codes or admin tokens in chat logs.",
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def stage71_owner_request_access(request: Request, path: str = "") -> Dict[str, Any]:
+    tenant_id = str(request.query_params.get("tenant_id") or "").strip()
+    session = stage71_request_owner_session_payload(request)
+    if not session:
+        return {"ok": False, "error": "owner_session_required", "tenant_id": tenant_id}
+    if not tenant_id:
+        tenant_id = str(session.get("tenant_id") or "").strip()
+    email = stage71_normalize_email(session.get("owner_email") or "")
+    if not email or not tenant_id:
+        return {"ok": False, "error": "owner_session_missing_email_or_tenant", "tenant_id": tenant_id}
+    if not stage71_owner_has_tenant_access(email, tenant_id):
+        return {"ok": False, "error": "owner_tenant_access_denied", "tenant_id": tenant_id, "owner_email": email}
+    return {"ok": True, "tenant_id": tenant_id, "owner_email": email, "role": session.get("role") or "owner"}
+
 def stage61_admin_auth_error(status_code: int, detail: str) -> JSONResponse:
     return JSONResponse(
         status_code=status_code,
@@ -480,14 +636,22 @@ async def stage61_admin_access_middleware(request: Request, call_next):
     token_from_query = stage61_query_token(request)
     query_token_valid = stage61_token_valid(token_from_query)
 
+    candidate = stage61_request_token(request)
+    admin_token_ok = stage61_token_valid(candidate)
+    admin_session_ok = stage62_request_has_valid_session(request)
+
     if stage61_admin_access_enforcement_enabled() and stage61_path_requires_admin(path):
         if not stage61_admin_token_configured():
             return stage61_admin_auth_error(503, "admin_token_not_configured")
-        candidate = stage61_request_token(request)
-        token_ok = stage61_token_valid(candidate)
-        session_ok = stage62_request_has_valid_session(request)
-        if not (token_ok or session_ok):
+        if not (admin_token_ok or admin_session_ok):
             return stage61_admin_auth_error(401, "admin_token_required")
+    elif stage71_owner_auth_enforcement_enabled() and stage71_path_requires_owner(path):
+        # Super-admin sessions may open owner surfaces for support/private demo, but
+        # ordinary client access must pass the Stage 71 owner session + tenant binding.
+        if not (admin_token_ok or admin_session_ok):
+            owner_access = stage71_owner_request_access(request, path=path)
+            if not owner_access.get("ok"):
+                return stage71_owner_auth_error(401, str(owner_access.get("error") or "owner_login_required"), tenant_id=owner_access.get("tenant_id") or request.query_params.get("tenant_id") or TENANT_ID_DEFAULT)
 
     response = await call_next(request)
     if query_token_valid:
@@ -1534,6 +1698,414 @@ def get_tenant_or_404(tenant_id: str) -> Dict[str, Any]:
     if not tenant.get("_id"):
         raise HTTPException(status_code=404, detail="Tenant not found")
     return tenant
+
+
+# -------------------------
+# STAGE 71: OWNER AUTH / TENANT OWNERSHIP FOUNDATION HELPERS
+# -------------------------
+
+def stage71_normalize_email(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def stage71_valid_email(value: Any) -> bool:
+    email = stage71_normalize_email(value)
+    return bool(email and re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email))
+
+
+def stage71_ensure_owner_tables() -> None:
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS owner_accounts (
+                    id TEXT PRIMARY KEY,
+                    email TEXT UNIQUE NOT NULL,
+                    display_name TEXT,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    login_code_hash TEXT,
+                    login_code_updated_at TIMESTAMPTZ,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    last_login_at TIMESTAMPTZ
+                )
+            """))
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS owner_tenant_access (
+                    id TEXT PRIMARY KEY,
+                    owner_email TEXT NOT NULL,
+                    tenant_id TEXT NOT NULL,
+                    role TEXT NOT NULL DEFAULT 'owner',
+                    status TEXT NOT NULL DEFAULT 'active',
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(owner_email, tenant_id)
+                )
+            """))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_owner_tenant_access_owner_email ON owner_tenant_access(owner_email)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_owner_tenant_access_tenant_id ON owner_tenant_access(tenant_id)"))
+    except Exception as e:
+        log.error("stage71_ensure_owner_tables_failed err=%s", e)
+        raise
+
+
+def stage71_owner_table_exists(table_name: str) -> bool:
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(text("""
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.tables
+                    WHERE table_schema='public' AND table_name=:table_name
+                )
+            """), {"table_name": table_name}).fetchone()
+        return bool(row and row[0])
+    except Exception:
+        return False
+
+
+def stage71_hash_login_code(email: str, code: str) -> str:
+    email = stage71_normalize_email(email)
+    code = str(code or "").strip()
+    secret = stage71_owner_session_secret()
+    if not email or not code or not secret:
+        return ""
+    msg = f"stage71-owner-login-code:{email}:{code}".encode("utf-8")
+    return hmac.new(secret.encode("utf-8"), msg, hashlib.sha256).hexdigest()
+
+
+def stage71_make_owner_login_code() -> str:
+    return "own_" + secrets.token_urlsafe(18)
+
+
+def stage71_get_owner_account(email: str) -> Dict[str, Any]:
+    email = stage71_normalize_email(email)
+    if not email:
+        return {}
+    stage71_ensure_owner_tables()
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT id, email, display_name, status, login_code_hash, login_code_updated_at, created_at, last_login_at
+            FROM owner_accounts
+            WHERE email=:email
+            LIMIT 1
+        """), {"email": email}).fetchone()
+    if not row:
+        return {}
+    return {
+        "id": row[0],
+        "email": row[1],
+        "display_name": row[2],
+        "status": row[3],
+        "has_login_code": bool(row[4]),
+        "login_code_updated_at": row[5].isoformat() if hasattr(row[5], "isoformat") and row[5] else row[5],
+        "created_at": row[6].isoformat() if hasattr(row[6], "isoformat") and row[6] else row[6],
+        "last_login_at": row[7].isoformat() if hasattr(row[7], "isoformat") and row[7] else row[7],
+        "login_code_hash_exposed": False,
+    }
+
+
+def stage71_owner_tenant_access_rows(email: str = "", tenant_id: str = "") -> List[Dict[str, Any]]:
+    stage71_ensure_owner_tables()
+    email = stage71_normalize_email(email)
+    tenant_id = str(tenant_id or "").strip()
+    where = []
+    params: Dict[str, Any] = {}
+    if email:
+        where.append("owner_email=:email")
+        params["email"] = email
+    if tenant_id:
+        where.append("tenant_id=:tenant_id")
+        params["tenant_id"] = tenant_id
+    where_sql = "WHERE " + " AND ".join(where) if where else ""
+    with engine.connect() as conn:
+        rows = conn.execute(text(f"""
+            SELECT id, owner_email, tenant_id, role, status, created_at
+            FROM owner_tenant_access
+            {where_sql}
+            ORDER BY created_at DESC
+            LIMIT 200
+        """), params).fetchall()
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        out.append({
+            "id": r[0],
+            "owner_email": r[1],
+            "tenant_id": r[2],
+            "role": r[3],
+            "status": r[4],
+            "created_at": r[5].isoformat() if hasattr(r[5], "isoformat") and r[5] else r[5],
+        })
+    return out
+
+
+def stage71_owner_has_tenant_access(email: str, tenant_id: str) -> bool:
+    email = stage71_normalize_email(email)
+    tenant_id = str(tenant_id or "").strip()
+    if not email or not tenant_id:
+        return False
+    try:
+        stage71_ensure_owner_tables()
+        with engine.connect() as conn:
+            row = conn.execute(text("""
+                SELECT 1 FROM owner_tenant_access
+                WHERE owner_email=:email AND tenant_id=:tenant_id AND status='active'
+                LIMIT 1
+            """), {"email": email, "tenant_id": tenant_id}).fetchone()
+        return bool(row)
+    except Exception as e:
+        log.error("stage71_owner_has_tenant_access_failed email=%s tenant_id=%s err=%s", email, tenant_id, e)
+        return False
+
+
+def stage71_upsert_owner_account(email: str, display_name: str = "", login_code: str = "") -> Dict[str, Any]:
+    email = stage71_normalize_email(email)
+    if not stage71_valid_email(email):
+        raise ValueError("owner_email_invalid")
+    stage71_ensure_owner_tables()
+    owner_id = "owner_" + hashlib.sha256(email.encode("utf-8")).hexdigest()[:24]
+    display_name = str(display_name or "").strip() or None
+    login_code_hash = stage71_hash_login_code(email, login_code) if login_code else ""
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO owner_accounts (id, email, display_name, status, login_code_hash, login_code_updated_at, created_at)
+            VALUES (:id, :email, :display_name, 'active', :login_code_hash, CASE WHEN :login_code_hash_blank THEN NULL ELSE NOW() END, NOW())
+            ON CONFLICT (email)
+            DO UPDATE SET
+                display_name = COALESCE(EXCLUDED.display_name, owner_accounts.display_name),
+                status = 'active',
+                login_code_hash = CASE WHEN :login_code_hash_blank THEN owner_accounts.login_code_hash ELSE EXCLUDED.login_code_hash END,
+                login_code_updated_at = CASE WHEN :login_code_hash_blank THEN owner_accounts.login_code_updated_at ELSE NOW() END
+        """), {
+            "id": owner_id,
+            "email": email,
+            "display_name": display_name,
+            "login_code_hash": login_code_hash or None,
+            "login_code_hash_blank": not bool(login_code_hash),
+        })
+    return stage71_get_owner_account(email)
+
+
+def stage71_bind_owner_to_tenant(email: str, tenant_id: str, role: str = "owner") -> Dict[str, Any]:
+    email = stage71_normalize_email(email)
+    tenant_id = str(tenant_id or "").strip()
+    role = str(role or "owner").strip() or "owner"
+    if not stage71_valid_email(email):
+        raise ValueError("owner_email_invalid")
+    if not tenant_id:
+        raise ValueError("tenant_id_required")
+    if not get_existing_tenant(tenant_id).get("_id"):
+        raise ValueError("tenant_not_found")
+    stage71_ensure_owner_tables()
+    access_id = "ownacc_" + uuid.uuid4().hex
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO owner_tenant_access (id, owner_email, tenant_id, role, status, created_at)
+            VALUES (:id, :email, :tenant_id, :role, 'active', NOW())
+            ON CONFLICT (owner_email, tenant_id)
+            DO UPDATE SET role=EXCLUDED.role, status='active'
+        """), {"id": access_id, "email": email, "tenant_id": tenant_id, "role": role})
+    rows = stage71_owner_tenant_access_rows(email=email, tenant_id=tenant_id)
+    return rows[0] if rows else {"owner_email": email, "tenant_id": tenant_id, "role": role, "status": "active"}
+
+
+def stage71_record_owner_login(email: str) -> None:
+    email = stage71_normalize_email(email)
+    if not email:
+        return
+    try:
+        stage71_ensure_owner_tables()
+        with engine.begin() as conn:
+            conn.execute(text("UPDATE owner_accounts SET last_login_at=NOW() WHERE email=:email"), {"email": email})
+    except Exception as e:
+        log.error("stage71_record_owner_login_failed email=%s err=%s", email, e)
+
+
+def stage71_bootstrap_owner_for_tenant(tenant_id: str, owner_email: str = "", display_name: str = "", regenerate_code: bool = True) -> Dict[str, Any]:
+    tenant_id = str(tenant_id or "").strip() or TENANT_ID_DEFAULT
+    tenant = get_existing_tenant(tenant_id)
+    if not tenant.get("_id"):
+        raise ValueError("tenant_not_found")
+    email = stage71_normalize_email(owner_email or tenant.get("owner_email") or "")
+    if not stage71_valid_email(email):
+        raise ValueError("owner_email_required_or_invalid")
+    login_code = stage71_make_owner_login_code() if regenerate_code else ""
+    owner = stage71_upsert_owner_account(email=email, display_name=display_name or tenant.get("business_name") or "", login_code=login_code)
+    binding = stage71_bind_owner_to_tenant(email=email, tenant_id=tenant_id, role="owner")
+    return {
+        "ok": True,
+        "stage": "71",
+        "tenant_id": tenant_id,
+        "owner_email": email,
+        "owner_account": owner,
+        "tenant_binding": binding,
+        "login_code": login_code or None,
+        "login_code_returned_once": bool(login_code),
+        "login_code_hash_exposed": False,
+        "links": {
+            "owner_login": f"/owner/login?tenant_id={tenant_id}",
+            "owner_dashboard": f"/owner/dashboard/ui?tenant_id={tenant_id}",
+            "owner_readiness": f"/owner/auth/readiness?tenant_id={tenant_id}",
+        },
+        "note": "The login code is returned only by this protected admin endpoint. Give it to the client owner through a safe channel; do not paste it into chat logs.",
+    }
+
+
+def stage71_validate_owner_login(email: str, login_code: str, tenant_id: str) -> Tuple[bool, str, Dict[str, Any]]:
+    email = stage71_normalize_email(email)
+    login_code = str(login_code or "").strip()
+    tenant_id = str(tenant_id or "").strip()
+    if not stage71_valid_email(email):
+        return False, "owner_email_invalid", {}
+    if not login_code:
+        return False, "login_code_required", {}
+    if not tenant_id:
+        return False, "tenant_id_required", {}
+    account = stage71_get_owner_account(email)
+    if not account:
+        return False, "owner_account_not_found", {}
+    if str(account.get("status") or "") != "active":
+        return False, "owner_account_not_active", account
+    if not stage71_owner_has_tenant_access(email, tenant_id):
+        return False, "owner_tenant_access_denied", account
+    expected_hash = ""
+    stage71_ensure_owner_tables()
+    with engine.connect() as conn:
+        row = conn.execute(text("SELECT login_code_hash FROM owner_accounts WHERE email=:email LIMIT 1"), {"email": email}).fetchone()
+    if row:
+        expected_hash = str(row[0] or "")
+    candidate_hash = stage71_hash_login_code(email, login_code)
+    if not expected_hash or not candidate_hash or not hmac.compare_digest(expected_hash, candidate_hash):
+        return False, "invalid_login_code", account
+    stage71_record_owner_login(email)
+    return True, "ok", account
+
+
+def stage71_owner_auth_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) -> Dict[str, Any]:
+    tid = (tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
+    base = (SERVER_BASE_URL or "").rstrip("/")
+    def url(path: str) -> str:
+        return base + path if base else path
+
+    tenant = get_existing_tenant(tid)
+    tenant_found = bool(tenant.get("_id"))
+    owner_email = stage71_normalize_email(tenant.get("owner_email") or "") if tenant_found else ""
+    tables_ok = False
+    table_error = ""
+    try:
+        stage71_ensure_owner_tables()
+        tables_ok = bool(stage71_owner_table_exists("owner_accounts") and stage71_owner_table_exists("owner_tenant_access"))
+    except Exception as e:
+        table_error = e.__class__.__name__
+    owner_account = stage71_get_owner_account(owner_email) if owner_email and tables_ok else {}
+    bindings = stage71_owner_tenant_access_rows(email=owner_email, tenant_id=tid) if owner_email and tables_ok else []
+    has_owner_binding = bool(bindings)
+
+    admin_required_paths = ["/owner/auth/readiness", "/owner/accounts", "/owner/accounts/bootstrap", "/tenant/owner/bind"]
+    missing_admin_protection = [path for path in admin_required_paths if path not in STAGE61_PROTECTED_EXACT_PATHS]
+    missing_owner_protection = [path for path in STAGE71_OWNER_PROTECTED_EXACT_PATHS if not stage71_path_requires_owner(path)]
+    blocking: List[str] = []
+    warnings: List[str] = []
+    if not tenant_found:
+        blocking.append("tenant_not_found")
+    if not tables_ok:
+        blocking.append("owner_tables_missing_or_unreadable")
+    if not stage71_owner_session_secret():
+        blocking.append("owner_session_secret_not_configured")
+    if missing_admin_protection:
+        blocking.append("owner_admin_setup_paths_not_admin_protected")
+    if missing_owner_protection:
+        blocking.append("owner_dashboard_paths_not_owner_protected")
+    if tenant_found and not owner_email:
+        warnings.append("tenant_owner_email_missing")
+    if owner_email and not owner_account:
+        warnings.append("owner_account_not_bootstrapped_yet")
+    if owner_email and not has_owner_binding:
+        warnings.append("owner_tenant_binding_missing")
+    if not os.getenv("REPLIQ_OWNER_SESSION_SECRET"):
+        warnings.append("owner_session_secret_falls_back_to_admin_session_secret_private_demo_only")
+    if stage71_owner_auth_enforcement_enabled() is False:
+        blocking.append("owner_auth_enforcement_disabled")
+
+    ready = bool(tables_ok and stage71_owner_session_secret() and not missing_admin_protection and not missing_owner_protection)
+    owner_login_ready = bool(ready and owner_account and has_owner_binding and owner_account.get("has_login_code"))
+    return {
+        "stage": "71",
+        "purpose": "Owner Auth / Public Client Account Foundation",
+        "tenant_id": tid,
+        "status": "ready" if owner_login_ready and not warnings else "attention" if ready else "blocked",
+        "owner_auth_foundation_ready": bool(ready),
+        "owner_login_ready_for_private_demo": bool(owner_login_ready),
+        "tenant_ownership_binding_ready": bool(has_owner_binding),
+        "private_owner_dashboard_ready": bool(owner_login_ready),
+        "public_saas_ready": False,
+        "public_saas_ready_reason": "false_until_public_signup_billing_csrf_rate_limits_and_full_client_superadmin_separation_are_done",
+        "auth_model": {
+            "owner_session_cookie": STAGE71_OWNER_SESSION_COOKIE_NAME,
+            "owner_session_max_age_seconds": stage71_owner_session_max_age_seconds(),
+            "owner_routes_use_signed_session": True,
+            "admin_setup_routes_use_stage61_62": True,
+            "super_admin_bypass_for_support": True,
+            "login_code_hash_exposed": False,
+            "login_code_value_exposed_by_readiness": False,
+        },
+        "tenant": {"found": bool(tenant_found), "owner_email_configured": bool(owner_email), "owner_email": owner_email if owner_email else None},
+        "schema": {"owner_accounts_table": bool(stage71_owner_table_exists("owner_accounts")), "owner_tenant_access_table": bool(stage71_owner_table_exists("owner_tenant_access")), "table_error": table_error or None},
+        "owner_account": owner_account if owner_account else {"email": owner_email or None, "exists": False, "login_code_hash_exposed": False},
+        "tenant_bindings": bindings,
+        "protected_paths": {"owner_session_required": sorted(STAGE71_OWNER_PROTECTED_EXACT_PATHS), "super_admin_setup_required": admin_required_paths},
+        "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
+        "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
+        "links": {
+            "owner_login": url(f"/owner/login?tenant_id={tid}"),
+            "owner_session": url(f"/owner/session?tenant_id={tid}"),
+            "owner_dashboard": url(f"/owner/dashboard/ui?tenant_id={tid}"),
+            "owner_readiness": url(f"/owner/auth/readiness?tenant_id={tid}"),
+            "bootstrap_owner": url("/owner/accounts/bootstrap"),
+            "control_center": url(f"/control-center/ui?tenant_id={tid}"),
+            "public_saas_audit": url(f"/public-saas/gap-audit/ui?tenant_id={tid}"),
+        },
+        "next_required_before_public_saas": [
+            "production email/magic-link delivery instead of admin-issued setup code",
+            "CSRF protection for owner browser write endpoints",
+            "public rate limits and abuse controls",
+            "billing/subscription gating",
+            "client-owner vs super-admin UI separation for all self-serve write surfaces",
+        ],
+        "note": "Stage 71 creates the owner account/session/tenant-binding foundation. It does not expose existing admin write surfaces to owners and does not change receptionist runtime.",
+    }
+
+
+def stage71_owner_dashboard_payload(request: Request, tenant_id: str = TENANT_ID_DEFAULT) -> Dict[str, Any]:
+    access = stage71_owner_request_access(request)
+    admin_access = False
+    if stage61_token_valid(stage61_request_token(request)) or stage62_request_has_valid_session(request):
+        admin_access = True
+        access = {"ok": True, "tenant_id": (tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT, "owner_email": "super_admin", "role": "super_admin"}
+    if not access.get("ok"):
+        raise HTTPException(status_code=401, detail=access.get("error") or "owner_login_required")
+    requested_tid = str(request.query_params.get("tenant_id") or "").strip()
+    tid = requested_tid or str(access.get("tenant_id") or tenant_id or "").strip()
+    if not tid:
+        raise HTTPException(status_code=400, detail="tenant_id_required")
+    tenant = get_tenant_or_404(tid)
+    owner_email = stage71_normalize_email(access.get("owner_email") or "")
+    readiness = stage71_owner_auth_readiness_payload(tid)
+    return {
+        "ok": True,
+        "stage": "71",
+        "tenant_id": tid,
+        "owner_email": owner_email if owner_email != "super_admin" else None,
+        "role": access.get("role") or "owner",
+        "opened_via_super_admin_bypass": bool(admin_access),
+        "tenant": {
+            "business_name": tenant.get("business_name"),
+            "owner_email": tenant.get("owner_email"),
+            "language": tenant.get("language"),
+            "timezone": tenant.get("timezone"),
+            "plan": tenant.get("plan"),
+            "subscription_status": tenant.get("subscription_status"),
+        },
+        "readiness": readiness,
+        "owner_safe_scope": {"dashboard": True, "read_only_foundation": True, "admin_write_surfaces_exposed_to_owner": False, "receptionist_core_changed": False},
+        "links": {"owner_dashboard": f"/owner/dashboard/ui?tenant_id={tid}", "owner_session": f"/owner/session?tenant_id={tid}", "owner_logout": "/owner/logout", "admin_control_center": f"/control-center/ui?tenant_id={tid}", "public_saas_audit": f"/public-saas/gap-audit/ui?tenant_id={tid}"},
+    }
 
 
 def load_runtime_tenant(tenant_id: str) -> Dict[str, Any]:
@@ -12641,11 +13213,12 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
     business_memory = stage70_safe_dependency("business_memory_faq_builder", lambda: stage67_business_memory_builder_readiness_payload(tenant_id_clean))
     telegram = stage70_safe_dependency("telegram_setup", lambda: stage68_telegram_setup_readiness_payload(tenant_id_clean, days=days))
     usage = stage70_safe_dependency("usage_analytics", lambda: stage57_usage_analytics_readiness_payload(tenant_id_clean, days=days))
+    owner_auth = stage70_safe_dependency("owner_auth_foundation", lambda: stage71_owner_auth_readiness_payload(tenant_id_clean))
 
     admin_token_configured = stage61_admin_token_configured()
     admin_access_enforced = bool(admin_access.get("admin_access_enforced"))
     admin_session_ready = bool(admin_session.get("admin_session_layer_ready") or admin_session.get("private_admin_ready"))
-    tenant_ownership_guard_enforced = bool(access.get("current_access_model", {}).get("tenant_ownership_guard_enforced"))
+    tenant_ownership_guard_enforced = bool(owner_auth.get("tenant_ownership_binding_ready") or access.get("current_access_model", {}).get("tenant_ownership_guard_enforced"))
     shared_admin_token_model = str(admin_access.get("auth_model", {}).get("type") or "") == "shared_admin_token_mvp"
     config_security = control_center.get("security") if isinstance(control_center.get("security"), dict) else {}
     raw_secrets_exposed = bool(
@@ -12663,6 +13236,7 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
         {"key": "business_memory", "ready": bool(business_memory.get("business_memory_faq_builder_ready") or business_memory.get("business_memory_content_ready")), "status": business_memory.get("status"), "stage": business_memory.get("stage")},
         {"key": "telegram_setup", "ready": bool(telegram.get("telegram_bot_self_serve_ready") or telegram.get("telegram_effective_runtime_ready")), "status": telegram.get("status"), "stage": telegram.get("stage")},
         {"key": "usage_visibility", "ready": bool(usage.get("private_admin_ready") or usage.get("usage_visibility_ready") or usage.get("status") == "ready"), "status": usage.get("status"), "stage": usage.get("stage")},
+        {"key": "owner_auth_foundation", "ready": bool(owner_auth.get("owner_auth_foundation_ready")), "status": owner_auth.get("status"), "stage": owner_auth.get("stage")},
     ]
     ready_self_serve_count = sum(1 for item in self_serve_blocks if item.get("ready"))
 
@@ -12670,25 +13244,30 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
     gaps.append(stage70_gap_payload(
         "owner_auth",
         "Per-owner public auth",
-        "missing",
+        "foundation" if owner_auth.get("owner_auth_foundation_ready") else "missing",
         {
-            "current_auth_model": admin_access.get("auth_model", {}).get("type") or admin_session.get("session_model", {}).get("type"),
+            "owner_auth_stage": owner_auth.get("stage"),
+            "owner_auth_foundation_ready": bool(owner_auth.get("owner_auth_foundation_ready")),
+            "owner_login_ready_for_private_demo": bool(owner_auth.get("owner_login_ready_for_private_demo")),
+            "owner_session_cookie": (owner_auth.get("auth_model") or {}).get("owner_session_cookie"),
+            "current_super_admin_model": admin_access.get("auth_model", {}).get("type") or admin_session.get("session_model", {}).get("type"),
             "shared_admin_token_configured": bool(admin_token_configured),
-            "admin_session_layer_ready": bool(admin_session_ready),
-            "stage61_warning": "shared_admin_token_is_mvp_access_layer_not_full_login",
         },
-        "Implement client-owner login/accounts before public SaaS access.",
+        "Move from setup-code foundation to production email/magic-link auth, CSRF, rate limits, and billing-gated public signup.",
+        severity="blocker",
     ))
     gaps.append(stage70_gap_payload(
         "tenant_ownership",
         "Tenant ownership and role checks",
-        "missing",
+        "foundation" if tenant_ownership_guard_enforced else "missing",
         {
-            "tenant_ownership_guard_enforced": bool(tenant_ownership_guard_enforced),
+            "tenant_ownership_binding_ready": bool(owner_auth.get("tenant_ownership_binding_ready")),
+            "owner_dashboard_paths_owner_protected": sorted(STAGE71_OWNER_PROTECTED_EXACT_PATHS),
             "tenant_id_parameter_is_not_auth": bool(access.get("current_access_model", {}).get("tenant_id_parameter_is_not_auth")),
             "current_access_model": access.get("current_access_model"),
         },
-        "Persist owner/user to tenant mapping and enforce owner-role checks on client surfaces.",
+        "Expand owner-tenant enforcement from Stage 71 owner dashboard to all client-owner self-serve surfaces before public launch.",
+        severity="blocker",
     ))
     gaps.append(stage70_gap_payload(
         "public_signup_boundary",
@@ -12815,6 +13394,8 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "raw_telegram_webhook_secret_exposed": bool(config_security.get("raw_telegram_webhook_secret_exposed", False)),
             "tenant_id_parameter_is_not_auth": True,
             "public_owner_auth_implemented": False,
+            "owner_auth_foundation_ready": bool(owner_auth.get("owner_auth_foundation_ready")),
+            "owner_login_ready_for_private_demo": bool(owner_auth.get("owner_login_ready_for_private_demo")),
             "tenant_ownership_guard_enforced": bool(tenant_ownership_guard_enforced),
             "billing_provider_integrated": False,
             "public_rate_limits_integrated": False,
@@ -12832,10 +13413,10 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "business_memory": business_memory,
             "telegram_setup": telegram,
             "usage_analytics": usage,
+            "owner_auth_foundation": owner_auth,
         },
         "recommended_next_stages": [
-            "Stage 71 — Owner Auth and Tenant Ownership Design Lock",
-            "Stage 72 — Owner Login / Tenant Ownership Enforcement",
+            "Stage 72 — Owner-Safe Self-Serve Surface Migration",
             "Stage 73 — Public Signup Boundary + Abuse Protection",
             "Stage 74 — Billing / Subscription Lifecycle Integration",
             "Stage 75 — Client/Super-admin Surface Separation",
@@ -12846,6 +13427,9 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "public_saas_readiness": url(f"/public-saas/readiness?tenant_id={tenant_id_clean}&days={days}"),
             "public_saas_gap_audit": url(f"/public-saas/gap-audit?tenant_id={tenant_id_clean}&days={days}"),
             "public_saas_gap_audit_ui": url(f"/public-saas/gap-audit/ui?tenant_id={tenant_id_clean}&days={days}"),
+            "owner_auth_readiness": url(f"/owner/auth/readiness?tenant_id={tenant_id_clean}"),
+            "owner_login": url(f"/owner/login?tenant_id={tenant_id_clean}"),
+            "owner_dashboard": url(f"/owner/dashboard/ui?tenant_id={tenant_id_clean}"),
             "control_center": url(f"/control-center/ui?tenant_id={tenant_id_clean}&days={days}"),
             "access_readiness": url(f"/access/readiness?tenant_id={tenant_id_clean}"),
             "tenant_config_ui": url(f"/tenant/config/ui?tenant_id={tenant_id_clean}"),
@@ -12999,6 +13583,7 @@ def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) ->
         "service_catalog_builder_readiness": stage66_service_catalog_readiness_payload(requested_tenant_id),
         "telegram_setup_readiness": stage68_telegram_setup_readiness_payload(requested_tenant_id),
         "client_control_center_readiness": stage69_client_control_center_payload(requested_tenant_id),
+        "owner_auth_readiness": stage71_owner_auth_readiness_payload(requested_tenant_id),
         "public_saas_gap_audit_readiness": stage70_public_saas_gap_audit_payload(requested_tenant_id),
         "telegram_text_channel_readiness": stage59_telegram_text_channel_readiness_payload(requested_tenant_id),
         "telegram_live_smoke_lock": stage60_telegram_live_smoke_lock_payload(requested_tenant_id),
@@ -13198,6 +13783,136 @@ def admin_session_status(request: Request):
 def admin_session_readiness(tenant_id: str = TENANT_ID_DEFAULT):
     return stage62_admin_session_readiness_payload(tenant_id=tenant_id)
 
+
+
+@app.get("/owner/auth/readiness")
+@app.get("/owner/readiness")
+@app.get("/tenant/owner/readiness")
+def owner_auth_readiness(tenant_id: str = TENANT_ID_DEFAULT):
+    return stage71_owner_auth_readiness_payload(tenant_id=tenant_id)
+
+
+@app.get("/owner/accounts")
+def owner_accounts_admin(tenant_id: str = TENANT_ID_DEFAULT, owner_email: str = ""):
+    tid = (tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
+    email = stage71_normalize_email(owner_email)
+    account = stage71_get_owner_account(email) if email else {}
+    return {"ok": True, "stage": "71", "tenant_id": tid, "owner_email_filter": email or None, "accounts": [account] if account else [], "tenant_bindings": stage71_owner_tenant_access_rows(email=email, tenant_id=tid), "login_code_hash_exposed": False}
+
+
+@app.post("/owner/accounts/bootstrap")
+def owner_accounts_bootstrap(payload: dict = Body(...)):
+    data = payload or {}
+    try:
+        return stage71_bootstrap_owner_for_tenant(
+            tenant_id=str(data.get("tenant_id") or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT,
+            owner_email=stage71_normalize_email(data.get("owner_email") or ""),
+            display_name=str(data.get("display_name") or "").strip(),
+            regenerate_code=bool(data.get("regenerate_code", True)),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail={"stage": "71", "error": str(e)})
+
+
+@app.post("/tenant/owner/bind")
+def tenant_owner_bind(payload: dict = Body(...)):
+    data = payload or {}
+    tenant_id = str(data.get("tenant_id") or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
+    owner_email = stage71_normalize_email(data.get("owner_email") or "")
+    try:
+        owner = stage71_upsert_owner_account(owner_email, display_name=str(data.get("display_name") or "").strip())
+        binding = stage71_bind_owner_to_tenant(owner_email, tenant_id, role=str(data.get("role") or "owner"))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail={"stage": "71", "error": str(e)})
+    return {"ok": True, "stage": "71", "tenant_id": tenant_id, "owner_account": owner, "tenant_binding": binding, "login_code_hash_exposed": False}
+
+
+@app.get("/owner/login", response_class=HTMLResponse)
+def owner_login_ui(tenant_id: str = TENANT_ID_DEFAULT, next: str = ""):
+    tenant_id_clean = (tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
+    next_path = stage62_safe_local_path(next or f"/owner/dashboard/ui?tenant_id={tenant_id_clean}", tenant_id_clean)
+    tenant_json = json.dumps(tenant_id_clean, ensure_ascii=False)
+    next_json = json.dumps(next_path, ensure_ascii=False)
+    html = r'''
+<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Repliq Owner Login</title>
+<style>body{font-family:Inter,Arial,sans-serif;background:#f6f7fb;color:#111827;margin:0;padding:24px}.wrap{max-width:560px;margin:8vh auto}.card{background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:24px;box-shadow:0 12px 32px rgba(15,23,42,.08)}h1{margin:0;font-size:30px;letter-spacing:-.03em}.sub{color:#6b7280;font-size:14px;line-height:1.45;margin:8px 0 18px}label{display:block;font-size:13px;font-weight:700;margin:14px 0 6px}input{width:100%;box-sizing:border-box;border:1px solid #d1d5db;border-radius:12px;padding:12px;font-size:14px}button{width:100%;border:0;background:#111827;color:white;padding:12px 16px;border-radius:12px;font-weight:800;margin-top:16px;cursor:pointer}.notice{border-radius:12px;padding:10px 12px;margin-top:14px;font-size:13px;display:none}.notice.ok{display:block;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0}.notice.err{display:block;background:#fef2f2;color:#991b1b;border:1px solid #fecaca}.small{color:#6b7280;font-size:12px;margin-top:12px;line-height:1.45}code{background:#f3f4f6;padding:2px 5px;border-radius:6px}</style></head>
+<body><div class="wrap"><div class="card"><h1>Repliq Owner Login</h1><div class="sub">Stage 71 owner session foundation. Use the owner email and setup code issued from the protected admin bootstrap endpoint. Do not paste owner codes into chat logs.</div><label>Tenant</label><input id="tenant_id"/><label>Owner email</label><input id="owner_email" type="email" autocomplete="email"/><label>Owner setup/login code</label><input id="login_code" type="password" autocomplete="one-time-code"/><button onclick="login()">Login</button><div id="msg" class="notice"></div><div class="small">This creates a separate HttpOnly owner session cookie: <code>repliq_owner_session</code>. It does not expose the code hash or admin token.</div></div></div>
+<script>
+const DEFAULT_TENANT_ID=__TENANT_ID_JSON__; const NEXT_PATH=__NEXT_PATH_JSON__;
+document.getElementById('tenant_id').value=DEFAULT_TENANT_ID||'clinic_demo';
+function setMsg(k,t){const el=document.getElementById('msg');el.className='notice '+k;el.textContent=t;}
+async function login(){const tenant_id=(document.getElementById('tenant_id').value||'').trim()||DEFAULT_TENANT_ID||'clinic_demo';const owner_email=(document.getElementById('owner_email').value||'').trim();const login_code=document.getElementById('login_code').value||''; if(!owner_email||!login_code.trim()){setMsg('err','Owner email and login code are required.');return;} setMsg('ok','Checking…'); const r=await fetch('/owner/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tenant_id,owner_email,login_code,next:NEXT_PATH})}); const data=await r.json().catch(()=>({})); if(!r.ok||!data.ok){setMsg('err',data.error||data.detail||'Login failed');return;} setMsg('ok','Login OK. Opening owner dashboard…'); window.location=data.redirect_url||('/owner/dashboard/ui?tenant_id='+encodeURIComponent(tenant_id));}
+document.addEventListener('keydown',e=>{if(e.key==='Enter')login();});
+</script></body></html>
+    '''.replace("__TENANT_ID_JSON__", tenant_json).replace("__NEXT_PATH_JSON__", next_json)
+    return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/owner/login")
+async def owner_login_submit(request: Request):
+    try:
+        data = await request.json()
+    except Exception:
+        raw = (await request.body()).decode("utf-8", errors="ignore")
+        data = {k: v[-1] if v else "" for k, v in urllib.parse.parse_qs(raw).items()}
+    tenant_id = str((data or {}).get("tenant_id") or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
+    owner_email = stage71_normalize_email((data or {}).get("owner_email") or (data or {}).get("email") or "")
+    login_code = str((data or {}).get("login_code") or (data or {}).get("code") or "").strip()
+    next_path = stage62_safe_local_path(str((data or {}).get("next") or f"/owner/dashboard/ui?tenant_id={tenant_id}"), tenant_id)
+    ok, reason, account = stage71_validate_owner_login(owner_email, login_code, tenant_id)
+    if not ok:
+        return JSONResponse(status_code=401, content={"ok": False, "stage": "71", "error": reason, "tenant_id": tenant_id, "login_code_hash_exposed": False}, headers={"Cache-Control": "no-store"})
+    response = JSONResponse(content={"ok": True, "stage": "71", "auth_model": "signed_owner_session_cookie", "tenant_id": tenant_id, "owner_email": owner_email, "redirect_url": next_path, "session_cookie": STAGE71_OWNER_SESSION_COOKIE_NAME, "max_age_seconds": stage71_owner_session_max_age_seconds(), "login_code_value_exposed": False, "login_code_hash_exposed": False}, headers={"Cache-Control": "no-store"})
+    stage71_set_owner_session_cookie(response, owner_email=owner_email, tenant_id=tenant_id, role="owner")
+    return response
+
+
+@app.get("/owner/logout", response_class=HTMLResponse)
+def owner_logout_ui():
+    html = """<!doctype html><html><head><meta charset='utf-8'/><title>Repliq Owner Logout</title></head><body style='font-family:Arial,sans-serif;padding:24px;'><h2>Owner logged out</h2><p>Repliq owner session cookie was cleared.</p><p><a href='/owner/login'>Open owner login</a></p></body></html>"""
+    response = HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
+    stage71_clear_owner_session_cookie(response)
+    return response
+
+
+@app.post("/owner/logout")
+def owner_logout_api():
+    response = JSONResponse(content={"ok": True, "stage": "71", "logged_out": True}, headers={"Cache-Control": "no-store"})
+    stage71_clear_owner_session_cookie(response)
+    return response
+
+
+@app.get("/owner/session")
+def owner_session_status(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
+    session = stage71_request_owner_session_payload(request)
+    requested_tid = str(request.query_params.get("tenant_id") or "").strip()
+    tid = requested_tid or str((session or {}).get("tenant_id") or tenant_id or TENANT_ID_DEFAULT).strip()
+    authenticated = bool(session and stage71_owner_has_tenant_access(session.get("owner_email") or "", tid))
+    return {"ok": True, "stage": "71", "authenticated": authenticated, "auth_model": "signed_owner_session_cookie" if session else "none", "tenant_id": tid, "owner_email": (session or {}).get("owner_email") if authenticated else None, "role": (session or {}).get("role") if authenticated else None, "expires_at": datetime.utcfromtimestamp(int(session.get("exp"))).isoformat() + "Z" if session and session.get("exp") else None, "session_cookie": STAGE71_OWNER_SESSION_COOKIE_NAME, "login_code_value_exposed": False, "login_code_hash_exposed": False}
+
+
+@app.get("/owner/dashboard")
+@app.get("/owner/control-center")
+def owner_dashboard_json(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
+    return stage71_owner_dashboard_payload(request=request, tenant_id=tenant_id)
+
+
+@app.get("/owner/dashboard/ui", response_class=HTMLResponse)
+@app.get("/owner/control-center/ui", response_class=HTMLResponse)
+def owner_dashboard_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
+    tenant_json = json.dumps((tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT)
+    html = r'''
+<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Repliq Owner Dashboard</title>
+<style>body{font-family:Inter,system-ui,-apple-system,Segoe UI,Arial,sans-serif;background:#f6f7fb;color:#111827;margin:0;padding:24px}.wrap{max-width:1000px;margin:0 auto}.hero,.card{background:white;border:1px solid #e5e7eb;border-radius:18px;padding:18px;margin:14px 0;box-shadow:0 8px 25px rgba(17,24,39,.05)}.hero{display:flex;justify-content:space-between;gap:18px;align-items:flex-start}.sub,.muted{color:#64748b;font-size:14px;line-height:1.45}h1{margin:0 0 6px;font-size:32px;letter-spacing:-.03em}h2{margin:0 0 12px}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.badge{display:inline-block;border-radius:999px;padding:5px 9px;background:#e5e7eb;font-size:12px;font-weight:700;margin:3px 4px 3px 0}.badge.ok{background:#dcfce7;color:#166534}.badge.warn{background:#fef3c7;color:#92400e}button{border:0;border-radius:12px;padding:10px 13px;background:#111827;color:white;font-weight:750;cursor:pointer}.secondary{background:#e5e7eb;color:#111827}input{box-sizing:border-box;border:1px solid #cbd5e1;border-radius:12px;padding:10px;font-size:14px}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}pre{background:#0f172a;color:#e2e8f0;border-radius:14px;padding:14px;max-height:520px;overflow:auto;white-space:pre-wrap}@media(max-width:900px){body{padding:12px}.hero{display:block}.grid{grid-template-columns:1fr}}</style></head>
+<body><div class="wrap"><div class="hero"><div><h1>Repliq Owner Dashboard</h1><div class="sub">Stage 71 owner-auth foundation. This is an owner-safe read-only surface. Existing admin write/config surfaces remain super-admin protected.</div><div class="actions"><input id="tenant_id" style="min-width:260px"/><button onclick="loadDash()">Load</button><button class="secondary" onclick="go('/owner/session?tenant_id='+encTenant())">Session JSON</button><button class="secondary" onclick="go('/owner/logout')">Logout</button></div></div><div id="badges"></div></div><div class="grid"><div class="card"><div class="muted">Business</div><h2 id="business">-</h2><div class="sub" id="tenantline">-</div></div><div class="card"><div class="muted">Owner</div><h2 id="owner">-</h2><div class="sub" id="role">-</div></div><div class="card"><div class="muted">Scope</div><h2>read-only</h2><div class="sub">no receptionist-core changes</div></div></div><div class="card"><h2>Owner auth readiness</h2><div id="ready"></div></div><div class="card"><h2>Links</h2><div id="links" class="actions"></div></div><div class="card"><h2>Raw owner dashboard</h2><pre id="raw">Loading...</pre></div></div>
+<script>
+const DEFAULT_TENANT_ID=__TENANT_ID_JSON__;
+function el(id){return document.getElementById(id)} function tenant(){return (el('tenant_id').value||'').trim()||DEFAULT_TENANT_ID||'clinic_demo'} function encTenant(){return encodeURIComponent(tenant())} function go(p){window.location=p} function esc(v){return v===null||v===undefined?'':String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;')} function badge(ok,label){return `<span class="badge ${ok?'ok':'warn'}">${esc(label)}</span>`}
+function render(d){el('raw').textContent=JSON.stringify(d,null,2); el('business').textContent=(d.tenant&&d.tenant.business_name)||'-'; el('tenantline').textContent='tenant_id: '+(d.tenant_id||tenant()); el('owner').textContent=d.owner_email||((d.opened_via_super_admin_bypass)?'super-admin bypass':'-'); el('role').textContent=d.role||'-'; const r=d.readiness||{}; el('badges').innerHTML=badge(!!d.ok,'stage '+(d.stage||'71'))+badge(!!r.owner_auth_foundation_ready,'owner foundation: '+!!r.owner_auth_foundation_ready)+badge(!!r.tenant_ownership_binding_ready,'tenant binding: '+!!r.tenant_ownership_binding_ready); el('ready').innerHTML=(r.blocking||[]).concat(r.warnings||[]).map(x=>`<span class="badge warn">${esc(x)}</span>`).join('')||'<span class="badge ok">ready</span>'; const links=d.links||{}; el('links').innerHTML=Object.keys(links).map(k=>`<button class="secondary" onclick="go('${esc(links[k])}')">${esc(k)}</button>`).join('');}
+async function loadDash(){el('tenant_id').value=tenant(); const r=await fetch('/owner/dashboard?tenant_id='+encTenant()); const d=await r.json().catch(()=>({})); if(!r.ok){el('raw').textContent=JSON.stringify(d,null,2);return;} render(d);} el('tenant_id').value=DEFAULT_TENANT_ID||'clinic_demo'; loadDash();
+</script></body></html>
+    '''.replace("__TENANT_ID_JSON__", tenant_json)
+    return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
 
 @app.get("/tenant/creation/readiness")
 @app.get("/signup/readiness")
@@ -15173,6 +15888,9 @@ def onboarding_links_payload(tenant_id: str) -> Dict[str, str]:
         "control_center_readiness_url": f"{base}/control-center/readiness?tenant_id={tenant_id}",
         "public_saas_gap_audit_url": f"{base}/public-saas/gap-audit/ui?tenant_id={tenant_id}",
         "public_saas_readiness_url": f"{base}/public-saas/readiness?tenant_id={tenant_id}",
+        "owner_auth_readiness_url": f"{base}/owner/auth/readiness?tenant_id={tenant_id}",
+        "owner_login_url": f"{base}/owner/login?tenant_id={tenant_id}",
+        "owner_dashboard_url": f"{base}/owner/dashboard/ui?tenant_id={tenant_id}",
         "config_ui_url": f"{base}/tenant/config/ui?tenant_id={tenant_id}",
         "config_json_url": f"{base}/tenant/config?tenant_id={tenant_id}",
         "routes_url": f"{base}/tenant/routes?tenant_id={tenant_id}",
@@ -16900,6 +17618,8 @@ summary { cursor:pointer; font-weight:800; }
       <a id="lnk_admin" href="#">Admin readiness</a>
       <a id="lnk_control_center" href="#">Control center</a>
       <a id="lnk_public_saas_config" href="#">Public SaaS audit</a>
+      <a id="lnk_owner_auth" href="#">Owner auth</a>
+      <a id="lnk_owner_dashboard" href="#">Owner dashboard</a>
       <a id="lnk_dashboard" href="#">Dashboard</a>
       <a id="lnk_devchat" href="#">Dev chat</a>
       <a id="lnk_demo_script" href="#">Demo script</a>
@@ -16938,6 +17658,8 @@ function setLinks(tid){
   document.getElementById('lnk_admin').href = '/tenant/admin/readiness?tenant_id=' + encodeURIComponent(tid);
   const controlCenter = document.getElementById('lnk_control_center'); if(controlCenter) controlCenter.href = '/control-center/ui?tenant_id=' + encodeURIComponent(tid);
   const publicSaas = document.getElementById('lnk_public_saas_config'); if(publicSaas) publicSaas.href = '/public-saas/gap-audit/ui?tenant_id=' + encodeURIComponent(tid);
+  const ownerAuth = document.getElementById('lnk_owner_auth'); if(ownerAuth) ownerAuth.href = '/owner/auth/readiness?tenant_id=' + encodeURIComponent(tid);
+  const ownerDash = document.getElementById('lnk_owner_dashboard'); if(ownerDash) ownerDash.href = '/owner/dashboard/ui?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_dashboard').href = '/dashboard?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_devchat').href = '/dev_chat_ui?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_demo_script').href = '/demo/script?tenant_id=' + encodeURIComponent(tid);

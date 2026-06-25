@@ -564,7 +564,7 @@ Confirmed after deploy:
 
 ## Stage 70 — Public SaaS Readiness Gap Audit
 
-Status: implemented locally in this archive, pending deploy verification.
+Status: closed by deploy verification.
 
 Scope:
 - Added protected public SaaS readiness/gap-audit JSON and UI endpoints.
@@ -583,10 +583,22 @@ The audit reports the factual blockers before public SaaS launch:
 
 Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, dialogue QA evaluator, and voice/calls were not changed.
 
-Expected verification:
+Confirmed after deploy:
 - `/dialogue/qa` = 50/50 passed.
-- `/public-saas/readiness?tenant_id=clinic_demo` returns `stage=70` and `public_saas_ready=false`.
-- `/public-saas/gap-audit/ui?tenant_id=clinic_demo` opens after admin login/session.
-- `/internal/readiness?tenant_id=clinic_demo` includes `public_saas_gap_audit_readiness`.
-- `/tenant/config?tenant_id=clinic_demo` includes `public_saas_gap_audit_readiness` and does not expose secrets.
-- Dashboard and tenant config UI show Public SaaS audit links.
+- Public SaaS gap audit/readiness/UI links/security checks passed.
+- `public_saas_ready` remains false by design.
+
+## Stage 71 — Owner Auth / Public Client Account Foundation
+
+Status: implemented, pending deployment verification.
+
+Summary:
+- Added owner account/session foundation for client-owner access.
+- Added owner_accounts and owner_tenant_access runtime tables.
+- Added admin-protected owner bootstrap/bind endpoints.
+- Added public owner login/logout/session endpoints.
+- Added owner-session-protected read-only owner dashboard/control-center surfaces.
+- Integrated owner auth foundation into internal readiness and public SaaS gap audit.
+- public_saas_ready remains false by design.
+- Receptionist core, booking, calendar runtime, Telegram runtime, and dialogue QA evaluator were not changed.
+
