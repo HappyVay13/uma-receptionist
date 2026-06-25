@@ -234,6 +234,14 @@ STAGE61_PROTECTED_EXACT_PATHS = {
     "/control-center/readiness",
     "/self-serve/control-center",
     "/self-serve/control-center/readiness",
+    "/public-saas/readiness",
+    "/public-saas/gap-audit",
+    "/public-saas/gap-audit/ui",
+    "/public-saas/readiness/ui",
+    "/saas/public-readiness",
+    "/saas/public-readiness/ui",
+    "/launch/public-readiness",
+    "/launch/public-readiness/ui",
     "/client/dashboard",
     "/client/dashboard/ui",
     "/client/control-center",
@@ -12360,6 +12368,14 @@ def stage69_client_control_center_payload(tenant_id: str = TENANT_ID_DEFAULT, da
         "/control-center/readiness",
         "/self-serve/control-center",
         "/self-serve/control-center/readiness",
+    "/public-saas/readiness",
+    "/public-saas/gap-audit",
+    "/public-saas/gap-audit/ui",
+    "/public-saas/readiness/ui",
+    "/saas/public-readiness",
+    "/saas/public-readiness/ui",
+    "/launch/public-readiness",
+    "/launch/public-readiness/ui",
         "/client/dashboard",
         "/client/dashboard/ui",
         "/client/control-center",
@@ -12549,9 +12565,294 @@ def stage69_client_control_center_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "google_calendar_setup": url(f"/google/calendars/ui?tenant_id={tenant_id_clean}"),
             "telegram_setup": url(f"/telegram/setup/ui?tenant_id={tenant_id_clean}"),
             "telegram_smoke_lock": url(f"/telegram/live-smoke/readiness?tenant_id={tenant_id_clean}&days={days}"),
+            "public_saas_gap_audit": url(f"/public-saas/gap-audit/ui?tenant_id={tenant_id_clean}&days={days}"),
             "dialogue_qa": url("/dialogue/qa"),
         },
         "note": "Stage 69 is an aggregate dashboard/control-center layer only. It does not change receptionist routing, slot generation, price side-questions, Google Calendar event runtime, Telegram webhook runtime, or voice/calls.",
+    }
+
+
+def stage70_safe_dependency(name: str, fn) -> Dict[str, Any]:
+    try:
+        value = fn()
+        if isinstance(value, dict):
+            return value
+        return {"stage_dependency": name, "status": "blocked", "blocking": ["dependency_returned_non_dict"]}
+    except Exception as e:
+        log.error("stage70_dependency_failed name=%s err=%s", name, e)
+        return {
+            "stage_dependency": name,
+            "status": "blocked",
+            "blocking": [f"{name}_failed:{e.__class__.__name__}"],
+            "warnings": [],
+        }
+
+
+def stage70_gap_payload(key: str, label: str, status: str, evidence: Any, required_next: str, severity: str = "blocker") -> Dict[str, Any]:
+    return {
+        "key": key,
+        "label": label,
+        "status": status,
+        "severity": severity,
+        "evidence": evidence,
+        "required_next": required_next,
+    }
+
+
+def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14) -> Dict[str, Any]:
+    """Read-only public SaaS readiness gap audit.
+
+    Stage 70 intentionally does not flip public_saas_ready to true. It aggregates
+    existing protected self-serve/readiness layers and makes the remaining public
+    launch blockers explicit from the current code state.
+    """
+    tid = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    days = max(1, min(int(days or 14), 60))
+    base = (SERVER_BASE_URL or "").rstrip("/")
+
+    def url(path: str) -> str:
+        return base + path if base else path
+
+    tenant = get_existing_tenant(tid)
+    tenant_found = bool(tenant.get("_id"))
+    tenant_id_clean = str(tenant.get("_id") or tenant.get("id") or tid).strip() or tid
+
+    required_paths = [
+        "/public-saas/readiness",
+        "/public-saas/gap-audit",
+        "/public-saas/gap-audit/ui",
+        "/public-saas/readiness/ui",
+        "/saas/public-readiness",
+        "/saas/public-readiness/ui",
+        "/launch/public-readiness",
+        "/launch/public-readiness/ui",
+    ]
+    missing_protection = [path for path in required_paths if path not in STAGE61_PROTECTED_EXACT_PATHS]
+
+    admin_access = stage70_safe_dependency("admin_access_enforcement", lambda: stage61_admin_access_enforcement_payload(tenant_id_clean))
+    admin_session = stage70_safe_dependency("admin_session", lambda: stage62_admin_session_readiness_payload(tenant_id_clean))
+    access = stage70_safe_dependency("access_boundaries", lambda: stage58_access_boundaries_readiness_payload(tenant_id_clean))
+    control_center = stage70_safe_dependency("client_control_center", lambda: stage69_client_control_center_payload(tenant_id_clean, days=days))
+    launch = stage70_safe_dependency("launch_readiness", lambda: stage54_launch_readiness_lock_payload(tenant_id_clean))
+    tenant_creation = stage70_safe_dependency("tenant_creation", lambda: stage63_tenant_creation_readiness_payload(tenant_id_clean))
+    onboarding = stage70_safe_dependency("onboarding_wizard", lambda: stage64_onboarding_wizard_readiness_payload(tenant_id_clean))
+    google = stage70_safe_dependency("google_calendar_self_serve", lambda: stage65_google_calendar_self_serve_readiness_payload(tenant_id_clean))
+    service_catalog = stage70_safe_dependency("service_catalog_builder", lambda: stage66_service_catalog_readiness_payload(tenant_id_clean))
+    business_memory = stage70_safe_dependency("business_memory_faq_builder", lambda: stage67_business_memory_builder_readiness_payload(tenant_id_clean))
+    telegram = stage70_safe_dependency("telegram_setup", lambda: stage68_telegram_setup_readiness_payload(tenant_id_clean, days=days))
+    usage = stage70_safe_dependency("usage_analytics", lambda: stage57_usage_analytics_readiness_payload(tenant_id_clean, days=days))
+
+    admin_token_configured = stage61_admin_token_configured()
+    admin_access_enforced = bool(admin_access.get("admin_access_enforced"))
+    admin_session_ready = bool(admin_session.get("admin_session_layer_ready") or admin_session.get("private_admin_ready"))
+    tenant_ownership_guard_enforced = bool(access.get("current_access_model", {}).get("tenant_ownership_guard_enforced"))
+    shared_admin_token_model = str(admin_access.get("auth_model", {}).get("type") or "") == "shared_admin_token_mvp"
+    config_security = control_center.get("security") if isinstance(control_center.get("security"), dict) else {}
+    raw_secrets_exposed = bool(
+        config_security.get("raw_service_account_json_exposed")
+        or config_security.get("raw_telegram_bot_token_exposed")
+        or config_security.get("raw_telegram_webhook_secret_exposed")
+    )
+
+    self_serve_blocks = [
+        {"key": "control_center", "ready": bool(control_center.get("private_admin_ready")), "status": control_center.get("status"), "stage": control_center.get("stage")},
+        {"key": "tenant_creation", "ready": bool(tenant_creation.get("tenant_creation_ready") or tenant_creation.get("status") in {"ready", "attention"}), "status": tenant_creation.get("status"), "stage": tenant_creation.get("stage")},
+        {"key": "onboarding_wizard", "ready": bool(onboarding.get("onboarding_wizard_ready") or onboarding.get("status") in {"ready", "attention"}), "status": onboarding.get("status"), "stage": onboarding.get("stage")},
+        {"key": "google_calendar", "ready": bool(google.get("google_calendar_self_serve_ready") or google.get("calendar_ready")), "status": google.get("status"), "stage": google.get("stage")},
+        {"key": "service_catalog", "ready": bool(service_catalog.get("service_catalog_builder_ready") or service_catalog.get("runtime_service_catalog_ready")), "status": service_catalog.get("status"), "stage": service_catalog.get("stage")},
+        {"key": "business_memory", "ready": bool(business_memory.get("business_memory_faq_builder_ready") or business_memory.get("business_memory_content_ready")), "status": business_memory.get("status"), "stage": business_memory.get("stage")},
+        {"key": "telegram_setup", "ready": bool(telegram.get("telegram_bot_self_serve_ready") or telegram.get("telegram_effective_runtime_ready")), "status": telegram.get("status"), "stage": telegram.get("stage")},
+        {"key": "usage_visibility", "ready": bool(usage.get("private_admin_ready") or usage.get("usage_visibility_ready") or usage.get("status") == "ready"), "status": usage.get("status"), "stage": usage.get("stage")},
+    ]
+    ready_self_serve_count = sum(1 for item in self_serve_blocks if item.get("ready"))
+
+    gaps = []
+    gaps.append(stage70_gap_payload(
+        "owner_auth",
+        "Per-owner public auth",
+        "missing",
+        {
+            "current_auth_model": admin_access.get("auth_model", {}).get("type") or admin_session.get("session_model", {}).get("type"),
+            "shared_admin_token_configured": bool(admin_token_configured),
+            "admin_session_layer_ready": bool(admin_session_ready),
+            "stage61_warning": "shared_admin_token_is_mvp_access_layer_not_full_login",
+        },
+        "Implement client-owner login/accounts before public SaaS access.",
+    ))
+    gaps.append(stage70_gap_payload(
+        "tenant_ownership",
+        "Tenant ownership and role checks",
+        "missing",
+        {
+            "tenant_ownership_guard_enforced": bool(tenant_ownership_guard_enforced),
+            "tenant_id_parameter_is_not_auth": bool(access.get("current_access_model", {}).get("tenant_id_parameter_is_not_auth")),
+            "current_access_model": access.get("current_access_model"),
+        },
+        "Persist owner/user to tenant mapping and enforce owner-role checks on client surfaces.",
+    ))
+    gaps.append(stage70_gap_payload(
+        "public_signup_boundary",
+        "Public signup boundary",
+        "not_public_yet",
+        {
+            "tenant_creation_stage": tenant_creation.get("stage"),
+            "tenant_creation_status": tenant_creation.get("status"),
+            "signup_routes_currently_protected": "/signup" in STAGE61_PROTECTED_EXACT_PATHS and "/tenant/create" in STAGE61_PROTECTED_EXACT_PATHS,
+        },
+        "Decide public signup/auth handoff and keep tenant creation protected until owner auth, rate limits, and abuse controls exist.",
+        severity="blocker",
+    ))
+    gaps.append(stage70_gap_payload(
+        "billing_subscription",
+        "Billing and subscription lifecycle",
+        "foundation_only",
+        {
+            "tenant_plan_fields_exist_in_runtime": True,
+            "subscription_status_known": tenant.get("subscription_status") if tenant_found else None,
+            "plan_known": tenant.get("plan") if tenant_found else None,
+            "billing_provider_integration_found": False,
+            "usage_is_marked_non_billing_proof": True,
+        },
+        "Add payment provider, trial/subscription lifecycle, plan limits enforcement, invoices/receipts, and failure handling before public launch.",
+        severity="blocker",
+    ))
+    gaps.append(stage70_gap_payload(
+        "browser_write_hardening",
+        "CSRF and public write hardening",
+        "missing_for_public",
+        {
+            "current_write_model": "admin_session_or_shared_token_mvp",
+            "browser_write_endpoints_exist": [
+                "/tenant/config/update",
+                "/tenant/service-catalog/update",
+                "/business-memory/update",
+                "/telegram/setup/update",
+                "/telegram/setup/set-webhook",
+                "/google/select_calendar",
+            ],
+            "csrf_public_owner_layer_found": False,
+        },
+        "Add CSRF/session hardening and public rate limits when owner-facing browser sessions are introduced.",
+        severity="blocker",
+    ))
+    gaps.append(stage70_gap_payload(
+        "client_superadmin_separation",
+        "Client-owner vs super-admin separation",
+        "missing",
+        {
+            "multi_tenant_admin_surfaces_exist": ["/tenants", "/tenants/ui"],
+            "current_access": "same protected admin-token/session layer",
+        },
+        "Separate super-admin routes from client-owner dashboard routes before exposing SaaS publicly.",
+        severity="blocker",
+    ))
+    gaps.append(stage70_gap_payload(
+        "public_runtime_monitoring",
+        "Public SaaS ops and abuse controls",
+        "partial",
+        {
+            "usage_visibility_ready": bool(usage.get("private_admin_ready") or usage.get("usage_visibility_ready")),
+            "sentry_middleware_available": _sentry_middleware_class is not None,
+            "rate_limits_found": False,
+            "client_billing_usage_proof_ready": False,
+        },
+        "Add production rate limits, client-safe usage visibility, billing-grade metering, and operational alerting before public launch.",
+        severity="major",
+    ))
+
+    blockers = []
+    warnings = []
+    if not tenant_found:
+        blockers.append("tenant_not_found")
+    if missing_protection:
+        blockers.append("stage70_paths_not_protected")
+    if not admin_access_enforced:
+        blockers.append("admin_access_not_enforced")
+    if not admin_session_ready:
+        blockers.append("admin_session_not_ready")
+    if raw_secrets_exposed:
+        blockers.append("secret_exposure_detected")
+    if shared_admin_token_model:
+        warnings.append("current_admin_auth_is_shared_token_mvp")
+    if not tenant_ownership_guard_enforced:
+        warnings.append("tenant_ownership_guard_missing")
+    if ALLOW_DEFAULT_TENANT_FALLBACK:
+        warnings.append("default_tenant_fallback_enabled")
+    if ready_self_serve_count < len(self_serve_blocks):
+        warnings.append("some_self_serve_blocks_not_ready")
+
+    public_blocking_keys = [item["key"] for item in gaps if item.get("severity") == "blocker" and item.get("status") != "ready"]
+    public_saas_ready = False
+    private_admin_ready = bool(tenant_found and not missing_protection and admin_access_enforced and admin_session_ready and not raw_secrets_exposed)
+    audit_ready = bool(private_admin_ready and control_center.get("private_admin_ready") is not False)
+
+    return {
+        "stage": "70",
+        "purpose": "Public SaaS Readiness Gap Audit",
+        "tenant_id": tenant_id_clean,
+        "status": "blocked" if blockers else "attention",
+        "gap_audit_ready": bool(audit_ready),
+        "private_admin_ready": bool(private_admin_ready),
+        "public_saas_ready": bool(public_saas_ready),
+        "public_saas_ready_reason": "false_until_owner_auth_tenant_ownership_billing_and_public_write_hardening_exist",
+        "current_scope": {
+            "product": "text-first AI receptionist SaaS",
+            "external_channel": "Telegram text",
+            "voice_calls_scope": "future_phase",
+            "current_access_model": "admin_session_or_shared_token_mvp",
+        },
+        "self_serve_foundation": {
+            "ready_count": ready_self_serve_count,
+            "total_count": len(self_serve_blocks),
+            "blocks": self_serve_blocks,
+        },
+        "public_launch_blockers": public_blocking_keys,
+        "gap_matrix": gaps,
+        "security": {
+            "stage70_routes_protected_by_admin_session_or_token": not bool(missing_protection),
+            "raw_service_account_json_exposed": bool(config_security.get("raw_service_account_json_exposed", False)),
+            "raw_telegram_bot_token_exposed": bool(config_security.get("raw_telegram_bot_token_exposed", False)),
+            "raw_telegram_webhook_secret_exposed": bool(config_security.get("raw_telegram_webhook_secret_exposed", False)),
+            "tenant_id_parameter_is_not_auth": True,
+            "public_owner_auth_implemented": False,
+            "tenant_ownership_guard_enforced": bool(tenant_ownership_guard_enforced),
+            "billing_provider_integrated": False,
+            "public_rate_limits_integrated": False,
+        },
+        "dependencies": {
+            "admin_access_enforcement": admin_access,
+            "admin_session": admin_session,
+            "access_boundaries": access,
+            "client_control_center": control_center,
+            "launch_readiness": launch,
+            "tenant_creation": tenant_creation,
+            "onboarding_wizard": onboarding,
+            "google_calendar": google,
+            "service_catalog": service_catalog,
+            "business_memory": business_memory,
+            "telegram_setup": telegram,
+            "usage_analytics": usage,
+        },
+        "recommended_next_stages": [
+            "Stage 71 — Owner Auth and Tenant Ownership Design Lock",
+            "Stage 72 — Owner Login / Tenant Ownership Enforcement",
+            "Stage 73 — Public Signup Boundary + Abuse Protection",
+            "Stage 74 — Billing / Subscription Lifecycle Integration",
+            "Stage 75 — Client/Super-admin Surface Separation",
+        ],
+        "blocking": list(dict.fromkeys([str(x) for x in blockers if str(x)])),
+        "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
+        "links": {
+            "public_saas_readiness": url(f"/public-saas/readiness?tenant_id={tenant_id_clean}&days={days}"),
+            "public_saas_gap_audit": url(f"/public-saas/gap-audit?tenant_id={tenant_id_clean}&days={days}"),
+            "public_saas_gap_audit_ui": url(f"/public-saas/gap-audit/ui?tenant_id={tenant_id_clean}&days={days}"),
+            "control_center": url(f"/control-center/ui?tenant_id={tenant_id_clean}&days={days}"),
+            "access_readiness": url(f"/access/readiness?tenant_id={tenant_id_clean}"),
+            "tenant_config_ui": url(f"/tenant/config/ui?tenant_id={tenant_id_clean}"),
+            "dashboard": url(f"/dashboard?tenant_id={tenant_id_clean}"),
+            "dialogue_qa": url("/dialogue/qa"),
+        },
+        "note": "Stage 70 is a read-only gap audit. It does not change booking routing, slot generation, date/time parsing, price side-questions, Google Calendar event runtime, Telegram webhook runtime, dialogue QA evaluator, or voice/calls.",
     }
 
 def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) -> Dict[str, Any]:
@@ -12698,6 +12999,7 @@ def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) ->
         "service_catalog_builder_readiness": stage66_service_catalog_readiness_payload(requested_tenant_id),
         "telegram_setup_readiness": stage68_telegram_setup_readiness_payload(requested_tenant_id),
         "client_control_center_readiness": stage69_client_control_center_payload(requested_tenant_id),
+        "public_saas_gap_audit_readiness": stage70_public_saas_gap_audit_payload(requested_tenant_id),
         "telegram_text_channel_readiness": stage59_telegram_text_channel_readiness_payload(requested_tenant_id),
         "telegram_live_smoke_lock": stage60_telegram_live_smoke_lock_payload(requested_tenant_id),
         "tenant_admin_config": tenant_admin_config_readiness_payload(tenant) if tenant_status.get("tenant_id") else {
@@ -13524,6 +13826,127 @@ loadCenter();
 </body>
 </html>
     '''.replace("__TENANT_ID_JSON__", tenant_json).replace("__DAYS_JSON__", days_json)
+    return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/public-saas/readiness")
+@app.get("/public-saas/gap-audit")
+@app.get("/saas/public-readiness")
+@app.get("/launch/public-readiness")
+def stage70_public_saas_gap_audit_json(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    return stage70_public_saas_gap_audit_payload(tenant_id=tenant_id, days=days)
+
+
+@app.get("/public-saas/gap-audit/ui", response_class=HTMLResponse)
+@app.get("/public-saas/readiness/ui", response_class=HTMLResponse)
+@app.get("/saas/public-readiness/ui", response_class=HTMLResponse)
+@app.get("/launch/public-readiness/ui", response_class=HTMLResponse)
+def stage70_public_saas_gap_audit_ui(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    tenant_json = json.dumps((tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT)
+    days_json = json.dumps(max(1, min(int(days or 14), 60)))
+    html = r"""
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Repliq Public SaaS Gap Audit</title>
+<style>
+body{font-family:Inter,system-ui,-apple-system,Segoe UI,Arial,sans-serif;background:#f6f7fb;color:#111827;margin:0;padding:24px}.wrap{max-width:1180px;margin:0 auto}.hero,.card{background:white;border:1px solid #e5e7eb;border-radius:18px;padding:18px;margin:14px 0;box-shadow:0 8px 25px rgba(17,24,39,.05)}.hero{display:flex;justify-content:space-between;gap:18px;align-items:flex-start}.sub,.muted{color:#64748b;font-size:14px;line-height:1.45}h1{margin:0 0 6px;font-size:32px;letter-spacing:-.03em}h2{margin:0 0 12px}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.matrix{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}.tile{border:1px solid #e5e7eb;border-radius:16px;padding:14px;background:#fff}.tile h3{margin:0 0 6px;font-size:17px}.badge{display:inline-block;border-radius:999px;padding:5px 9px;background:#e5e7eb;font-size:12px;font-weight:700;margin:3px 4px 3px 0}.badge.ok{background:#dcfce7;color:#166534}.badge.warn{background:#fef3c7;color:#92400e}.badge.err{background:#fee2e2;color:#991b1b}.num{font-size:28px;font-weight:800;margin-top:6px}button{border:0;border-radius:12px;padding:10px 13px;background:#111827;color:white;font-weight:750;cursor:pointer}.secondary{background:#e5e7eb;color:#111827}input,select{box-sizing:border-box;border:1px solid #cbd5e1;border-radius:12px;padding:10px;font-size:14px}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}a{color:#2563eb;text-decoration:none}pre{background:#0f172a;color:#e2e8f0;border-radius:14px;padding:14px;max-height:520px;overflow:auto;white-space:pre-wrap}.links{display:flex;flex-wrap:wrap;gap:8px}.links a{background:#f1f5f9;border-radius:999px;padding:7px 10px;font-size:13px}@media(max-width:900px){body{padding:12px}.hero{display:block}.grid,.matrix{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hero">
+    <div>
+      <h1>Public SaaS Readiness Gap Audit</h1>
+      <div class="sub">Stage 70 - factual read-only audit of what is ready and what still blocks public SaaS launch. Public SaaS should remain false until owner auth, tenant ownership, billing, and public write hardening exist.</div>
+      <div class="actions">
+        <input id="tenant_id" style="min-width:280px"/>
+        <select id="days"><option value="7">7 days</option><option value="14">14 days</option><option value="30">30 days</option><option value="60">60 days</option></select>
+        <button onclick="loadAudit()">Load</button>
+        <button class="secondary" onclick="go('/control-center/ui?tenant_id='+encTenant())">Control center</button>
+        <button class="secondary" onclick="go('/tenant/config/ui?tenant_id='+encTenant())">Tenant config</button>
+        <button class="secondary" onclick="go('/dashboard?tenant_id='+encTenant())">Dashboard</button>
+        <button class="secondary" onclick="go('/admin/logout')">Logout</button>
+      </div>
+    </div>
+    <div style="min-width:260px">
+      <div id="main_badges"></div>
+      <div class="sub" id="tenant_line">Loading...</div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card"><div class="muted">Self-serve blocks</div><div id="m_foundation" class="num">-</div><div class="sub">ready foundation blocks</div></div>
+    <div class="card"><div class="muted">Public blockers</div><div id="m_blockers" class="num">-</div><div class="sub">must be closed before public SaaS</div></div>
+    <div class="card"><div class="muted">Private admin</div><div id="m_private" class="num">-</div><div class="sub">protected MVP admin layer</div></div>
+    <div class="card"><div class="muted">Public SaaS</div><div id="m_public" class="num">false</div><div class="sub">expected false for Stage 70</div></div>
+  </div>
+
+  <div class="card">
+    <h2>Gap matrix</h2>
+    <div id="gap_matrix" class="matrix"></div>
+  </div>
+
+  <div class="card">
+    <h2>Recommended next stages</h2>
+    <div id="next_stages" class="links"></div>
+  </div>
+
+  <div class="card">
+    <h2>Quick links</h2>
+    <div id="links" class="links"></div>
+  </div>
+
+  <div class="card">
+    <h2>Raw audit</h2>
+    <pre id="raw">Loading...</pre>
+  </div>
+</div>
+<script>
+const DEFAULT_TENANT_ID=__TENANT_ID_JSON__;
+const DEFAULT_DAYS=__DAYS_JSON__;
+function el(id){return document.getElementById(id)}
+function tenant(){return (el('tenant_id').value||'').trim()||DEFAULT_TENANT_ID||'clinic_demo'}
+function encTenant(){return encodeURIComponent(tenant())}
+function days(){return el('days').value||String(DEFAULT_DAYS||14)}
+function go(path){window.location=path}
+function esc(v){return v===null||v===undefined?'':String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;')}
+function badge(status,label){const cls=status==='ready'||status===true?'ok':status==='missing'||status==='blocked'||status==='not_public_yet'||status==='missing_for_public'||status===false?'err':'warn';return `<span class="badge ${cls}">${esc(label)}</span>`}
+function setText(id,value){el(id).textContent=(value===null||value===undefined||value==='')?'-':String(value)}
+function gapCard(item){
+  const ev=item.evidence?JSON.stringify(item.evidence,null,2):'';
+  return `<div class="tile"><h3>${esc(item.label||item.key)}</h3><div>${badge(item.status||'attention',item.status||'attention')}${badge(item.severity||'major',item.severity||'major')}</div><div class="sub" style="margin-top:8px"><strong>Next:</strong> ${esc(item.required_next||'')}</div>${ev?`<pre style="max-height:180px;margin-top:10px">${esc(ev)}</pre>`:''}</div>`;
+}
+function render(data){
+  el('raw').textContent=JSON.stringify(data,null,2);
+  el('main_badges').innerHTML=badge(data.status||'attention','status: '+(data.status||'attention'))+badge(data.private_admin_ready?'ready':'blocked','private admin: '+data.private_admin_ready)+badge(data.public_saas_ready?'ready':'blocked','public SaaS: '+data.public_saas_ready);
+  setText('tenant_line', data.tenant_id || tenant());
+  const f=data.self_serve_foundation||{};
+  setText('m_foundation', `${f.ready_count||0}/${f.total_count||0}`);
+  setText('m_blockers', (data.public_launch_blockers||[]).length);
+  setText('m_private', String(data.private_admin_ready===true));
+  setText('m_public', String(data.public_saas_ready===true));
+  el('gap_matrix').innerHTML=(data.gap_matrix||[]).map(gapCard).join('') || '<div class="sub">No gap matrix returned.</div>';
+  el('next_stages').innerHTML=(data.recommended_next_stages||[]).map(x=>`<span class="badge warn">${esc(x)}</span>`).join('');
+  const links=data.links||{};
+  el('links').innerHTML=Object.keys(links).map(k=>`<a href="${esc(links[k])}">${esc(k)}</a>`).join('');
+}
+async function loadAudit(){
+  el('tenant_id').value=tenant();
+  const r=await fetch('/public-saas/readiness?tenant_id='+encTenant()+'&days='+encodeURIComponent(days()));
+  const data=await r.json();
+  if(!r.ok){el('raw').textContent=JSON.stringify(data,null,2);return;}
+  render(data);
+}
+el('tenant_id').value=DEFAULT_TENANT_ID||'clinic_demo';
+el('days').value=String(DEFAULT_DAYS||14);
+loadAudit();
+</script>
+</body>
+</html>
+    """.replace("__TENANT_ID_JSON__", tenant_json).replace("__DAYS_JSON__", days_json)
     return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
 
 
@@ -14748,6 +15171,8 @@ def onboarding_links_payload(tenant_id: str) -> Dict[str, str]:
         "dashboard_url": f"{base}/dashboard?tenant_id={tenant_id}",
         "control_center_url": f"{base}/control-center/ui?tenant_id={tenant_id}",
         "control_center_readiness_url": f"{base}/control-center/readiness?tenant_id={tenant_id}",
+        "public_saas_gap_audit_url": f"{base}/public-saas/gap-audit/ui?tenant_id={tenant_id}",
+        "public_saas_readiness_url": f"{base}/public-saas/readiness?tenant_id={tenant_id}",
         "config_ui_url": f"{base}/tenant/config/ui?tenant_id={tenant_id}",
         "config_json_url": f"{base}/tenant/config?tenant_id={tenant_id}",
         "routes_url": f"{base}/tenant/routes?tenant_id={tenant_id}",
@@ -15909,6 +16334,7 @@ def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
       </div>
       <div class="muted nav-links">JSON endpoints:
         <a id="lnk_control_center" href="#">control center</a> ·
+        <a id="lnk_public_saas" href="#">public SaaS audit</a> ·
         <a id="lnk_analytics" href="#">analytics</a> ·
         <a id="lnk_usage" href="#">usage</a> ·
         <a id="lnk_usage_ready" href="#">usage readiness</a> ·
@@ -16191,6 +16617,7 @@ async function loadAll() {{
   const limit = el('limit')?.value || '20';
   setText('usage_badge', `${{days}} day window`, 'Selected window');
   const controlCenterLink = el('lnk_control_center'); if(controlCenterLink) controlCenterLink.href = `/control-center/ui?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
+  const publicSaasLink = el('lnk_public_saas'); if(publicSaasLink) publicSaasLink.href = `/public-saas/gap-audit/ui?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
   el('lnk_analytics').href = `/dashboard/analytics?tenant_id=${{encodeURIComponent(tenant)}}`;
   el('lnk_usage').href = `/dashboard/usage?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
   el('lnk_usage_ready').href = `/usage/readiness?tenant_id=${{encodeURIComponent(tenant)}}&days=${{encodeURIComponent(days)}}`;
@@ -16472,6 +16899,7 @@ summary { cursor:pointer; font-weight:800; }
       <a id="lnk_json" href="#">Safe JSON config</a>
       <a id="lnk_admin" href="#">Admin readiness</a>
       <a id="lnk_control_center" href="#">Control center</a>
+      <a id="lnk_public_saas_config" href="#">Public SaaS audit</a>
       <a id="lnk_dashboard" href="#">Dashboard</a>
       <a id="lnk_devchat" href="#">Dev chat</a>
       <a id="lnk_demo_script" href="#">Demo script</a>
@@ -16509,6 +16937,7 @@ function setLinks(tid){
   document.getElementById('lnk_json').href = '/tenant/config?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_admin').href = '/tenant/admin/readiness?tenant_id=' + encodeURIComponent(tid);
   const controlCenter = document.getElementById('lnk_control_center'); if(controlCenter) controlCenter.href = '/control-center/ui?tenant_id=' + encodeURIComponent(tid);
+  const publicSaas = document.getElementById('lnk_public_saas_config'); if(publicSaas) publicSaas.href = '/public-saas/gap-audit/ui?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_dashboard').href = '/dashboard?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_devchat').href = '/dev_chat_ui?tenant_id=' + encodeURIComponent(tid);
   document.getElementById('lnk_demo_script').href = '/demo/script?tenant_id=' + encodeURIComponent(tid);
@@ -17092,6 +17521,7 @@ def tenant_config(tenant_id: str = TENANT_ID_DEFAULT):
         "telegram_text_channel_readiness": stage59_telegram_text_channel_readiness_payload(str(tenant.get("_id") or tenant_id)),
         "telegram_live_smoke_lock": stage60_telegram_live_smoke_lock_payload(str(tenant.get("_id") or tenant_id)),
         "client_control_center_readiness": stage69_client_control_center_payload(str(tenant.get("_id") or tenant_id)),
+        "public_saas_gap_audit_readiness": stage70_public_saas_gap_audit_payload(str(tenant.get("_id") or tenant_id)),
         "config_ui_hardening": tenant_config_ui_readiness_payload(tenant),
         "plan_meta": tenant_plan_meta(tenant),
         "links": onboarding_links_payload(str(tenant.get("_id") or tenant_id)),
@@ -17291,6 +17721,7 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
         "service_catalog_builder_readiness": stage66_service_catalog_readiness_payload(tenant_id),
         "telegram_setup_readiness": stage68_telegram_setup_readiness_payload(tenant_id),
         "client_control_center_readiness": stage69_client_control_center_payload(tenant_id),
+        "public_saas_gap_audit_readiness": stage70_public_saas_gap_audit_payload(tenant_id),
         "telegram_text_channel_readiness": stage59_telegram_text_channel_readiness_payload(tenant_id),
         "telegram_live_smoke_lock": stage60_telegram_live_smoke_lock_payload(tenant_id),
         "config_ui_hardening": tenant_config_ui_readiness_payload(updated),

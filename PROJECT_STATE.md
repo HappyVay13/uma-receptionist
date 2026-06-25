@@ -529,7 +529,7 @@ Public self-serve SaaS remains not fully ready yet.
 
 ## Stage 69 — Client Dashboard Self-Serve Control Center
 
-Status: implemented locally in this archive, pending deploy verification.
+Status: closed by deploy verification.
 
 Scope:
 - Added protected control center JSON/readiness/UI endpoints:
@@ -556,10 +556,37 @@ Scope:
 
 Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, dialogue QA evaluator, and voice/calls were not changed.
 
+Confirmed after deploy:
+- `/dialogue/qa` = 50/50 passed.
+- Control Center readiness/UI links/security checks passed.
+- Public self-serve SaaS remains not fully ready yet.
+
+
+## Stage 70 — Public SaaS Readiness Gap Audit
+
+Status: implemented locally in this archive, pending deploy verification.
+
+Scope:
+- Added protected public SaaS readiness/gap-audit JSON and UI endpoints.
+- Added `public_saas_gap_audit_readiness` to `/internal/readiness`, `/tenant/config`, and `/tenant/config/update`.
+- Added Public SaaS audit links to onboarding links, Control Center links, dashboard quick links, and tenant config UI quick links.
+- Kept `public_saas_ready=false` by design.
+
+The audit reports the factual blockers before public SaaS launch:
+- per-owner public auth missing;
+- tenant ownership / role checks missing;
+- public signup boundary not open yet;
+- billing/subscription lifecycle foundation only;
+- CSRF/public browser write hardening missing;
+- client-owner and super-admin surfaces not separated;
+- public SaaS ops/rate limits/billing-grade usage proof not complete.
+
+Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, dialogue QA evaluator, and voice/calls were not changed.
+
 Expected verification:
 - `/dialogue/qa` = 50/50 passed.
-- `/control-center/ui?tenant_id=clinic_demo` opens after admin login/session.
-- `/control-center/readiness?tenant_id=clinic_demo` returns `stage=69` and `public_saas_ready=false`.
-- `/internal/readiness?tenant_id=clinic_demo` includes `client_control_center_readiness`.
-- `/tenant/config?tenant_id=clinic_demo` includes `client_control_center_readiness` and does not expose secrets.
-- `/tenant/config/ui?tenant_id=clinic_demo` and `/dashboard?tenant_id=clinic_demo` show control-center links.
+- `/public-saas/readiness?tenant_id=clinic_demo` returns `stage=70` and `public_saas_ready=false`.
+- `/public-saas/gap-audit/ui?tenant_id=clinic_demo` opens after admin login/session.
+- `/internal/readiness?tenant_id=clinic_demo` includes `public_saas_gap_audit_readiness`.
+- `/tenant/config?tenant_id=clinic_demo` includes `public_saas_gap_audit_readiness` and does not expose secrets.
+- Dashboard and tenant config UI show Public SaaS audit links.
