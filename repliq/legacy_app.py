@@ -13302,6 +13302,7 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
     telegram = stage70_safe_dependency("telegram_setup", lambda: stage68_telegram_setup_readiness_payload(tenant_id_clean, days=days))
     usage = stage70_safe_dependency("usage_analytics", lambda: stage57_usage_analytics_readiness_payload(tenant_id_clean, days=days))
     owner_auth = stage70_safe_dependency("owner_auth_foundation", lambda: stage71_owner_auth_readiness_payload(tenant_id_clean))
+    public_signup = stage70_safe_dependency("public_signup_boundary", lambda: stage72_public_signup_readiness_payload(tenant_id_clean))
 
     admin_token_configured = stage61_admin_token_configured()
     admin_access_enforced = bool(admin_access.get("admin_access_enforced"))
@@ -13325,6 +13326,7 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
         {"key": "telegram_setup", "ready": bool(telegram.get("telegram_bot_self_serve_ready") or telegram.get("telegram_effective_runtime_ready")), "status": telegram.get("status"), "stage": telegram.get("stage")},
         {"key": "usage_visibility", "ready": bool(usage.get("private_admin_ready") or usage.get("usage_visibility_ready") or usage.get("status") == "ready"), "status": usage.get("status"), "stage": usage.get("stage")},
         {"key": "owner_auth_foundation", "ready": bool(owner_auth.get("owner_auth_foundation_ready")), "status": owner_auth.get("status"), "stage": owner_auth.get("stage")},
+        {"key": "public_signup_boundary", "ready": bool(public_signup.get("public_signup_boundary_ready")), "status": public_signup.get("status"), "stage": public_signup.get("stage")},
     ]
     ready_self_serve_count = sum(1 for item in self_serve_blocks if item.get("ready"))
 
@@ -13360,13 +13362,17 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
     gaps.append(stage70_gap_payload(
         "public_signup_boundary",
         "Public signup boundary",
-        "not_public_yet",
+        "foundation" if public_signup.get("public_signup_boundary_ready") else "missing",
         {
             "tenant_creation_stage": tenant_creation.get("stage"),
             "tenant_creation_status": tenant_creation.get("status"),
-            "signup_routes_currently_protected": "/signup" in STAGE61_PROTECTED_EXACT_PATHS and "/tenant/create" in STAGE61_PROTECTED_EXACT_PATHS,
+            "public_signup_stage": public_signup.get("stage"),
+            "public_signup_boundary_ready": bool(public_signup.get("public_signup_boundary_ready")),
+            "admin_token_dependency_for_public_signup": bool(public_signup.get("admin_token_dependency_for_public_signup")),
+            "legacy_signup_routes_still_protected": "/signup" in STAGE61_PROTECTED_EXACT_PATHS and "/tenant/create" in STAGE61_PROTECTED_EXACT_PATHS,
+            "public_signup_paths": (public_signup.get("public_paths") or {}),
         },
-        "Decide public signup/auth handoff and keep tenant creation protected until owner auth, rate limits, and abuse controls exist.",
+        "Continue hardening public signup with CSRF, email verification/magic-link auth, billing gate, and abuse controls before declaring public SaaS ready.",
         severity="blocker",
     ))
     gaps.append(stage70_gap_payload(
@@ -13398,6 +13404,7 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
                 "/google/select_calendar",
             ],
             "csrf_public_owner_layer_found": False,
+            "public_signup_boundary_foundation_ready": bool(public_signup.get("public_signup_boundary_ready")),
         },
         "Add CSRF/session hardening and public rate limits when owner-facing browser sessions are introduced.",
         severity="blocker",
@@ -13481,7 +13488,8 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "raw_telegram_bot_token_exposed": bool(config_security.get("raw_telegram_bot_token_exposed", False)),
             "raw_telegram_webhook_secret_exposed": bool(config_security.get("raw_telegram_webhook_secret_exposed", False)),
             "tenant_id_parameter_is_not_auth": True,
-            "public_owner_auth_implemented": False,
+            "public_owner_auth_implemented": bool(owner_auth.get("owner_auth_foundation_ready")),
+            "public_signup_boundary_foundation_ready": bool(public_signup.get("public_signup_boundary_ready")),
             "owner_auth_foundation_ready": bool(owner_auth.get("owner_auth_foundation_ready")),
             "owner_login_ready_for_private_demo": bool(owner_auth.get("owner_login_ready_for_private_demo")),
             "tenant_ownership_guard_enforced": bool(tenant_ownership_guard_enforced),
@@ -13502,10 +13510,11 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "telegram_setup": telegram,
             "usage_analytics": usage,
             "owner_auth_foundation": owner_auth,
+            "public_signup_boundary": public_signup,
         },
         "recommended_next_stages": [
-            "Stage 72 — Owner-Safe Self-Serve Surface Migration",
-            "Stage 73 — Public Signup Boundary + Abuse Protection",
+            "Stage 72.1 — Public Signup CSRF / Email Verification Hardening",
+            "Stage 73 — Owner-Safe Self-Serve Surface Migration",
             "Stage 74 — Billing / Subscription Lifecycle Integration",
             "Stage 75 — Client/Super-admin Surface Separation",
         ],
@@ -13672,6 +13681,7 @@ def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) ->
         "telegram_setup_readiness": stage68_telegram_setup_readiness_payload(requested_tenant_id),
         "client_control_center_readiness": stage69_client_control_center_payload(requested_tenant_id),
         "owner_auth_readiness": stage71_owner_auth_readiness_payload(requested_tenant_id),
+        "public_signup_boundary_readiness": stage72_public_signup_readiness_payload(requested_tenant_id),
         "public_saas_gap_audit_readiness": stage70_public_saas_gap_audit_payload(requested_tenant_id),
         "telegram_text_channel_readiness": stage59_telegram_text_channel_readiness_payload(requested_tenant_id),
         "telegram_live_smoke_lock": stage60_telegram_live_smoke_lock_payload(requested_tenant_id),
@@ -14006,6 +14016,13 @@ async function loadDash(){el('tenant_id').value=tenant(); const r=await fetch('/
 @app.get("/signup/readiness")
 def tenant_creation_readiness(tenant_id: str = TENANT_ID_DEFAULT):
     return stage63_tenant_creation_readiness_payload(tenant_id=tenant_id)
+
+
+@app.get("/public/signup/readiness")
+@app.get("/public/signup/boundary/readiness")
+@app.get("/signup/public/readiness")
+def stage72_public_signup_readiness(tenant_id: str = TENANT_ID_DEFAULT):
+    return stage72_public_signup_readiness_payload(tenant_id=tenant_id)
 
 
 @app.get("/onboarding/wizard/readiness")
@@ -15265,6 +15282,260 @@ def stage63_tenant_creation_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT
 
 
 # -------------------------
+# STAGE 72: PUBLIC SIGNUP BOUNDARY / OWNER SIGNUP FLOW FOUNDATION
+# -------------------------
+STAGE72_PUBLIC_SIGNUP_RATE_LIMIT_TABLE = "public_signup_events"
+STAGE72_PUBLIC_SIGNUP_PUBLIC_PATHS = (
+    "/public/signup",
+    "/public/signup/ui",
+    "/public/signup/readiness",
+    "/public/signup/boundary/readiness",
+    "/signup/public/readiness",
+)
+
+
+def stage72_public_signup_enabled() -> bool:
+    raw = (os.getenv("REPLIQ_PUBLIC_SIGNUP_ENABLED", "true") or "true").strip().lower()
+    return raw not in {"0", "false", "no", "off", "disabled"}
+
+
+def stage72_public_signup_hourly_limit() -> int:
+    raw = (os.getenv("REPLIQ_PUBLIC_SIGNUP_IP_HOURLY_LIMIT", "5") or "5").strip()
+    try:
+        return max(1, min(int(raw), 100))
+    except Exception:
+        return 5
+
+
+def stage72_public_signup_email_daily_limit() -> int:
+    raw = (os.getenv("REPLIQ_PUBLIC_SIGNUP_EMAIL_DAILY_LIMIT", "3") or "3").strip()
+    try:
+        return max(1, min(int(raw), 20))
+    except Exception:
+        return 3
+
+
+def stage72_public_signup_secret() -> str:
+    return (os.getenv("REPLIQ_PUBLIC_SIGNUP_SECRET", "") or stage71_owner_session_secret() or stage62_session_secret() or "stage72-dev-fallback").strip()
+
+
+def stage72_client_ip_hash(request: Optional[Request]) -> str:
+    raw_ip = ""
+    try:
+        forwarded = str((request.headers.get("x-forwarded-for") if request else "") or "").split(",")[0].strip()
+        raw_ip = forwarded or str((request.client.host if request and request.client else "") or "").strip()
+    except Exception:
+        raw_ip = ""
+    if not raw_ip:
+        raw_ip = "unknown"
+    secret = stage72_public_signup_secret()
+    return hmac.new(secret.encode("utf-8"), raw_ip.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def stage72_ensure_public_signup_events_table() -> None:
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS public_signup_events (
+                    id TEXT PRIMARY KEY,
+                    tenant_id TEXT,
+                    owner_email TEXT,
+                    ip_hash TEXT,
+                    status TEXT NOT NULL DEFAULT 'received',
+                    reason TEXT,
+                    user_agent TEXT,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                )
+            """))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_public_signup_events_ip_hash_created_at ON public_signup_events(ip_hash, created_at)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_public_signup_events_owner_email_created_at ON public_signup_events(owner_email, created_at)"))
+    except Exception as e:
+        log.error("stage72_ensure_public_signup_events_table_failed err=%s", e)
+        raise
+
+
+def stage72_public_signup_table_exists() -> bool:
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(text("""
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.tables
+                    WHERE table_schema='public' AND table_name=:table_name
+                )
+            """), {"table_name": STAGE72_PUBLIC_SIGNUP_RATE_LIMIT_TABLE}).fetchone()
+        return bool(row and row[0])
+    except Exception:
+        return False
+
+
+def stage72_record_public_signup_event(request: Optional[Request], owner_email: str = "", tenant_id: str = "", status: str = "received", reason: str = "") -> None:
+    try:
+        stage72_ensure_public_signup_events_table()
+        ip_hash = stage72_client_ip_hash(request)
+        ua = str((request.headers.get("user-agent") if request else "") or "")[:240]
+        with engine.begin() as conn:
+            conn.execute(text("""
+                INSERT INTO public_signup_events (id, tenant_id, owner_email, ip_hash, status, reason, user_agent, created_at)
+                VALUES (:id, :tenant_id, :owner_email, :ip_hash, :status, :reason, :user_agent, NOW())
+            """), {
+                "id": "psu_" + uuid.uuid4().hex,
+                "tenant_id": str(tenant_id or "").strip() or None,
+                "owner_email": stage71_normalize_email(owner_email) or None,
+                "ip_hash": ip_hash,
+                "status": str(status or "received")[:40],
+                "reason": str(reason or "")[:160] or None,
+                "user_agent": ua or None,
+            })
+    except Exception as e:
+        log.error("stage72_record_public_signup_event_failed err=%s", e)
+
+
+def stage72_public_signup_rate_limit_check(request: Optional[Request], owner_email: str) -> Dict[str, Any]:
+    try:
+        stage72_ensure_public_signup_events_table()
+        ip_hash = stage72_client_ip_hash(request)
+        email = stage71_normalize_email(owner_email)
+        hourly_limit = stage72_public_signup_hourly_limit()
+        email_daily_limit = stage72_public_signup_email_daily_limit()
+        with engine.connect() as conn:
+            ip_hour_count = conn.execute(text("""
+                SELECT COUNT(*) FROM public_signup_events
+                WHERE ip_hash=:ip_hash AND created_at > NOW() - INTERVAL '1 hour'
+            """), {"ip_hash": ip_hash}).scalar() or 0
+            email_day_count = 0
+            if email:
+                email_day_count = conn.execute(text("""
+                    SELECT COUNT(*) FROM public_signup_events
+                    WHERE owner_email=:owner_email AND created_at > NOW() - INTERVAL '1 day'
+                """), {"owner_email": email}).scalar() or 0
+        if int(ip_hour_count) >= hourly_limit:
+            return {"ok": False, "reason": "public_signup_ip_rate_limit", "hourly_limit": hourly_limit, "ip_hash_exposed": False}
+        if email and int(email_day_count) >= email_daily_limit:
+            return {"ok": False, "reason": "public_signup_email_daily_limit", "email_daily_limit": email_daily_limit, "ip_hash_exposed": False}
+        return {"ok": True, "reason": "ok", "hourly_limit": hourly_limit, "email_daily_limit": email_daily_limit, "ip_hash_exposed": False}
+    except Exception as e:
+        log.error("stage72_public_signup_rate_limit_check_failed err=%s", e)
+        return {"ok": False, "reason": "public_signup_rate_limit_unavailable", "error": e.__class__.__name__, "ip_hash_exposed": False}
+
+
+def stage72_bool_payload(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    raw = str(value or "").strip().lower()
+    return raw in {"1", "true", "yes", "on", "accepted", "agree", "agreed"}
+
+
+def stage72_public_signup_honeypot_value(payload: Dict[str, Any]) -> str:
+    payload = payload or {}
+    for key in ("website", "company_website", "homepage", "_hp", "honeypot"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return key
+    return ""
+
+
+def stage72_public_signup_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) -> Dict[str, Any]:
+    tid = (tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
+    base = (SERVER_BASE_URL or "").rstrip("/")
+    def url(path: str) -> str:
+        return base + path if base else path
+
+    blocking: List[str] = []
+    warnings: List[str] = []
+    try:
+        stage72_ensure_public_signup_events_table()
+    except Exception:
+        blocking.append("public_signup_events_table_unavailable")
+
+    tenant_cols = {c.get("name") for c in tenants_columns()}
+    missing_required_cols = [c for c in ("business_name", "owner_email") if c not in tenant_cols]
+    if "id" not in tenant_cols and "tenant_id" not in tenant_cols:
+        missing_required_cols.append("id_or_tenant_id")
+    if missing_required_cols:
+        blocking.append("tenant_signup_required_columns_missing")
+    if not stage72_public_signup_enabled():
+        blocking.append("public_signup_disabled_by_env")
+    protected_public_paths = [p for p in STAGE72_PUBLIC_SIGNUP_PUBLIC_PATHS if p in STAGE61_PROTECTED_EXACT_PATHS]
+    if protected_public_paths:
+        blocking.append("public_signup_paths_admin_protected")
+    if not stage71_owner_session_secret():
+        blocking.append("owner_session_secret_not_configured")
+    if not stage71_owner_table_exists("owner_accounts") or not stage71_owner_table_exists("owner_tenant_access"):
+        try:
+            stage71_ensure_owner_tables()
+        except Exception:
+            blocking.append("owner_tables_missing_or_unreadable")
+    if not os.getenv("REPLIQ_PUBLIC_SIGNUP_SECRET"):
+        warnings.append("public_signup_secret_uses_owner_session_secret_fallback")
+    if not os.getenv("REPLIQ_OWNER_SESSION_SECRET"):
+        warnings.append("owner_session_secret_falls_back_to_admin_session_secret_private_demo_only")
+    if not SERVER_BASE_URL:
+        warnings.append("server_base_url_missing_for_public_links")
+
+    ready = not blocking
+    return {
+        "stage": "72",
+        "purpose": "Public Signup Boundary / Owner Signup Flow Foundation",
+        "tenant_id": tid,
+        "status": "ready" if ready and not warnings else "attention" if ready else "blocked",
+        "public_signup_boundary_ready": bool(ready),
+        "owner_account_creation_during_signup_ready": bool(ready),
+        "tenant_ownership_binding_during_signup_ready": bool(ready),
+        "admin_token_dependency_for_public_signup": False,
+        "public_saas_ready": False,
+        "public_saas_ready_reason": "false_until_billing_csrf_email_verification_rate_limits_and_full_client_superadmin_separation_are_done",
+        "auth_model": {
+            "public_signup": "public_http_entrypoint_with_honeypot_rate_limits_and_owner_session_cookie",
+            "owner_session_cookie": STAGE71_OWNER_SESSION_COOKIE_NAME,
+            "admin_signup_routes_kept_protected": True,
+        },
+        "public_paths": {
+            "ui": ["/public/signup", "/public/signup/ui"],
+            "api": ["POST /public/signup"],
+            "readiness": ["/public/signup/readiness", "/public/signup/boundary/readiness", "/signup/public/readiness"],
+            "not_admin_protected": not bool(protected_public_paths),
+        },
+        "write_boundary_foundation": {
+            "owner_email_required": True,
+            "terms_acceptance_required": True,
+            "honeypot_field_enabled": True,
+            "ip_rate_limit_enabled": True,
+            "email_daily_limit_enabled": True,
+            "ip_hourly_limit": stage72_public_signup_hourly_limit(),
+            "email_daily_limit": stage72_public_signup_email_daily_limit(),
+            "ip_hash_exposed": False,
+        },
+        "security": {
+            "raw_admin_token_exposed": False,
+            "raw_owner_session_secret_exposed": False,
+            "raw_login_code_hash_exposed": False,
+            "raw_telegram_bot_token_exposed": False,
+            "raw_telegram_webhook_secret_exposed": False,
+            "public_signup_paths_admin_protected": bool(protected_public_paths),
+            "admin_tenant_create_still_protected": "/tenant/create" in STAGE61_PROTECTED_EXACT_PATHS,
+            "legacy_signup_ui_still_admin_protected": "/signup" in STAGE61_PROTECTED_EXACT_PATHS,
+        },
+        "schema": {
+            "public_signup_events_table": bool(stage72_public_signup_table_exists()),
+            "owner_accounts_table": bool(stage71_owner_table_exists("owner_accounts")),
+            "owner_tenant_access_table": bool(stage71_owner_table_exists("owner_tenant_access")),
+            "tenant_columns_missing": missing_required_cols,
+        },
+        "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
+        "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
+        "links": {
+            "public_signup_ui": url("/public/signup"),
+            "public_signup_readiness": url(f"/public/signup/readiness?tenant_id={tid}"),
+            "public_saas_audit": url(f"/public-saas/gap-audit/ui?tenant_id={tid}"),
+        },
+        "note": "Stage 72 opens a dedicated public signup boundary while keeping existing admin/demo tenant creation protected. It creates tenant + owner binding and starts an owner session, but does not make full public SaaS ready yet.",
+    }
+
+
+
+
+
+# -------------------------
 # STAGE 64: SELF-SERVE ONBOARDING WIZARD
 # -------------------------
 def stage64_text_lines(value: Any) -> List[str]:
@@ -16446,6 +16717,102 @@ loadWizard();
 </html>
     """.replace("__TENANT_ID_JSON__", tenant_id_json)
     return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/public/signup", response_class=HTMLResponse)
+@app.get("/public/signup/ui", response_class=HTMLResponse)
+def stage72_public_signup_ui():
+    readiness_json = json.dumps(stage72_public_signup_readiness_payload(), ensure_ascii=False)
+    html = """
+<!doctype html>
+<html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>Repliq Public Signup</title>
+<style>body{font-family:Inter,Arial,sans-serif;background:#f6f7fb;color:#111827;margin:0;padding:24px}.wrap{max-width:880px;margin:0 auto}.hero,.card{background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:20px;margin-bottom:14px}.hero{background:#111827;color:white}.hero p{color:#d1d5db}label{display:block;font-size:13px;font-weight:750;margin:12px 0 6px}input,select{width:100%;box-sizing:border-box;border:1px solid #d1d5db;border-radius:12px;padding:11px}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}button{border:0;background:#111827;color:#fff;border-radius:12px;padding:12px 16px;font-weight:800;cursor:pointer}.secondary{background:white;color:#111827;border:1px solid #d1d5db}.small{color:#6b7280;font-size:12px}.ok{color:#065f46}.err{color:#991b1b}.hidden{display:none}.code{white-space:pre-wrap;background:#0f172a;color:#e2e8f0;border-radius:14px;padding:12px;max-height:320px;overflow:auto;font-family:monospace;font-size:12px}.hp{position:absolute;left:-5000px;top:auto;width:1px;height:1px;overflow:hidden}@media(max-width:760px){.grid{grid-template-columns:1fr}body{padding:12px}}</style>
+</head><body><div class="wrap"><div class="hero"><h1>Start Repliq</h1><p>Stage 72 public signup foundation. Creates tenant, owner account, tenant binding, and owner session. Billing/email verification remain future hardening.</p></div>
+<div class="card"><div id="readiness" class="small"></div><div class="grid"><div><label>Business name *</label><input id="business_name" oninput="suggestSlug()"/></div><div><label>Tenant slug</label><input id="tenant_slug"/></div><div><label>Owner email *</label><input id="owner_email" type="email"/></div><div><label>Phone</label><input id="phone_number"/></div><div><label>Business type</label><select id="business_type"><option value="clinic">clinic</option><option value="barbershop">barbershop</option><option value="salon">salon</option><option value="dentistry">dentistry</option><option value="auto_service">auto_service</option><option value="restaurant">restaurant</option><option value="other">other</option></select></div><div><label>Language</label><select id="language"><option value="lv">Latvian</option><option value="ru">Russian</option><option value="en">English</option></select></div><div><label>Timezone</label><input id="timezone" value="Europe/Riga"/></div><div><label>Work hours</label><div class="grid"><input id="work_start" value="09:00"/><input id="work_end" value="18:00"/></div></div></div><div class="hp"><label>Website</label><input id="website" autocomplete="off" tabindex="-1"/></div><p><label style="display:flex;gap:8px;align-items:flex-start;font-weight:500"><input id="accepted_terms" type="checkbox" style="width:auto"/> I confirm this is a real business signup request.</label></p><button onclick="signup()">Create workspace</button> <span id="status" class="small"></span></div>
+<div class="card hidden" id="result"><h2>Workspace created</h2><div id="summary"></div><p><button onclick="openOwner()">Open owner dashboard</button> <button class="secondary" onclick="copyCode()">Copy login code</button></p><p class="small">Save the owner login code locally. It is shown once. Do not paste it into chat logs.</p><div class="code" id="raw"></div></div></div>
+<script>
+const READINESS=__READINESS_JSON__;let latest=null;function el(id){return document.getElementById(id)}function slugifyTenant(v){return String(v||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9_-]+/g,'_').replace(/[_-]{2,}/g,'_').replace(/^[_-]+|[_-]+$/g,'').slice(0,48)}function suggestSlug(){if(el('tenant_slug').dataset.touched==='1')return;el('tenant_slug').value=slugifyTenant(el('business_name').value)}el('tenant_slug').addEventListener('input',()=>{el('tenant_slug').dataset.touched='1'});function setStatus(t,c='small'){el('status').className=c;el('status').textContent=t}function payload(){return{business_name:el('business_name').value.trim(),tenant_slug:el('tenant_slug').value.trim()||null,owner_email:el('owner_email').value.trim(),phone_number:el('phone_number').value.trim()||null,business_type:el('business_type').value,language:el('language').value,timezone:el('timezone').value.trim()||'Europe/Riga',work_start:el('work_start').value.trim()||'09:00',work_end:el('work_end').value.trim()||'18:00',accepted_terms:el('accepted_terms').checked,website:el('website').value||''}}async function signup(){const p=payload();if(!p.business_name||!p.owner_email){setStatus('Business name and owner email are required.','small err');return}if(!p.accepted_terms){setStatus('Please confirm the checkbox.','small err');return}setStatus('Creating...');const r=await fetch('/public/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});const data=await r.json().catch(()=>({}));latest=data;if(!r.ok||!data.ok){setStatus(data.error||data.detail||'Signup failed','small err');el('raw').textContent=JSON.stringify(data,null,2);return}setStatus('Created. Owner session is active.','small ok');el('result').classList.remove('hidden');el('summary').innerHTML='Tenant: <b>'+data.tenant_id+'</b><br/>Owner: '+data.owner_email+'<br/>Owner session created: '+data.owner_session_created;el('raw').textContent=JSON.stringify(data,null,2)}function openOwner(){if(latest&&latest.links&&latest.links.owner_dashboard){window.location=latest.links.owner_dashboard}}async function copyCode(){if(!latest||!latest.owner_login_code)return;try{await navigator.clipboard.writeText(latest.owner_login_code)}catch(e){}}el('readiness').textContent='readiness: '+(READINESS.status||'-')+' · public_signup_boundary_ready='+READINESS.public_signup_boundary_ready+' · public_saas_ready='+READINESS.public_saas_ready;
+</script></body></html>
+    """.replace("__READINESS_JSON__", readiness_json)
+    return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/public/signup")
+async def stage72_public_signup_submit(request: Request):
+    try:
+        data = await request.json()
+    except Exception:
+        raw = (await request.body()).decode("utf-8", errors="ignore")
+        data = {k: v[-1] if v else "" for k, v in urllib.parse.parse_qs(raw).items()}
+    data = dict(data or {})
+    owner_email = stage71_normalize_email(data.get("owner_email") or data.get("email") or "")
+
+    def reject(status_code: int, error: str):
+        stage72_record_public_signup_event(request, owner_email=owner_email, tenant_id=str(data.get("tenant_slug") or data.get("tenant_id") or ""), status="rejected", reason=error)
+        return JSONResponse(status_code=status_code, content={"ok": False, "stage": "72", "error": error, "public_saas_ready": False, "secret_values_exposed": False}, headers={"Cache-Control": "no-store"})
+
+    if not stage72_public_signup_enabled():
+        return reject(503, "public_signup_disabled")
+    if stage72_public_signup_honeypot_value(data):
+        return reject(400, "public_signup_rejected")
+    if not stage72_bool_payload(data.get("accepted_terms")):
+        return reject(400, "accepted_terms_required")
+    if not stage71_valid_email(owner_email):
+        return reject(400, "owner_email_required_or_invalid")
+    rate = stage72_public_signup_rate_limit_check(request, owner_email)
+    if not rate.get("ok"):
+        return reject(429, str(rate.get("reason") or "public_signup_rate_limited"))
+
+    create_payload = dict(data)
+    create_payload["owner_email"] = owner_email
+    try:
+        created = onboarding_create_tenant(create_payload)
+        tenant_id = str(created.get("tenant_id") or "").strip()
+        if not tenant_id:
+            return reject(500, "tenant_create_missing_tenant_id")
+        owner_bootstrap = stage71_bootstrap_owner_for_tenant(tenant_id=tenant_id, owner_email=owner_email, display_name=str(data.get("owner_name") or data.get("business_name") or "").strip(), regenerate_code=True)
+    except HTTPException as e:
+        detail = e.detail if isinstance(e.detail, str) else json.dumps(e.detail, ensure_ascii=False)
+        return reject(int(e.status_code or 400), detail[:160])
+    except ValueError as e:
+        return reject(400, str(e))
+    except Exception as e:
+        log.error("stage72_public_signup_failed err=%s", e)
+        return reject(500, e.__class__.__name__)
+
+    stage72_record_public_signup_event(request, owner_email=owner_email, tenant_id=tenant_id, status="created", reason="ok")
+    next_path = f"/owner/dashboard/ui?tenant_id={urllib.parse.quote(tenant_id)}"
+    content = {
+        "ok": True,
+        "stage": "72",
+        "status": "ok",
+        "tenant_id": tenant_id,
+        "business_name": created.get("business_name"),
+        "owner_email": owner_email,
+        "owner_session_created": True,
+        "owner_login_code": owner_bootstrap.get("login_code"),
+        "owner_login_code_returned_once": bool(owner_bootstrap.get("login_code")),
+        "login_code_hash_exposed": False,
+        "secret_values_exposed": False,
+        "public_saas_ready": False,
+        "public_saas_ready_reason": "false_until_billing_csrf_email_verification_rate_limits_and_full_client_superadmin_separation_are_done",
+        "onboarding": created.get("onboarding"),
+        "readiness": created.get("readiness"),
+        "links": {
+            "owner_dashboard": next_path,
+            "owner_login": f"/owner/login?tenant_id={urllib.parse.quote(tenant_id)}",
+            "onboarding_wizard": f"/onboarding/wizard/ui?tenant_id={urllib.parse.quote(tenant_id)}",
+            "control_center": f"/control-center/ui?tenant_id={urllib.parse.quote(tenant_id)}",
+            "tenant_config": f"/tenant/config/ui?tenant_id={urllib.parse.quote(tenant_id)}",
+            "public_signup_readiness": f"/public/signup/readiness?tenant_id={urllib.parse.quote(tenant_id)}",
+            "public_saas_audit": f"/public-saas/gap-audit/ui?tenant_id={urllib.parse.quote(tenant_id)}",
+        },
+        "rate_limit": {"ip_hash_exposed": False, "hourly_limit": stage72_public_signup_hourly_limit(), "email_daily_limit": stage72_public_signup_email_daily_limit()},
+        "note": "Stage 72 returns the owner login code once for this foundation build and also sets an HttpOnly owner session cookie. Save the code locally; do not paste it into chat logs.",
+    }
+    response = JSONResponse(content=content, headers={"Cache-Control": "no-store"})
+    stage71_set_owner_session_cookie(response, owner_email=owner_email, tenant_id=tenant_id, role="owner")
+    return response
 
 
 @app.get("/signup", response_class=HTMLResponse)

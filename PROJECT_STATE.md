@@ -623,3 +623,61 @@ Expected verification:
 - public_saas_ready remains false by design.
 
 Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, dialogue QA evaluator, and voice/calls were not changed.
+
+## Stage 72 — Public Signup Boundary / Owner Signup Flow Foundation
+
+Status: implemented in archive, awaiting deploy verification.
+
+Scope:
+- Added dedicated public signup boundary endpoints that are not Stage 61 admin-token protected:
+  - `GET /public/signup`
+  - `GET /public/signup/ui`
+  - `POST /public/signup`
+  - `GET /public/signup/readiness`
+  - `GET /public/signup/boundary/readiness`
+  - `GET /signup/public/readiness`
+- Kept existing legacy/admin tenant creation routes protected:
+  - `/signup`
+  - `/signup/ui`
+  - `/tenant/create`
+  - `/tenant/create/ui`
+  - `/onboarding/create_tenant`
+- Public signup creates:
+  - tenant/business profile through the existing Stage 63 creation path;
+  - owner account through Stage 71 owner auth foundation;
+  - owner-to-tenant binding;
+  - signed owner session cookie;
+  - one-time owner login code for the foundation flow.
+- Added public signup event/rate-limit table:
+  - `public_signup_events`
+- Added foundation write-boundary checks:
+  - owner email required;
+  - accepted terms required;
+  - honeypot field check;
+  - IP-hash hourly limit;
+  - owner-email daily limit;
+  - raw IP hash not exposed in responses.
+- Integrated Stage 72 readiness into:
+  - `/internal/readiness` as `public_signup_boundary_readiness`;
+  - Stage 70 public SaaS gap audit.
+- Updated Stage 70 public signup gap from `not_public_yet` to `foundation` when Stage 72 readiness is OK.
+- `public_saas_ready` remains false by design.
+
+Still not done before full public SaaS:
+- billing/subscription gate;
+- email verification or magic-link auth;
+- CSRF hardening for owner browser writes;
+- production-grade rate limits/abuse controls;
+- full client-owner vs super-admin surface separation.
+
+Expected verification:
+- `/dialogue/qa` = 50/50 passed.
+- `/public/signup/readiness?tenant_id=clinic_demo` returns `stage=72` and `public_signup_boundary_ready=true` unless disabled by env.
+- `/public/signup` opens without admin login/token.
+- `/signup` and `/tenant/create` remain admin protected.
+- Public signup creates a new test tenant, creates owner binding, sets owner session cookie, and opens `/owner/dashboard/ui?tenant_id=<new_tenant>`.
+- Owner login code hash is not exposed.
+- Admin token and system secrets are not exposed.
+- `/public-saas/readiness?tenant_id=clinic_demo` shows public signup boundary as foundation while `public_saas_ready=false` remains.
+
+Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, dialogue QA evaluator, and voice/calls were not changed.
