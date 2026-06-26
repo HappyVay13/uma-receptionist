@@ -602,3 +602,24 @@ Summary:
 - public_saas_ready remains false by design.
 - Receptionist core, booking, calendar runtime, Telegram runtime, and dialogue QA evaluator were not changed.
 
+
+## Stage 71.1 — Owner Readiness / Tenant Context Fix
+
+Status: implemented in archive, awaiting deploy verification.
+
+Scope:
+- Added safe `owner_email` tenant column migration via `ALTER TABLE IF NOT EXISTS`.
+- Updated owner bootstrap/bind flow to sync `owner_email` into tenant profile when the field is empty.
+- Updated owner readiness so an active `owner_tenant_access` binding is enough to satisfy ownership readiness even if legacy tenant profile was missing `owner_email`.
+- Added Owner email field to Tenant Config UI and update payload.
+- Improved tenant context resolution for owner/auth/dashboard, tenant config, control center, public SaaS audit, admin login and dashboard surfaces so `clinic_demo` context is preserved instead of falling back to `default` when a session/query/default-demo tenant is available.
+
+Expected verification:
+- `/dialogue/qa` = 50/50 passed.
+- `/owner/auth/readiness?tenant_id=clinic_demo` no longer shows `tenant_owner_email_missing` after bootstrap/bind or owner_email save.
+- `/tenant/config/ui?tenant_id=clinic_demo` shows Owner email and saves it without exposing codes/secrets.
+- Owner dashboard/login/session still work with `clinic_demo`.
+- Control Center / Tenant config / Dashboard default to `clinic_demo` when opened from a `clinic_demo` session or explicit query.
+- public_saas_ready remains false by design.
+
+Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, dialogue QA evaluator, and voice/calls were not changed.

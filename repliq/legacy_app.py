@@ -1362,6 +1362,7 @@ def ensure_tenants_lifecycle_columns() -> None:
             conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS plan TEXT"))
             conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS dialogs_per_month INTEGER"))
             conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS trial_end TIMESTAMPTZ"))
+            conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS owner_email TEXT"))
             conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS telegram_bot_token TEXT"))
             conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS telegram_webhook_secret TEXT"))
             conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS telegram_webhook_url TEXT"))
@@ -1701,6 +1702,81 @@ def get_tenant_or_404(tenant_id: str) -> Dict[str, Any]:
 
 
 # -------------------------
+# STAGE 71.1: OWNER READINESS / TENANT CONTEXT HOTFIX HELPERS
+# -------------------------
+
+def stage711_private_demo_tenant_id() -> str:
+    for env_name in ("REPLIQ_UI_DEFAULT_TENANT_ID", "REPLIQ_PRIVATE_DEMO_TENANT_ID", "TEST_TENANT_ID", "TELEGRAM_DEFAULT_TENANT_ID"):
+        value = (os.getenv(env_name, "") or "").strip()
+        if value:
+            return value
+    try:
+        if str(TENANT_ID_DEFAULT or "").strip() == "default" and get_existing_tenant("clinic_demo").get("_id"):
+            return "clinic_demo"
+    except Exception:
+        pass
+    return (TENANT_ID_DEFAULT or "default").strip() or "default"
+
+
+def stage711_resolve_tenant_context(request: Optional[Request] = None, tenant_id: str = "") -> str:
+    try:
+        if request is not None and "tenant_id" in request.query_params:
+            requested = str(request.query_params.get("tenant_id") or "").strip()
+            if requested:
+                return requested
+    except Exception:
+        pass
+
+    candidate = str(tenant_id or "").strip()
+    if candidate and candidate != str(TENANT_ID_DEFAULT or "").strip():
+        return candidate
+
+    try:
+        owner_session = stage71_request_owner_session_payload(request) if request is not None else None
+        owner_tid = str((owner_session or {}).get("tenant_id") or "").strip()
+        if owner_tid and owner_tid != str(TENANT_ID_DEFAULT or "").strip():
+            return owner_tid
+    except Exception:
+        pass
+
+    try:
+        admin_session = stage62_request_session_payload(request) if request is not None else None
+        admin_tid = str((admin_session or {}).get("tenant_id") or "").strip()
+        if admin_tid and admin_tid != str(TENANT_ID_DEFAULT or "").strip():
+            return admin_tid
+    except Exception:
+        pass
+
+    preferred = stage711_private_demo_tenant_id()
+    if preferred:
+        return preferred
+    return candidate or (TENANT_ID_DEFAULT or "default")
+
+
+def stage711_sync_tenant_owner_email(tenant_id: str, owner_email: str, only_if_empty: bool = True) -> bool:
+    tid = str(tenant_id or "").strip()
+    email = stage71_normalize_email(owner_email)
+    if not tid or not stage71_valid_email(email):
+        return False
+    try:
+        cols = tenants_columns()
+        col_names = {c.get("name") for c in cols}
+        if "owner_email" not in col_names:
+            return False
+        pk = tenants_pk(cols)
+        where_extra = " AND (owner_email IS NULL OR owner_email='')" if only_if_empty else ""
+        with engine.begin() as conn:
+            result = conn.execute(
+                text(f"UPDATE tenants SET owner_email=:email WHERE {pk}=:tid{where_extra}"),
+                {"email": email, "tid": tid},
+            )
+        return bool(getattr(result, "rowcount", 0) or 0)
+    except Exception as e:
+        log.error("stage711_sync_tenant_owner_email_failed tenant_id=%s err=%s", tid, e)
+        return False
+
+
+# -------------------------
 # STAGE 71: OWNER AUTH / TENANT OWNERSHIP FOUNDATION HELPERS
 # -------------------------
 
@@ -1928,13 +2004,15 @@ def stage71_bootstrap_owner_for_tenant(tenant_id: str, owner_email: str = "", di
     login_code = stage71_make_owner_login_code() if regenerate_code else ""
     owner = stage71_upsert_owner_account(email=email, display_name=display_name or tenant.get("business_name") or "", login_code=login_code)
     binding = stage71_bind_owner_to_tenant(email=email, tenant_id=tenant_id, role="owner")
+    tenant_owner_email_synced = stage711_sync_tenant_owner_email(tenant_id, email, only_if_empty=True)
     return {
         "ok": True,
-        "stage": "71",
+        "stage": "71.1",
         "tenant_id": tenant_id,
         "owner_email": email,
         "owner_account": owner,
         "tenant_binding": binding,
+        "tenant_owner_email_synced": bool(tenant_owner_email_synced),
         "login_code": login_code or None,
         "login_code_returned_once": bool(login_code),
         "login_code_hash_exposed": False,
@@ -1985,16 +2063,26 @@ def stage71_owner_auth_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) -> 
 
     tenant = get_existing_tenant(tid)
     tenant_found = bool(tenant.get("_id"))
-    owner_email = stage71_normalize_email(tenant.get("owner_email") or "") if tenant_found else ""
+    tenant_owner_email = stage71_normalize_email(tenant.get("owner_email") or "") if tenant_found else ""
     tables_ok = False
     table_error = ""
+    tenant_binding_rows: List[Dict[str, Any]] = []
     try:
         stage71_ensure_owner_tables()
         tables_ok = bool(stage71_owner_table_exists("owner_accounts") and stage71_owner_table_exists("owner_tenant_access"))
+        if tables_ok and tenant_found:
+            tenant_binding_rows = stage71_owner_tenant_access_rows(tenant_id=tid)
     except Exception as e:
         table_error = e.__class__.__name__
+    binding_owner_email = ""
+    for row in tenant_binding_rows:
+        if str(row.get("status") or "active") == "active" and stage71_valid_email(row.get("owner_email")):
+            binding_owner_email = stage71_normalize_email(row.get("owner_email"))
+            break
+    owner_email = tenant_owner_email or binding_owner_email
+    owner_email_source = "tenant.owner_email" if tenant_owner_email else "owner_tenant_access" if binding_owner_email else "missing"
     owner_account = stage71_get_owner_account(owner_email) if owner_email and tables_ok else {}
-    bindings = stage71_owner_tenant_access_rows(email=owner_email, tenant_id=tid) if owner_email and tables_ok else []
+    bindings = stage71_owner_tenant_access_rows(email=owner_email, tenant_id=tid) if owner_email and tables_ok else tenant_binding_rows
     has_owner_binding = bool(bindings)
 
     admin_required_paths = ["/owner/auth/readiness", "/owner/accounts", "/owner/accounts/bootstrap", "/tenant/owner/bind"]
@@ -2026,8 +2114,8 @@ def stage71_owner_auth_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) -> 
     ready = bool(tables_ok and stage71_owner_session_secret() and not missing_admin_protection and not missing_owner_protection)
     owner_login_ready = bool(ready and owner_account and has_owner_binding and owner_account.get("has_login_code"))
     return {
-        "stage": "71",
-        "purpose": "Owner Auth / Public Client Account Foundation",
+        "stage": "71.1",
+        "purpose": "Owner Readiness / Tenant Context Fix",
         "tenant_id": tid,
         "status": "ready" if owner_login_ready and not warnings else "attention" if ready else "blocked",
         "owner_auth_foundation_ready": bool(ready),
@@ -2045,7 +2133,7 @@ def stage71_owner_auth_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) -> 
             "login_code_hash_exposed": False,
             "login_code_value_exposed_by_readiness": False,
         },
-        "tenant": {"found": bool(tenant_found), "owner_email_configured": bool(owner_email), "owner_email": owner_email if owner_email else None},
+        "tenant": {"found": bool(tenant_found), "owner_email_configured": bool(tenant_owner_email), "owner_email": tenant_owner_email if tenant_owner_email else None, "effective_owner_email": owner_email if owner_email else None, "owner_email_source": owner_email_source},
         "schema": {"owner_accounts_table": bool(stage71_owner_table_exists("owner_accounts")), "owner_tenant_access_table": bool(stage71_owner_table_exists("owner_tenant_access")), "table_error": table_error or None},
         "owner_account": owner_account if owner_account else {"email": owner_email or None, "exists": False, "login_code_hash_exposed": False},
         "tenant_bindings": bindings,
@@ -13653,8 +13741,8 @@ def admin_access_enforcement_readiness(tenant_id: str = TENANT_ID_DEFAULT):
 
 
 @app.get("/admin/login", response_class=HTMLResponse)
-def admin_login_ui(tenant_id: str = TENANT_ID_DEFAULT, next: str = ""):
-    tenant_id_clean = (tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
+def admin_login_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT, next: str = ""):
+    tenant_id_clean = stage711_resolve_tenant_context(request, tenant_id)
     next_path = stage62_safe_local_path(next or f"/tenant/config/ui?tenant_id={tenant_id_clean}", tenant_id_clean)
     tenant_id_json = json.dumps(tenant_id_clean, ensure_ascii=False)
     next_json = json.dumps(next_path, ensure_ascii=False)
@@ -13727,7 +13815,7 @@ async def admin_login_submit(request: Request):
         raw = (await request.body()).decode("utf-8", errors="ignore")
         data = {k: v[-1] if v else "" for k, v in urllib.parse.parse_qs(raw).items()}
     token = str((data or {}).get("admin_token") or (data or {}).get("token") or "").strip()
-    tenant_id = str((data or {}).get("tenant_id") or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
+    tenant_id = stage711_resolve_tenant_context(request, str((data or {}).get("tenant_id") or ""))
     next_path = stage62_safe_local_path(str((data or {}).get("next") or ""), tenant_id)
     if not stage61_admin_token_configured():
         return JSONResponse(status_code=503, content={"ok": False, "stage": "62", "error": "admin_token_not_configured"}, headers={"Cache-Control": "no-store"})
@@ -13788,24 +13876,24 @@ def admin_session_readiness(tenant_id: str = TENANT_ID_DEFAULT):
 @app.get("/owner/auth/readiness")
 @app.get("/owner/readiness")
 @app.get("/tenant/owner/readiness")
-def owner_auth_readiness(tenant_id: str = TENANT_ID_DEFAULT):
-    return stage71_owner_auth_readiness_payload(tenant_id=tenant_id)
+def owner_auth_readiness(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
+    return stage71_owner_auth_readiness_payload(tenant_id=stage711_resolve_tenant_context(request, tenant_id))
 
 
 @app.get("/owner/accounts")
-def owner_accounts_admin(tenant_id: str = TENANT_ID_DEFAULT, owner_email: str = ""):
-    tid = (tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
+def owner_accounts_admin(request: Request, tenant_id: str = TENANT_ID_DEFAULT, owner_email: str = ""):
+    tid = stage711_resolve_tenant_context(request, tenant_id)
     email = stage71_normalize_email(owner_email)
     account = stage71_get_owner_account(email) if email else {}
-    return {"ok": True, "stage": "71", "tenant_id": tid, "owner_email_filter": email or None, "accounts": [account] if account else [], "tenant_bindings": stage71_owner_tenant_access_rows(email=email, tenant_id=tid), "login_code_hash_exposed": False}
+    return {"ok": True, "stage": "71.1", "tenant_id": tid, "owner_email_filter": email or None, "accounts": [account] if account else [], "tenant_bindings": stage71_owner_tenant_access_rows(email=email, tenant_id=tid), "login_code_hash_exposed": False}
 
 
 @app.post("/owner/accounts/bootstrap")
-def owner_accounts_bootstrap(payload: dict = Body(...)):
+def owner_accounts_bootstrap(request: Request, payload: dict = Body(...)):
     data = payload or {}
     try:
         return stage71_bootstrap_owner_for_tenant(
-            tenant_id=str(data.get("tenant_id") or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT,
+            tenant_id=stage711_resolve_tenant_context(request, str(data.get("tenant_id") or "")),
             owner_email=stage71_normalize_email(data.get("owner_email") or ""),
             display_name=str(data.get("display_name") or "").strip(),
             regenerate_code=bool(data.get("regenerate_code", True)),
@@ -13815,21 +13903,22 @@ def owner_accounts_bootstrap(payload: dict = Body(...)):
 
 
 @app.post("/tenant/owner/bind")
-def tenant_owner_bind(payload: dict = Body(...)):
+def tenant_owner_bind(request: Request, payload: dict = Body(...)):
     data = payload or {}
-    tenant_id = str(data.get("tenant_id") or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
+    tenant_id = stage711_resolve_tenant_context(request, str(data.get("tenant_id") or ""))
     owner_email = stage71_normalize_email(data.get("owner_email") or "")
     try:
         owner = stage71_upsert_owner_account(owner_email, display_name=str(data.get("display_name") or "").strip())
         binding = stage71_bind_owner_to_tenant(owner_email, tenant_id, role=str(data.get("role") or "owner"))
+        tenant_owner_email_synced = stage711_sync_tenant_owner_email(tenant_id, owner_email, only_if_empty=True)
     except ValueError as e:
         raise HTTPException(status_code=400, detail={"stage": "71", "error": str(e)})
-    return {"ok": True, "stage": "71", "tenant_id": tenant_id, "owner_account": owner, "tenant_binding": binding, "login_code_hash_exposed": False}
+    return {"ok": True, "stage": "71.1", "tenant_id": tenant_id, "owner_account": owner, "tenant_binding": binding, "tenant_owner_email_synced": bool(tenant_owner_email_synced), "login_code_hash_exposed": False}
 
 
 @app.get("/owner/login", response_class=HTMLResponse)
-def owner_login_ui(tenant_id: str = TENANT_ID_DEFAULT, next: str = ""):
-    tenant_id_clean = (tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
+def owner_login_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT, next: str = ""):
+    tenant_id_clean = stage711_resolve_tenant_context(request, tenant_id)
     next_path = stage62_safe_local_path(next or f"/owner/dashboard/ui?tenant_id={tenant_id_clean}", tenant_id_clean)
     tenant_json = json.dumps(tenant_id_clean, ensure_ascii=False)
     next_json = json.dumps(next_path, ensure_ascii=False)
@@ -13855,7 +13944,7 @@ async def owner_login_submit(request: Request):
     except Exception:
         raw = (await request.body()).decode("utf-8", errors="ignore")
         data = {k: v[-1] if v else "" for k, v in urllib.parse.parse_qs(raw).items()}
-    tenant_id = str((data or {}).get("tenant_id") or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
+    tenant_id = stage711_resolve_tenant_context(request, str((data or {}).get("tenant_id") or ""))
     owner_email = stage71_normalize_email((data or {}).get("owner_email") or (data or {}).get("email") or "")
     login_code = str((data or {}).get("login_code") or (data or {}).get("code") or "").strip()
     next_path = stage62_safe_local_path(str((data or {}).get("next") or f"/owner/dashboard/ui?tenant_id={tenant_id}"), tenant_id)
@@ -13885,8 +13974,7 @@ def owner_logout_api():
 @app.get("/owner/session")
 def owner_session_status(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
     session = stage71_request_owner_session_payload(request)
-    requested_tid = str(request.query_params.get("tenant_id") or "").strip()
-    tid = requested_tid or str((session or {}).get("tenant_id") or tenant_id or TENANT_ID_DEFAULT).strip()
+    tid = stage711_resolve_tenant_context(request, tenant_id)
     authenticated = bool(session and stage71_owner_has_tenant_access(session.get("owner_email") or "", tid))
     return {"ok": True, "stage": "71", "authenticated": authenticated, "auth_model": "signed_owner_session_cookie" if session else "none", "tenant_id": tid, "owner_email": (session or {}).get("owner_email") if authenticated else None, "role": (session or {}).get("role") if authenticated else None, "expires_at": datetime.utcfromtimestamp(int(session.get("exp"))).isoformat() + "Z" if session and session.get("exp") else None, "session_cookie": STAGE71_OWNER_SESSION_COOKIE_NAME, "login_code_value_exposed": False, "login_code_hash_exposed": False}
 
@@ -13894,13 +13982,13 @@ def owner_session_status(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
 @app.get("/owner/dashboard")
 @app.get("/owner/control-center")
 def owner_dashboard_json(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
-    return stage71_owner_dashboard_payload(request=request, tenant_id=tenant_id)
+    return stage71_owner_dashboard_payload(request=request, tenant_id=stage711_resolve_tenant_context(request, tenant_id))
 
 
 @app.get("/owner/dashboard/ui", response_class=HTMLResponse)
 @app.get("/owner/control-center/ui", response_class=HTMLResponse)
 def owner_dashboard_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
-    tenant_json = json.dumps((tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT)
+    tenant_json = json.dumps(stage711_resolve_tenant_context(request, tenant_id), ensure_ascii=False)
     html = r'''
 <!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Repliq Owner Dashboard</title>
 <style>body{font-family:Inter,system-ui,-apple-system,Segoe UI,Arial,sans-serif;background:#f6f7fb;color:#111827;margin:0;padding:24px}.wrap{max-width:1000px;margin:0 auto}.hero,.card{background:white;border:1px solid #e5e7eb;border-radius:18px;padding:18px;margin:14px 0;box-shadow:0 8px 25px rgba(17,24,39,.05)}.hero{display:flex;justify-content:space-between;gap:18px;align-items:flex-start}.sub,.muted{color:#64748b;font-size:14px;line-height:1.45}h1{margin:0 0 6px;font-size:32px;letter-spacing:-.03em}h2{margin:0 0 12px}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.badge{display:inline-block;border-radius:999px;padding:5px 9px;background:#e5e7eb;font-size:12px;font-weight:700;margin:3px 4px 3px 0}.badge.ok{background:#dcfce7;color:#166534}.badge.warn{background:#fef3c7;color:#92400e}button{border:0;border-radius:12px;padding:10px 13px;background:#111827;color:white;font-weight:750;cursor:pointer}.secondary{background:#e5e7eb;color:#111827}input{box-sizing:border-box;border:1px solid #cbd5e1;border-radius:12px;padding:10px;font-size:14px}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}pre{background:#0f172a;color:#e2e8f0;border-radius:14px;padding:14px;max-height:520px;overflow:auto;white-space:pre-wrap}@media(max-width:900px){body{padding:12px}.hero{display:block}.grid{grid-template-columns:1fr}}</style></head>
@@ -14425,23 +14513,23 @@ el('tenant_id').value=DEFAULT_TENANT_ID; loadSetup();
 
 @app.get("/control-center/readiness")
 @app.get("/self-serve/control-center/readiness")
-def stage69_control_center_readiness(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
-    return stage69_client_control_center_payload(tenant_id=tenant_id, days=days)
+def stage69_control_center_readiness(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    return stage69_client_control_center_payload(tenant_id=stage711_resolve_tenant_context(request, tenant_id), days=days)
 
 
 @app.get("/control-center")
 @app.get("/self-serve/control-center")
 @app.get("/client/dashboard")
 @app.get("/client/control-center")
-def stage69_control_center_json(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
-    return stage69_client_control_center_payload(tenant_id=tenant_id, days=days)
+def stage69_control_center_json(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    return stage69_client_control_center_payload(tenant_id=stage711_resolve_tenant_context(request, tenant_id), days=days)
 
 
 @app.get("/control-center/ui", response_class=HTMLResponse)
 @app.get("/client/dashboard/ui", response_class=HTMLResponse)
 @app.get("/client/control-center/ui", response_class=HTMLResponse)
-def stage69_control_center_ui(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
-    tenant_json = json.dumps((tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT)
+def stage69_control_center_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    tenant_json = json.dumps(stage711_resolve_tenant_context(request, tenant_id), ensure_ascii=False)
     days_json = json.dumps(max(1, min(int(days or 14), 60)))
     html = r'''
 <!doctype html>
@@ -14548,16 +14636,16 @@ loadCenter();
 @app.get("/public-saas/gap-audit")
 @app.get("/saas/public-readiness")
 @app.get("/launch/public-readiness")
-def stage70_public_saas_gap_audit_json(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
-    return stage70_public_saas_gap_audit_payload(tenant_id=tenant_id, days=days)
+def stage70_public_saas_gap_audit_json(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    return stage70_public_saas_gap_audit_payload(tenant_id=stage711_resolve_tenant_context(request, tenant_id), days=days)
 
 
 @app.get("/public-saas/gap-audit/ui", response_class=HTMLResponse)
 @app.get("/public-saas/readiness/ui", response_class=HTMLResponse)
 @app.get("/saas/public-readiness/ui", response_class=HTMLResponse)
 @app.get("/launch/public-readiness/ui", response_class=HTMLResponse)
-def stage70_public_saas_gap_audit_ui(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
-    tenant_json = json.dumps((tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT)
+def stage70_public_saas_gap_audit_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    tenant_json = json.dumps(stage711_resolve_tenant_context(request, tenant_id), ensure_ascii=False)
     days_json = json.dumps(max(1, min(int(days or 14), 60)))
     html = r"""
 <!doctype html>
@@ -16901,8 +16989,8 @@ def dashboard_analytics(tenant_id: str) -> Dict[str, Any]:
 
 @app.get("/dashboard/bookings")
 @app.get("/bookings")
-def dashboard_bookings(tenant_id: str = TENANT_ID_DEFAULT, limit: int = 50):
-    tenant = get_tenant((tenant_id or '').strip() or TENANT_ID_DEFAULT)
+def dashboard_bookings(request: Request, tenant_id: str = TENANT_ID_DEFAULT, limit: int = 50):
+    tenant = get_tenant(stage711_resolve_tenant_context(request, tenant_id))
     if not tenant.get('_id'):
         raise HTTPException(status_code=404, detail='Tenant not found')
     return {
@@ -16912,8 +17000,8 @@ def dashboard_bookings(tenant_id: str = TENANT_ID_DEFAULT, limit: int = 50):
 
 @app.get("/dashboard/conversations")
 @app.get("/conversations")
-def dashboard_conversations(tenant_id: str = TENANT_ID_DEFAULT, limit: int = 100):
-    tenant = get_tenant((tenant_id or '').strip() or TENANT_ID_DEFAULT)
+def dashboard_conversations(request: Request, tenant_id: str = TENANT_ID_DEFAULT, limit: int = 100):
+    tenant = get_tenant(stage711_resolve_tenant_context(request, tenant_id))
     if not tenant.get('_id'):
         raise HTTPException(status_code=404, detail='Tenant not found')
     return {
@@ -16923,24 +17011,24 @@ def dashboard_conversations(tenant_id: str = TENANT_ID_DEFAULT, limit: int = 100
 
 @app.get("/dashboard/analytics")
 @app.get("/analytics")
-def dashboard_analytics_endpoint(tenant_id: str = TENANT_ID_DEFAULT):
-    tenant = get_tenant((tenant_id or '').strip() or TENANT_ID_DEFAULT)
+def dashboard_analytics_endpoint(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
+    tenant = get_tenant(stage711_resolve_tenant_context(request, tenant_id))
     if not tenant.get('_id'):
         raise HTTPException(status_code=404, detail='Tenant not found')
     return dashboard_analytics(tenant.get('_id'))
 
 @app.get("/dashboard/usage")
 @app.get("/usage")
-def dashboard_usage_endpoint(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
-    tenant = get_tenant((tenant_id or '').strip() or TENANT_ID_DEFAULT)
+def dashboard_usage_endpoint(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    tenant = get_tenant(stage711_resolve_tenant_context(request, tenant_id))
     if not tenant.get('_id'):
         raise HTTPException(status_code=404, detail='Tenant not found')
     return dashboard_usage_summary(tenant.get('_id'), days=days)
 
 @app.get("/dashboard/activity")
 @app.get("/activity")
-def dashboard_activity_endpoint(tenant_id: str = TENANT_ID_DEFAULT, limit: int = 25):
-    tenant = get_tenant((tenant_id or '').strip() or TENANT_ID_DEFAULT)
+def dashboard_activity_endpoint(request: Request, tenant_id: str = TENANT_ID_DEFAULT, limit: int = 25):
+    tenant = get_tenant(stage711_resolve_tenant_context(request, tenant_id))
     if not tenant.get('_id'):
         raise HTTPException(status_code=404, detail='Tenant not found')
     return {
@@ -16950,8 +17038,8 @@ def dashboard_activity_endpoint(tenant_id: str = TENANT_ID_DEFAULT, limit: int =
 
 @app.get("/dashboard/chart-data")
 @app.get("/chart-data")
-def dashboard_chart_data_endpoint(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
-    tenant = get_tenant((tenant_id or '').strip() or TENANT_ID_DEFAULT)
+def dashboard_chart_data_endpoint(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    tenant = get_tenant(stage711_resolve_tenant_context(request, tenant_id))
     if not tenant.get('_id'):
         raise HTTPException(status_code=404, detail='Tenant not found')
     usage = dashboard_usage_summary(tenant.get('_id'), days=days)
@@ -16964,8 +17052,8 @@ def dashboard_chart_data_endpoint(tenant_id: str = TENANT_ID_DEFAULT, days: int 
     }
 
 @app.get("/dashboard", response_class=HTMLResponse)
-def dashboard_ui(tenant_id: str = TENANT_ID_DEFAULT):
-    tenant_id = (tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
+def dashboard_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
+    tenant_id = stage711_resolve_tenant_context(request, tenant_id)
     html = f"""
 <!DOCTYPE html>
 <html lang="en">
@@ -17424,8 +17512,8 @@ document.addEventListener('DOMContentLoaded', loadAll);
 
 
 @app.get("/tenant/config/ui")
-def tenant_config_ui(tenant_id: str = TENANT_ID_DEFAULT):
-    tenant_id = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+def tenant_config_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
+    tenant_id = stage711_resolve_tenant_context(request, tenant_id)
     tenant_id_json = json.dumps(tenant_id, ensure_ascii=False)
     html = """
 <!doctype html>
@@ -17537,6 +17625,7 @@ summary { cursor:pointer; font-weight:800; }
     <h2>Basic business settings</h2>
     <div class="grid">
       <div><label>Business name <span class="hint">shown in dashboard/demo</span></label><input id="business_name"/></div>
+      <div><label>Owner email <span class="hint">used for owner login/readiness</span></label><input id="owner_email" type="email" placeholder="owner@business.com"/></div>
       <div><label>Phone number <span class="hint">optional route</span></label><input id="phone_number"/></div>
       <div><label>Timezone</label><input id="timezone" placeholder="Europe/Riga"/></div>
       <div><label>Primary language</label><select id="language"><option value="lv">Latvian (lv)</option><option value="ru">Russian (ru)</option><option value="en">English (en)</option></select></div>
@@ -17770,6 +17859,7 @@ async function loadConfig(){
   lastConfig = data;
   const t = data.tenant || {};
   document.getElementById('business_name').value = t.business_name || '';
+  document.getElementById('owner_email').value = t.owner_email || '';
   document.getElementById('phone_number').value = t.phone_number || '';
   document.getElementById('timezone').value = t.timezone || '';
   document.getElementById('language').value = t.language || 'lv';
@@ -17803,6 +17893,7 @@ async function saveConfig(){
     const payload = {
       tenant_id: tid,
       business_name: document.getElementById('business_name').value || null,
+      owner_email: document.getElementById('owner_email').value || null,
       phone_number: document.getElementById('phone_number').value || null,
       timezone: document.getElementById('timezone').value || null,
       language: document.getElementById('language').value || null,
@@ -17879,6 +17970,7 @@ def _sync_weekly_hours_with_fallback_bounds(
 class TenantConfigUpdateRequest(BaseModel):
     tenant_id: str
     business_name: Optional[str] = None
+    owner_email: Optional[str] = None
     phone_number: Optional[str] = None
     timezone: Optional[str] = None
     language: Optional[str] = None
@@ -18203,8 +18295,9 @@ def tenant_change_plan(payload: TenantPlanChangeRequest):
 
 
 @app.get("/tenant/config")
-def tenant_config(tenant_id: str = TENANT_ID_DEFAULT):
-    tenant = get_tenant((tenant_id or "").strip() or TENANT_ID_DEFAULT)
+def tenant_config(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
+    tenant_id = stage711_resolve_tenant_context(request, tenant_id)
+    tenant = get_tenant(tenant_id)
     if not tenant.get("_id"):
         raise HTTPException(status_code=404, detail="Tenant not found")
     settings = tenant_settings(tenant, get_lang(tenant.get("language") or "lv"))
@@ -18357,6 +18450,11 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
             params[field_name] = value
 
     add_field("business_name", payload.business_name.strip() if isinstance(payload.business_name, str) and payload.business_name.strip() else payload.business_name)
+    if payload.owner_email is not None:
+        clean_owner_email = stage71_normalize_email(payload.owner_email)
+        if clean_owner_email and not stage71_valid_email(clean_owner_email):
+            raise HTTPException(status_code=400, detail="owner_email_invalid")
+        add_field("owner_email", clean_owner_email or None)
     add_field("phone_number", normalize_incoming_to_number(payload.phone_number or "") or None)
     add_field("timezone", payload.timezone.strip() if isinstance(payload.timezone, str) and payload.timezone.strip() else payload.timezone)
     add_field("language", get_lang(payload.language) if payload.language is not None else None)
