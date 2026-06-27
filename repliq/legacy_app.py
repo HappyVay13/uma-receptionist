@@ -277,6 +277,10 @@ STAGE61_PROTECTED_EXACT_PATHS = {
     "/security/csrf/readiness",
     "/browser-write/readiness",
     "/browser-write-hardening/readiness",
+    "/abuse/readiness",
+    "/security/abuse/readiness",
+    "/rate-limits/readiness",
+    "/abuse-protection/readiness",
     "/client/dashboard",
     "/client/dashboard/ui",
     "/client/control-center",
@@ -929,7 +933,7 @@ def stage74_csrf_write_hardening_readiness_payload(tenant_id: str = TENANT_ID_DE
             "csrf_token_value_exposed_in_readiness": False,
         },
         "public_saas_ready": False,
-        "public_saas_ready_reason": "false_until_rate_limits_email_verification_and_full_client_superadmin_separation_are_done",
+        "public_saas_ready_reason": "false_until_email_verification_magic_link_and_full_client_superadmin_separation_are_done",
         "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
         "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
         "links": {
@@ -939,6 +943,324 @@ def stage74_csrf_write_hardening_readiness_payload(tenant_id: str = TENANT_ID_DE
             "control_center": f"/control-center/ui?tenant_id={tid}",
         },
         "note": "Stage 74 hardens authenticated browser writes and public signup cross-site POSTs. It does not change receptionist dialogue, booking, slot generation, Google Calendar event runtime, Telegram webhook runtime, billing semantics, or QA evaluator behavior.",
+    }
+
+
+# -------------------------
+# STAGE 75: ABUSE PROTECTION / RATE LIMITS HARDENING FOUNDATION
+# -------------------------
+STAGE75_ABUSE_EVENTS_TABLE = "abuse_events"
+STAGE75_READINESS_PATHS = (
+    "/abuse/readiness",
+    "/security/abuse/readiness",
+    "/rate-limits/readiness",
+    "/abuse-protection/readiness",
+)
+STAGE75_MONITORED_BUCKETS = (
+    "admin_login",
+    "owner_login",
+    "public_signup",
+    "public_csrf_token",
+)
+
+
+def stage75_abuse_protection_enabled() -> bool:
+    raw = (os.getenv("REPLIQ_ABUSE_PROTECTION_ENABLED", "true") or "true").strip().lower()
+    return raw not in {"0", "false", "no", "off", "disabled", "report_only"}
+
+
+def stage75_fail_open_enabled() -> bool:
+    raw = (os.getenv("REPLIQ_ABUSE_PROTECTION_FAIL_OPEN", "true") or "true").strip().lower()
+    return raw not in {"0", "false", "no", "off", "disabled"}
+
+
+def stage75_int_env(name: str, default: int, low: int, high: int) -> int:
+    raw = (os.getenv(name, str(default)) or str(default)).strip()
+    try:
+        return max(low, min(int(raw), high))
+    except Exception:
+        return int(default)
+
+
+def stage75_admin_login_ip_hourly_limit() -> int:
+    return stage75_int_env("REPLIQ_ADMIN_LOGIN_IP_HOURLY_LIMIT", 30, 3, 500)
+
+
+def stage75_owner_login_ip_hourly_limit() -> int:
+    return stage75_int_env("REPLIQ_OWNER_LOGIN_IP_HOURLY_LIMIT", 30, 3, 500)
+
+
+def stage75_owner_login_subject_hourly_limit() -> int:
+    return stage75_int_env("REPLIQ_OWNER_LOGIN_SUBJECT_HOURLY_LIMIT", 10, 3, 100)
+
+
+def stage75_public_signup_ip_hourly_limit() -> int:
+    return stage75_int_env("REPLIQ_PUBLIC_SIGNUP_ABUSE_IP_HOURLY_LIMIT", 10, 1, 100)
+
+
+def stage75_public_signup_subject_daily_limit() -> int:
+    return stage75_int_env("REPLIQ_PUBLIC_SIGNUP_ABUSE_SUBJECT_DAILY_LIMIT", 5, 1, 50)
+
+
+def stage75_public_csrf_token_ip_hourly_limit() -> int:
+    return stage75_int_env("REPLIQ_PUBLIC_CSRF_TOKEN_IP_HOURLY_LIMIT", 120, 10, 2000)
+
+
+def stage75_abuse_secret() -> str:
+    return (
+        os.getenv("REPLIQ_ABUSE_PROTECTION_SECRET", "")
+        or os.getenv("REPLIQ_PUBLIC_SIGNUP_SECRET", "")
+        or stage71_owner_session_secret()
+        or stage62_session_secret()
+        or stage61_admin_token_value()
+        or "stage75-dev-fallback"
+    ).strip()
+
+
+def stage75_abuse_secret_source() -> str:
+    if (os.getenv("REPLIQ_ABUSE_PROTECTION_SECRET", "") or "").strip():
+        return "REPLIQ_ABUSE_PROTECTION_SECRET"
+    if (os.getenv("REPLIQ_PUBLIC_SIGNUP_SECRET", "") or "").strip():
+        return "public_signup_secret_fallback"
+    if stage71_owner_session_secret():
+        return "owner_session_secret_fallback"
+    if stage62_session_secret():
+        return "admin_session_secret_fallback"
+    if stage61_admin_token_value():
+        return "admin_token_fallback"
+    return "dev_fallback"
+
+
+def stage75_hash_value(value: str) -> str:
+    raw = str(value or "").strip() or "unknown"
+    return hmac.new(stage75_abuse_secret().encode("utf-8"), raw.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def stage75_client_ip_hash(request: Optional[Request]) -> str:
+    raw_ip = ""
+    try:
+        forwarded = str((request.headers.get("x-forwarded-for") if request else "") or "").split(",")[0].strip()
+        raw_ip = forwarded or str((request.client.host if request and request.client else "") or "").strip()
+    except Exception:
+        raw_ip = ""
+    return stage75_hash_value(raw_ip or "unknown")
+
+
+def stage75_user_agent(request: Optional[Request]) -> str:
+    try:
+        return str((request.headers.get("user-agent") if request else "") or "")[:240]
+    except Exception:
+        return ""
+
+
+def stage75_ensure_abuse_events_table() -> None:
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS abuse_events (
+                id TEXT PRIMARY KEY,
+                bucket TEXT NOT NULL,
+                path TEXT,
+                tenant_id TEXT,
+                subject_hash TEXT,
+                ip_hash TEXT,
+                status TEXT NOT NULL DEFAULT 'received',
+                reason TEXT,
+                user_agent TEXT,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_abuse_events_bucket_ip_created_at ON abuse_events(bucket, ip_hash, created_at)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_abuse_events_bucket_subject_created_at ON abuse_events(bucket, subject_hash, created_at)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_abuse_events_tenant_created_at ON abuse_events(tenant_id, created_at)"))
+
+
+def stage75_abuse_table_exists() -> bool:
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(text("""
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.tables
+                    WHERE table_schema='public' AND table_name=:table_name
+                )
+            """), {"table_name": STAGE75_ABUSE_EVENTS_TABLE}).fetchone()
+        return bool(row and row[0])
+    except Exception:
+        return False
+
+
+def stage75_record_abuse_event(request: Optional[Request], bucket: str, subject: str = "", tenant_id: str = "", status: str = "received", reason: str = "") -> None:
+    if not stage75_abuse_protection_enabled():
+        return
+    try:
+        stage75_ensure_abuse_events_table()
+        path = ""
+        try:
+            path = str((request.url.path if request else "") or "")[:160]
+        except Exception:
+            path = ""
+        with engine.begin() as conn:
+            conn.execute(text("""
+                INSERT INTO abuse_events (id, bucket, path, tenant_id, subject_hash, ip_hash, status, reason, user_agent, created_at)
+                VALUES (:id, :bucket, :path, :tenant_id, :subject_hash, :ip_hash, :status, :reason, :user_agent, NOW())
+            """), {
+                "id": "abus_" + uuid.uuid4().hex,
+                "bucket": str(bucket or "unknown")[:80],
+                "path": path or None,
+                "tenant_id": str(tenant_id or "").strip()[:80] or None,
+                "subject_hash": stage75_hash_value(subject) if str(subject or "").strip() else None,
+                "ip_hash": stage75_client_ip_hash(request),
+                "status": str(status or "received")[:40],
+                "reason": str(reason or "")[:160] or None,
+                "user_agent": stage75_user_agent(request) or None,
+            })
+    except Exception as e:
+        log.error("stage75_record_abuse_event_failed bucket=%s err=%s", bucket, e)
+
+
+def stage75_count_events(bucket: str, ip_hash: str = "", subject_hash: str = "", window_seconds: int = 3600) -> int:
+    cutoff = datetime.utcnow() - timedelta(seconds=max(1, int(window_seconds or 3600)))
+    where = ["bucket=:bucket", "created_at > :cutoff"]
+    params: Dict[str, Any] = {"bucket": bucket, "cutoff": cutoff}
+    if ip_hash:
+        where.append("ip_hash=:ip_hash")
+        params["ip_hash"] = ip_hash
+    if subject_hash:
+        where.append("subject_hash=:subject_hash")
+        params["subject_hash"] = subject_hash
+    with engine.connect() as conn:
+        return int(conn.execute(text("SELECT COUNT(*) FROM abuse_events WHERE " + " AND ".join(where)), params).scalar() or 0)
+
+
+def stage75_rate_limit_check(request: Optional[Request], bucket: str, subject: str = "", tenant_id: str = "", ip_limit: int = 30, ip_window_seconds: int = 3600, subject_limit: int = 0, subject_window_seconds: int = 3600) -> Dict[str, Any]:
+    if not stage75_abuse_protection_enabled():
+        return {"ok": True, "stage": "75", "reason": "abuse_protection_disabled", "enforced": False}
+    try:
+        stage75_ensure_abuse_events_table()
+        ip_hash = stage75_client_ip_hash(request)
+        if int(ip_limit or 0) > 0:
+            ip_count = stage75_count_events(bucket=bucket, ip_hash=ip_hash, window_seconds=ip_window_seconds)
+            if ip_count >= int(ip_limit):
+                return {"ok": False, "stage": "75", "reason": f"{bucket}_ip_rate_limit", "bucket": bucket, "limit": int(ip_limit), "window_seconds": int(ip_window_seconds), "retry_after_seconds": int(ip_window_seconds), "ip_hash_exposed": False, "subject_hash_exposed": False}
+        subject_clean = str(subject or "").strip()
+        if subject_clean and int(subject_limit or 0) > 0:
+            subject_count = stage75_count_events(bucket=bucket, subject_hash=stage75_hash_value(subject_clean), window_seconds=subject_window_seconds)
+            if subject_count >= int(subject_limit):
+                return {"ok": False, "stage": "75", "reason": f"{bucket}_subject_rate_limit", "bucket": bucket, "limit": int(subject_limit), "window_seconds": int(subject_window_seconds), "retry_after_seconds": int(subject_window_seconds), "ip_hash_exposed": False, "subject_hash_exposed": False}
+        return {"ok": True, "stage": "75", "reason": "ok", "bucket": bucket, "enforced": True, "ip_hash_exposed": False, "subject_hash_exposed": False}
+    except Exception as e:
+        log.error("stage75_rate_limit_check_failed bucket=%s err=%s", bucket, e)
+        if stage75_fail_open_enabled():
+            return {"ok": True, "stage": "75", "reason": "rate_limit_storage_unavailable_fail_open", "error": e.__class__.__name__, "enforced": False, "ip_hash_exposed": False, "subject_hash_exposed": False}
+        return {"ok": False, "stage": "75", "reason": "rate_limit_storage_unavailable", "error": e.__class__.__name__, "ip_hash_exposed": False, "subject_hash_exposed": False}
+
+
+def stage75_admin_login_gate(request: Optional[Request], tenant_id: str = "") -> Dict[str, Any]:
+    return stage75_rate_limit_check(request, bucket="admin_login", subject=str(tenant_id or "").strip() or "admin", tenant_id=tenant_id, ip_limit=stage75_admin_login_ip_hourly_limit(), ip_window_seconds=3600, subject_limit=0)
+
+
+def stage75_owner_login_gate(request: Optional[Request], tenant_id: str = "", owner_email: str = "") -> Dict[str, Any]:
+    subject = f"{str(tenant_id or '').strip()}:{stage71_normalize_email(owner_email)}"
+    return stage75_rate_limit_check(request, bucket="owner_login", subject=subject, tenant_id=tenant_id, ip_limit=stage75_owner_login_ip_hourly_limit(), ip_window_seconds=3600, subject_limit=stage75_owner_login_subject_hourly_limit(), subject_window_seconds=3600)
+
+
+def stage75_public_signup_gate(request: Optional[Request], owner_email: str = "", tenant_id: str = "") -> Dict[str, Any]:
+    subject = f"{str(tenant_id or '').strip()}:{stage71_normalize_email(owner_email)}"
+    by_ip = stage75_rate_limit_check(request, bucket="public_signup", subject="", tenant_id=tenant_id, ip_limit=stage75_public_signup_ip_hourly_limit(), ip_window_seconds=3600, subject_limit=0)
+    if not by_ip.get("ok"):
+        return by_ip
+    return stage75_rate_limit_check(request, bucket="public_signup", subject=subject, tenant_id=tenant_id, ip_limit=0, subject_limit=stage75_public_signup_subject_daily_limit(), subject_window_seconds=60 * 60 * 24)
+
+
+def stage75_public_csrf_token_gate(request: Optional[Request], tenant_id: str = "") -> Dict[str, Any]:
+    return stage75_rate_limit_check(request, bucket="public_csrf_token", subject=str(tenant_id or "public").strip() or "public", tenant_id=tenant_id, ip_limit=stage75_public_csrf_token_ip_hourly_limit(), ip_window_seconds=3600, subject_limit=0)
+
+
+def stage75_abuse_error(result: Dict[str, Any], tenant_id: str = "") -> JSONResponse:
+    result = dict(result or {})
+    retry_after = int(result.get("retry_after_seconds") or 3600)
+    return JSONResponse(status_code=429, content={"ok": False, "stage": "75", "error": str(result.get("reason") or "rate_limited"), "bucket": result.get("bucket"), "tenant_id": tenant_id or None, "retry_after_seconds": retry_after, "ip_hash_exposed": False, "subject_hash_exposed": False, "raw_admin_token_exposed": False, "raw_owner_login_code_exposed": False, "note": "Stage 75 abuse protection blocks repeated login/signup/token attempts without exposing raw IPs, subject hashes, admin tokens, or owner codes."}, headers={"Cache-Control": "no-store", "Retry-After": str(retry_after)})
+
+
+def stage75_recent_counts(hours: int = 24) -> Dict[str, int]:
+    hours = max(1, min(int(hours or 24), 168))
+    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    counts: Dict[str, int] = {bucket: 0 for bucket in STAGE75_MONITORED_BUCKETS}
+    try:
+        if not stage75_abuse_table_exists():
+            return counts
+        with engine.connect() as conn:
+            rows = conn.execute(text("""
+                SELECT bucket, COUNT(*) FROM abuse_events
+                WHERE created_at > :cutoff
+                GROUP BY bucket
+            """), {"cutoff": cutoff}).fetchall()
+        for row in rows:
+            bucket = str(row[0] or "")
+            if bucket:
+                counts[bucket] = int(row[1] or 0)
+    except Exception as e:
+        log.error("stage75_recent_counts_failed err=%s", e)
+    return counts
+
+
+def stage75_abuse_rate_limits_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT, hours: int = 24) -> Dict[str, Any]:
+    tid = (tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
+    hours = max(1, min(int(hours or 24), 168))
+    blocking: List[str] = []
+    warnings: List[str] = []
+    try:
+        stage75_ensure_abuse_events_table()
+    except Exception:
+        blocking.append("abuse_events_table_unavailable")
+    table_exists = stage75_abuse_table_exists()
+    if not table_exists:
+        blocking.append("abuse_events_table_missing")
+    if not stage75_abuse_protection_enabled():
+        blocking.append("abuse_protection_disabled")
+    secret_source = stage75_abuse_secret_source()
+    if secret_source != "REPLIQ_ABUSE_PROTECTION_SECRET":
+        warnings.append(f"abuse_secret_uses_{secret_source}")
+    if stage75_fail_open_enabled():
+        warnings.append("abuse_protection_fail_open_enabled_foundation_mode")
+    missing_protection = [path for path in STAGE75_READINESS_PATHS if path not in STAGE61_PROTECTED_EXACT_PATHS]
+    if missing_protection:
+        blocking.append("stage75_readiness_paths_not_admin_protected")
+    if not stage72_public_signup_table_exists():
+        warnings.append("stage72_public_signup_specific_rate_limit_table_missing")
+    counts = stage75_recent_counts(hours=hours)
+    ready = bool(not blocking)
+    return {
+        "ok": True,
+        "stage": "75",
+        "purpose": "Abuse Protection / Rate Limits Hardening Foundation",
+        "tenant_id": tid,
+        "status": "ready" if ready and not warnings else "attention" if ready else "blocked",
+        "abuse_rate_limits_ready": bool(ready),
+        "public_abuse_protection_foundation_ready": bool(ready),
+        "enforcement_enabled": bool(stage75_abuse_protection_enabled()),
+        "fail_open_foundation_mode": bool(stage75_fail_open_enabled()),
+        "storage": {"abuse_events_table": bool(table_exists), "public_signup_events_table": bool(stage72_public_signup_table_exists()), "raw_ip_exposed": False, "subject_hash_exposed": False},
+        "policies": {
+            "admin_login": {"ip_hourly_limit": stage75_admin_login_ip_hourly_limit(), "records_success_and_failure": True},
+            "owner_login": {"ip_hourly_limit": stage75_owner_login_ip_hourly_limit(), "subject_hourly_limit": stage75_owner_login_subject_hourly_limit(), "records_success_and_failure": True},
+            "public_signup": {"ip_hourly_limit": stage75_public_signup_ip_hourly_limit(), "subject_daily_limit": stage75_public_signup_subject_daily_limit(), "stage72_specific_limits_still_active": True},
+            "public_csrf_token": {"ip_hourly_limit": stage75_public_csrf_token_ip_hourly_limit()},
+        },
+        "monitored_routes": {
+            "admin_login": ["POST /admin/login"],
+            "owner_login": ["POST /owner/login"],
+            "public_signup": ["POST /public/signup"],
+            "csrf_token_public_scope": ["GET /csrf/token?scope=public"],
+            "external_webhooks_not_rate_limited_in_stage75": sorted(STAGE74_EXTERNAL_WEBHOOK_WRITE_PATHS),
+        },
+        "recent_event_counts": {"window_hours": hours, "by_bucket": counts},
+        "security": {"raw_admin_token_exposed": False, "raw_owner_login_code_exposed": False, "raw_ip_exposed": False, "subject_hash_exposed": False, "readiness_routes_admin_protected": not bool(missing_protection)},
+        "public_saas_ready": False,
+        "public_saas_ready_reason": "false_until_email_verification_magic_link_and_full_client_superadmin_separation_are_done",
+        "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
+        "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
+        "links": {"readiness": f"/abuse/readiness?tenant_id={tid}", "rate_limits_readiness": f"/rate-limits/readiness?tenant_id={tid}", "public_saas_audit": f"/public-saas/readiness?tenant_id={tid}", "control_center": f"/control-center/ui?tenant_id={tid}"},
+        "note": "Stage 75 adds a central abuse ledger and rate-limit gates for admin login, owner login, public signup, and public CSRF token issuance. It does not change receptionist dialogue, booking, slots, calendar event runtime, Telegram webhook runtime, billing semantics, or QA evaluator behavior.",
     }
 
 def stage61_admin_auth_error(status_code: int, detail: str) -> JSONResponse:
@@ -2477,7 +2799,7 @@ def stage71_owner_auth_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) -> 
         "tenant_ownership_binding_ready": bool(has_owner_binding),
         "private_owner_dashboard_ready": bool(owner_login_ready),
         "public_saas_ready": False,
-        "public_saas_ready_reason": "false_until_public_signup_billing_csrf_rate_limits_and_full_client_superadmin_separation_are_done",
+        "public_saas_ready_reason": "false_until_email_verification_magic_link_and_full_client_superadmin_separation_are_done",
         "auth_model": {
             "owner_session_cookie": STAGE71_OWNER_SESSION_COOKIE_NAME,
             "owner_session_max_age_seconds": stage71_owner_session_max_age_seconds(),
@@ -13424,6 +13746,7 @@ def stage69_client_control_center_payload(tenant_id: str = TENANT_ID_DEFAULT, da
     usage = stage69_safe_dependency("usage_analytics", lambda: stage57_usage_analytics_readiness_payload(tenant_id_clean, days=days))
     billing = stage69_safe_dependency("billing_subscription", lambda: stage73_billing_subscription_gate_readiness_payload(tenant_id_clean, days=days))
     csrf = stage69_safe_dependency("csrf_browser_write_hardening", lambda: stage74_csrf_write_hardening_readiness_payload(tenant_id_clean))
+    abuse = stage69_safe_dependency("abuse_rate_limits", lambda: stage75_abuse_rate_limits_readiness_payload(tenant_id_clean, hours=24))
     launch = stage69_safe_dependency("launch_readiness", lambda: stage54_launch_readiness_lock_payload(tenant_id_clean))
     access = stage69_safe_dependency("access_boundaries", lambda: stage58_access_boundaries_readiness_payload(tenant_id_clean))
 
@@ -13516,6 +13839,15 @@ def stage69_client_control_center_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             url(f"/csrf/readiness?tenant_id={tenant_id_clean}"),
             "Cookie-authenticated browser writes are protected by same-origin metadata and signed CSRF token support.",
         ),
+        stage69_step_payload(
+            "abuse_rate_limits",
+            "Abuse / rate limits",
+            abuse,
+            bool(abuse.get("abuse_rate_limits_ready")),
+            url(f"/abuse/readiness?tenant_id={tenant_id_clean}"),
+            url(f"/rate-limits/readiness?tenant_id={tenant_id_clean}"),
+            "Admin login, owner login, public signup, and public CSRF token issuance have a central abuse/rate-limit ledger.",
+        ),
     ]
 
     ready_count = sum(1 for step in steps if step.get("ready"))
@@ -13579,6 +13911,7 @@ def stage69_client_control_center_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "usage_analytics": usage,
             "billing_subscription": billing,
             "csrf_browser_write_hardening": csrf,
+            "abuse_rate_limits": abuse,
             "launch_readiness": launch,
             "access_boundaries": access,
         },
@@ -13592,6 +13925,7 @@ def stage69_client_control_center_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "tenant_ownership_checks_not_public_saas_ready_yet": True,
             "billing_subscription_gate_foundation_ready": bool(billing.get("billing_subscription_gate_foundation_ready")),
             "csrf_browser_write_hardening_ready": bool(csrf.get("csrf_browser_write_hardening_ready")),
+            "abuse_rate_limits_ready": bool(abuse.get("abuse_rate_limits_ready")),
         },
         "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
         "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
@@ -13611,6 +13945,8 @@ def stage69_client_control_center_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "billing_readiness": url(f"/billing/readiness?tenant_id={tenant_id_clean}&days={days}"),
             "owner_billing": url(f"/owner/billing/ui?tenant_id={tenant_id_clean}"),
             "csrf_readiness": url(f"/csrf/readiness?tenant_id={tenant_id_clean}"),
+            "abuse_readiness": url(f"/abuse/readiness?tenant_id={tenant_id_clean}"),
+            "rate_limits_readiness": url(f"/rate-limits/readiness?tenant_id={tenant_id_clean}"),
             "public_saas_gap_audit": url(f"/public-saas/gap-audit/ui?tenant_id={tenant_id_clean}&days={days}"),
             "dialogue_qa": url("/dialogue/qa"),
         },
@@ -13691,6 +14027,7 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
     public_signup = stage70_safe_dependency("public_signup_boundary", lambda: stage72_public_signup_readiness_payload(tenant_id_clean))
     billing = stage70_safe_dependency("billing_subscription_gate", lambda: stage73_billing_subscription_gate_readiness_payload(tenant_id_clean, days=days))
     csrf = stage70_safe_dependency("csrf_browser_write_hardening", lambda: stage74_csrf_write_hardening_readiness_payload(tenant_id_clean))
+    abuse = stage70_safe_dependency("abuse_rate_limits", lambda: stage75_abuse_rate_limits_readiness_payload(tenant_id_clean, hours=24))
 
     admin_token_configured = stage61_admin_token_configured()
     admin_access_enforced = bool(admin_access.get("admin_access_enforced"))
@@ -13717,6 +14054,7 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
         {"key": "public_signup_boundary", "ready": bool(public_signup.get("public_signup_boundary_ready")), "status": public_signup.get("status"), "stage": public_signup.get("stage")},
         {"key": "billing_subscription", "ready": bool(billing.get("billing_subscription_gate_foundation_ready")), "status": billing.get("status"), "stage": billing.get("stage")},
         {"key": "csrf_browser_write_hardening", "ready": bool(csrf.get("csrf_browser_write_hardening_ready")), "status": csrf.get("status"), "stage": csrf.get("stage")},
+        {"key": "abuse_rate_limits", "ready": bool(abuse.get("abuse_rate_limits_ready")), "status": abuse.get("status"), "stage": abuse.get("stage")},
     ]
     ready_self_serve_count = sum(1 for item in self_serve_blocks if item.get("ready"))
 
@@ -13818,11 +14156,15 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
         {
             "usage_visibility_ready": bool(usage.get("private_admin_ready") or usage.get("usage_visibility_ready")),
             "sentry_middleware_available": _sentry_middleware_class is not None,
-            "rate_limits_found": False,
+            "rate_limits_found": bool(abuse.get("abuse_rate_limits_ready")),
+            "abuse_rate_limits_stage": abuse.get("stage"),
+            "admin_login_rate_limit_ready": bool((abuse.get("policies") or {}).get("admin_login")),
+            "owner_login_rate_limit_ready": bool((abuse.get("policies") or {}).get("owner_login")),
+            "public_signup_rate_limit_ready": bool((abuse.get("policies") or {}).get("public_signup")),
             "client_billing_usage_proof_ready": False,
         },
-        "Add production rate limits, client-safe usage visibility, billing-grade metering, and operational alerting before public launch.",
-        severity="major",
+        "Continue with email verification/magic-link auth, client-safe usage visibility, billing-grade metering, and operational alerting before public launch.",
+        severity="major" if abuse.get("abuse_rate_limits_ready") else "blocker",
     ))
 
     blockers = []
@@ -13859,7 +14201,7 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
         "gap_audit_ready": bool(audit_ready),
         "private_admin_ready": bool(private_admin_ready),
         "public_saas_ready": bool(public_saas_ready),
-        "public_saas_ready_reason": "false_until_rate_limits_email_verification_and_full_client_superadmin_separation_are_done",
+        "public_saas_ready_reason": "false_until_email_verification_magic_link_and_full_client_superadmin_separation_are_done",
         "current_scope": {
             "product": "text-first AI receptionist SaaS",
             "external_channel": "Telegram text",
@@ -13887,7 +14229,8 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "billing_provider_integrated": bool(billing.get("provider_integration_live")),
             "billing_subscription_gate_foundation_ready": bool(billing.get("billing_subscription_gate_foundation_ready")),
             "csrf_browser_write_hardening_ready": bool(csrf.get("csrf_browser_write_hardening_ready")),
-            "public_rate_limits_integrated": False,
+            "public_rate_limits_integrated": bool(abuse.get("abuse_rate_limits_ready")),
+            "abuse_rate_limits_ready": bool(abuse.get("abuse_rate_limits_ready")),
         },
         "dependencies": {
             "admin_access_enforcement": admin_access,
@@ -13906,11 +14249,12 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "public_signup_boundary": public_signup,
             "billing_subscription_gate": billing,
             "csrf_browser_write_hardening": csrf,
+            "abuse_rate_limits": abuse,
         },
         "recommended_next_stages": [
-            "Stage 75 — Abuse Protection / Rate Limits Hardening",
             "Stage 76 — Email Verification / Magic Link Auth Foundation",
             "Stage 77 — Client-owner vs Super-admin Separation Hardening",
+            "Stage 78 — Final Public SaaS Readiness Lock",
         ],
         "blocking": list(dict.fromkeys([str(x) for x in blockers if str(x)])),
         "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
@@ -14226,10 +14570,17 @@ async def admin_login_submit(request: Request):
     token = str((data or {}).get("admin_token") or (data or {}).get("token") or "").strip()
     tenant_id = stage711_resolve_tenant_context(request, str((data or {}).get("tenant_id") or ""))
     next_path = stage62_safe_local_path(str((data or {}).get("next") or ""), tenant_id)
+    abuse_gate = stage75_admin_login_gate(request, tenant_id=tenant_id)
+    if not abuse_gate.get("ok"):
+        stage75_record_abuse_event(request, bucket="admin_login", subject=tenant_id or "admin", tenant_id=tenant_id, status="blocked", reason=str(abuse_gate.get("reason") or "rate_limited"))
+        return stage75_abuse_error(abuse_gate, tenant_id=tenant_id)
     if not stage61_admin_token_configured():
+        stage75_record_abuse_event(request, bucket="admin_login", subject=tenant_id or "admin", tenant_id=tenant_id, status="failed", reason="admin_token_not_configured")
         return JSONResponse(status_code=503, content={"ok": False, "stage": "62", "error": "admin_token_not_configured"}, headers={"Cache-Control": "no-store"})
     if not stage61_token_valid(token):
+        stage75_record_abuse_event(request, bucket="admin_login", subject=tenant_id or "admin", tenant_id=tenant_id, status="failed", reason="invalid_admin_token")
         return JSONResponse(status_code=401, content={"ok": False, "stage": "62", "error": "invalid_admin_token"}, headers={"Cache-Control": "no-store"})
+    stage75_record_abuse_event(request, bucket="admin_login", subject=tenant_id or "admin", tenant_id=tenant_id, status="success", reason="ok")
     response = JSONResponse(content={
         "ok": True,
         "stage": "62",
@@ -14294,7 +14645,13 @@ def stage74_csrf_token(request: Request, scope: str = "admin", tenant_id: str = 
             if not access.get("ok"):
                 return stage71_owner_auth_error(401, str(access.get("error") or "owner_login_required"), tenant_id=tid)
             tid = str(access.get("tenant_id") or tid)
-    elif requested_scope != "public":
+    elif requested_scope == "public":
+        abuse_gate = stage75_public_csrf_token_gate(request, tenant_id=tid)
+        if not abuse_gate.get("ok"):
+            stage75_record_abuse_event(request, bucket="public_csrf_token", subject=tid or "public", tenant_id=tid, status="blocked", reason=str(abuse_gate.get("reason") or "rate_limited"))
+            return stage75_abuse_error(abuse_gate, tenant_id=tid)
+        stage75_record_abuse_event(request, bucket="public_csrf_token", subject=tid or "public", tenant_id=tid, status="issued", reason="ok")
+    else:
         return JSONResponse(status_code=400, content={"ok": False, "stage": "74", "error": "invalid_csrf_scope"}, headers={"Cache-Control": "no-store"})
     return JSONResponse(content={
         "ok": True,
@@ -14314,6 +14671,14 @@ def stage74_csrf_token(request: Request, scope: str = "admin", tenant_id: str = 
 @app.get("/browser-write-hardening/readiness")
 def stage74_csrf_readiness(tenant_id: str = TENANT_ID_DEFAULT):
     return stage74_csrf_write_hardening_readiness_payload(tenant_id=tenant_id)
+
+
+@app.get("/abuse/readiness")
+@app.get("/security/abuse/readiness")
+@app.get("/rate-limits/readiness")
+@app.get("/abuse-protection/readiness")
+def stage75_abuse_readiness(tenant_id: str = TENANT_ID_DEFAULT, hours: int = 24):
+    return stage75_abuse_rate_limits_readiness_payload(tenant_id=tenant_id, hours=hours)
 
 
 
@@ -14392,10 +14757,16 @@ async def owner_login_submit(request: Request):
     owner_email = stage71_normalize_email((data or {}).get("owner_email") or (data or {}).get("email") or "")
     login_code = str((data or {}).get("login_code") or (data or {}).get("code") or "").strip()
     next_path = stage62_safe_local_path(str((data or {}).get("next") or f"/owner/dashboard/ui?tenant_id={tenant_id}"), tenant_id)
+    abuse_gate = stage75_owner_login_gate(request, tenant_id=tenant_id, owner_email=owner_email)
+    if not abuse_gate.get("ok"):
+        stage75_record_abuse_event(request, bucket="owner_login", subject=f"{tenant_id}:{owner_email}", tenant_id=tenant_id, status="blocked", reason=str(abuse_gate.get("reason") or "rate_limited"))
+        return stage75_abuse_error(abuse_gate, tenant_id=tenant_id)
     ok, reason, account = stage71_validate_owner_login(owner_email, login_code, tenant_id)
     if not ok:
-        return JSONResponse(status_code=401, content={"ok": False, "stage": "71", "error": reason, "tenant_id": tenant_id, "login_code_hash_exposed": False}, headers={"Cache-Control": "no-store"})
-    response = JSONResponse(content={"ok": True, "stage": "71", "auth_model": "signed_owner_session_cookie", "tenant_id": tenant_id, "owner_email": owner_email, "redirect_url": next_path, "session_cookie": STAGE71_OWNER_SESSION_COOKIE_NAME, "max_age_seconds": stage71_owner_session_max_age_seconds(), "login_code_value_exposed": False, "login_code_hash_exposed": False}, headers={"Cache-Control": "no-store"})
+        stage75_record_abuse_event(request, bucket="owner_login", subject=f"{tenant_id}:{owner_email}", tenant_id=tenant_id, status="failed", reason=reason)
+        return JSONResponse(status_code=401, content={"ok": False, "stage": "71", "error": reason, "tenant_id": tenant_id, "login_code_hash_exposed": False, "abuse_protection": {"stage": "75", "ip_hash_exposed": False, "subject_hash_exposed": False}}, headers={"Cache-Control": "no-store"})
+    stage75_record_abuse_event(request, bucket="owner_login", subject=f"{tenant_id}:{owner_email}", tenant_id=tenant_id, status="success", reason="ok")
+    response = JSONResponse(content={"ok": True, "stage": "71", "auth_model": "signed_owner_session_cookie", "tenant_id": tenant_id, "owner_email": owner_email, "redirect_url": next_path, "session_cookie": STAGE71_OWNER_SESSION_COOKIE_NAME, "max_age_seconds": stage71_owner_session_max_age_seconds(), "login_code_value_exposed": False, "login_code_hash_exposed": False, "abuse_protection": {"stage": "75", "ip_hash_exposed": False, "subject_hash_exposed": False}}, headers={"Cache-Control": "no-store"})
     stage71_set_owner_session_cookie(response, owner_email=owner_email, tenant_id=tenant_id, role="owner")
     return response
 
@@ -15957,7 +16328,7 @@ def stage72_public_signup_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) 
         "tenant_ownership_binding_during_signup_ready": bool(ready),
         "admin_token_dependency_for_public_signup": False,
         "public_saas_ready": False,
-        "public_saas_ready_reason": "false_until_rate_limits_email_verification_and_full_client_superadmin_separation_are_done",
+        "public_saas_ready_reason": "false_until_email_verification_magic_link_and_full_client_superadmin_separation_are_done",
         "auth_model": {
             "public_signup": "public_http_entrypoint_with_honeypot_rate_limits_and_owner_session_cookie",
             "owner_session_cookie": STAGE71_OWNER_SESSION_COOKIE_NAME,
@@ -17017,7 +17388,7 @@ def tenant_billing_status(tenant: Dict[str, Any]) -> Dict[str, Any]:
         "owner_visible": True,
         "admin_mutable": True,
         "public_saas_ready": False,
-        "public_saas_ready_reason": "false_until_rate_limits_email_verification_and_full_client_superadmin_separation_are_done",
+        "public_saas_ready_reason": "false_until_email_verification_magic_link_and_full_client_superadmin_separation_are_done",
     }
 
 
@@ -17087,7 +17458,7 @@ def stage73_billing_subscription_gate_readiness_payload(tenant_id: str = TENANT_
         "provider_integration_live": bool((billing_status or {}).get("provider_integration_live")),
         "provider_integration_required_for_this_stage": False,
         "public_saas_ready": False,
-        "public_saas_ready_reason": "false_until_rate_limits_email_verification_and_full_client_superadmin_separation_are_done",
+        "public_saas_ready_reason": "false_until_email_verification_magic_link_and_full_client_superadmin_separation_are_done",
         "schema": {
             "billing_columns": sorted(STAGE73_BILLING_COLUMNS.keys()),
             "missing_columns": missing_cols,
@@ -17613,8 +17984,10 @@ async def stage72_public_signup_submit(request: Request):
     owner_email = stage71_normalize_email(data.get("owner_email") or data.get("email") or "")
 
     def reject(status_code: int, error: str):
-        stage72_record_public_signup_event(request, owner_email=owner_email, tenant_id=str(data.get("tenant_slug") or data.get("tenant_id") or ""), status="rejected", reason=error)
-        return JSONResponse(status_code=status_code, content={"ok": False, "stage": "72", "error": error, "public_saas_ready": False, "secret_values_exposed": False}, headers={"Cache-Control": "no-store"})
+        rejected_tenant_id = str(data.get("tenant_slug") or data.get("tenant_id") or "")
+        stage72_record_public_signup_event(request, owner_email=owner_email, tenant_id=rejected_tenant_id, status="rejected", reason=error)
+        stage75_record_abuse_event(request, bucket="public_signup", subject=f"{rejected_tenant_id}:{owner_email}", tenant_id=rejected_tenant_id, status="rejected", reason=error)
+        return JSONResponse(status_code=status_code, content={"ok": False, "stage": "72", "error": error, "public_saas_ready": False, "secret_values_exposed": False, "abuse_protection": {"stage": "75", "ip_hash_exposed": False, "subject_hash_exposed": False}}, headers={"Cache-Control": "no-store"})
 
     if not stage72_public_signup_enabled():
         return reject(503, "public_signup_disabled")
@@ -17627,6 +18000,10 @@ async def stage72_public_signup_submit(request: Request):
     rate = stage72_public_signup_rate_limit_check(request, owner_email)
     if not rate.get("ok"):
         return reject(429, str(rate.get("reason") or "public_signup_rate_limited"))
+    abuse_gate = stage75_public_signup_gate(request, owner_email=owner_email, tenant_id=str(data.get("tenant_slug") or data.get("tenant_id") or ""))
+    if not abuse_gate.get("ok"):
+        stage75_record_abuse_event(request, bucket="public_signup", subject=f"{str(data.get('tenant_slug') or data.get('tenant_id') or '')}:{owner_email}", tenant_id=str(data.get("tenant_slug") or data.get("tenant_id") or ""), status="blocked", reason=str(abuse_gate.get("reason") or "rate_limited"))
+        return stage75_abuse_error(abuse_gate, tenant_id=str(data.get("tenant_slug") or data.get("tenant_id") or ""))
 
     create_payload = dict(data)
     create_payload["owner_email"] = owner_email
@@ -17646,6 +18023,7 @@ async def stage72_public_signup_submit(request: Request):
         return reject(500, e.__class__.__name__)
 
     stage72_record_public_signup_event(request, owner_email=owner_email, tenant_id=tenant_id, status="created", reason="ok")
+    stage75_record_abuse_event(request, bucket="public_signup", subject=f"{tenant_id}:{owner_email}", tenant_id=tenant_id, status="created", reason="ok")
     next_path = f"/owner/dashboard/ui?tenant_id={urllib.parse.quote(tenant_id)}"
     content = {
         "ok": True,
@@ -17660,7 +18038,7 @@ async def stage72_public_signup_submit(request: Request):
         "login_code_hash_exposed": False,
         "secret_values_exposed": False,
         "public_saas_ready": False,
-        "public_saas_ready_reason": "false_until_rate_limits_email_verification_and_full_client_superadmin_separation_are_done",
+        "public_saas_ready_reason": "false_until_email_verification_magic_link_and_full_client_superadmin_separation_are_done",
         "onboarding": created.get("onboarding"),
         "readiness": created.get("readiness"),
         "links": {
@@ -17673,7 +18051,8 @@ async def stage72_public_signup_submit(request: Request):
             "public_saas_audit": f"/public-saas/gap-audit/ui?tenant_id={urllib.parse.quote(tenant_id)}",
         },
         "rate_limit": {"ip_hash_exposed": False, "hourly_limit": stage72_public_signup_hourly_limit(), "email_daily_limit": stage72_public_signup_email_daily_limit()},
-        "note": "Stage 72 returns the owner login code once for this foundation build and also sets an HttpOnly owner session cookie. Save the code locally; do not paste it into chat logs.",
+        "abuse_protection": {"stage": "75", "enabled": bool(stage75_abuse_protection_enabled()), "ip_hash_exposed": False, "subject_hash_exposed": False},
+        "note": "Stage 72 returns the owner login code once for this foundation build and also sets an HttpOnly owner session cookie. Stage 75 records safe abuse/rate-limit metadata without exposing raw IPs or subject hashes. Save the code locally; do not paste it into chat logs.",
     }
     response = JSONResponse(content=content, headers={"Cache-Control": "no-store"})
     stage71_set_owner_session_cookie(response, owner_email=owner_email, tenant_id=tenant_id, role="owner")

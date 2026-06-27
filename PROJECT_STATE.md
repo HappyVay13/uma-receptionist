@@ -840,3 +840,31 @@ Expected verification:
 - `/public-saas/readiness?tenant_id=clinic_demo` includes `csrf_browser_write_hardening_ready=true` while `public_saas_ready=false` remains.
 
 Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, dialogue QA evaluator, LLM orchestration, billing semantics, and voice/calls were not changed.
+
+## Stage 75 — Abuse Protection / Rate Limits Hardening Foundation
+
+Status: implemented in archive, awaiting deploy verification.
+
+Scope:
+- Added central `abuse_events` ledger table with safe HMAC-hashed IP/subject metadata.
+- Added rate-limit gates for admin login, owner login, public signup, and public CSRF token issuance.
+- Added readiness endpoints:
+  - `GET /abuse/readiness`
+  - `GET /security/abuse/readiness`
+  - `GET /rate-limits/readiness`
+  - `GET /abuse-protection/readiness`
+- Added Control Center integration.
+- Added Public SaaS gap audit integration.
+- Stage 72 public signup-specific limits remain active; Stage 75 adds a shared abuse ledger around public signup.
+- `public_saas_ready` remains false by design; remaining blockers are email verification/magic-link auth, client-owner vs super-admin separation hardening, and final public SaaS readiness lock.
+
+Expected verification:
+- Render deploy starts successfully.
+- `/dialogue/qa` = 50/50 passed.
+- `/abuse/readiness?tenant_id=clinic_demo` returns `stage=75`.
+- `/rate-limits/readiness?tenant_id=clinic_demo` works.
+- `/control-center/ui?tenant_id=clinic_demo` shows Abuse / rate limits.
+- `/public-saas/readiness?tenant_id=clinic_demo` includes abuse/rate-limit readiness while `public_saas_ready=false` remains.
+- Admin login, owner login, and public signup still work.
+
+Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, billing semantics, dialogue QA evaluator, LLM orchestration, and voice/calls were not changed.

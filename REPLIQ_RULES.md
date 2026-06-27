@@ -451,3 +451,20 @@ If a price question is asked inside an active booking flow and the current langu
 - Do not change booking routing, slot generation, date/time parsing, side-question handling, confirmation, cancellation, rescheduling, Google Calendar event runtime, Telegram webhook handling, billing semantics, LLM orchestration, or regression evaluator rules.
 - `public_saas_ready` must remain false after Stage 74 until production abuse/rate limits, email verification/magic-link auth, and full client-owner vs super-admin separation are complete.
 - Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+
+## Stage 75 rules — Abuse Protection / Rate Limits Hardening Foundation
+
+- Stage 75 may add abuse/rate-limit readiness, safe abuse-event storage, and route-level gates for admin login, owner login, public signup, and public CSRF token issuance only.
+- Stage 75 must not expose raw IP addresses, subject hashes, admin tokens, owner login codes, owner login code hashes, session secrets, CSRF secrets, Telegram tokens, or Google credentials.
+- Stage 75 readiness endpoints must remain protected by Stage 61/62 admin auth:
+  - `/abuse/readiness`
+  - `/security/abuse/readiness`
+  - `/rate-limits/readiness`
+  - `/abuse-protection/readiness`
+- Stage 72 public signup-specific rate limits must remain active. Stage 75 may add a shared abuse ledger around them but must not remove Stage 72 checks.
+- Admin login and owner login must continue to work for valid credentials.
+- Public signup must remain usable from the same-origin public signup UI.
+- External channel webhooks must not be blocked by this browser/public-account abuse stage: Telegram, SMS, WhatsApp, and voice webhook routes are out of scope.
+- Do not change booking routing, slot generation, date/time parsing, side-question handling, confirmation, cancellation, rescheduling, Google Calendar event runtime, Telegram webhook handling, billing semantics, LLM orchestration, or regression evaluator rules.
+- `public_saas_ready` must remain false after Stage 75 until email verification/magic-link auth, client-owner vs super-admin separation hardening, and final public SaaS readiness lock are complete.
+- Current protected baseline remains `/dialogue/qa = 50/50 passed`.
