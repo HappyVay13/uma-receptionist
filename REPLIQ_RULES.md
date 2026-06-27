@@ -3,7 +3,7 @@
 Core rule: LLM is an understanding layer only. Booking actions remain controlled by orchestration/state logic.
 
 Current protected baseline:
-- `/dialogue/qa` confirmed after Stage 53 deploy: 50/50 passed. Stage 54 must preserve this baseline.
+- `/dialogue/qa` confirmed after Stage 72 deploy: 50/50 passed. Stage 73 must preserve this baseline.
 - Stage 41.1 hardens cross-language grounded price lookup while preserving booking flow.
 - Stage 42 is a documentation/audit checkpoint only.
 - Stage 43A adds production readiness checks without changing conversational behavior.
@@ -397,3 +397,30 @@ If a price question is asked inside an active booking flow and the current langu
 - Business memory should contain one fact per line for predictable receptionist answers.
 - Do not store secrets, API keys, private calendar credentials, or private client data in business memory or FAQ fields.
 - `public_saas_ready` remains false until owner auth, tenant ownership checks, billing, CSRF/rate limits, and production account controls are implemented.
+
+
+## Stage 73 — Billing / Subscription Gate Foundation Rules
+
+- Stage 73 may add billing/subscription readiness, manual tenant billing metadata, admin billing UI/update endpoints, owner read-only billing surfaces, and public SaaS audit integration only.
+- Stage 73 must not integrate a live payment provider unless explicitly requested in a later stage. Stripe/payment provider secrets must not be accepted, logged, returned, or documented in this stage.
+- Admin billing routes must remain protected by Stage 61/62 admin session/token:
+  - `/billing/readiness`
+  - `/billing/subscription/readiness`
+  - `/tenant/billing/readiness`
+  - `/tenant/billing`
+  - `/tenant/billing/ui`
+  - `/tenant/billing/update`
+  - `/billing`
+  - `/billing/ui`
+- Owner billing routes must require the Stage 71 signed owner session or the existing super-admin bypass:
+  - `/owner/billing`
+  - `/owner/billing/ui`
+  - `/owner/subscription`
+  - `/owner/subscription/ui`
+- Owner billing is read-only in this stage. Owner surfaces must not expose admin billing writes.
+- Manual lifecycle statuses may include `trial`, `active`, `past_due`, `suspended`, `inactive`, and `expired`.
+- `suspended`, `inactive`, and `expired` are blocked lifecycle states. `past_due` is allowed with attention metadata until a later billing automation stage changes policy.
+- Runtime gate metadata may be exposed, but receptionist core behavior must not be changed in this stage.
+- Do not change booking routing, slot generation, date/time parsing, side-question handling, confirmation, cancellation, rescheduling, Google Calendar runtime create/update/delete behavior, Telegram webhook handling, LLM orchestration, or regression evaluator rules.
+- `public_saas_ready` must remain false after Stage 73 until CSRF/browser write hardening, abuse/rate limits, email verification/magic-link auth, and full client-owner vs super-admin separation are complete.
+- Current protected baseline remains `/dialogue/qa = 50/50 passed`.

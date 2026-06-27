@@ -179,6 +179,10 @@ STAGE71_OWNER_PROTECTED_EXACT_PATHS = {
     "/owner/dashboard/ui",
     "/owner/control-center",
     "/owner/control-center/ui",
+    "/owner/billing",
+    "/owner/billing/ui",
+    "/owner/subscription",
+    "/owner/subscription/ui",
 }
 
 STAGE61_PROTECTED_EXACT_PATHS = {
@@ -261,6 +265,14 @@ STAGE61_PROTECTED_EXACT_PATHS = {
     "/saas/public-readiness/ui",
     "/launch/public-readiness",
     "/launch/public-readiness/ui",
+    "/billing/readiness",
+    "/billing/subscription/readiness",
+    "/tenant/billing/readiness",
+    "/tenant/billing",
+    "/tenant/billing/ui",
+    "/tenant/billing/update",
+    "/billing",
+    "/billing/ui",
     "/client/dashboard",
     "/client/dashboard/ui",
     "/client/control-center",
@@ -1362,6 +1374,12 @@ def ensure_tenants_lifecycle_columns() -> None:
             conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS plan TEXT"))
             conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS dialogs_per_month INTEGER"))
             conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS trial_end TIMESTAMPTZ"))
+            conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS billing_provider TEXT"))
+            conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS billing_customer_id TEXT"))
+            conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS billing_subscription_id TEXT"))
+            conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS billing_current_period_end TIMESTAMPTZ"))
+            conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS billing_last_event_at TIMESTAMPTZ"))
+            conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS billing_notes TEXT"))
             conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS owner_email TEXT"))
             conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS telegram_bot_token TEXT"))
             conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS telegram_webhook_secret TEXT"))
@@ -2144,6 +2162,8 @@ def stage71_owner_auth_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) -> 
             "owner_login": url(f"/owner/login?tenant_id={tid}"),
             "owner_session": url(f"/owner/session?tenant_id={tid}"),
             "owner_dashboard": url(f"/owner/dashboard/ui?tenant_id={tid}"),
+            "owner_billing": url(f"/owner/billing/ui?tenant_id={tid}"),
+            "billing_readiness": url(f"/billing/readiness?tenant_id={tid}"),
             "owner_readiness": url(f"/owner/auth/readiness?tenant_id={tid}"),
             "bootstrap_owner": url("/owner/accounts/bootstrap"),
             "control_center": url(f"/control-center/ui?tenant_id={tid}"),
@@ -2191,8 +2211,10 @@ def stage71_owner_dashboard_payload(request: Request, tenant_id: str = TENANT_ID
             "subscription_status": tenant.get("subscription_status"),
         },
         "readiness": readiness,
-        "owner_safe_scope": {"dashboard": True, "read_only_foundation": True, "admin_write_surfaces_exposed_to_owner": False, "receptionist_core_changed": False},
-        "links": {"owner_dashboard": f"/owner/dashboard/ui?tenant_id={tid}", "owner_session": f"/owner/session?tenant_id={tid}", "owner_logout": "/owner/logout", "admin_control_center": f"/control-center/ui?tenant_id={tid}", "public_saas_audit": f"/public-saas/gap-audit/ui?tenant_id={tid}"},
+        "billing": tenant_billing_status(tenant),
+        "billing_readiness": stage73_billing_subscription_gate_readiness_payload(tid),
+        "owner_safe_scope": {"dashboard": True, "read_only_foundation": True, "billing_read_only": True, "admin_write_surfaces_exposed_to_owner": False, "receptionist_core_changed": False},
+        "links": {"owner_dashboard": f"/owner/dashboard/ui?tenant_id={tid}", "owner_session": f"/owner/session?tenant_id={tid}", "owner_billing": f"/owner/billing/ui?tenant_id={tid}", "owner_logout": "/owner/logout", "admin_control_center": f"/control-center/ui?tenant_id={tid}", "billing_readiness": f"/billing/readiness?tenant_id={tid}", "public_saas_audit": f"/public-saas/gap-audit/ui?tenant_id={tid}"},
     }
 
 
@@ -4389,7 +4411,7 @@ def tenant_status_value(tenant: Dict[str, Any]) -> str:
         return "active"
     if lifecycle == "past_due":
         return "past_due"
-    if lifecycle == "inactive":
+    if lifecycle in {"inactive", "suspended"}:
         return "inactive"
     if lifecycle == "expired":
         return "expired"
@@ -13064,6 +13086,7 @@ def stage69_client_control_center_payload(tenant_id: str = TENANT_ID_DEFAULT, da
     business_memory = stage69_safe_dependency("business_memory_faq_builder", lambda: stage67_business_memory_builder_readiness_payload(tenant_id_clean))
     telegram = stage69_safe_dependency("telegram_setup", lambda: stage68_telegram_setup_readiness_payload(tenant_id_clean, days=days))
     usage = stage69_safe_dependency("usage_analytics", lambda: stage57_usage_analytics_readiness_payload(tenant_id_clean, days=days))
+    billing = stage69_safe_dependency("billing_subscription", lambda: stage73_billing_subscription_gate_readiness_payload(tenant_id_clean, days=days))
     launch = stage69_safe_dependency("launch_readiness", lambda: stage54_launch_readiness_lock_payload(tenant_id_clean))
     access = stage69_safe_dependency("access_boundaries", lambda: stage58_access_boundaries_readiness_payload(tenant_id_clean))
 
@@ -13138,6 +13161,15 @@ def stage69_client_control_center_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             url(f"/dashboard?tenant_id={tenant_id_clean}"),
             "Dashboard analytics endpoints are available for a client/admin review.",
         ),
+        stage69_step_payload(
+            "billing_subscription",
+            "Billing / subscription",
+            billing,
+            bool(billing.get("billing_subscription_gate_foundation_ready")),
+            url(f"/billing/readiness?tenant_id={tenant_id_clean}&days={days}"),
+            url(f"/tenant/billing/ui?tenant_id={tenant_id_clean}"),
+            "Manual subscription status, plan limits, owner-visible billing state, and runtime gate foundation are available.",
+        ),
     ]
 
     ready_count = sum(1 for step in steps if step.get("ready"))
@@ -13199,6 +13231,7 @@ def stage69_client_control_center_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "business_memory": business_memory,
             "telegram_setup": telegram,
             "usage_analytics": usage,
+            "billing_subscription": billing,
             "launch_readiness": launch,
             "access_boundaries": access,
         },
@@ -13210,6 +13243,7 @@ def stage69_client_control_center_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "control_center_routes_protected_by_admin_session_or_token": not bool(missing_protection),
             "public_owner_auth_not_implemented_yet": True,
             "tenant_ownership_checks_not_public_saas_ready_yet": True,
+            "billing_subscription_gate_foundation_ready": bool(billing.get("billing_subscription_gate_foundation_ready")),
         },
         "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
         "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
@@ -13225,6 +13259,9 @@ def stage69_client_control_center_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "google_calendar_setup": url(f"/google/calendars/ui?tenant_id={tenant_id_clean}"),
             "telegram_setup": url(f"/telegram/setup/ui?tenant_id={tenant_id_clean}"),
             "telegram_smoke_lock": url(f"/telegram/live-smoke/readiness?tenant_id={tenant_id_clean}&days={days}"),
+            "billing_ui": url(f"/tenant/billing/ui?tenant_id={tenant_id_clean}"),
+            "billing_readiness": url(f"/billing/readiness?tenant_id={tenant_id_clean}&days={days}"),
+            "owner_billing": url(f"/owner/billing/ui?tenant_id={tenant_id_clean}"),
             "public_saas_gap_audit": url(f"/public-saas/gap-audit/ui?tenant_id={tenant_id_clean}&days={days}"),
             "dialogue_qa": url("/dialogue/qa"),
         },
@@ -13303,6 +13340,7 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
     usage = stage70_safe_dependency("usage_analytics", lambda: stage57_usage_analytics_readiness_payload(tenant_id_clean, days=days))
     owner_auth = stage70_safe_dependency("owner_auth_foundation", lambda: stage71_owner_auth_readiness_payload(tenant_id_clean))
     public_signup = stage70_safe_dependency("public_signup_boundary", lambda: stage72_public_signup_readiness_payload(tenant_id_clean))
+    billing = stage70_safe_dependency("billing_subscription_gate", lambda: stage73_billing_subscription_gate_readiness_payload(tenant_id_clean, days=days))
 
     admin_token_configured = stage61_admin_token_configured()
     admin_access_enforced = bool(admin_access.get("admin_access_enforced"))
@@ -13327,6 +13365,7 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
         {"key": "usage_visibility", "ready": bool(usage.get("private_admin_ready") or usage.get("usage_visibility_ready") or usage.get("status") == "ready"), "status": usage.get("status"), "stage": usage.get("stage")},
         {"key": "owner_auth_foundation", "ready": bool(owner_auth.get("owner_auth_foundation_ready")), "status": owner_auth.get("status"), "stage": owner_auth.get("stage")},
         {"key": "public_signup_boundary", "ready": bool(public_signup.get("public_signup_boundary_ready")), "status": public_signup.get("status"), "stage": public_signup.get("stage")},
+        {"key": "billing_subscription", "ready": bool(billing.get("billing_subscription_gate_foundation_ready")), "status": billing.get("status"), "stage": billing.get("stage")},
     ]
     ready_self_serve_count = sum(1 for item in self_serve_blocks if item.get("ready"))
 
@@ -13378,15 +13417,19 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
     gaps.append(stage70_gap_payload(
         "billing_subscription",
         "Billing and subscription lifecycle",
-        "foundation_only",
+        "foundation" if billing.get("billing_subscription_gate_foundation_ready") else "foundation_only",
         {
-            "tenant_plan_fields_exist_in_runtime": True,
-            "subscription_status_known": tenant.get("subscription_status") if tenant_found else None,
-            "plan_known": tenant.get("plan") if tenant_found else None,
-            "billing_provider_integration_found": False,
+            "billing_stage": billing.get("stage"),
+            "billing_subscription_gate_foundation_ready": bool(billing.get("billing_subscription_gate_foundation_ready")),
+            "owner_visible_billing_status_ready": bool(billing.get("owner_visible_billing_status_ready")),
+            "admin_subscription_update_ready": bool(billing.get("admin_subscription_update_ready")),
+            "runtime_gate_foundation_ready": bool(billing.get("runtime_gate_foundation_ready")),
+            "subscription_status_known": (billing.get("billing") or {}).get("subscription_status"),
+            "plan_known": (billing.get("billing") or {}).get("plan"),
+            "billing_provider_integration_found": bool(billing.get("provider_integration_live")),
             "usage_is_marked_non_billing_proof": True,
         },
-        "Add payment provider, trial/subscription lifecycle, plan limits enforcement, invoices/receipts, and failure handling before public launch.",
+        "Continue from manual billing foundation to payment-provider integration, invoices/receipts, webhook sync, and failure-handling automation before mature SaaS launch.",
         severity="blocker",
     ))
     gaps.append(stage70_gap_payload(
@@ -13493,7 +13536,8 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "owner_auth_foundation_ready": bool(owner_auth.get("owner_auth_foundation_ready")),
             "owner_login_ready_for_private_demo": bool(owner_auth.get("owner_login_ready_for_private_demo")),
             "tenant_ownership_guard_enforced": bool(tenant_ownership_guard_enforced),
-            "billing_provider_integrated": False,
+            "billing_provider_integrated": bool(billing.get("provider_integration_live")),
+            "billing_subscription_gate_foundation_ready": bool(billing.get("billing_subscription_gate_foundation_ready")),
             "public_rate_limits_integrated": False,
         },
         "dependencies": {
@@ -13511,12 +13555,13 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "usage_analytics": usage,
             "owner_auth_foundation": owner_auth,
             "public_signup_boundary": public_signup,
+            "billing_subscription_gate": billing,
         },
         "recommended_next_stages": [
-            "Stage 72.1 — Public Signup CSRF / Email Verification Hardening",
-            "Stage 73 — Owner-Safe Self-Serve Surface Migration",
-            "Stage 74 — Billing / Subscription Lifecycle Integration",
-            "Stage 75 — Client/Super-admin Surface Separation",
+            "Stage 74 — CSRF / Browser Write Hardening",
+            "Stage 75 — Abuse Protection / Rate Limits Hardening",
+            "Stage 76 — Email Verification / Magic Link Auth Foundation",
+            "Stage 77 — Client-owner vs Super-admin Separation Hardening",
         ],
         "blocking": list(dict.fromkeys([str(x) for x in blockers if str(x)])),
         "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
@@ -13527,6 +13572,9 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "owner_auth_readiness": url(f"/owner/auth/readiness?tenant_id={tenant_id_clean}"),
             "owner_login": url(f"/owner/login?tenant_id={tenant_id_clean}"),
             "owner_dashboard": url(f"/owner/dashboard/ui?tenant_id={tenant_id_clean}"),
+            "billing_readiness": url(f"/billing/readiness?tenant_id={tenant_id_clean}&days={days}"),
+            "billing_ui": url(f"/tenant/billing/ui?tenant_id={tenant_id_clean}"),
+            "owner_billing": url(f"/owner/billing/ui?tenant_id={tenant_id_clean}"),
             "control_center": url(f"/control-center/ui?tenant_id={tenant_id_clean}&days={days}"),
             "access_readiness": url(f"/access/readiness?tenant_id={tenant_id_clean}"),
             "tenant_config_ui": url(f"/tenant/config/ui?tenant_id={tenant_id_clean}"),
@@ -13682,6 +13730,7 @@ def stage43a_production_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) ->
         "client_control_center_readiness": stage69_client_control_center_payload(requested_tenant_id),
         "owner_auth_readiness": stage71_owner_auth_readiness_payload(requested_tenant_id),
         "public_signup_boundary_readiness": stage72_public_signup_readiness_payload(requested_tenant_id),
+        "billing_subscription_readiness": stage73_billing_subscription_gate_readiness_payload(requested_tenant_id),
         "public_saas_gap_audit_readiness": stage70_public_saas_gap_audit_payload(requested_tenant_id),
         "telegram_text_channel_readiness": stage59_telegram_text_channel_readiness_payload(requested_tenant_id),
         "telegram_live_smoke_lock": stage60_telegram_live_smoke_lock_payload(requested_tenant_id),
@@ -14023,6 +14072,43 @@ def tenant_creation_readiness(tenant_id: str = TENANT_ID_DEFAULT):
 @app.get("/signup/public/readiness")
 def stage72_public_signup_readiness(tenant_id: str = TENANT_ID_DEFAULT):
     return stage72_public_signup_readiness_payload(tenant_id=tenant_id)
+
+
+@app.get("/billing/readiness")
+@app.get("/billing/subscription/readiness")
+@app.get("/tenant/billing/readiness")
+def stage73_billing_readiness(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    return stage73_billing_subscription_gate_readiness_payload(tenant_id=tenant_id, days=days)
+
+
+@app.get("/tenant/billing")
+@app.get("/billing")
+def tenant_billing_json(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    return stage73_tenant_billing_payload(tenant_id=tenant_id, days=days)
+
+
+@app.get("/tenant/billing/ui", response_class=HTMLResponse)
+@app.get("/billing/ui", response_class=HTMLResponse)
+def tenant_billing_ui(tenant_id: str = TENANT_ID_DEFAULT):
+    return HTMLResponse(content=stage73_billing_ui_html(tenant_id=tenant_id, owner_mode=False), headers={"Cache-Control": "no-store"})
+
+
+@app.post("/tenant/billing/update")
+def tenant_billing_update(payload: TenantBillingUpdateRequest):
+    return stage73_apply_tenant_billing_update(payload)
+
+
+@app.get("/owner/billing")
+@app.get("/owner/subscription")
+def owner_billing_json(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    return stage73_owner_billing_payload(request=request, tenant_id=tenant_id, days=days)
+
+
+@app.get("/owner/billing/ui", response_class=HTMLResponse)
+@app.get("/owner/subscription/ui", response_class=HTMLResponse)
+def owner_billing_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
+    tid = stage711_resolve_tenant_context(request, tenant_id)
+    return HTMLResponse(content=stage73_billing_ui_html(tenant_id=tid, owner_mode=True), headers={"Cache-Control": "no-store"})
 
 
 @app.get("/onboarding/wizard/readiness")
@@ -14899,14 +14985,14 @@ LIFECYCLE_STATUS_ALIASES = {
     "live": "active",
     "due": "past_due",
     "payment_failed": "past_due",
-    "paused": "inactive",
-    "disabled": "inactive",
+    "paused": "suspended",
+    "disabled": "suspended",
     "cancelled": "inactive",
     "canceled": "inactive",
     "expired": "expired",
 }
 
-ALLOWED_SUBSCRIPTION_STATUSES = {"trial", "active", "past_due", "inactive", "expired"}
+ALLOWED_SUBSCRIPTION_STATUSES = {"trial", "active", "past_due", "suspended", "inactive", "expired"}
 
 def normalize_subscription_status(value: Any) -> str:
     raw = str(value or "").strip().lower()
@@ -14940,7 +15026,7 @@ def tenant_lifecycle_payload(tenant: Dict[str, Any]) -> Dict[str, Any]:
     trial_end = tenant_trial_end_value(tenant)
     subscription_status = normalize_subscription_status(tenant.get("subscription_status"))
     effective_status = effective_subscription_status(tenant)
-    blocked = effective_status in {"inactive", "expired"}
+    blocked = effective_status in {"suspended", "inactive", "expired"}
     if effective_status == "past_due":
         blocked = False
     return {
@@ -16247,6 +16333,9 @@ def onboarding_links_payload(tenant_id: str) -> Dict[str, str]:
         "control_center_readiness_url": f"{base}/control-center/readiness?tenant_id={tenant_id}",
         "public_saas_gap_audit_url": f"{base}/public-saas/gap-audit/ui?tenant_id={tenant_id}",
         "public_saas_readiness_url": f"{base}/public-saas/readiness?tenant_id={tenant_id}",
+        "billing_readiness_url": f"{base}/billing/readiness?tenant_id={tenant_id}",
+        "billing_ui_url": f"{base}/tenant/billing/ui?tenant_id={tenant_id}",
+        "owner_billing_url": f"{base}/owner/billing/ui?tenant_id={tenant_id}",
         "owner_auth_readiness_url": f"{base}/owner/auth/readiness?tenant_id={tenant_id}",
         "owner_login_url": f"{base}/owner/login?tenant_id={tenant_id}",
         "owner_dashboard_url": f"{base}/owner/dashboard/ui?tenant_id={tenant_id}",
@@ -16413,6 +16502,394 @@ def tenant_plan_meta(tenant: Dict[str, Any]) -> Dict[str, Any]:
             "dialogs_remaining": max(0, dialog_limit - current_month_usage) if dialog_limit > 0 else 0,
         },
     }
+
+
+
+
+# -------------------------
+# STAGE 73: BILLING / SUBSCRIPTION GATE FOUNDATION
+# -------------------------
+STAGE73_BILLING_COLUMNS = {
+    "plan": "TEXT",
+    "subscription_status": "TEXT",
+    "dialogs_per_month": "INTEGER",
+    "trial_end": "TIMESTAMPTZ",
+    "billing_provider": "TEXT",
+    "billing_customer_id": "TEXT",
+    "billing_subscription_id": "TEXT",
+    "billing_current_period_end": "TIMESTAMPTZ",
+    "billing_last_event_at": "TIMESTAMPTZ",
+    "billing_notes": "TEXT",
+}
+STAGE73_FOUNDATION_BILLING_PROVIDER = "manual"
+STAGE73_PRODUCTION_PROVIDER = (os.getenv("REPLIQ_BILLING_PROVIDER", "manual") or "manual").strip().lower() or "manual"
+
+
+class TenantBillingUpdateRequest(BaseModel):
+    tenant_id: str
+    plan: Optional[str] = None
+    subscription_status: Optional[str] = None
+    trial_end: Optional[str] = None
+    billing_current_period_end: Optional[str] = None
+    dialogs_per_month: Optional[int] = None
+    reset_override: bool = False
+    billing_provider: Optional[str] = None
+    billing_customer_id: Optional[str] = None
+    billing_subscription_id: Optional[str] = None
+    billing_notes: Optional[str] = None
+
+
+def stage73_ensure_billing_columns() -> None:
+    """Ensure Stage 73 tenant billing columns exist.
+
+    This is a schema foundation only. It does not contact a payment provider and
+    does not mutate receptionist conversations or calendar events.
+    """
+    with engine.begin() as conn:
+        for column_name, column_type in STAGE73_BILLING_COLUMNS.items():
+            conn.execute(text(f"ALTER TABLE tenants ADD COLUMN IF NOT EXISTS {column_name} {column_type}"))
+
+
+def stage73_billing_columns_missing() -> List[str]:
+    try:
+        stage73_ensure_billing_columns()
+        col_names = {c.get("name") for c in tenants_columns()}
+        return [name for name in STAGE73_BILLING_COLUMNS if name not in col_names]
+    except Exception as e:
+        log.error("stage73_billing_columns_check_failed err=%s", e)
+        return list(STAGE73_BILLING_COLUMNS.keys())
+
+
+def stage73_iso_or_none(value: Any) -> Optional[str]:
+    if not value:
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    parsed = parse_dt_any_tz(str(value or "").strip())
+    return parsed.isoformat() if parsed else str(value)
+
+
+def stage73_parse_optional_datetime(value: Any) -> Optional[datetime]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    parsed = parse_dt_any_tz(raw)
+    if parsed:
+        return parsed
+    raise HTTPException(status_code=400, detail="invalid_datetime")
+
+
+def stage73_normalize_billing_provider(value: Any) -> str:
+    provider = str(value or STAGE73_PRODUCTION_PROVIDER or STAGE73_FOUNDATION_BILLING_PROVIDER).strip().lower()
+    provider = re.sub(r"[^a-z0-9_\-]+", "_", provider).strip("_")
+    return provider or STAGE73_FOUNDATION_BILLING_PROVIDER
+
+
+def stage73_runtime_gate_status(tenant: Dict[str, Any]) -> Dict[str, Any]:
+    tenant = normalize_tenant_saas_fields(tenant or {})
+    decision = tenant_access_decision(tenant, source="billing_gate_foundation")
+    lifecycle = tenant_lifecycle_payload(tenant)
+    return {
+        "gate_foundation_enabled": True,
+        "enforcement_scope": "subscription_status_and_usage_limits_foundation",
+        "allowed": bool(decision.get("allowed")),
+        "reason": decision.get("reason"),
+        "lifecycle": lifecycle,
+        "usage_gate": (decision.get("meta") or {}),
+        "blocks_runtime_when": ["suspended", "inactive", "expired_trial"],
+        "past_due_policy": "allowed_with_attention_in_foundation",
+        "receptionist_core_changed": False,
+    }
+
+
+def tenant_billing_status(tenant: Dict[str, Any]) -> Dict[str, Any]:
+    tenant = normalize_tenant_saas_fields(tenant or {})
+    tenant_id = str(tenant.get("_id") or tenant.get("id") or "").strip()
+    plan_meta = tenant_plan_meta(tenant)
+    lifecycle = tenant_lifecycle_payload(tenant)
+    provider = stage73_normalize_billing_provider(tenant.get("billing_provider") or STAGE73_PRODUCTION_PROVIDER)
+    return {
+        "stage": "73",
+        "tenant_id": tenant_id or None,
+        "plan": plan_meta.get("plan"),
+        "plan_display_name": plan_meta.get("display_name"),
+        "subscription_status": normalize_subscription_status(tenant.get("subscription_status")),
+        "effective_status": lifecycle.get("effective_status"),
+        "trial_end": stage73_iso_or_none(tenant.get("trial_end") or tenant.get("trial_end_at")),
+        "current_period_end": stage73_iso_or_none(tenant.get("billing_current_period_end")),
+        "billing_provider": provider,
+        "provider_mode": "manual_foundation" if provider == "manual" else "provider_configured_foundation",
+        "provider_integration_live": provider not in {"", "manual", "none", "disabled"} and bool(str(tenant.get("billing_customer_id") or "").strip() and str(tenant.get("billing_subscription_id") or "").strip()),
+        "has_billing_customer_id": bool(str(tenant.get("billing_customer_id") or "").strip()),
+        "has_billing_subscription_id": bool(str(tenant.get("billing_subscription_id") or "").strip()),
+        "billing_last_event_at": stage73_iso_or_none(tenant.get("billing_last_event_at")),
+        "limits": plan_meta.get("limits"),
+        "usage": plan_meta.get("usage"),
+        "runtime_gate": stage73_runtime_gate_status(tenant),
+        "owner_visible": True,
+        "admin_mutable": True,
+        "public_saas_ready": False,
+        "public_saas_ready_reason": "false_until_csrf_email_verification_rate_limits_and_full_client_superadmin_separation_are_done",
+    }
+
+
+def stage73_billing_subscription_gate_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14) -> Dict[str, Any]:
+    tid = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    days = max(1, min(int(days or 14), 60))
+    base = (SERVER_BASE_URL or "").rstrip("/")
+
+    def url(path: str) -> str:
+        return base + path if base else path
+
+    blocking: List[str] = []
+    warnings: List[str] = []
+    try:
+        missing_cols = stage73_billing_columns_missing()
+    except Exception as e:
+        log.error("stage73_readiness_schema_failed tenant_id=%s err=%s", tid, e)
+        missing_cols = list(STAGE73_BILLING_COLUMNS.keys())
+        blocking.append("billing_schema_unavailable")
+
+    tenant = get_existing_tenant(tid)
+    tenant_found = bool(tenant.get("_id"))
+    tenant_id_clean = str(tenant.get("_id") or tenant.get("id") or tid).strip() or tid
+    billing_status = tenant_billing_status(tenant) if tenant_found else {}
+
+    admin_paths = [
+        "/billing/readiness",
+        "/billing/subscription/readiness",
+        "/tenant/billing/readiness",
+        "/tenant/billing",
+        "/tenant/billing/ui",
+        "/tenant/billing/update",
+        "/billing",
+        "/billing/ui",
+        "/tenant/change_plan",
+    ]
+    owner_paths = ["/owner/billing", "/owner/billing/ui", "/owner/subscription", "/owner/subscription/ui"]
+    missing_admin_protection = [path for path in admin_paths if path not in STAGE61_PROTECTED_EXACT_PATHS]
+    missing_owner_protection = [path for path in owner_paths if not stage71_path_requires_owner(path)]
+
+    if not tenant_found:
+        blocking.append("tenant_not_found")
+    if missing_cols:
+        blocking.append("billing_columns_missing")
+    if missing_admin_protection:
+        blocking.append("billing_admin_paths_not_protected")
+    if missing_owner_protection:
+        blocking.append("owner_billing_paths_not_owner_protected")
+    if tenant_found and normalize_subscription_status(tenant.get("subscription_status")) not in ALLOWED_SUBSCRIPTION_STATUSES:
+        blocking.append("subscription_status_invalid")
+    if tenant_found and not str(tenant.get("trial_end") or tenant.get("trial_end_at") or "").strip() and normalize_subscription_status(tenant.get("subscription_status")) == "trial":
+        warnings.append("trial_end_not_configured")
+    if tenant_found and billing_status.get("effective_status") in {"past_due", "suspended", "inactive", "expired"}:
+        warnings.append(f"tenant_subscription_attention:{billing_status.get('effective_status')}")
+
+    foundation_ready = bool(not blocking)
+    return {
+        "stage": "73",
+        "purpose": "Billing / Subscription Gate Foundation",
+        "tenant_id": tenant_id_clean,
+        "status": "ready" if foundation_ready else "blocked",
+        "billing_subscription_gate_foundation_ready": bool(foundation_ready),
+        "subscription_status_known": bool(tenant_found and billing_status.get("subscription_status")),
+        "owner_visible_billing_status_ready": bool(foundation_ready and not missing_owner_protection),
+        "admin_subscription_update_ready": bool(foundation_ready and not missing_admin_protection),
+        "runtime_gate_foundation_ready": bool(foundation_ready),
+        "provider_integration_live": bool((billing_status or {}).get("provider_integration_live")),
+        "provider_integration_required_for_this_stage": False,
+        "public_saas_ready": False,
+        "public_saas_ready_reason": "false_until_csrf_email_verification_rate_limits_and_full_client_superadmin_separation_are_done",
+        "schema": {
+            "billing_columns": sorted(STAGE73_BILLING_COLUMNS.keys()),
+            "missing_columns": missing_cols,
+        },
+        "billing": billing_status,
+        "protected_paths": {
+            "admin_required": admin_paths,
+            "owner_required": owner_paths,
+            "admin_missing": missing_admin_protection,
+            "owner_missing": missing_owner_protection,
+        },
+        "plan_catalog": available_plan_catalog(),
+        "manual_foundation": {
+            "enabled": True,
+            "billing_provider": STAGE73_PRODUCTION_PROVIDER,
+            "admin_update_endpoint": "/tenant/billing/update",
+            "tenant_change_plan_endpoint_reused": "/tenant/change_plan",
+            "stripe_or_payment_provider_not_integrated_yet": True,
+        },
+        "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
+        "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
+        "links": {
+            "billing_readiness": url(f"/billing/readiness?tenant_id={tenant_id_clean}&days={days}"),
+            "tenant_billing": url(f"/tenant/billing?tenant_id={tenant_id_clean}&days={days}"),
+            "tenant_billing_ui": url(f"/tenant/billing/ui?tenant_id={tenant_id_clean}&days={days}"),
+            "owner_billing": url(f"/owner/billing/ui?tenant_id={tenant_id_clean}"),
+            "control_center": url(f"/control-center/ui?tenant_id={tenant_id_clean}&days={days}"),
+            "public_saas_audit": url(f"/public-saas/gap-audit/ui?tenant_id={tenant_id_clean}&days={days}"),
+        },
+        "note": "Stage 73 adds a billing/subscription foundation and runtime gate metadata. It does not call a payment provider and does not change receptionist dialogue, slot generation, calendar mutation, Telegram webhook runtime, or QA evaluator behavior.",
+    }
+
+
+def stage73_tenant_billing_payload(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14) -> Dict[str, Any]:
+    tid = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    tenant = get_tenant_or_404(tid)
+    tenant = normalize_tenant_saas_fields(tenant)
+    return {
+        "ok": True,
+        "stage": "73",
+        "tenant_id": str(tenant.get("_id") or tid),
+        "tenant": {
+            "business_name": tenant.get("business_name"),
+            "owner_email": tenant.get("owner_email"),
+            "plan": tenant.get("plan"),
+            "subscription_status": tenant.get("subscription_status"),
+        },
+        "billing": tenant_billing_status(tenant),
+        "readiness": stage73_billing_subscription_gate_readiness_payload(tid, days=days),
+        "plan_catalog": available_plan_catalog(),
+        "links": onboarding_links_payload(str(tenant.get("_id") or tid)),
+        "security": {
+            "admin_token_exposed": False,
+            "owner_login_code_hash_exposed": False,
+            "raw_payment_provider_secret_exposed": False,
+            "provider_secret_fields_present_in_response": False,
+        },
+    }
+
+
+def stage73_apply_tenant_billing_update(payload: TenantBillingUpdateRequest) -> Dict[str, Any]:
+    tenant_id = (payload.tenant_id or "").strip()
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="tenant_id required")
+    get_tenant_or_404(tenant_id)
+    stage73_ensure_billing_columns()
+    cols = tenants_columns()
+    col_names = {c["name"] for c in cols}
+    pk = tenants_pk(cols)
+    updates: List[str] = []
+    params: Dict[str, Any] = {"tid": tenant_id}
+
+    def add_field(field_name: str, value: Any) -> None:
+        if field_name in col_names:
+            updates.append(f"{field_name}=:{field_name}")
+            params[field_name] = value
+
+    if payload.plan is not None:
+        add_field("plan", normalized_plan_name(payload.plan))
+    if payload.subscription_status is not None:
+        add_field("subscription_status", normalize_subscription_status(payload.subscription_status))
+    if payload.reset_override:
+        if "dialogs_per_month" in col_names:
+            updates.append("dialogs_per_month=NULL")
+    elif payload.dialogs_per_month is not None:
+        add_field("dialogs_per_month", max(0, int(payload.dialogs_per_month)))
+    if payload.trial_end is not None:
+        add_field("trial_end", stage73_parse_optional_datetime(payload.trial_end) if str(payload.trial_end or "").strip() else None)
+    if payload.billing_current_period_end is not None:
+        add_field("billing_current_period_end", stage73_parse_optional_datetime(payload.billing_current_period_end) if str(payload.billing_current_period_end or "").strip() else None)
+    if payload.billing_provider is not None:
+        add_field("billing_provider", stage73_normalize_billing_provider(payload.billing_provider))
+    if payload.billing_customer_id is not None:
+        add_field("billing_customer_id", str(payload.billing_customer_id or "").strip() or None)
+    if payload.billing_subscription_id is not None:
+        add_field("billing_subscription_id", str(payload.billing_subscription_id or "").strip() or None)
+    if payload.billing_notes is not None:
+        add_field("billing_notes", str(payload.billing_notes or "").strip() or None)
+    if "billing_last_event_at" in col_names:
+        updates.append("billing_last_event_at=NOW()")
+    if "updated_at" in col_names:
+        updates.append("updated_at=NOW()")
+    if not updates:
+        raise HTTPException(status_code=400, detail="no_writable_billing_fields")
+    with engine.begin() as conn:
+        conn.execute(text(f"UPDATE tenants SET {', '.join(updates)} WHERE {pk}=:tid"), params)
+    updated = get_tenant_or_404(tenant_id)
+    return {
+        "ok": True,
+        "stage": "73",
+        "tenant_id": tenant_id,
+        "billing": tenant_billing_status(updated),
+        "readiness": stage73_billing_subscription_gate_readiness_payload(tenant_id),
+        "plan_meta": tenant_plan_meta(updated),
+        "public_saas_ready": False,
+    }
+
+
+def stage73_owner_billing_payload(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14) -> Dict[str, Any]:
+    admin_access = bool(stage61_token_valid(stage61_request_token(request)) or stage62_request_has_valid_session(request))
+    if admin_access:
+        access = {"ok": True, "tenant_id": stage711_resolve_tenant_context(request, tenant_id), "owner_email": "super_admin", "role": "super_admin"}
+    else:
+        access = stage71_owner_request_access(request, path="/owner/billing")
+    if not access.get("ok"):
+        raise HTTPException(status_code=401, detail=access.get("error") or "owner_login_required")
+    requested_tid = str(request.query_params.get("tenant_id") or "").strip()
+    tid = requested_tid or str(access.get("tenant_id") or tenant_id or "").strip()
+    if not tid:
+        raise HTTPException(status_code=400, detail="tenant_id_required")
+    payload = stage73_tenant_billing_payload(tid, days=days)
+    payload["auth_model"] = "owner_session_or_super_admin_bypass"
+    payload["owner_email"] = stage71_normalize_email(access.get("owner_email") or "") if not admin_access else None
+    payload["role"] = access.get("role") or "owner"
+    payload["opened_via_super_admin_bypass"] = bool(admin_access)
+    payload["owner_safe_scope"] = {"read_only": True, "admin_update_endpoint_exposed_to_owner": False, "receptionist_core_changed": False}
+    return payload
+
+
+def stage73_billing_ui_html(tenant_id: str = TENANT_ID_DEFAULT, owner_mode: bool = False) -> str:
+    tenant_id_json = json.dumps((tenant_id or "").strip() or TENANT_ID_DEFAULT, ensure_ascii=False)
+    owner_mode_json = "true" if owner_mode else "false"
+    title = "Owner Billing" if owner_mode else "Billing Admin"
+    subtitle = "Owner-visible read-only subscription status." if owner_mode else "Stage 73 manual billing/subscription foundation."
+    return f"""
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Repliq {title}</title>
+<style>
+body{{font-family:Inter,Arial,sans-serif;background:#f6f7fb;color:#111827;margin:0;padding:24px}}.wrap{{max-width:1080px;margin:0 auto}}.hero,.card{{background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:18px;margin-bottom:14px;box-shadow:0 8px 24px rgba(15,23,42,.06)}}.hero{{background:#111827;color:white}}.hero p{{color:#d1d5db}}.grid{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}}label{{display:block;font-size:12px;color:#6b7280;margin-bottom:4px}}input,select,textarea{{width:100%;box-sizing:border-box;border:1px solid #d1d5db;border-radius:10px;padding:10px;background:white;color:#111827}}button{{border:0;border-radius:10px;padding:10px 14px;background:#111827;color:white;font-weight:700;cursor:pointer}}button.secondary{{background:#e5e7eb;color:#111827}}.actions{{display:flex;flex-wrap:wrap;gap:8px;align-items:center}}.badge{{display:inline-block;border-radius:999px;padding:4px 8px;font-size:12px;background:#e5e7eb;margin:2px}}.ok{{background:#dcfce7;color:#166534}}.warn{{background:#fef3c7;color:#92400e}}.err{{background:#fee2e2;color:#991b1b}}pre{{background:#0f172a;color:#e2e8f0;border-radius:14px;padding:14px;white-space:pre-wrap;max-height:520px;overflow:auto}}@media(max-width:900px){{body{{padding:12px}}.grid{{grid-template-columns:1fr}}}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hero"><h1>{title}</h1><p>{subtitle}</p></div>
+  <div class="card actions"><input id="tenant_id" style="max-width:320px"/><button onclick="loadBilling()">Load</button><button class="secondary" onclick="go('/owner/dashboard/ui?tenant_id='+encTenant())">Owner dashboard</button><button class="secondary" onclick="go('/control-center/ui?tenant_id='+encTenant())">Control center</button><button class="secondary" onclick="go('/public-saas/gap-audit/ui?tenant_id='+encTenant())">Public SaaS audit</button></div>
+  <div class="card"><div id="summary"></div></div>
+  <div class="card" id="editCard">
+    <h2>Subscription settings</h2>
+    <div class="grid">
+      <div><label>Plan</label><select id="plan"><option value="starter">Starter</option><option value="pro">Pro</option><option value="ai">AI</option><option value="business">Business</option></select></div>
+      <div><label>Subscription status</label><select id="subscription_status"><option value="trial">trial</option><option value="active">active</option><option value="past_due">past_due</option><option value="suspended">suspended</option><option value="inactive">inactive</option><option value="expired">expired</option></select></div>
+      <div><label>Dialogs per month override</label><input id="dialogs_per_month" type="number" min="0" placeholder="empty = plan default"/></div>
+      <div><label>Trial end ISO</label><input id="trial_end" placeholder="2026-07-31T23:59:00Z"/></div>
+      <div><label>Billing provider</label><input id="billing_provider" placeholder="manual"/></div>
+      <div><label>Current period end ISO</label><input id="billing_current_period_end" placeholder="optional"/></div>
+      <div><label>Customer id</label><input id="billing_customer_id" placeholder="optional"/></div>
+      <div><label>Subscription id</label><input id="billing_subscription_id" placeholder="optional"/></div>
+      <div><label><input id="reset_override" type="checkbox" style="width:auto"/> Reset dialogs override</label></div>
+    </div>
+    <div style="margin-top:12px"><label>Billing notes</label><textarea id="billing_notes" placeholder="internal admin note"></textarea></div>
+    <div class="actions" style="margin-top:12px"><button onclick="saveBilling()">Save billing</button><span id="save_status"></span></div>
+  </div>
+  <div class="card"><h2>Raw</h2><pre id="raw">Loading…</pre></div>
+</div>
+<script>
+const DEFAULT_TENANT_ID={tenant_id_json}; const OWNER_MODE={owner_mode_json}; let last=null;
+function el(id){{return document.getElementById(id)}} function tenant(){{return (el('tenant_id').value||'').trim()||DEFAULT_TENANT_ID||'clinic_demo'}} function encTenant(){{return encodeURIComponent(tenant())}} function go(p){{window.location=p}} function esc(v){{return v===null||v===undefined?'':String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;')}} function badge(cls,t){{return `<span class="badge ${{cls}}">${{esc(t)}}</span>`}}
+function setForm(d){{const b=(d.billing||{{}}); el('plan').value=b.plan||'starter'; el('subscription_status').value=b.subscription_status||'trial'; el('dialogs_per_month').value=((b.usage||{{}}).dialogs_per_month)||''; el('trial_end').value=b.trial_end||''; el('billing_provider').value=b.billing_provider||'manual'; el('billing_current_period_end').value=b.current_period_end||''; el('billing_customer_id').value=b.has_billing_customer_id?'configured':''; el('billing_subscription_id').value=b.has_billing_subscription_id?'configured':''; el('billing_notes').value='';}}
+function render(d){{last=d; el('raw').textContent=JSON.stringify(d,null,2); const b=d.billing||{{}}; const rt=b.runtime_gate||{{}}; const ready=d.readiness||{{}}; el('summary').innerHTML=`<h2>${{esc((d.tenant||{{}}).business_name||d.tenant_id)}}</h2><div>${{badge(rt.allowed?'ok':'err','runtime gate: '+(rt.allowed?'allowed':'blocked'))}}${{badge('ok','plan: '+(b.plan||'-'))}}${{badge(b.effective_status==='active'||b.effective_status==='trial'?'ok':'warn','status: '+(b.effective_status||'-'))}}${{badge(ready.billing_subscription_gate_foundation_ready?'ok':'warn','Stage 73 foundation: '+!!ready.billing_subscription_gate_foundation_ready)}}</div>`; setForm(d);}}
+async function loadBilling(){{el('tenant_id').value=tenant(); const endpoint=OWNER_MODE?'/owner/billing':'/tenant/billing'; const r=await fetch(endpoint+'?tenant_id='+encTenant()); const d=await r.json().catch(()=>({{}})); if(!r.ok){{el('raw').textContent=JSON.stringify(d,null,2); return;}} render(d);}}
+async function saveBilling(){{if(OWNER_MODE)return; const payload={{tenant_id:tenant(), plan:el('plan').value, subscription_status:el('subscription_status').value, trial_end:el('trial_end').value, billing_current_period_end:el('billing_current_period_end').value, dialogs_per_month:el('dialogs_per_month').value?parseInt(el('dialogs_per_month').value,10):null, reset_override:el('reset_override').checked, billing_provider:el('billing_provider').value, billing_customer_id:el('billing_customer_id').value==='configured'?null:el('billing_customer_id').value, billing_subscription_id:el('billing_subscription_id').value==='configured'?null:el('billing_subscription_id').value, billing_notes:el('billing_notes').value}}; el('save_status').textContent='Saving…'; const r=await fetch('/tenant/billing/update',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(payload)}}); const d=await r.json().catch(()=>({{}})); el('raw').textContent=JSON.stringify(d,null,2); el('save_status').textContent=r.ok?'Saved':'Save failed'; if(r.ok) loadBilling();}}
+el('tenant_id').value=DEFAULT_TENANT_ID||'clinic_demo'; if(OWNER_MODE){{el('editCard').style.display='none';}} loadBilling();
+</script>
+</body>
+</html>
+"""
 
 
 def tenant_missing_setup_items(tenant: Dict[str, Any]) -> List[str]:
@@ -18703,6 +19180,8 @@ def tenant_config(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
         "telegram_text_channel_readiness": stage59_telegram_text_channel_readiness_payload(str(tenant.get("_id") or tenant_id)),
         "telegram_live_smoke_lock": stage60_telegram_live_smoke_lock_payload(str(tenant.get("_id") or tenant_id)),
         "client_control_center_readiness": stage69_client_control_center_payload(str(tenant.get("_id") or tenant_id)),
+        "billing_subscription_readiness": stage73_billing_subscription_gate_readiness_payload(str(tenant.get("_id") or tenant_id)),
+        "billing": tenant_billing_status(tenant),
         "public_saas_gap_audit_readiness": stage70_public_saas_gap_audit_payload(str(tenant.get("_id") or tenant_id)),
         "config_ui_hardening": tenant_config_ui_readiness_payload(tenant),
         "plan_meta": tenant_plan_meta(tenant),
@@ -18908,6 +19387,8 @@ def tenant_config_update(payload: TenantConfigUpdateRequest):
         "service_catalog_builder_readiness": stage66_service_catalog_readiness_payload(tenant_id),
         "telegram_setup_readiness": stage68_telegram_setup_readiness_payload(tenant_id),
         "client_control_center_readiness": stage69_client_control_center_payload(tenant_id),
+        "billing_subscription_readiness": stage73_billing_subscription_gate_readiness_payload(tenant_id),
+        "billing": tenant_billing_status(updated),
         "public_saas_gap_audit_readiness": stage70_public_saas_gap_audit_payload(tenant_id),
         "telegram_text_channel_readiness": stage59_telegram_text_channel_readiness_payload(tenant_id),
         "telegram_live_smoke_lock": stage60_telegram_live_smoke_lock_payload(tenant_id),

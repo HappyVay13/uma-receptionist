@@ -1,6 +1,6 @@
 # Repliq Project State
 
-Current stage: Stage 62 — Admin Login / Session Layer.
+Current stage: Stage 73 — Billing / Subscription Gate Foundation.
 
 Production regression baseline before Stage 40:
 - Stage 39 was deployed and confirmed by user: `/dialogue/qa` = 15/15 passed.
@@ -68,6 +68,18 @@ Protected baseline:
 - Stage 60 Telegram live smoke lock
 - Stage 61 admin access enforcement
 - Stage 62 admin login / session layer
+- Stage 63 tenant creation / signup foundation
+- Stage 64 self-serve onboarding wizard
+- Stage 65 Google Calendar OAuth self-serve
+- Stage 66 service catalog builder
+- Stage 67 business memory / FAQ builder
+- Stage 68 Telegram bot self-serve setup
+- Stage 69 client dashboard self-serve control center
+- Stage 70 public SaaS readiness gap audit
+- Stage 71 owner auth / public client account foundation
+- Stage 71.1 owner readiness / tenant context fix
+- Stage 72 public signup boundary / owner signup flow foundation
+- Stage 73 billing / subscription gate foundation
 
 ## Stage 36 — Advanced Conversation Recovery
 
@@ -626,7 +638,7 @@ Receptionist core was not changed. Booking routing, slots, date/time parsing, pr
 
 ## Stage 72 — Public Signup Boundary / Owner Signup Flow Foundation
 
-Status: implemented in archive, awaiting deploy verification.
+Status: deployed and verified by user. `/dialogue/qa` = 50/50 passed. Public signup, owner session/dashboard, protected legacy signup routes and security checks were reported OK.
 
 Scope:
 - Added dedicated public signup boundary endpoints that are not Stage 61 admin-token protected:
@@ -681,3 +693,44 @@ Expected verification:
 - `/public-saas/readiness?tenant_id=clinic_demo` shows public signup boundary as foundation while `public_saas_ready=false` remains.
 
 Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, dialogue QA evaluator, and voice/calls were not changed.
+
+
+## Stage 73 — Billing / Subscription Gate Foundation
+
+Status: implemented in archive, awaiting deploy verification.
+
+Scope:
+- Added manual billing/subscription foundation for tenants without integrating a live payment provider.
+- Added safe tenant billing columns for provider metadata, customer/subscription identifiers, current billing period end, last billing event time, and internal billing notes.
+- Reused existing `plan`, `subscription_status`, `dialogs_per_month`, and `trial_end` lifecycle fields.
+- Added `suspended` as a supported blocked lifecycle state. `past_due` remains allowed with attention metadata.
+- Added admin-protected billing readiness, JSON, UI and update endpoints:
+  - `GET /billing/readiness`
+  - `GET /billing/subscription/readiness`
+  - `GET /tenant/billing/readiness`
+  - `GET /tenant/billing`
+  - `GET /billing`
+  - `GET /tenant/billing/ui`
+  - `GET /billing/ui`
+  - `POST /tenant/billing/update`
+- Added owner-session-protected read-only billing endpoints:
+  - `GET /owner/billing`
+  - `GET /owner/subscription`
+  - `GET /owner/billing/ui`
+  - `GET /owner/subscription/ui`
+- Integrated billing readiness/status into internal readiness, tenant config, owner dashboard, control center, and public SaaS gap audit.
+- Stage 70 now reports billing/subscription lifecycle as `foundation` when Stage 73 checks pass.
+- `public_saas_ready` remains false by design.
+
+Expected verification:
+- `/dialogue/qa` = 50/50 passed.
+- `/billing/readiness?tenant_id=clinic_demo` returns `stage=73` and `billing_subscription_gate_foundation_ready=true` for an existing tenant.
+- `/tenant/billing?tenant_id=clinic_demo` is admin protected and returns billing status.
+- `/tenant/billing/ui?tenant_id=clinic_demo` opens after admin login.
+- `POST /tenant/billing/update` updates manual plan/status/billing metadata without exposing secrets.
+- `/owner/billing?tenant_id=<owner_tenant>` works only with valid owner session or super-admin bypass.
+- `/owner/billing/ui?tenant_id=<owner_tenant>` is read-only for owner mode.
+- `/public-saas/readiness?tenant_id=clinic_demo` shows billing/subscription as foundation while `public_saas_ready=false` remains.
+- Stage 72 public signup and owner session flow remains working.
+
+Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, dialogue QA evaluator, LLM orchestration, and voice/calls were not changed.
