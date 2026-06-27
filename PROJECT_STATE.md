@@ -1,6 +1,6 @@
 # Repliq Project State
 
-Current stage: Stage 73 — Billing / Subscription Gate Foundation.
+Current stage: Stage 74 — CSRF / Browser Write Hardening Foundation.
 
 Production regression baseline before Stage 40:
 - Stage 39 was deployed and confirmed by user: `/dialogue/qa` = 15/15 passed.
@@ -80,6 +80,8 @@ Protected baseline:
 - Stage 71.1 owner readiness / tenant context fix
 - Stage 72 public signup boundary / owner signup flow foundation
 - Stage 73 billing / subscription gate foundation
+- Stage 73.1 billing update route import hotfix
+- Stage 74 CSRF / browser write hardening foundation
 
 ## Stage 36 — Advanced Conversation Recovery
 
@@ -697,7 +699,7 @@ Receptionist core was not changed. Booking routing, slots, date/time parsing, pr
 
 ## Stage 73 — Billing / Subscription Gate Foundation
 
-Status: implemented in archive, awaiting deploy verification.
+Status: deployed and verified by user after Stage 73.1 hotfix; `/dialogue/qa` = 50/50 passed.
 
 Scope:
 - Added manual billing/subscription foundation for tenants without integrating a live payment provider.
@@ -737,7 +739,7 @@ Receptionist core was not changed. Booking routing, slots, date/time parsing, pr
 
 ## Stage 73.1 — Billing Update Route Import Hotfix
 
-Status: implemented in hotfix archive, awaiting deploy verification.
+Status: deployed and verified by user; `/dialogue/qa` = 50/50 passed.
 
 Reason:
 - Render deployed Stage 73 build successfully, but runtime import failed before app startup.
@@ -767,3 +769,74 @@ Expected verification:
 - `/billing/readiness?tenant_id=clinic_demo` works.
 - `/tenant/billing/update` remains admin protected and still validates payload through `TenantBillingUpdateRequest` at call time.
 - `public_saas_ready` remains false.
+
+
+## Stage 74 — CSRF / Browser Write Hardening Foundation
+
+Status: implemented in archive, awaiting deploy verification.
+
+Scope:
+- Added Stage 74 browser write hardening for cookie-authenticated admin/owner writes.
+- Added same-origin Fetch Metadata / Origin / Referer checks for browser writes that rely on signed session cookies.
+- Added signed CSRF token support via `X-Repliq-CSRF-Token` for admin, owner, and public scopes.
+- Added explicit admin token header/bearer/query bypass for automation/API scripts that do not rely on browser session cookies.
+- Added cross-site browser POST blocking for public signup while keeping public signup usable from the same-origin UI and non-browser API clients.
+- Added Stage 74 readiness endpoints:
+  - `GET /csrf/readiness`
+  - `GET /security/csrf/readiness`
+  - `GET /browser-write/readiness`
+  - `GET /browser-write-hardening/readiness`
+  - `GET /csrf/token`
+- Added Stage 74 readiness into Control Center and Public SaaS gap audit.
+- Stage 70 now reports browser write hardening as ready/foundation when Stage 74 checks pass.
+- `public_saas_ready` remains false by design; remaining blockers are production abuse/rate limits, email verification/magic-link auth, and full client-owner vs super-admin separation hardening.
+
+Protected/hardened write paths:
+- Admin browser writes:
+  - `/owner/accounts/bootstrap`
+  - `/tenant/owner/bind`
+  - `/google/select_calendar`
+  - `/tenant/billing/update`
+  - `/tenant/business-memory/update`
+  - `/business-memory/update`
+  - `/telegram/setup/update`
+  - `/telegram/setup/set-webhook`
+  - `/telegram/set-webhook`
+  - `/onboarding/finish`
+  - `/onboarding/create_tenant`
+  - `/tenant/create`
+  - `/tenant/change_plan`
+  - `/tenant/service-catalog/update`
+  - `/service-catalog/update`
+  - `/tenant/config/update`
+  - dev write/test helper endpoints already behind admin boundary.
+- Owner browser writes:
+  - `/owner/logout`
+- Public browser writes:
+  - `/public/signup`
+- External channel webhooks are excluded from CSRF checks:
+  - `/voice/incoming`
+  - `/voice/language`
+  - `/voice/intent`
+  - `/sms/incoming`
+  - `/whatsapp/incoming`
+  - `/telegram/webhook`
+
+Expected verification:
+- Render deploy starts successfully.
+- `/dialogue/qa` = 50/50 passed.
+- `/csrf/readiness?tenant_id=clinic_demo` returns `stage=74` and `csrf_browser_write_hardening_ready=true`.
+- `/security/csrf/readiness?tenant_id=clinic_demo` works and is admin protected.
+- `/csrf/token?scope=admin&tenant_id=clinic_demo` works only with admin auth and does not expose raw secrets.
+- Existing admin UIs still save configuration from same-origin browser pages:
+  - tenant config update
+  - service catalog update
+  - business memory update
+  - Telegram setup update
+  - Google calendar selection
+  - billing update
+- `/public/signup` still works from the same-origin public signup UI.
+- Cross-site browser POST attempts to protected cookie-authenticated write paths return Stage 74 `403`.
+- `/public-saas/readiness?tenant_id=clinic_demo` includes `csrf_browser_write_hardening_ready=true` while `public_saas_ready=false` remains.
+
+Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, dialogue QA evaluator, LLM orchestration, billing semantics, and voice/calls were not changed.

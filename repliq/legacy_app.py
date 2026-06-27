@@ -273,6 +273,10 @@ STAGE61_PROTECTED_EXACT_PATHS = {
     "/tenant/billing/update",
     "/billing",
     "/billing/ui",
+    "/csrf/readiness",
+    "/security/csrf/readiness",
+    "/browser-write/readiness",
+    "/browser-write-hardening/readiness",
     "/client/dashboard",
     "/client/dashboard/ui",
     "/client/control-center",
@@ -304,6 +308,10 @@ STAGE61_PROTECTED_EXACT_PATHS = {
     "/tenants",
     "/tenants/ui",
     "/dev_chat",
+    "/dev_reset",
+    "/dev_understand",
+    "/dev_focus_test",
+    "/dev/dialogue-simulate",
     "/dev_chat_ui",
     "/dev_rules",
     "/dev_logs",
@@ -621,6 +629,318 @@ def stage71_owner_request_access(request: Request, path: str = "") -> Dict[str, 
         return {"ok": False, "error": "owner_tenant_access_denied", "tenant_id": tenant_id, "owner_email": email}
     return {"ok": True, "tenant_id": tenant_id, "owner_email": email, "role": session.get("role") or "owner"}
 
+
+# -------------------------
+# STAGE 74: CSRF / BROWSER WRITE HARDENING FOUNDATION
+# -------------------------
+STAGE74_CSRF_HEADER_NAME = "x-repliq-csrf-token"
+STAGE74_CSRF_ALT_HEADER_NAMES = ("x-csrf-token", "x-xsrf-token")
+STAGE74_CSRF_TOKEN_TTL_SECONDS = 60 * 60 * 4
+STAGE74_CSRF_TOKEN_VERSION = 1
+
+# Browser writes that are authenticated by admin/owner cookies must pass a same-origin
+# browser metadata check or a signed CSRF token. External channel webhooks and public
+# OAuth callbacks are intentionally excluded from this browser-CSRF layer.
+STAGE74_ADMIN_BROWSER_WRITE_PATHS = {
+    "/owner/accounts/bootstrap",
+    "/tenant/owner/bind",
+    "/google/select_calendar",
+    "/tenant/billing/update",
+    "/tenant/business-memory/update",
+    "/business-memory/update",
+    "/telegram/setup/update",
+    "/telegram/setup/set-webhook",
+    "/telegram/set-webhook",
+    "/onboarding/finish",
+    "/onboarding/create_tenant",
+    "/tenant/create",
+    "/tenant/change_plan",
+    "/tenant/service-catalog/update",
+    "/service-catalog/update",
+    "/tenant/config/update",
+    "/dev_chat",
+    "/dev_reset",
+    "/dev_understand",
+    "/dev_focus_test",
+    "/dev/dialogue-simulate",
+}
+STAGE74_OWNER_BROWSER_WRITE_PATHS = {
+    "/owner/logout",
+}
+STAGE74_PUBLIC_BROWSER_WRITE_PATHS = {
+    "/public/signup",
+}
+STAGE74_EXTERNAL_WEBHOOK_WRITE_PATHS = {
+    "/voice/incoming",
+    "/voice/language",
+    "/voice/intent",
+    "/sms/incoming",
+    "/whatsapp/incoming",
+    "/telegram/webhook",
+}
+
+
+def stage74_normalize_path(path: str) -> str:
+    return (path or "").rstrip("/") or "/"
+
+
+def stage74_csrf_enforcement_enabled() -> bool:
+    raw = (os.getenv("REPLIQ_CSRF_ENFORCEMENT", "true") or "true").strip().lower()
+    return raw not in {"0", "false", "no", "off", "disabled", "report_only"}
+
+
+def stage74_csrf_secret() -> str:
+    return (
+        os.getenv("REPLIQ_CSRF_SECRET", "")
+        or stage71_owner_session_secret()
+        or stage62_session_secret()
+        or stage61_admin_token_value()
+        or "stage74-dev-fallback"
+    ).strip()
+
+
+def stage74_csrf_secret_source() -> str:
+    if (os.getenv("REPLIQ_CSRF_SECRET", "") or "").strip():
+        return "REPLIQ_CSRF_SECRET"
+    if stage71_owner_session_secret():
+        return "owner_session_secret_fallback"
+    if stage62_session_secret():
+        return "admin_session_secret_fallback"
+    if stage61_admin_token_value():
+        return "admin_token_fallback"
+    return "dev_fallback"
+
+
+def stage61_request_non_cookie_token(request: Request) -> str:
+    for key in STAGE61_ADMIN_HEADER_KEYS:
+        value = (request.headers.get(key) or "").strip()
+        if value:
+            return value
+    auth = (request.headers.get("authorization") or "").strip()
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    return stage61_query_token(request)
+
+
+def stage74_make_csrf_token(scope: str = "admin", tenant_id: str = "") -> str:
+    now = int(datetime.utcnow().timestamp())
+    payload = {
+        "v": STAGE74_CSRF_TOKEN_VERSION,
+        "type": "csrf_token",
+        "scope": str(scope or "admin").strip().lower() or "admin",
+        "tenant_id": str(tenant_id or "*").strip() or "*",
+        "iat": now,
+        "exp": now + STAGE74_CSRF_TOKEN_TTL_SECONDS,
+        "nonce": secrets.token_urlsafe(16),
+    }
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    payload_b64 = stage62_b64url_encode(raw)
+    sig = hmac.new(stage74_csrf_secret().encode("utf-8"), payload_b64.encode("ascii"), hashlib.sha256).hexdigest()
+    return f"{payload_b64}.{sig}"
+
+
+def stage74_parse_csrf_token(raw_token: str) -> Optional[Dict[str, Any]]:
+    raw_token = (raw_token or "").strip()
+    if not raw_token or "." not in raw_token:
+        return None
+    payload_b64, sig = raw_token.rsplit(".", 1)
+    expected = hmac.new(stage74_csrf_secret().encode("utf-8"), payload_b64.encode("ascii"), hashlib.sha256).hexdigest()
+    try:
+        if not hmac.compare_digest(sig, expected):
+            return None
+        payload = json.loads(stage62_b64url_decode(payload_b64).decode("utf-8"))
+    except Exception:
+        return None
+    if payload.get("type") != "csrf_token":
+        return None
+    try:
+        exp = int(payload.get("exp") or 0)
+    except Exception:
+        return None
+    if exp < int(datetime.utcnow().timestamp()):
+        return None
+    return payload
+
+
+def stage74_request_csrf_token(request: Request) -> str:
+    value = (request.headers.get(STAGE74_CSRF_HEADER_NAME) or "").strip()
+    if value:
+        return value
+    for key in STAGE74_CSRF_ALT_HEADER_NAMES:
+        value = (request.headers.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def stage74_csrf_token_valid_for_request(request: Request, scope: str, tenant_id: str = "") -> bool:
+    payload = stage74_parse_csrf_token(stage74_request_csrf_token(request))
+    if not payload:
+        return False
+    expected_scope = str(scope or "admin").strip().lower() or "admin"
+    token_scope = str(payload.get("scope") or "").strip().lower()
+    if token_scope != expected_scope:
+        return False
+    expected_tenant = str(tenant_id or "").strip()
+    token_tenant = str(payload.get("tenant_id") or "*").strip() or "*"
+    if expected_tenant and token_tenant not in {"*", expected_tenant}:
+        return False
+    return True
+
+
+def stage74_origin_host_candidates(request: Request) -> List[str]:
+    values: List[str] = []
+    try:
+        host = str(request.url.netloc or "").lower()
+        if host:
+            values.append(host)
+    except Exception:
+        pass
+    forwarded_host = str(request.headers.get("x-forwarded-host") or "").split(",")[0].strip().lower()
+    if forwarded_host:
+        values.append(forwarded_host)
+    configured = (SERVER_BASE_URL or "").strip()
+    if configured:
+        try:
+            parsed = urllib.parse.urlparse(configured)
+            if parsed.netloc:
+                values.append(parsed.netloc.lower())
+        except Exception:
+            pass
+    return list(dict.fromkeys([v for v in values if v]))
+
+
+def stage74_same_origin_browser_metadata_ok(request: Request) -> bool:
+    sec_fetch_site = (request.headers.get("sec-fetch-site") or "").strip().lower()
+    if sec_fetch_site:
+        return sec_fetch_site in {"same-origin", "none"}
+
+    allowed_hosts = set(stage74_origin_host_candidates(request))
+    origin = (request.headers.get("origin") or "").strip()
+    if origin:
+        try:
+            parsed = urllib.parse.urlparse(origin)
+            return (parsed.netloc or "").lower() in allowed_hosts
+        except Exception:
+            return False
+
+    referer = (request.headers.get("referer") or "").strip()
+    if referer:
+        try:
+            parsed = urllib.parse.urlparse(referer)
+            return (parsed.netloc or "").lower() in allowed_hosts
+        except Exception:
+            return False
+
+    # Non-browser API clients and Render health/internal checks usually do not send
+    # Fetch Metadata / Origin / Referer. They are not CSRF-able without browser cookies.
+    return True
+
+
+def stage74_browser_write_protection_ok(request: Request, scope: str, tenant_id: str = "") -> bool:
+    if stage74_csrf_token_valid_for_request(request, scope=scope, tenant_id=tenant_id):
+        return True
+    return stage74_same_origin_browser_metadata_ok(request)
+
+
+def stage74_csrf_error(scope: str, tenant_id: str = "", reason: str = "csrf_browser_write_check_failed") -> JSONResponse:
+    return JSONResponse(
+        status_code=403,
+        content={
+            "ok": False,
+            "stage": "74",
+            "error": reason,
+            "scope": scope,
+            "tenant_id": tenant_id or None,
+            "csrf_header": STAGE74_CSRF_HEADER_NAME,
+            "accepted": [
+                "same-origin browser request metadata",
+                "signed CSRF token in X-Repliq-CSRF-Token",
+                "explicit admin token header/bearer/query for admin API automation",
+            ],
+            "note": "Stage 74 blocks cross-site browser writes that rely on signed admin/owner session cookies. It does not expose session secrets or raw tokens.",
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def stage74_csrf_write_hardening_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) -> Dict[str, Any]:
+    tid = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    required_paths = [
+        "/csrf/readiness",
+        "/security/csrf/readiness",
+        "/browser-write/readiness",
+        "/browser-write-hardening/readiness",
+    ]
+    missing_protection = [path for path in required_paths if path not in STAGE61_PROTECTED_EXACT_PATHS]
+    admin_write_paths_missing_admin_protection = [path for path in sorted(STAGE74_ADMIN_BROWSER_WRITE_PATHS) if path not in STAGE61_PROTECTED_EXACT_PATHS]
+    owner_write_paths_missing_owner_protection = [path for path in sorted(STAGE74_OWNER_BROWSER_WRITE_PATHS) if path not in STAGE71_OWNER_PROTECTED_EXACT_PATHS and path not in {"/owner/logout"}]
+    blocking: List[str] = []
+    warnings: List[str] = []
+    if missing_protection:
+        blocking.append("stage74_readiness_paths_not_admin_protected")
+    if admin_write_paths_missing_admin_protection:
+        blocking.append("admin_browser_write_paths_not_admin_protected")
+    if owner_write_paths_missing_owner_protection:
+        blocking.append("owner_browser_write_paths_not_owner_protected")
+    if not stage74_csrf_enforcement_enabled():
+        blocking.append("csrf_enforcement_disabled")
+    secret_source = stage74_csrf_secret_source()
+    if secret_source != "REPLIQ_CSRF_SECRET":
+        warnings.append(f"csrf_secret_uses_{secret_source}")
+
+    ready = bool(not blocking and stage74_csrf_secret())
+    return {
+        "ok": True,
+        "stage": "74",
+        "purpose": "CSRF / Browser Write Hardening Foundation",
+        "tenant_id": tid,
+        "status": "ready" if ready else "blocked",
+        "csrf_browser_write_hardening_ready": bool(ready),
+        "csrf_enforcement_enabled": bool(stage74_csrf_enforcement_enabled()),
+        "protection_model": {
+            "signed_csrf_token_supported": True,
+            "same_origin_fetch_metadata_enforced": True,
+            "origin_referer_fallback_check_enabled": True,
+            "admin_api_token_bypass_for_automation": True,
+            "cookie_authenticated_browser_writes_hardened": True,
+            "public_signup_cross_site_browser_post_blocked": True,
+        },
+        "csrf_token": {
+            "header": STAGE74_CSRF_HEADER_NAME,
+            "ttl_seconds": STAGE74_CSRF_TOKEN_TTL_SECONDS,
+            "secret_configured_explicitly": bool(secret_source == "REPLIQ_CSRF_SECRET"),
+            "secret_source": secret_source,
+            "token_value_exposed_in_readiness": False,
+            "raw_secret_exposed": False,
+        },
+        "write_routes": {
+            "admin_browser_write_paths": sorted(STAGE74_ADMIN_BROWSER_WRITE_PATHS),
+            "owner_browser_write_paths": sorted(STAGE74_OWNER_BROWSER_WRITE_PATHS),
+            "public_browser_write_paths": sorted(STAGE74_PUBLIC_BROWSER_WRITE_PATHS),
+            "external_webhook_write_paths_excluded": sorted(STAGE74_EXTERNAL_WEBHOOK_WRITE_PATHS),
+        },
+        "security": {
+            "admin_write_routes_protected_by_admin_auth": not bool(admin_write_paths_missing_admin_protection),
+            "owner_write_routes_have_owner_boundary_or_logout_exception": not bool(owner_write_paths_missing_owner_protection),
+            "raw_admin_token_exposed": False,
+            "raw_owner_session_secret_exposed": False,
+            "raw_csrf_secret_exposed": False,
+            "csrf_token_value_exposed_in_readiness": False,
+        },
+        "public_saas_ready": False,
+        "public_saas_ready_reason": "false_until_rate_limits_email_verification_and_full_client_superadmin_separation_are_done",
+        "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
+        "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
+        "links": {
+            "csrf_token_admin": f"/csrf/token?scope=admin&tenant_id={tid}",
+            "readiness": f"/csrf/readiness?tenant_id={tid}",
+            "public_saas_audit": f"/public-saas/readiness?tenant_id={tid}",
+            "control_center": f"/control-center/ui?tenant_id={tid}",
+        },
+        "note": "Stage 74 hardens authenticated browser writes and public signup cross-site POSTs. It does not change receptionist dialogue, booking, slot generation, Google Calendar event runtime, Telegram webhook runtime, billing semantics, or QA evaluator behavior.",
+    }
+
 def stage61_admin_auth_error(status_code: int, detail: str) -> JSONResponse:
     return JSONResponse(
         status_code=status_code,
@@ -664,6 +984,22 @@ async def stage61_admin_access_middleware(request: Request, call_next):
             owner_access = stage71_owner_request_access(request, path=path)
             if not owner_access.get("ok"):
                 return stage71_owner_auth_error(401, str(owner_access.get("error") or "owner_login_required"), tenant_id=owner_access.get("tenant_id") or request.query_params.get("tenant_id") or TENANT_ID_DEFAULT)
+
+    if stage74_csrf_enforcement_enabled() and request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"}:
+        tenant_for_csrf = str(request.query_params.get("tenant_id") or "").strip()
+        explicit_admin_token_ok = stage61_token_valid(stage61_request_non_cookie_token(request))
+        if path in STAGE74_ADMIN_BROWSER_WRITE_PATHS:
+            if not explicit_admin_token_ok and admin_session_ok:
+                if not stage74_browser_write_protection_ok(request, scope="admin", tenant_id=tenant_for_csrf):
+                    return stage74_csrf_error("admin", tenant_for_csrf)
+        elif path in STAGE74_OWNER_BROWSER_WRITE_PATHS:
+            if not (explicit_admin_token_ok or admin_session_ok):
+                if stage71_request_owner_session_payload(request):
+                    if not stage74_browser_write_protection_ok(request, scope="owner", tenant_id=tenant_for_csrf):
+                        return stage74_csrf_error("owner", tenant_for_csrf)
+        elif path in STAGE74_PUBLIC_BROWSER_WRITE_PATHS:
+            if not stage74_browser_write_protection_ok(request, scope="public", tenant_id=tenant_for_csrf):
+                return stage74_csrf_error("public", tenant_for_csrf, reason="cross_site_public_browser_write_blocked")
 
     response = await call_next(request)
     if query_token_valid:
@@ -13087,6 +13423,7 @@ def stage69_client_control_center_payload(tenant_id: str = TENANT_ID_DEFAULT, da
     telegram = stage69_safe_dependency("telegram_setup", lambda: stage68_telegram_setup_readiness_payload(tenant_id_clean, days=days))
     usage = stage69_safe_dependency("usage_analytics", lambda: stage57_usage_analytics_readiness_payload(tenant_id_clean, days=days))
     billing = stage69_safe_dependency("billing_subscription", lambda: stage73_billing_subscription_gate_readiness_payload(tenant_id_clean, days=days))
+    csrf = stage69_safe_dependency("csrf_browser_write_hardening", lambda: stage74_csrf_write_hardening_readiness_payload(tenant_id_clean))
     launch = stage69_safe_dependency("launch_readiness", lambda: stage54_launch_readiness_lock_payload(tenant_id_clean))
     access = stage69_safe_dependency("access_boundaries", lambda: stage58_access_boundaries_readiness_payload(tenant_id_clean))
 
@@ -13170,6 +13507,15 @@ def stage69_client_control_center_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             url(f"/tenant/billing/ui?tenant_id={tenant_id_clean}"),
             "Manual subscription status, plan limits, owner-visible billing state, and runtime gate foundation are available.",
         ),
+        stage69_step_payload(
+            "csrf_browser_write_hardening",
+            "CSRF / browser write hardening",
+            csrf,
+            bool(csrf.get("csrf_browser_write_hardening_ready")),
+            url(f"/csrf/readiness?tenant_id={tenant_id_clean}"),
+            url(f"/csrf/readiness?tenant_id={tenant_id_clean}"),
+            "Cookie-authenticated browser writes are protected by same-origin metadata and signed CSRF token support.",
+        ),
     ]
 
     ready_count = sum(1 for step in steps if step.get("ready"))
@@ -13232,6 +13578,7 @@ def stage69_client_control_center_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "telegram_setup": telegram,
             "usage_analytics": usage,
             "billing_subscription": billing,
+            "csrf_browser_write_hardening": csrf,
             "launch_readiness": launch,
             "access_boundaries": access,
         },
@@ -13244,6 +13591,7 @@ def stage69_client_control_center_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "public_owner_auth_not_implemented_yet": True,
             "tenant_ownership_checks_not_public_saas_ready_yet": True,
             "billing_subscription_gate_foundation_ready": bool(billing.get("billing_subscription_gate_foundation_ready")),
+            "csrf_browser_write_hardening_ready": bool(csrf.get("csrf_browser_write_hardening_ready")),
         },
         "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
         "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
@@ -13262,6 +13610,7 @@ def stage69_client_control_center_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "billing_ui": url(f"/tenant/billing/ui?tenant_id={tenant_id_clean}"),
             "billing_readiness": url(f"/billing/readiness?tenant_id={tenant_id_clean}&days={days}"),
             "owner_billing": url(f"/owner/billing/ui?tenant_id={tenant_id_clean}"),
+            "csrf_readiness": url(f"/csrf/readiness?tenant_id={tenant_id_clean}"),
             "public_saas_gap_audit": url(f"/public-saas/gap-audit/ui?tenant_id={tenant_id_clean}&days={days}"),
             "dialogue_qa": url("/dialogue/qa"),
         },
@@ -13341,6 +13690,7 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
     owner_auth = stage70_safe_dependency("owner_auth_foundation", lambda: stage71_owner_auth_readiness_payload(tenant_id_clean))
     public_signup = stage70_safe_dependency("public_signup_boundary", lambda: stage72_public_signup_readiness_payload(tenant_id_clean))
     billing = stage70_safe_dependency("billing_subscription_gate", lambda: stage73_billing_subscription_gate_readiness_payload(tenant_id_clean, days=days))
+    csrf = stage70_safe_dependency("csrf_browser_write_hardening", lambda: stage74_csrf_write_hardening_readiness_payload(tenant_id_clean))
 
     admin_token_configured = stage61_admin_token_configured()
     admin_access_enforced = bool(admin_access.get("admin_access_enforced"))
@@ -13366,6 +13716,7 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
         {"key": "owner_auth_foundation", "ready": bool(owner_auth.get("owner_auth_foundation_ready")), "status": owner_auth.get("status"), "stage": owner_auth.get("stage")},
         {"key": "public_signup_boundary", "ready": bool(public_signup.get("public_signup_boundary_ready")), "status": public_signup.get("status"), "stage": public_signup.get("stage")},
         {"key": "billing_subscription", "ready": bool(billing.get("billing_subscription_gate_foundation_ready")), "status": billing.get("status"), "stage": billing.get("stage")},
+        {"key": "csrf_browser_write_hardening", "ready": bool(csrf.get("csrf_browser_write_hardening_ready")), "status": csrf.get("status"), "stage": csrf.get("stage")},
     ]
     ready_self_serve_count = sum(1 for item in self_serve_blocks if item.get("ready"))
 
@@ -13382,7 +13733,7 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "current_super_admin_model": admin_access.get("auth_model", {}).get("type") or admin_session.get("session_model", {}).get("type"),
             "shared_admin_token_configured": bool(admin_token_configured),
         },
-        "Move from setup-code foundation to production email/magic-link auth, CSRF, rate limits, and billing-gated public signup.",
+        "Move from setup-code foundation to production email/magic-link auth, rate limits, and billing-gated public signup.",
         severity="blocker",
     ))
     gaps.append(stage70_gap_payload(
@@ -13411,7 +13762,7 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "legacy_signup_routes_still_protected": "/signup" in STAGE61_PROTECTED_EXACT_PATHS and "/tenant/create" in STAGE61_PROTECTED_EXACT_PATHS,
             "public_signup_paths": (public_signup.get("public_paths") or {}),
         },
-        "Continue hardening public signup with CSRF, email verification/magic-link auth, billing gate, and abuse controls before declaring public SaaS ready.",
+        "Continue hardening public signup with email verification/magic-link auth, billing gate, and production abuse controls before declaring public SaaS ready.",
         severity="blocker",
     ))
     gaps.append(stage70_gap_payload(
@@ -13434,23 +13785,20 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
     ))
     gaps.append(stage70_gap_payload(
         "browser_write_hardening",
-        "CSRF and public write hardening",
-        "missing_for_public",
+        "CSRF and browser write hardening",
+        "ready" if csrf.get("csrf_browser_write_hardening_ready") else "missing_for_public",
         {
-            "current_write_model": "admin_session_or_shared_token_mvp",
-            "browser_write_endpoints_exist": [
-                "/tenant/config/update",
-                "/tenant/service-catalog/update",
-                "/business-memory/update",
-                "/telegram/setup/update",
-                "/telegram/setup/set-webhook",
-                "/google/select_calendar",
-            ],
-            "csrf_public_owner_layer_found": False,
+            "csrf_stage": csrf.get("stage"),
+            "csrf_browser_write_hardening_ready": bool(csrf.get("csrf_browser_write_hardening_ready")),
+            "same_origin_fetch_metadata_enforced": bool((csrf.get("protection_model") or {}).get("same_origin_fetch_metadata_enforced")),
+            "signed_csrf_token_supported": bool((csrf.get("protection_model") or {}).get("signed_csrf_token_supported")),
+            "admin_browser_write_paths": (csrf.get("write_routes") or {}).get("admin_browser_write_paths"),
+            "owner_browser_write_paths": (csrf.get("write_routes") or {}).get("owner_browser_write_paths"),
+            "public_signup_cross_site_browser_post_blocked": bool((csrf.get("protection_model") or {}).get("public_signup_cross_site_browser_post_blocked")),
             "public_signup_boundary_foundation_ready": bool(public_signup.get("public_signup_boundary_ready")),
         },
-        "Add CSRF/session hardening and public rate limits when owner-facing browser sessions are introduced.",
-        severity="blocker",
+        "Keep CSRF hardening enabled and continue with production abuse/rate limits, email verification, and stricter owner/admin separation.",
+        severity="major" if csrf.get("csrf_browser_write_hardening_ready") else "blocker",
     ))
     gaps.append(stage70_gap_payload(
         "client_superadmin_separation",
@@ -13511,7 +13859,7 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
         "gap_audit_ready": bool(audit_ready),
         "private_admin_ready": bool(private_admin_ready),
         "public_saas_ready": bool(public_saas_ready),
-        "public_saas_ready_reason": "false_until_owner_auth_tenant_ownership_billing_and_public_write_hardening_exist",
+        "public_saas_ready_reason": "false_until_rate_limits_email_verification_and_full_client_superadmin_separation_are_done",
         "current_scope": {
             "product": "text-first AI receptionist SaaS",
             "external_channel": "Telegram text",
@@ -13538,6 +13886,7 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "tenant_ownership_guard_enforced": bool(tenant_ownership_guard_enforced),
             "billing_provider_integrated": bool(billing.get("provider_integration_live")),
             "billing_subscription_gate_foundation_ready": bool(billing.get("billing_subscription_gate_foundation_ready")),
+            "csrf_browser_write_hardening_ready": bool(csrf.get("csrf_browser_write_hardening_ready")),
             "public_rate_limits_integrated": False,
         },
         "dependencies": {
@@ -13556,9 +13905,9 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "owner_auth_foundation": owner_auth,
             "public_signup_boundary": public_signup,
             "billing_subscription_gate": billing,
+            "csrf_browser_write_hardening": csrf,
         },
         "recommended_next_stages": [
-            "Stage 74 — CSRF / Browser Write Hardening",
             "Stage 75 — Abuse Protection / Rate Limits Hardening",
             "Stage 76 — Email Verification / Magic Link Auth Foundation",
             "Stage 77 — Client-owner vs Super-admin Separation Hardening",
@@ -13575,6 +13924,7 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "billing_readiness": url(f"/billing/readiness?tenant_id={tenant_id_clean}&days={days}"),
             "billing_ui": url(f"/tenant/billing/ui?tenant_id={tenant_id_clean}"),
             "owner_billing": url(f"/owner/billing/ui?tenant_id={tenant_id_clean}"),
+            "csrf_readiness": url(f"/csrf/readiness?tenant_id={tenant_id_clean}"),
             "control_center": url(f"/control-center/ui?tenant_id={tenant_id_clean}&days={days}"),
             "access_readiness": url(f"/access/readiness?tenant_id={tenant_id_clean}"),
             "tenant_config_ui": url(f"/tenant/config/ui?tenant_id={tenant_id_clean}"),
@@ -13929,6 +14279,41 @@ def admin_session_status(request: Request):
 @app.get("/admin/session/readiness")
 def admin_session_readiness(tenant_id: str = TENANT_ID_DEFAULT):
     return stage62_admin_session_readiness_payload(tenant_id=tenant_id)
+
+
+@app.get("/csrf/token")
+def stage74_csrf_token(request: Request, scope: str = "admin", tenant_id: str = TENANT_ID_DEFAULT):
+    requested_scope = str(scope or "admin").strip().lower() or "admin"
+    tid = stage711_resolve_tenant_context(request, tenant_id) if requested_scope in {"admin", "owner"} else ((tenant_id or "").strip() or TENANT_ID_DEFAULT)
+    if requested_scope == "admin":
+        if not (stage61_token_valid(stage61_request_token(request)) or stage62_request_has_valid_session(request)):
+            return stage61_admin_auth_error(401, "admin_token_required")
+    elif requested_scope == "owner":
+        if not (stage61_token_valid(stage61_request_token(request)) or stage62_request_has_valid_session(request)):
+            access = stage71_owner_request_access(request, path="/owner/dashboard")
+            if not access.get("ok"):
+                return stage71_owner_auth_error(401, str(access.get("error") or "owner_login_required"), tenant_id=tid)
+            tid = str(access.get("tenant_id") or tid)
+    elif requested_scope != "public":
+        return JSONResponse(status_code=400, content={"ok": False, "stage": "74", "error": "invalid_csrf_scope"}, headers={"Cache-Control": "no-store"})
+    return JSONResponse(content={
+        "ok": True,
+        "stage": "74",
+        "scope": requested_scope,
+        "tenant_id": tid,
+        "csrf_header": STAGE74_CSRF_HEADER_NAME,
+        "csrf_token": stage74_make_csrf_token(scope=requested_scope, tenant_id=tid),
+        "ttl_seconds": STAGE74_CSRF_TOKEN_TTL_SECONDS,
+        "raw_secret_exposed": False,
+    }, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/csrf/readiness")
+@app.get("/security/csrf/readiness")
+@app.get("/browser-write/readiness")
+@app.get("/browser-write-hardening/readiness")
+def stage74_csrf_readiness(tenant_id: str = TENANT_ID_DEFAULT):
+    return stage74_csrf_write_hardening_readiness_payload(tenant_id=tenant_id)
 
 
 
@@ -15362,7 +15747,7 @@ def stage63_tenant_creation_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT
             "owner identity and tenant ownership checks",
             "Google Calendar OAuth self-serve hardening",
             "billing/subscription lifecycle",
-            "CSRF/rate-limit protection for public signup",
+            "CSRF browser hardening plus production rate-limit protection for public signup",
         ],
         "note": "Stage 63 creates the tenant creation foundation while keeping creation protected by admin session/token until public SaaS auth, billing, rate limits, and tenant ownership are implemented.",
     }
@@ -15572,7 +15957,7 @@ def stage72_public_signup_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) 
         "tenant_ownership_binding_during_signup_ready": bool(ready),
         "admin_token_dependency_for_public_signup": False,
         "public_saas_ready": False,
-        "public_saas_ready_reason": "false_until_billing_csrf_email_verification_rate_limits_and_full_client_superadmin_separation_are_done",
+        "public_saas_ready_reason": "false_until_rate_limits_email_verification_and_full_client_superadmin_separation_are_done",
         "auth_model": {
             "public_signup": "public_http_entrypoint_with_honeypot_rate_limits_and_owner_session_cookie",
             "owner_session_cookie": STAGE71_OWNER_SESSION_COOKIE_NAME,
@@ -15774,7 +16159,7 @@ def stage65_google_calendar_self_serve_readiness_payload(tenant_id: str = TENANT
         "next_stages_before_public_saas": [
             "per-owner auth and tenant ownership checks",
             "billing/subscription gating",
-            "CSRF/rate-limits for public browser write endpoints",
+            "production abuse/rate-limits for public browser write endpoints",
         ],
         "note": "Stage 65 makes Google Calendar connection/selection self-serve inside the protected admin session. It does not change receptionist core dialogue, slot routing, or calendar event runtime.",
     }
@@ -16322,7 +16707,7 @@ def stage64_onboarding_wizard_readiness_payload(tenant_id: str = TENANT_ID_DEFAU
         "required_before_public_saas": [
             "Replace admin-token/session with per-owner auth and tenant ownership checks.",
             "Add billing/subscription gating before public signup.",
-            "Add CSRF/rate-limits for public browser write endpoints.",
+            "Add production abuse/rate-limits for public browser write endpoints.",
             "Add production email/magic-link delivery for owner login.",
         ],
         "note": "Stage 64 adds a protected self-serve onboarding wizard/checklist. It does not call LLMs, mutate conversations, or create/update/delete calendar events.",
@@ -16632,7 +17017,7 @@ def tenant_billing_status(tenant: Dict[str, Any]) -> Dict[str, Any]:
         "owner_visible": True,
         "admin_mutable": True,
         "public_saas_ready": False,
-        "public_saas_ready_reason": "false_until_csrf_email_verification_rate_limits_and_full_client_superadmin_separation_are_done",
+        "public_saas_ready_reason": "false_until_rate_limits_email_verification_and_full_client_superadmin_separation_are_done",
     }
 
 
@@ -16702,7 +17087,7 @@ def stage73_billing_subscription_gate_readiness_payload(tenant_id: str = TENANT_
         "provider_integration_live": bool((billing_status or {}).get("provider_integration_live")),
         "provider_integration_required_for_this_stage": False,
         "public_saas_ready": False,
-        "public_saas_ready_reason": "false_until_csrf_email_verification_rate_limits_and_full_client_superadmin_separation_are_done",
+        "public_saas_ready_reason": "false_until_rate_limits_email_verification_and_full_client_superadmin_separation_are_done",
         "schema": {
             "billing_columns": sorted(STAGE73_BILLING_COLUMNS.keys()),
             "missing_columns": missing_cols,
@@ -17275,7 +17660,7 @@ async def stage72_public_signup_submit(request: Request):
         "login_code_hash_exposed": False,
         "secret_values_exposed": False,
         "public_saas_ready": False,
-        "public_saas_ready_reason": "false_until_billing_csrf_email_verification_rate_limits_and_full_client_superadmin_separation_are_done",
+        "public_saas_ready_reason": "false_until_rate_limits_email_verification_and_full_client_superadmin_separation_are_done",
         "onboarding": created.get("onboarding"),
         "readiness": created.get("readiness"),
         "links": {

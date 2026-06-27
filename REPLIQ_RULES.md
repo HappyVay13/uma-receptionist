@@ -433,3 +433,21 @@ If a price question is asked inside an active booking flow and the current langu
 - Billing update validation must continue to use `TenantBillingUpdateRequest`; moving model instantiation from route annotation time to call time is acceptable.
 - Do not change booking routing, slot generation, date/time parsing, side-question handling, confirmation, cancellation, rescheduling, Google Calendar runtime, Telegram webhook handling, LLM orchestration, or regression evaluator rules.
 - `public_saas_ready` must remain false after this hotfix.
+
+
+## Stage 74 rules — CSRF / Browser Write Hardening Foundation
+
+- Stage 74 may add CSRF/browser-write hardening, readiness endpoints, and public SaaS audit/control-center metadata only.
+- Cookie-authenticated admin/owner browser writes must pass same-origin browser metadata or a signed CSRF token.
+- Explicit admin token header/bearer/query usage may bypass CSRF for automation/API scripts, because those calls do not rely on browser session cookies.
+- CSRF readiness endpoints must remain protected by Stage 61/62 admin auth:
+  - `/csrf/readiness`
+  - `/security/csrf/readiness`
+  - `/browser-write/readiness`
+  - `/browser-write-hardening/readiness`
+- `/csrf/token` must not expose raw session secrets, admin tokens, owner session secrets, or CSRF secrets.
+- Public signup may remain public, but cross-site browser POSTs must be blocked by Stage 74 browser metadata/token checks.
+- External channel webhooks must not be placed behind browser CSRF checks: Telegram, SMS, WhatsApp, and voice webhook routes are not browser UI writes.
+- Do not change booking routing, slot generation, date/time parsing, side-question handling, confirmation, cancellation, rescheduling, Google Calendar event runtime, Telegram webhook handling, billing semantics, LLM orchestration, or regression evaluator rules.
+- `public_saas_ready` must remain false after Stage 74 until production abuse/rate limits, email verification/magic-link auth, and full client-owner vs super-admin separation are complete.
+- Current protected baseline remains `/dialogue/qa = 50/50 passed`.
