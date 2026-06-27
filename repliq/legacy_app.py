@@ -14094,8 +14094,11 @@ def tenant_billing_ui(tenant_id: str = TENANT_ID_DEFAULT):
 
 
 @app.post("/tenant/billing/update")
-def tenant_billing_update(payload: TenantBillingUpdateRequest):
-    return stage73_apply_tenant_billing_update(payload)
+def tenant_billing_update(payload: dict = Body(...)):
+    # Stage 73.1: keep the FastAPI route import-safe on Render Python 3.14.
+    # The request model is instantiated at call time because the model class is
+    # declared later in this legacy single-file app.
+    return stage73_apply_tenant_billing_update(TenantBillingUpdateRequest(**(payload or {})))
 
 
 @app.get("/owner/billing")

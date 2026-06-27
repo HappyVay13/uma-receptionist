@@ -734,3 +734,36 @@ Expected verification:
 - Stage 72 public signup and owner session flow remains working.
 
 Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, dialogue QA evaluator, LLM orchestration, and voice/calls were not changed.
+
+## Stage 73.1 — Billing Update Route Import Hotfix
+
+Status: implemented in hotfix archive, awaiting deploy verification.
+
+Reason:
+- Render deployed Stage 73 build successfully, but runtime import failed before app startup.
+- Render traceback pointed to `@app.post("/tenant/billing/update")` and `NameError: name 'TenantBillingUpdateRequest' is not defined` during FastAPI route registration on Python 3.14.
+
+Fix:
+- Changed only the Stage 73 billing update route signature to avoid a forward reference to the request model at import/route-registration time.
+- The route now accepts a raw request dict via `Body(...)` and instantiates `TenantBillingUpdateRequest` at call time, after module import is complete.
+- Billing request validation remains handled by the same Pydantic model.
+
+Not changed:
+- booking routing;
+- slot generation;
+- date/time parsing;
+- price side-question logic;
+- confirmation;
+- cancel/reschedule;
+- Google Calendar runtime;
+- Telegram webhook runtime;
+- dialogue QA evaluator;
+- LLM orchestration;
+- Stage 73 billing logic semantics.
+
+Expected verification:
+- Render app starts successfully.
+- `/dialogue/qa` = 50/50 passed.
+- `/billing/readiness?tenant_id=clinic_demo` works.
+- `/tenant/billing/update` remains admin protected and still validates payload through `TenantBillingUpdateRequest` at call time.
+- `public_saas_ready` remains false.

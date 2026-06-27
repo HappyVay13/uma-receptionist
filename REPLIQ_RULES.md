@@ -424,3 +424,12 @@ If a price question is asked inside an active booking flow and the current langu
 - Do not change booking routing, slot generation, date/time parsing, side-question handling, confirmation, cancellation, rescheduling, Google Calendar runtime create/update/delete behavior, Telegram webhook handling, LLM orchestration, or regression evaluator rules.
 - `public_saas_ready` must remain false after Stage 73 until CSRF/browser write hardening, abuse/rate limits, email verification/magic-link auth, and full client-owner vs super-admin separation are complete.
 - Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+
+## Stage 73.1 rules — Billing Update Route Import Hotfix
+
+- Stage 73.1 is a startup hotfix only.
+- The only code-level change allowed is making the Stage 73 billing update route import-safe on Render/Python 3.14.
+- The `/tenant/billing/update` route must remain admin protected by the existing Stage 61/62 middleware.
+- Billing update validation must continue to use `TenantBillingUpdateRequest`; moving model instantiation from route annotation time to call time is acceptable.
+- Do not change booking routing, slot generation, date/time parsing, side-question handling, confirmation, cancellation, rescheduling, Google Calendar runtime, Telegram webhook handling, LLM orchestration, or regression evaluator rules.
+- `public_saas_ready` must remain false after this hotfix.
