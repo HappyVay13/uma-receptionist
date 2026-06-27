@@ -1,6 +1,6 @@
 # Repliq Project State
 
-Current stage: Stage 74 — CSRF / Browser Write Hardening Foundation.
+Current stage: Stage 76 — Email Verification / Magic Link Auth Foundation.
 
 Production regression baseline before Stage 40:
 - Stage 39 was deployed and confirmed by user: `/dialogue/qa` = 15/15 passed.
@@ -868,3 +868,32 @@ Expected verification:
 - Admin login, owner login, and public signup still work.
 
 Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, billing semantics, dialogue QA evaluator, LLM orchestration, and voice/calls were not changed.
+
+
+## Stage 76 — Email Verification / Magic Link Auth Foundation
+
+Status: implemented in archive, awaiting deploy verification.
+
+Scope:
+- Added one-time owner magic-link auth foundation.
+- Added `owner_magic_links` table with HMAC token hashes only.
+- Added `owner_accounts.email_verified_at` via safe schema extension.
+- Added admin-protected readiness endpoints: `/email/readiness`, `/email-verification/readiness`, `/magic-link/readiness`, `/owner/magic-link/readiness`.
+- Added admin-protected `POST /owner/magic-link/bootstrap`.
+- Added public owner auth endpoints: `GET/POST /owner/magic-login`.
+- Public signup now also returns one-time magic-link fields while preserving the Stage 71 setup-code fallback.
+- Control Center and Public SaaS audit now include email/magic-link auth readiness.
+- `public_saas_ready` remains false by design; remaining blockers are client-owner vs super-admin separation hardening and final public SaaS readiness lock.
+
+Expected verification:
+- Render deploy starts successfully.
+- `/dialogue/qa` = 50/50 passed.
+- `/email/readiness?tenant_id=clinic_demo` returns `stage=76`.
+- `/magic-link/readiness?tenant_id=clinic_demo` works.
+- `/owner/magic-link/bootstrap` creates a one-time magic link/token for an existing bound owner.
+- `/owner/magic-login?token=...` sets the owner session and marks owner email verified.
+- `/owner/session?tenant_id=<tenant>` shows authenticated owner session after magic login.
+- `/public/signup` still works.
+- `/public-saas/readiness?tenant_id=clinic_demo` includes email/magic-link readiness while `public_saas_ready=false` remains.
+
+Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, billing semantics, CSRF semantics, dialogue QA evaluator, LLM orchestration, and voice/calls were not changed.

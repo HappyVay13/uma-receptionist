@@ -3,7 +3,7 @@
 Core rule: LLM is an understanding layer only. Booking actions remain controlled by orchestration/state logic.
 
 Current protected baseline:
-- `/dialogue/qa` confirmed after Stage 72 deploy: 50/50 passed. Stage 73 must preserve this baseline.
+- `/dialogue/qa` confirmed after Stage 75 deploy: 50/50 passed. Stage 76 must preserve this baseline.
 - Stage 41.1 hardens cross-language grounded price lookup while preserving booking flow.
 - Stage 42 is a documentation/audit checkpoint only.
 - Stage 43A adds production readiness checks without changing conversational behavior.
@@ -468,3 +468,14 @@ If a price question is asked inside an active booking flow and the current langu
 - Do not change booking routing, slot generation, date/time parsing, side-question handling, confirmation, cancellation, rescheduling, Google Calendar event runtime, Telegram webhook handling, billing semantics, LLM orchestration, or regression evaluator rules.
 - `public_saas_ready` must remain false after Stage 75 until email verification/magic-link auth, client-owner vs super-admin separation hardening, and final public SaaS readiness lock are complete.
 - Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+
+
+## Stage 76 — Email Verification / Magic Link Auth Rules
+
+- Magic-link auth is an owner-auth layer only; it must not change receptionist dialogue behavior.
+- Raw magic tokens may be returned once by public signup or protected admin bootstrap, but must not be stored raw.
+- Readiness endpoints must not expose token hashes, login-code hashes, admin tokens, raw IPs, or subject hashes.
+- Successful magic-link login sets the existing Stage 71 HttpOnly owner session cookie and marks owner email verified.
+- Legacy owner setup-code login remains supported during this foundation stage.
+- Real outbound email delivery is not required for Stage 76 foundation; absence of an email provider may be a readiness warning, not a dialogue/runtime blocker.
+- Public SaaS readiness remains false until client-owner vs super-admin separation and final launch gate stages are closed.

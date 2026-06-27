@@ -191,6 +191,7 @@ STAGE61_PROTECTED_EXACT_PATHS = {
     "/tenant/owner/readiness",
     "/owner/accounts",
     "/owner/accounts/bootstrap",
+    "/owner/magic-link/bootstrap",
     "/tenant/owner/bind",
     "/internal/readiness",
     "/demo/script",
@@ -281,6 +282,11 @@ STAGE61_PROTECTED_EXACT_PATHS = {
     "/security/abuse/readiness",
     "/rate-limits/readiness",
     "/abuse-protection/readiness",
+    "/email/readiness",
+    "/email-verification/readiness",
+    "/magic-link/readiness",
+    "/owner/magic-link/readiness",
+    "/owner/magic-link/bootstrap",
     "/client/dashboard",
     "/client/dashboard/ui",
     "/client/control-center",
@@ -647,6 +653,7 @@ STAGE74_CSRF_TOKEN_VERSION = 1
 # OAuth callbacks are intentionally excluded from this browser-CSRF layer.
 STAGE74_ADMIN_BROWSER_WRITE_PATHS = {
     "/owner/accounts/bootstrap",
+    "/owner/magic-link/bootstrap",
     "/tenant/owner/bind",
     "/google/select_calendar",
     "/tenant/billing/update",
@@ -933,7 +940,7 @@ def stage74_csrf_write_hardening_readiness_payload(tenant_id: str = TENANT_ID_DE
             "csrf_token_value_exposed_in_readiness": False,
         },
         "public_saas_ready": False,
-        "public_saas_ready_reason": "false_until_email_verification_magic_link_and_full_client_superadmin_separation_are_done",
+        "public_saas_ready_reason": "false_until_client_owner_vs_super_admin_separation_and_final_launch_gate_are_done",
         "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
         "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
         "links": {
@@ -1248,7 +1255,7 @@ def stage75_abuse_rate_limits_readiness_payload(tenant_id: str = TENANT_ID_DEFAU
         },
         "monitored_routes": {
             "admin_login": ["POST /admin/login"],
-            "owner_login": ["POST /owner/login"],
+            "owner_login": ["POST /owner/login", "GET /owner/magic-login?token=...", "POST /owner/magic-login"],
             "public_signup": ["POST /public/signup"],
             "csrf_token_public_scope": ["GET /csrf/token?scope=public"],
             "external_webhooks_not_rate_limited_in_stage75": sorted(STAGE74_EXTERNAL_WEBHOOK_WRITE_PATHS),
@@ -1256,12 +1263,375 @@ def stage75_abuse_rate_limits_readiness_payload(tenant_id: str = TENANT_ID_DEFAU
         "recent_event_counts": {"window_hours": hours, "by_bucket": counts},
         "security": {"raw_admin_token_exposed": False, "raw_owner_login_code_exposed": False, "raw_ip_exposed": False, "subject_hash_exposed": False, "readiness_routes_admin_protected": not bool(missing_protection)},
         "public_saas_ready": False,
-        "public_saas_ready_reason": "false_until_email_verification_magic_link_and_full_client_superadmin_separation_are_done",
+        "public_saas_ready_reason": "false_until_client_owner_vs_super_admin_separation_and_final_launch_gate_are_done",
         "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
         "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
         "links": {"readiness": f"/abuse/readiness?tenant_id={tid}", "rate_limits_readiness": f"/rate-limits/readiness?tenant_id={tid}", "public_saas_audit": f"/public-saas/readiness?tenant_id={tid}", "control_center": f"/control-center/ui?tenant_id={tid}"},
         "note": "Stage 75 adds a central abuse ledger and rate-limit gates for admin login, owner login, public signup, and public CSRF token issuance. It does not change receptionist dialogue, booking, slots, calendar event runtime, Telegram webhook runtime, billing semantics, or QA evaluator behavior.",
     }
+
+
+# -------------------------
+# STAGE 76: EMAIL VERIFICATION / MAGIC LINK AUTH FOUNDATION
+# -------------------------
+STAGE76_MAGIC_LINKS_TABLE = "owner_magic_links"
+STAGE76_READINESS_PATHS = {
+    "/email/readiness",
+    "/email-verification/readiness",
+    "/magic-link/readiness",
+    "/owner/magic-link/readiness",
+}
+STAGE76_ADMIN_WRITE_PATHS = {
+    "/owner/magic-link/bootstrap",
+}
+STAGE76_PUBLIC_MAGIC_LOGIN_PATHS = {
+    "/owner/magic-login",
+}
+STAGE76_MAGIC_LINK_TOKEN_PREFIX = "ml_"
+STAGE76_MAGIC_LINK_TOKEN_VERSION = 1
+
+
+def stage76_magic_link_auth_enabled() -> bool:
+    raw = (os.getenv("REPLIQ_MAGIC_LINK_AUTH_ENABLED", "true") or "true").strip().lower()
+    return raw not in {"0", "false", "no", "off", "disabled"}
+
+
+def stage76_magic_link_ttl_seconds() -> int:
+    raw = (os.getenv("REPLIQ_MAGIC_LINK_TTL_SECONDS", "") or "").strip()
+    if raw:
+        try:
+            return max(300, min(int(raw), 60 * 60 * 24))
+        except Exception:
+            pass
+    return 60 * 30
+
+
+def stage76_magic_link_secret() -> str:
+    return (
+        os.getenv("REPLIQ_MAGIC_LINK_SECRET", "")
+        or stage71_owner_session_secret()
+        or stage62_session_secret()
+        or stage61_admin_token_value()
+        or "stage76-dev-fallback"
+    ).strip()
+
+
+def stage76_magic_link_secret_source() -> str:
+    if (os.getenv("REPLIQ_MAGIC_LINK_SECRET", "") or "").strip():
+        return "REPLIQ_MAGIC_LINK_SECRET"
+    if stage71_owner_session_secret():
+        return "owner_session_secret_fallback"
+    if stage62_session_secret():
+        return "admin_session_secret_fallback"
+    if stage61_admin_token_value():
+        return "admin_token_fallback"
+    return "dev_fallback"
+
+
+def stage76_email_delivery_provider_configured() -> bool:
+    return bool(
+        (os.getenv("REPLIQ_EMAIL_DELIVERY_PROVIDER", "") or "").strip()
+        or (os.getenv("SMTP_HOST", "") or "").strip()
+        or (os.getenv("RESEND_API_KEY", "") or "").strip()
+        or (os.getenv("SENDGRID_API_KEY", "") or "").strip()
+    )
+
+
+def stage76_table_exists(table_name: str) -> bool:
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(text("""
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.tables
+                    WHERE table_schema='public' AND table_name=:table_name
+                )
+            """), {"table_name": table_name}).fetchone()
+        return bool(row and row[0])
+    except Exception:
+        return False
+
+
+def stage76_ensure_magic_link_tables() -> None:
+    stage71_ensure_owner_tables()
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE owner_accounts ADD COLUMN IF NOT EXISTS email_verified_at TIMESTAMPTZ"))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS owner_magic_links (
+                id TEXT PRIMARY KEY,
+                owner_email TEXT NOT NULL,
+                tenant_id TEXT NOT NULL,
+                purpose TEXT NOT NULL DEFAULT 'login',
+                token_hash TEXT UNIQUE NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                expires_at TIMESTAMPTZ NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                consumed_at TIMESTAMPTZ,
+                requested_by TEXT
+            )
+        """))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_owner_magic_links_email_tenant_status ON owner_magic_links(owner_email, tenant_id, status)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_owner_magic_links_token_hash ON owner_magic_links(token_hash)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_owner_magic_links_expires_at ON owner_magic_links(expires_at)"))
+
+
+def stage76_make_magic_link_token() -> str:
+    return STAGE76_MAGIC_LINK_TOKEN_PREFIX + secrets.token_urlsafe(32)
+
+
+def stage76_hash_magic_link_token(token: str) -> str:
+    raw = str(token or "").strip()
+    if not raw:
+        return ""
+    msg = f"stage76-magic-link-token:{raw}".encode("utf-8")
+    return hmac.new(stage76_magic_link_secret().encode("utf-8"), msg, hashlib.sha256).hexdigest()
+
+
+def stage76_base_url() -> str:
+    return (SERVER_BASE_URL or "").rstrip("/")
+
+
+def stage76_magic_login_url(token: str, tenant_id: str = "", next_path: str = "") -> str:
+    tid = str(tenant_id or "").strip()
+    base = stage76_base_url()
+    path = "/owner/magic-login?token=" + urllib.parse.quote(str(token or ""), safe="")
+    if tid:
+        path += "&tenant_id=" + urllib.parse.quote(tid, safe="")
+    if next_path:
+        path += "&next=" + urllib.parse.quote(stage62_safe_local_path(next_path, tid or TENANT_ID_DEFAULT), safe="")
+    return base + path if base else path
+
+
+def stage76_create_magic_link(tenant_id: str, owner_email: str, purpose: str = "login", requested_by: str = "system", next_path: str = "") -> Dict[str, Any]:
+    if not stage76_magic_link_auth_enabled():
+        raise ValueError("magic_link_auth_disabled")
+    tid = str(tenant_id or "").strip()
+    email = stage71_normalize_email(owner_email)
+    purpose_clean = str(purpose or "login").strip().lower() or "login"
+    if not tid:
+        raise ValueError("tenant_id_required")
+    if not get_existing_tenant(tid).get("_id"):
+        raise ValueError("tenant_not_found")
+    if not stage71_valid_email(email):
+        raise ValueError("owner_email_invalid")
+    if not stage71_owner_has_tenant_access(email, tid):
+        raise ValueError("owner_tenant_access_denied")
+    stage76_ensure_magic_link_tables()
+    token = stage76_make_magic_link_token()
+    token_hash = stage76_hash_magic_link_token(token)
+    expires_at = datetime.utcnow() + timedelta(seconds=stage76_magic_link_ttl_seconds())
+    with engine.begin() as conn:
+        conn.execute(text("""
+            UPDATE owner_magic_links
+            SET status='revoked'
+            WHERE owner_email=:email AND tenant_id=:tenant_id AND purpose=:purpose AND status='active'
+        """), {"email": email, "tenant_id": tid, "purpose": purpose_clean})
+        conn.execute(text("""
+            INSERT INTO owner_magic_links (id, owner_email, tenant_id, purpose, token_hash, status, expires_at, created_at, requested_by)
+            VALUES (:id, :email, :tenant_id, :purpose, :token_hash, 'active', :expires_at, NOW(), :requested_by)
+        """), {
+            "id": "magic_" + uuid.uuid4().hex,
+            "email": email,
+            "tenant_id": tid,
+            "purpose": purpose_clean,
+            "token_hash": token_hash,
+            "expires_at": expires_at,
+            "requested_by": str(requested_by or "system")[:80],
+        })
+    link_url = stage76_magic_login_url(token, tid, next_path or f"/owner/dashboard/ui?tenant_id={tid}")
+    return {
+        "ok": True,
+        "stage": "76",
+        "tenant_id": tid,
+        "owner_email": email,
+        "purpose": purpose_clean,
+        "magic_link_url": link_url,
+        "magic_link_token": token,
+        "magic_link_token_returned_once": True,
+        "token_expires_at": expires_at.isoformat() + "Z",
+        "ttl_seconds": stage76_magic_link_ttl_seconds(),
+        "email_delivery_provider_configured": bool(stage76_email_delivery_provider_configured()),
+        "email_delivery_attempted": False,
+        "token_hash_exposed": False,
+        "raw_token_stored": False,
+        "note": "Stage 76 foundation returns the magic link once. Real outbound email delivery is intentionally not attempted unless a later email-provider stage adds it.",
+    }
+
+
+def stage76_get_magic_link_row(token: str) -> Dict[str, Any]:
+    token_hash = stage76_hash_magic_link_token(token)
+    if not token_hash:
+        return {}
+    stage76_ensure_magic_link_tables()
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT id, owner_email, tenant_id, purpose, status, expires_at, created_at, consumed_at, (expires_at < NOW()) AS expired
+            FROM owner_magic_links
+            WHERE token_hash=:token_hash
+            ORDER BY created_at DESC
+            LIMIT 1
+        """), {"token_hash": token_hash}).fetchone()
+    if not row:
+        return {}
+    def iso(v):
+        return v.isoformat() if hasattr(v, "isoformat") and v else v
+    return {
+        "id": row[0],
+        "owner_email": stage71_normalize_email(row[1]),
+        "tenant_id": str(row[2] or "").strip(),
+        "purpose": str(row[3] or "login"),
+        "status": str(row[4] or ""),
+        "expires_at": iso(row[5]),
+        "created_at": iso(row[6]),
+        "consumed_at": iso(row[7]),
+        "expired": bool(row[8]),
+        "token_hash_exposed": False,
+    }
+
+
+def stage76_consume_magic_link_token(token: str) -> Tuple[bool, str, Dict[str, Any]]:
+    raw = str(token or "").strip()
+    if not raw:
+        return False, "magic_token_required", {}
+    if not stage76_magic_link_auth_enabled():
+        return False, "magic_link_auth_disabled", {}
+    try:
+        row = stage76_get_magic_link_row(raw)
+    except Exception as e:
+        log.error("stage76_magic_link_lookup_failed err=%s", e)
+        return False, "magic_link_storage_unavailable", {}
+    if not row:
+        return False, "magic_token_not_found", {}
+    if row.get("status") != "active":
+        return False, "magic_token_not_active", row
+    if row.get("expired"):
+        return False, "magic_token_expired", row
+    email = stage71_normalize_email(row.get("owner_email"))
+    tid = str(row.get("tenant_id") or "").strip()
+    if not stage71_owner_has_tenant_access(email, tid):
+        return False, "owner_tenant_access_denied", row
+    with engine.begin() as conn:
+        updated = conn.execute(text("""
+            UPDATE owner_magic_links
+            SET status='consumed', consumed_at=NOW()
+            WHERE id=:id AND status='active' AND expires_at >= NOW()
+        """), {"id": row.get("id")})
+        if int(getattr(updated, "rowcount", 0) or 0) < 1:
+            return False, "magic_token_already_used_or_expired", row
+        conn.execute(text("""
+            UPDATE owner_accounts
+            SET email_verified_at=COALESCE(email_verified_at, NOW()), last_login_at=NOW()
+            WHERE email=:email
+        """), {"email": email})
+    row["status"] = "consumed"
+    row["email_verified"] = True
+    return True, "ok", row
+
+
+def stage76_owner_email_verification_status(owner_email: str = "") -> Dict[str, Any]:
+    email = stage71_normalize_email(owner_email)
+    if not email:
+        return {"owner_email": None, "email_verified": False, "email_verified_at": None, "email_verified_at_exposed": False}
+    try:
+        stage76_ensure_magic_link_tables()
+        with engine.connect() as conn:
+            row = conn.execute(text("SELECT email_verified_at FROM owner_accounts WHERE email=:email LIMIT 1"), {"email": email}).fetchone()
+        value = row[0] if row else None
+        return {
+            "owner_email": email,
+            "email_verified": bool(value),
+            "email_verified_at": value.isoformat() if hasattr(value, "isoformat") and value else value,
+            "email_verified_at_exposed": bool(value),
+        }
+    except Exception as e:
+        log.error("stage76_owner_email_verification_status_failed email=%s err=%s", email, e)
+        return {"owner_email": email, "email_verified": False, "email_verified_at": None, "error": e.__class__.__name__, "email_verified_at_exposed": False}
+
+
+def stage76_recent_magic_link_counts(hours: int = 24) -> Dict[str, int]:
+    hours = max(1, min(int(hours or 24), 168))
+    counts = {"active": 0, "consumed": 0, "revoked": 0, "expired": 0}
+    try:
+        if not stage76_table_exists(STAGE76_MAGIC_LINKS_TABLE):
+            return counts
+        cutoff = datetime.utcnow() - timedelta(hours=hours)
+        with engine.connect() as conn:
+            rows = conn.execute(text("""
+                SELECT status, COUNT(*)
+                FROM owner_magic_links
+                WHERE created_at > :cutoff
+                GROUP BY status
+            """), {"cutoff": cutoff}).fetchall()
+        for row in rows:
+            status = str(row[0] or "unknown")
+            counts[status] = int(row[1] or 0)
+    except Exception as e:
+        log.error("stage76_recent_magic_link_counts_failed err=%s", e)
+    return counts
+
+
+def stage76_email_magic_link_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT, hours: int = 24) -> Dict[str, Any]:
+    tid = (tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
+    hours = max(1, min(int(hours or 24), 168))
+    blocking: List[str] = []
+    warnings: List[str] = []
+    try:
+        stage76_ensure_magic_link_tables()
+    except Exception as e:
+        blocking.append(f"magic_link_storage_unavailable:{e.__class__.__name__}")
+    magic_table = stage76_table_exists(STAGE76_MAGIC_LINKS_TABLE)
+    owner_table = stage71_owner_table_exists("owner_accounts")
+    access_table = stage71_owner_table_exists("owner_tenant_access")
+    if not magic_table:
+        blocking.append("owner_magic_links_table_missing")
+    if not owner_table:
+        blocking.append("owner_accounts_table_missing")
+    if not access_table:
+        blocking.append("owner_tenant_access_table_missing")
+    if not stage76_magic_link_auth_enabled():
+        blocking.append("magic_link_auth_disabled")
+    if not stage76_magic_link_secret():
+        blocking.append("magic_link_secret_not_configured")
+    secret_source = stage76_magic_link_secret_source()
+    if secret_source != "REPLIQ_MAGIC_LINK_SECRET":
+        warnings.append(f"magic_link_secret_uses_{secret_source}")
+    if not stage76_email_delivery_provider_configured():
+        warnings.append("email_delivery_provider_not_configured_foundation_returns_link_once")
+    missing_protection = [path for path in STAGE76_READINESS_PATHS | STAGE76_ADMIN_WRITE_PATHS if path not in STAGE61_PROTECTED_EXACT_PATHS]
+    if missing_protection:
+        blocking.append("stage76_admin_readiness_or_bootstrap_paths_not_protected")
+    public_magic_paths_wrongly_admin_protected = [path for path in STAGE76_PUBLIC_MAGIC_LOGIN_PATHS if path in STAGE61_PROTECTED_EXACT_PATHS or path in STAGE71_OWNER_PROTECTED_EXACT_PATHS]
+    if public_magic_paths_wrongly_admin_protected:
+        blocking.append("public_magic_login_path_wrongly_protected")
+    csrf_write_missing = [path for path in STAGE76_ADMIN_WRITE_PATHS if path not in STAGE74_ADMIN_BROWSER_WRITE_PATHS]
+    if csrf_write_missing:
+        blocking.append("stage76_admin_magic_link_write_not_csrf_hardened")
+    counts = stage76_recent_magic_link_counts(hours=hours)
+    ready = bool(not blocking)
+    return {
+        "ok": True,
+        "stage": "76",
+        "purpose": "Email Verification / Magic Link Auth Foundation",
+        "tenant_id": tid,
+        "status": "ready" if ready and not warnings else "attention" if ready else "blocked",
+        "email_verification_magic_link_foundation_ready": bool(ready),
+        "magic_link_auth_ready": bool(ready),
+        "owner_magic_login_ready": bool(ready),
+        "email_verification_storage_ready": bool(magic_table and owner_table),
+        "email_delivery_provider_configured": bool(stage76_email_delivery_provider_configured()),
+        "email_delivery_attempted": False,
+        "ttl_seconds": stage76_magic_link_ttl_seconds(),
+        "storage": {"owner_magic_links_table": bool(magic_table), "owner_accounts_table": bool(owner_table), "owner_tenant_access_table": bool(access_table), "raw_magic_token_stored": False, "token_hash_exposed": False},
+        "protected_paths": {"readiness_admin_protected": sorted(STAGE76_READINESS_PATHS), "admin_magic_link_bootstrap_protected": sorted(STAGE76_ADMIN_WRITE_PATHS), "public_magic_login_paths": sorted(STAGE76_PUBLIC_MAGIC_LOGIN_PATHS), "missing_protection": missing_protection},
+        "auth_model": {"magic_link_token_prefix": STAGE76_MAGIC_LINK_TOKEN_PREFIX, "one_time_token": True, "sets_owner_session_cookie": STAGE71_OWNER_SESSION_COOKIE_NAME, "marks_email_verified_at": True, "legacy_login_code_still_supported": True, "token_hash_exposed": False, "raw_token_stored": False},
+        "recent_magic_link_counts": {"window_hours": hours, "by_status": counts},
+        "public_saas_ready": False,
+        "public_saas_ready_reason": "false_until_client_owner_vs_super_admin_separation_and_final_launch_gate_are_done",
+        "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
+        "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
+        "links": {"readiness": f"/email/readiness?tenant_id={tid}", "magic_link_readiness": f"/magic-link/readiness?tenant_id={tid}", "owner_magic_login": f"/owner/magic-login?tenant_id={tid}", "owner_magic_link_bootstrap": "/owner/magic-link/bootstrap", "public_saas_audit": f"/public-saas/readiness?tenant_id={tid}", "control_center": f"/control-center/ui?tenant_id={tid}"},
+        "note": "Stage 76 adds one-time owner magic-link auth and email_verified_at foundation. It does not send real emails yet unless a later email provider stage is added, and it does not change receptionist booking/runtime behavior.",
+    }
+
 
 def stage61_admin_auth_error(status_code: int, detail: str) -> JSONResponse:
     return JSONResponse(
@@ -2681,9 +3051,17 @@ def stage71_bootstrap_owner_for_tenant(tenant_id: str, owner_email: str = "", di
     owner = stage71_upsert_owner_account(email=email, display_name=display_name or tenant.get("business_name") or "", login_code=login_code)
     binding = stage71_bind_owner_to_tenant(email=email, tenant_id=tenant_id, role="owner")
     tenant_owner_email_synced = stage711_sync_tenant_owner_email(tenant_id, email, only_if_empty=True)
+    magic_link: Dict[str, Any] = {}
+    magic_link_warning = ""
+    try:
+        magic_link = stage76_create_magic_link(tenant_id=tenant_id, owner_email=email, purpose="login", requested_by="admin_bootstrap", next_path=f"/owner/dashboard/ui?tenant_id={tenant_id}")
+    except Exception as e:
+        magic_link_warning = e.__class__.__name__
+        log.error("stage76_admin_bootstrap_magic_link_failed tenant_id=%s email=%s err=%s", tenant_id, email, e)
     return {
         "ok": True,
-        "stage": "71.1",
+        "stage": "76",
+        "previous_stage": "71.1",
         "tenant_id": tenant_id,
         "owner_email": email,
         "owner_account": owner,
@@ -2691,13 +3069,20 @@ def stage71_bootstrap_owner_for_tenant(tenant_id: str, owner_email: str = "", di
         "tenant_owner_email_synced": bool(tenant_owner_email_synced),
         "login_code": login_code or None,
         "login_code_returned_once": bool(login_code),
+        "magic_link_url": magic_link.get("magic_link_url"),
+        "magic_link_token": magic_link.get("magic_link_token"),
+        "magic_link_token_returned_once": bool(magic_link.get("magic_link_token")),
+        "magic_link_warning": magic_link_warning or None,
         "login_code_hash_exposed": False,
+        "magic_link_token_hash_exposed": False,
         "links": {
             "owner_login": f"/owner/login?tenant_id={tenant_id}",
+            "owner_magic_login": f"/owner/magic-login?tenant_id={tenant_id}",
             "owner_dashboard": f"/owner/dashboard/ui?tenant_id={tenant_id}",
             "owner_readiness": f"/owner/auth/readiness?tenant_id={tenant_id}",
+            "email_readiness": f"/email/readiness?tenant_id={tenant_id}",
         },
-        "note": "The login code is returned only by this protected admin endpoint. Give it to the client owner through a safe channel; do not paste it into chat logs.",
+        "note": "Stage 76 returns a one-time magic link and still keeps the Stage 71 setup code fallback for compatibility. Give either credential to the client owner through a safe channel; do not paste tokens into chat logs.",
     }
 
 
@@ -2761,7 +3146,7 @@ def stage71_owner_auth_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) -> 
     bindings = stage71_owner_tenant_access_rows(email=owner_email, tenant_id=tid) if owner_email and tables_ok else tenant_binding_rows
     has_owner_binding = bool(bindings)
 
-    admin_required_paths = ["/owner/auth/readiness", "/owner/accounts", "/owner/accounts/bootstrap", "/tenant/owner/bind"]
+    admin_required_paths = ["/owner/auth/readiness", "/owner/accounts", "/owner/accounts/bootstrap", "/owner/magic-link/bootstrap", "/tenant/owner/bind"]
     missing_admin_protection = [path for path in admin_required_paths if path not in STAGE61_PROTECTED_EXACT_PATHS]
     missing_owner_protection = [path for path in STAGE71_OWNER_PROTECTED_EXACT_PATHS if not stage71_path_requires_owner(path)]
     blocking: List[str] = []
@@ -2799,7 +3184,7 @@ def stage71_owner_auth_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) -> 
         "tenant_ownership_binding_ready": bool(has_owner_binding),
         "private_owner_dashboard_ready": bool(owner_login_ready),
         "public_saas_ready": False,
-        "public_saas_ready_reason": "false_until_email_verification_magic_link_and_full_client_superadmin_separation_are_done",
+        "public_saas_ready_reason": "false_until_client_owner_vs_super_admin_separation_and_final_launch_gate_are_done",
         "auth_model": {
             "owner_session_cookie": STAGE71_OWNER_SESSION_COOKIE_NAME,
             "owner_session_max_age_seconds": stage71_owner_session_max_age_seconds(),
@@ -2827,14 +3212,12 @@ def stage71_owner_auth_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) -> 
             "control_center": url(f"/control-center/ui?tenant_id={tid}"),
             "public_saas_audit": url(f"/public-saas/gap-audit/ui?tenant_id={tid}"),
         },
+        "email_magic_link_dependency": stage76_email_magic_link_readiness_payload(tid, hours=24),
         "next_required_before_public_saas": [
-            "production email/magic-link delivery instead of admin-issued setup code",
-            "CSRF protection for owner browser write endpoints",
-            "public rate limits and abuse controls",
-            "billing/subscription gating",
             "client-owner vs super-admin UI separation for all self-serve write surfaces",
+            "final public SaaS readiness lock",
         ],
-        "note": "Stage 71 creates the owner account/session/tenant-binding foundation. It does not expose existing admin write surfaces to owners and does not change receptionist runtime.",
+        "note": "Stage 71 creates the owner account/session/tenant-binding foundation. Stage 76 adds magic-link/email verification foundation; neither stage changes receptionist runtime.",
     }
 
 
@@ -13747,6 +14130,7 @@ def stage69_client_control_center_payload(tenant_id: str = TENANT_ID_DEFAULT, da
     billing = stage69_safe_dependency("billing_subscription", lambda: stage73_billing_subscription_gate_readiness_payload(tenant_id_clean, days=days))
     csrf = stage69_safe_dependency("csrf_browser_write_hardening", lambda: stage74_csrf_write_hardening_readiness_payload(tenant_id_clean))
     abuse = stage69_safe_dependency("abuse_rate_limits", lambda: stage75_abuse_rate_limits_readiness_payload(tenant_id_clean, hours=24))
+    email_auth = stage69_safe_dependency("email_magic_link_auth", lambda: stage76_email_magic_link_readiness_payload(tenant_id_clean, hours=24))
     launch = stage69_safe_dependency("launch_readiness", lambda: stage54_launch_readiness_lock_payload(tenant_id_clean))
     access = stage69_safe_dependency("access_boundaries", lambda: stage58_access_boundaries_readiness_payload(tenant_id_clean))
 
@@ -13848,6 +14232,15 @@ def stage69_client_control_center_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             url(f"/rate-limits/readiness?tenant_id={tenant_id_clean}"),
             "Admin login, owner login, public signup, and public CSRF token issuance have a central abuse/rate-limit ledger.",
         ),
+        stage69_step_payload(
+            "email_magic_link_auth",
+            "Email verification / magic link",
+            email_auth,
+            bool(email_auth.get("email_verification_magic_link_foundation_ready")),
+            url(f"/email/readiness?tenant_id={tenant_id_clean}"),
+            url(f"/owner/magic-login?tenant_id={tenant_id_clean}"),
+            "One-time owner magic links verify owner email and create the owner session without exposing token hashes.",
+        ),
     ]
 
     ready_count = sum(1 for step in steps if step.get("ready"))
@@ -13912,6 +14305,7 @@ def stage69_client_control_center_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "billing_subscription": billing,
             "csrf_browser_write_hardening": csrf,
             "abuse_rate_limits": abuse,
+            "email_magic_link_auth": email_auth,
             "launch_readiness": launch,
             "access_boundaries": access,
         },
@@ -13921,11 +14315,12 @@ def stage69_client_control_center_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "raw_telegram_bot_token_exposed": False,
             "raw_telegram_webhook_secret_exposed": False,
             "control_center_routes_protected_by_admin_session_or_token": not bool(missing_protection),
-            "public_owner_auth_not_implemented_yet": True,
+            "public_owner_auth_not_implemented_yet": False,
             "tenant_ownership_checks_not_public_saas_ready_yet": True,
             "billing_subscription_gate_foundation_ready": bool(billing.get("billing_subscription_gate_foundation_ready")),
             "csrf_browser_write_hardening_ready": bool(csrf.get("csrf_browser_write_hardening_ready")),
             "abuse_rate_limits_ready": bool(abuse.get("abuse_rate_limits_ready")),
+            "email_verification_magic_link_foundation_ready": bool(email_auth.get("email_verification_magic_link_foundation_ready")),
         },
         "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
         "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
@@ -14028,6 +14423,7 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
     billing = stage70_safe_dependency("billing_subscription_gate", lambda: stage73_billing_subscription_gate_readiness_payload(tenant_id_clean, days=days))
     csrf = stage70_safe_dependency("csrf_browser_write_hardening", lambda: stage74_csrf_write_hardening_readiness_payload(tenant_id_clean))
     abuse = stage70_safe_dependency("abuse_rate_limits", lambda: stage75_abuse_rate_limits_readiness_payload(tenant_id_clean, hours=24))
+    email_auth = stage70_safe_dependency("email_magic_link_auth", lambda: stage76_email_magic_link_readiness_payload(tenant_id_clean, hours=24))
 
     admin_token_configured = stage61_admin_token_configured()
     admin_access_enforced = bool(admin_access.get("admin_access_enforced"))
@@ -14055,6 +14451,7 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
         {"key": "billing_subscription", "ready": bool(billing.get("billing_subscription_gate_foundation_ready")), "status": billing.get("status"), "stage": billing.get("stage")},
         {"key": "csrf_browser_write_hardening", "ready": bool(csrf.get("csrf_browser_write_hardening_ready")), "status": csrf.get("status"), "stage": csrf.get("stage")},
         {"key": "abuse_rate_limits", "ready": bool(abuse.get("abuse_rate_limits_ready")), "status": abuse.get("status"), "stage": abuse.get("stage")},
+        {"key": "email_magic_link_auth", "ready": bool(email_auth.get("email_verification_magic_link_foundation_ready")), "status": email_auth.get("status"), "stage": email_auth.get("stage")},
     ]
     ready_self_serve_count = sum(1 for item in self_serve_blocks if item.get("ready"))
 
@@ -14062,17 +14459,20 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
     gaps.append(stage70_gap_payload(
         "owner_auth",
         "Per-owner public auth",
-        "foundation" if owner_auth.get("owner_auth_foundation_ready") else "missing",
+        "foundation" if owner_auth.get("owner_auth_foundation_ready") and email_auth.get("email_verification_magic_link_foundation_ready") else "missing",
         {
             "owner_auth_stage": owner_auth.get("stage"),
             "owner_auth_foundation_ready": bool(owner_auth.get("owner_auth_foundation_ready")),
             "owner_login_ready_for_private_demo": bool(owner_auth.get("owner_login_ready_for_private_demo")),
+            "email_magic_link_stage": email_auth.get("stage"),
+            "email_verification_magic_link_foundation_ready": bool(email_auth.get("email_verification_magic_link_foundation_ready")),
+            "email_delivery_provider_configured": bool(email_auth.get("email_delivery_provider_configured")),
             "owner_session_cookie": (owner_auth.get("auth_model") or {}).get("owner_session_cookie"),
             "current_super_admin_model": admin_access.get("auth_model", {}).get("type") or admin_session.get("session_model", {}).get("type"),
             "shared_admin_token_configured": bool(admin_token_configured),
         },
-        "Move from setup-code foundation to production email/magic-link auth, rate limits, and billing-gated public signup.",
-        severity="blocker",
+        "Stage 76 adds production-direction owner magic-link/email verification foundation. Add real outbound email provider later for mature SaaS polish.",
+        severity="major" if email_auth.get("email_verification_magic_link_foundation_ready") else "blocker",
     ))
     gaps.append(stage70_gap_payload(
         "tenant_ownership",
@@ -14103,6 +14503,23 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
         "Continue hardening public signup with email verification/magic-link auth, billing gate, and production abuse controls before declaring public SaaS ready.",
         severity="blocker",
     ))
+    gaps.append(stage70_gap_payload(
+        "email_verification_magic_link",
+        "Email verification and magic-link auth",
+        "foundation" if email_auth.get("email_verification_magic_link_foundation_ready") else "missing",
+        {
+            "email_magic_link_stage": email_auth.get("stage"),
+            "email_verification_magic_link_foundation_ready": bool(email_auth.get("email_verification_magic_link_foundation_ready")),
+            "owner_magic_login_ready": bool(email_auth.get("owner_magic_login_ready")),
+            "email_delivery_provider_configured": bool(email_auth.get("email_delivery_provider_configured")),
+            "legacy_login_code_still_supported": bool((email_auth.get("auth_model") or {}).get("legacy_login_code_still_supported")),
+            "raw_magic_token_stored": bool((email_auth.get("storage") or {}).get("raw_magic_token_stored")),
+            "token_hash_exposed": bool((email_auth.get("storage") or {}).get("token_hash_exposed")),
+        },
+        "Use Stage 76 one-time magic links for public owner auth. Real outbound email delivery can be added later; no raw token/hash is exposed in readiness.",
+        severity="major" if email_auth.get("email_verification_magic_link_foundation_ready") else "blocker",
+    ))
+
     gaps.append(stage70_gap_payload(
         "billing_subscription",
         "Billing and subscription lifecycle",
@@ -14201,7 +14618,7 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
         "gap_audit_ready": bool(audit_ready),
         "private_admin_ready": bool(private_admin_ready),
         "public_saas_ready": bool(public_saas_ready),
-        "public_saas_ready_reason": "false_until_email_verification_magic_link_and_full_client_superadmin_separation_are_done",
+        "public_saas_ready_reason": "false_until_client_owner_vs_super_admin_separation_and_final_launch_gate_are_done",
         "current_scope": {
             "product": "text-first AI receptionist SaaS",
             "external_channel": "Telegram text",
@@ -14231,6 +14648,9 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "csrf_browser_write_hardening_ready": bool(csrf.get("csrf_browser_write_hardening_ready")),
             "public_rate_limits_integrated": bool(abuse.get("abuse_rate_limits_ready")),
             "abuse_rate_limits_ready": bool(abuse.get("abuse_rate_limits_ready")),
+            "email_verification_magic_link_foundation_ready": bool(email_auth.get("email_verification_magic_link_foundation_ready")),
+            "owner_magic_login_ready": bool(email_auth.get("owner_magic_login_ready")),
+            "email_delivery_provider_configured": bool(email_auth.get("email_delivery_provider_configured")),
         },
         "dependencies": {
             "admin_access_enforcement": admin_access,
@@ -14250,9 +14670,9 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "billing_subscription_gate": billing,
             "csrf_browser_write_hardening": csrf,
             "abuse_rate_limits": abuse,
+            "email_magic_link_auth": email_auth,
         },
         "recommended_next_stages": [
-            "Stage 76 — Email Verification / Magic Link Auth Foundation",
             "Stage 77 — Client-owner vs Super-admin Separation Hardening",
             "Stage 78 — Final Public SaaS Readiness Lock",
         ],
@@ -14269,6 +14689,8 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "billing_ui": url(f"/tenant/billing/ui?tenant_id={tenant_id_clean}"),
             "owner_billing": url(f"/owner/billing/ui?tenant_id={tenant_id_clean}"),
             "csrf_readiness": url(f"/csrf/readiness?tenant_id={tenant_id_clean}"),
+            "email_readiness": url(f"/email/readiness?tenant_id={tenant_id_clean}"),
+            "owner_magic_login": url(f"/owner/magic-login?tenant_id={tenant_id_clean}"),
             "control_center": url(f"/control-center/ui?tenant_id={tenant_id_clean}&days={days}"),
             "access_readiness": url(f"/access/readiness?tenant_id={tenant_id_clean}"),
             "tenant_config_ui": url(f"/tenant/config/ui?tenant_id={tenant_id_clean}"),
@@ -14725,6 +15147,109 @@ def tenant_owner_bind(request: Request, payload: dict = Body(...)):
     return {"ok": True, "stage": "71.1", "tenant_id": tenant_id, "owner_account": owner, "tenant_binding": binding, "tenant_owner_email_synced": bool(tenant_owner_email_synced), "login_code_hash_exposed": False}
 
 
+
+@app.get("/email/readiness")
+@app.get("/email-verification/readiness")
+@app.get("/magic-link/readiness")
+@app.get("/owner/magic-link/readiness")
+def stage76_email_magic_link_readiness(request: Request, tenant_id: str = TENANT_ID_DEFAULT, hours: int = 24):
+    tid = stage711_resolve_tenant_context(request, tenant_id)
+    return stage76_email_magic_link_readiness_payload(tid, hours=hours)
+
+
+@app.post("/owner/magic-link/bootstrap")
+def stage76_owner_magic_link_bootstrap(request: Request, payload: dict = Body(...)):
+    data = payload or {}
+    tenant_id = stage711_resolve_tenant_context(request, str(data.get("tenant_id") or ""))
+    owner_email = stage71_normalize_email(data.get("owner_email") or data.get("email") or "")
+    next_path = stage62_safe_local_path(str(data.get("next") or f"/owner/dashboard/ui?tenant_id={tenant_id}"), tenant_id)
+    try:
+        magic_link = stage76_create_magic_link(tenant_id=tenant_id, owner_email=owner_email, purpose="login", requested_by="admin_bootstrap", next_path=next_path)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail={"stage": "76", "error": str(e), "tenant_id": tenant_id, "token_hash_exposed": False})
+    return {
+        "ok": True,
+        "stage": "76",
+        "tenant_id": tenant_id,
+        "owner_email": owner_email,
+        "magic_link_url": magic_link.get("magic_link_url"),
+        "magic_link_token": magic_link.get("magic_link_token"),
+        "magic_link_token_returned_once": bool(magic_link.get("magic_link_token")),
+        "token_expires_at": magic_link.get("token_expires_at"),
+        "ttl_seconds": magic_link.get("ttl_seconds"),
+        "email_delivery_provider_configured": bool(magic_link.get("email_delivery_provider_configured")),
+        "email_delivery_attempted": False,
+        "token_hash_exposed": False,
+        "raw_token_stored": False,
+        "links": {"owner_magic_login": f"/owner/magic-login?tenant_id={tenant_id}", "owner_dashboard": f"/owner/dashboard/ui?tenant_id={tenant_id}", "email_readiness": f"/email/readiness?tenant_id={tenant_id}"},
+        "note": "Magic link token is returned once by this protected admin endpoint for Stage 76 foundation. Do not paste it into chat logs.",
+    }
+
+
+@app.get("/owner/magic-login", response_class=HTMLResponse)
+def stage76_owner_magic_login_get(request: Request, token: str = "", tenant_id: str = TENANT_ID_DEFAULT, next: str = ""):
+    tid_hint = stage711_resolve_tenant_context(request, tenant_id)
+    raw_token = str(token or request.query_params.get("magic_token") or "").strip()
+    next_path = stage62_safe_local_path(next or f"/owner/dashboard/ui?tenant_id={tid_hint}", tid_hint)
+    if raw_token:
+        abuse_gate = stage75_owner_login_gate(request, tenant_id=tid_hint, owner_email="magic_link")
+        if not abuse_gate.get("ok"):
+            stage75_record_abuse_event(request, bucket="owner_login", subject=f"{tid_hint}:magic_link", tenant_id=tid_hint, status="blocked", reason=str(abuse_gate.get("reason") or "rate_limited"))
+            return stage75_abuse_error(abuse_gate, tenant_id=tid_hint)
+        ok, reason, row = stage76_consume_magic_link_token(raw_token)
+        if not ok:
+            stage75_record_abuse_event(request, bucket="owner_login", subject=f"{tid_hint}:magic_link", tenant_id=tid_hint, status="failed", reason=reason)
+            return JSONResponse(status_code=401, content={"ok": False, "stage": "76", "error": reason, "tenant_id": tid_hint, "magic_link_token_hash_exposed": False}, headers={"Cache-Control": "no-store"})
+        tenant_id_final = str(row.get("tenant_id") or tid_hint).strip() or tid_hint
+        owner_email = stage71_normalize_email(row.get("owner_email") or "")
+        next_path = stage62_safe_local_path(next or f"/owner/dashboard/ui?tenant_id={tenant_id_final}", tenant_id_final)
+        stage75_record_abuse_event(request, bucket="owner_login", subject=f"{tenant_id_final}:{owner_email}", tenant_id=tenant_id_final, status="success", reason="magic_link_ok")
+        response = RedirectResponse(url=next_path, status_code=303, headers={"Cache-Control": "no-store"})
+        stage71_set_owner_session_cookie(response, owner_email=owner_email, tenant_id=tenant_id_final, role="owner")
+        return response
+    tid_json = json.dumps(tid_hint, ensure_ascii=False)
+    next_json = json.dumps(next_path, ensure_ascii=False)
+    html = """
+<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Repliq Magic Login</title>
+<style>body{font-family:Inter,Arial,sans-serif;background:#f6f7fb;color:#111827;margin:0;padding:24px}.wrap{max-width:560px;margin:8vh auto}.card{background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:24px;box-shadow:0 12px 32px rgba(15,23,42,.08)}h1{margin:0;font-size:30px;letter-spacing:-.03em}.sub{color:#6b7280;font-size:14px;line-height:1.45;margin:8px 0 18px}label{display:block;font-size:13px;font-weight:700;margin:14px 0 6px}input{width:100%;box-sizing:border-box;border:1px solid #d1d5db;border-radius:12px;padding:12px;font-size:14px}button{width:100%;border:0;background:#111827;color:white;padding:12px 16px;border-radius:12px;font-weight:800;margin-top:16px;cursor:pointer}.notice{border-radius:12px;padding:10px 12px;margin-top:14px;font-size:13px;display:none}.notice.ok{display:block;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0}.notice.err{display:block;background:#fef2f2;color:#991b1b;border:1px solid #fecaca}.small{color:#6b7280;font-size:12px;margin-top:12px;line-height:1.45}</style></head>
+<body><div class="wrap"><div class="card"><h1>Repliq Magic Login</h1><div class="sub">Stage 76 one-time owner magic-link foundation. Paste the token from a magic link if you are not opening the full link directly.</div><label>Tenant</label><input id="tenant_id"/><label>Magic token</label><input id="token" type="password" autocomplete="one-time-code"/><button onclick="login()">Login with magic token</button><div id="msg" class="notice"></div><div class="small">The token is one-time, expires quickly, is stored only as a hash, and sets the HttpOnly owner session cookie.</div></div></div>
+<script>
+const DEFAULT_TENANT_ID=__TENANT_ID_JSON__; const NEXT_PATH=__NEXT_PATH_JSON__; document.getElementById('tenant_id').value=DEFAULT_TENANT_ID||'clinic_demo';
+function setMsg(k,t){const el=document.getElementById('msg');el.className='notice '+k;el.textContent=t;}
+async function login(){const tenant_id=(document.getElementById('tenant_id').value||'').trim()||DEFAULT_TENANT_ID||'clinic_demo';const token=document.getElementById('token').value||'';if(!token.trim()){setMsg('err','Magic token is required.');return;}setMsg('ok','Checking…');const r=await fetch('/owner/magic-login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tenant_id,token,next:NEXT_PATH})});const data=await r.json().catch(()=>({}));if(!r.ok||!data.ok){setMsg('err',data.error||data.detail||'Magic login failed');return;}setMsg('ok','Login OK. Opening owner dashboard…');window.location=data.redirect_url||('/owner/dashboard/ui?tenant_id='+encodeURIComponent(data.tenant_id||tenant_id));}
+document.addEventListener('keydown',e=>{if(e.key==='Enter')login();});
+</script></body></html>
+    """.replace("__TENANT_ID_JSON__", tid_json).replace("__NEXT_PATH_JSON__", next_json)
+    return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/owner/magic-login")
+async def stage76_owner_magic_login_submit(request: Request):
+    try:
+        data = await request.json()
+    except Exception:
+        raw = (await request.body()).decode("utf-8", errors="ignore")
+        data = {k: v[-1] if v else "" for k, v in urllib.parse.parse_qs(raw).items()}
+    data = data or {}
+    tenant_hint = stage711_resolve_tenant_context(request, str(data.get("tenant_id") or ""))
+    raw_token = str(data.get("token") or data.get("magic_token") or "").strip()
+    next_path = stage62_safe_local_path(str(data.get("next") or f"/owner/dashboard/ui?tenant_id={tenant_hint}"), tenant_hint)
+    abuse_gate = stage75_owner_login_gate(request, tenant_id=tenant_hint, owner_email="magic_link")
+    if not abuse_gate.get("ok"):
+        stage75_record_abuse_event(request, bucket="owner_login", subject=f"{tenant_hint}:magic_link", tenant_id=tenant_hint, status="blocked", reason=str(abuse_gate.get("reason") or "rate_limited"))
+        return stage75_abuse_error(abuse_gate, tenant_id=tenant_hint)
+    ok, reason, row = stage76_consume_magic_link_token(raw_token)
+    if not ok:
+        stage75_record_abuse_event(request, bucket="owner_login", subject=f"{tenant_hint}:magic_link", tenant_id=tenant_hint, status="failed", reason=reason)
+        return JSONResponse(status_code=401, content={"ok": False, "stage": "76", "error": reason, "tenant_id": tenant_hint, "magic_link_token_hash_exposed": False, "raw_magic_token_stored": False}, headers={"Cache-Control": "no-store"})
+    tenant_id = str(row.get("tenant_id") or tenant_hint).strip() or tenant_hint
+    owner_email = stage71_normalize_email(row.get("owner_email") or "")
+    next_path = stage62_safe_local_path(str(data.get("next") or f"/owner/dashboard/ui?tenant_id={tenant_id}"), tenant_id)
+    stage75_record_abuse_event(request, bucket="owner_login", subject=f"{tenant_id}:{owner_email}", tenant_id=tenant_id, status="success", reason="magic_link_ok")
+    response = JSONResponse(content={"ok": True, "stage": "76", "auth_model": "signed_owner_session_cookie_via_magic_link", "tenant_id": tenant_id, "owner_email": owner_email, "redirect_url": next_path, "session_cookie": STAGE71_OWNER_SESSION_COOKIE_NAME, "email_verified": True, "magic_link_token_value_exposed": False, "magic_link_token_hash_exposed": False, "login_code_value_exposed": False, "login_code_hash_exposed": False, "abuse_protection": {"stage": "75", "ip_hash_exposed": False, "subject_hash_exposed": False}}, headers={"Cache-Control": "no-store"})
+    stage71_set_owner_session_cookie(response, owner_email=owner_email, tenant_id=tenant_id, role="owner")
+    return response
+
 @app.get("/owner/login", response_class=HTMLResponse)
 def owner_login_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT, next: str = ""):
     tenant_id_clean = stage711_resolve_tenant_context(request, tenant_id)
@@ -14734,10 +15259,11 @@ def owner_login_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT, next: s
     html = r'''
 <!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Repliq Owner Login</title>
 <style>body{font-family:Inter,Arial,sans-serif;background:#f6f7fb;color:#111827;margin:0;padding:24px}.wrap{max-width:560px;margin:8vh auto}.card{background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:24px;box-shadow:0 12px 32px rgba(15,23,42,.08)}h1{margin:0;font-size:30px;letter-spacing:-.03em}.sub{color:#6b7280;font-size:14px;line-height:1.45;margin:8px 0 18px}label{display:block;font-size:13px;font-weight:700;margin:14px 0 6px}input{width:100%;box-sizing:border-box;border:1px solid #d1d5db;border-radius:12px;padding:12px;font-size:14px}button{width:100%;border:0;background:#111827;color:white;padding:12px 16px;border-radius:12px;font-weight:800;margin-top:16px;cursor:pointer}.notice{border-radius:12px;padding:10px 12px;margin-top:14px;font-size:13px;display:none}.notice.ok{display:block;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0}.notice.err{display:block;background:#fef2f2;color:#991b1b;border:1px solid #fecaca}.small{color:#6b7280;font-size:12px;margin-top:12px;line-height:1.45}code{background:#f3f4f6;padding:2px 5px;border-radius:6px}</style></head>
-<body><div class="wrap"><div class="card"><h1>Repliq Owner Login</h1><div class="sub">Stage 71 owner session foundation. Use the owner email and setup code issued from the protected admin bootstrap endpoint. Do not paste owner codes into chat logs.</div><label>Tenant</label><input id="tenant_id"/><label>Owner email</label><input id="owner_email" type="email" autocomplete="email"/><label>Owner setup/login code</label><input id="login_code" type="password" autocomplete="one-time-code"/><button onclick="login()">Login</button><div id="msg" class="notice"></div><div class="small">This creates a separate HttpOnly owner session cookie: <code>repliq_owner_session</code>. It does not expose the code hash or admin token.</div></div></div>
+<body><div class="wrap"><div class="card"><h1>Repliq Owner Login</h1><div class="sub">Stage 76 owner auth foundation. Use a magic link token or the legacy setup code issued from the protected admin/bootstrap flow. Do not paste owner codes or magic tokens into chat logs.</div><label>Tenant</label><input id="tenant_id"/><label>Owner email</label><input id="owner_email" type="email" autocomplete="email"/><label>Owner setup/login code</label><input id="login_code" type="password" autocomplete="one-time-code"/><button onclick="login()">Login</button><div id="msg" class="notice"></div><div class="small">This creates a separate HttpOnly owner session cookie: <code>repliq_owner_session</code>. It does not expose the code hash, magic token hash, or admin token. Magic link entry: <a id="magic_link" href="#">/owner/magic-login</a>.</div></div></div>
 <script>
 const DEFAULT_TENANT_ID=__TENANT_ID_JSON__; const NEXT_PATH=__NEXT_PATH_JSON__;
 document.getElementById('tenant_id').value=DEFAULT_TENANT_ID||'clinic_demo';
+document.getElementById('magic_link').href='/owner/magic-login?tenant_id='+encodeURIComponent(DEFAULT_TENANT_ID||'clinic_demo');
 function setMsg(k,t){const el=document.getElementById('msg');el.className='notice '+k;el.textContent=t;}
 async function login(){const tenant_id=(document.getElementById('tenant_id').value||'').trim()||DEFAULT_TENANT_ID||'clinic_demo';const owner_email=(document.getElementById('owner_email').value||'').trim();const login_code=document.getElementById('login_code').value||''; if(!owner_email||!login_code.trim()){setMsg('err','Owner email and login code are required.');return;} setMsg('ok','Checking…'); const r=await fetch('/owner/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tenant_id,owner_email,login_code,next:NEXT_PATH})}); const data=await r.json().catch(()=>({})); if(!r.ok||!data.ok){setMsg('err',data.error||data.detail||'Login failed');return;} setMsg('ok','Login OK. Opening owner dashboard…'); window.location=data.redirect_url||('/owner/dashboard/ui?tenant_id='+encodeURIComponent(tenant_id));}
 document.addEventListener('keydown',e=>{if(e.key==='Enter')login();});
@@ -14791,7 +15317,8 @@ def owner_session_status(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
     session = stage71_request_owner_session_payload(request)
     tid = stage711_resolve_tenant_context(request, tenant_id)
     authenticated = bool(session and stage71_owner_has_tenant_access(session.get("owner_email") or "", tid))
-    return {"ok": True, "stage": "71", "authenticated": authenticated, "auth_model": "signed_owner_session_cookie" if session else "none", "tenant_id": tid, "owner_email": (session or {}).get("owner_email") if authenticated else None, "role": (session or {}).get("role") if authenticated else None, "expires_at": datetime.utcfromtimestamp(int(session.get("exp"))).isoformat() + "Z" if session and session.get("exp") else None, "session_cookie": STAGE71_OWNER_SESSION_COOKIE_NAME, "login_code_value_exposed": False, "login_code_hash_exposed": False}
+    owner_email = (session or {}).get("owner_email") if authenticated else None
+    return {"ok": True, "stage": "76" if authenticated else "71", "previous_stage": "71", "authenticated": authenticated, "auth_model": "signed_owner_session_cookie" if session else "none", "tenant_id": tid, "owner_email": owner_email, "role": (session or {}).get("role") if authenticated else None, "expires_at": datetime.utcfromtimestamp(int(session.get("exp"))).isoformat() + "Z" if session and session.get("exp") else None, "session_cookie": STAGE71_OWNER_SESSION_COOKIE_NAME, "email_verification": stage76_owner_email_verification_status(owner_email) if owner_email else {"email_verified": False}, "login_code_value_exposed": False, "login_code_hash_exposed": False, "magic_link_token_exposed": False, "magic_link_token_hash_exposed": False}
 
 
 @app.get("/owner/dashboard")
@@ -16328,7 +16855,7 @@ def stage72_public_signup_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) 
         "tenant_ownership_binding_during_signup_ready": bool(ready),
         "admin_token_dependency_for_public_signup": False,
         "public_saas_ready": False,
-        "public_saas_ready_reason": "false_until_email_verification_magic_link_and_full_client_superadmin_separation_are_done",
+        "public_saas_ready_reason": "false_until_client_owner_vs_super_admin_separation_and_final_launch_gate_are_done",
         "auth_model": {
             "public_signup": "public_http_entrypoint_with_honeypot_rate_limits_and_owner_session_cookie",
             "owner_session_cookie": STAGE71_OWNER_SESSION_COOKIE_NAME,
@@ -17388,7 +17915,7 @@ def tenant_billing_status(tenant: Dict[str, Any]) -> Dict[str, Any]:
         "owner_visible": True,
         "admin_mutable": True,
         "public_saas_ready": False,
-        "public_saas_ready_reason": "false_until_email_verification_magic_link_and_full_client_superadmin_separation_are_done",
+        "public_saas_ready_reason": "false_until_client_owner_vs_super_admin_separation_and_final_launch_gate_are_done",
     }
 
 
@@ -17458,7 +17985,7 @@ def stage73_billing_subscription_gate_readiness_payload(tenant_id: str = TENANT_
         "provider_integration_live": bool((billing_status or {}).get("provider_integration_live")),
         "provider_integration_required_for_this_stage": False,
         "public_saas_ready": False,
-        "public_saas_ready_reason": "false_until_email_verification_magic_link_and_full_client_superadmin_separation_are_done",
+        "public_saas_ready_reason": "false_until_client_owner_vs_super_admin_separation_and_final_launch_gate_are_done",
         "schema": {
             "billing_columns": sorted(STAGE73_BILLING_COLUMNS.keys()),
             "missing_columns": missing_cols,
@@ -17967,7 +18494,7 @@ def stage72_public_signup_ui():
 <div class="card"><div id="readiness" class="small"></div><div class="grid"><div><label>Business name *</label><input id="business_name" oninput="suggestSlug()"/></div><div><label>Tenant slug</label><input id="tenant_slug"/></div><div><label>Owner email *</label><input id="owner_email" type="email"/></div><div><label>Phone</label><input id="phone_number"/></div><div><label>Business type</label><select id="business_type"><option value="clinic">clinic</option><option value="barbershop">barbershop</option><option value="salon">salon</option><option value="dentistry">dentistry</option><option value="auto_service">auto_service</option><option value="restaurant">restaurant</option><option value="other">other</option></select></div><div><label>Language</label><select id="language"><option value="lv">Latvian</option><option value="ru">Russian</option><option value="en">English</option></select></div><div><label>Timezone</label><input id="timezone" value="Europe/Riga"/></div><div><label>Work hours</label><div class="grid"><input id="work_start" value="09:00"/><input id="work_end" value="18:00"/></div></div></div><div class="hp"><label>Website</label><input id="website" autocomplete="off" tabindex="-1"/></div><p><label style="display:flex;gap:8px;align-items:flex-start;font-weight:500"><input id="accepted_terms" type="checkbox" style="width:auto"/> I confirm this is a real business signup request.</label></p><button onclick="signup()">Create workspace</button> <span id="status" class="small"></span></div>
 <div class="card hidden" id="result"><h2>Workspace created</h2><div id="summary"></div><p><button onclick="openOwner()">Open owner dashboard</button> <button class="secondary" onclick="copyCode()">Copy login code</button></p><p class="small">Save the owner login code locally. It is shown once. Do not paste it into chat logs.</p><div class="code" id="raw"></div></div></div>
 <script>
-const READINESS=__READINESS_JSON__;let latest=null;function el(id){return document.getElementById(id)}function slugifyTenant(v){return String(v||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9_-]+/g,'_').replace(/[_-]{2,}/g,'_').replace(/^[_-]+|[_-]+$/g,'').slice(0,48)}function suggestSlug(){if(el('tenant_slug').dataset.touched==='1')return;el('tenant_slug').value=slugifyTenant(el('business_name').value)}el('tenant_slug').addEventListener('input',()=>{el('tenant_slug').dataset.touched='1'});function setStatus(t,c='small'){el('status').className=c;el('status').textContent=t}function payload(){return{business_name:el('business_name').value.trim(),tenant_slug:el('tenant_slug').value.trim()||null,owner_email:el('owner_email').value.trim(),phone_number:el('phone_number').value.trim()||null,business_type:el('business_type').value,language:el('language').value,timezone:el('timezone').value.trim()||'Europe/Riga',work_start:el('work_start').value.trim()||'09:00',work_end:el('work_end').value.trim()||'18:00',accepted_terms:el('accepted_terms').checked,website:el('website').value||''}}async function signup(){const p=payload();if(!p.business_name||!p.owner_email){setStatus('Business name and owner email are required.','small err');return}if(!p.accepted_terms){setStatus('Please confirm the checkbox.','small err');return}setStatus('Creating...');const r=await fetch('/public/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});const data=await r.json().catch(()=>({}));latest=data;if(!r.ok||!data.ok){setStatus(data.error||data.detail||'Signup failed','small err');el('raw').textContent=JSON.stringify(data,null,2);return}setStatus('Created. Owner session is active.','small ok');el('result').classList.remove('hidden');el('summary').innerHTML='Tenant: <b>'+data.tenant_id+'</b><br/>Owner: '+data.owner_email+'<br/>Owner session created: '+data.owner_session_created;el('raw').textContent=JSON.stringify(data,null,2)}function openOwner(){if(latest&&latest.links&&latest.links.owner_dashboard){window.location=latest.links.owner_dashboard}}async function copyCode(){if(!latest||!latest.owner_login_code)return;try{await navigator.clipboard.writeText(latest.owner_login_code)}catch(e){}}el('readiness').textContent='readiness: '+(READINESS.status||'-')+' · public_signup_boundary_ready='+READINESS.public_signup_boundary_ready+' · public_saas_ready='+READINESS.public_saas_ready;
+const READINESS=__READINESS_JSON__;let latest=null;function el(id){return document.getElementById(id)}function slugifyTenant(v){return String(v||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9_-]+/g,'_').replace(/[_-]{2,}/g,'_').replace(/^[_-]+|[_-]+$/g,'').slice(0,48)}function suggestSlug(){if(el('tenant_slug').dataset.touched==='1')return;el('tenant_slug').value=slugifyTenant(el('business_name').value)}el('tenant_slug').addEventListener('input',()=>{el('tenant_slug').dataset.touched='1'});function setStatus(t,c='small'){el('status').className=c;el('status').textContent=t}function payload(){return{business_name:el('business_name').value.trim(),tenant_slug:el('tenant_slug').value.trim()||null,owner_email:el('owner_email').value.trim(),phone_number:el('phone_number').value.trim()||null,business_type:el('business_type').value,language:el('language').value,timezone:el('timezone').value.trim()||'Europe/Riga',work_start:el('work_start').value.trim()||'09:00',work_end:el('work_end').value.trim()||'18:00',accepted_terms:el('accepted_terms').checked,website:el('website').value||''}}async function signup(){const p=payload();if(!p.business_name||!p.owner_email){setStatus('Business name and owner email are required.','small err');return}if(!p.accepted_terms){setStatus('Please confirm the checkbox.','small err');return}setStatus('Creating...');const r=await fetch('/public/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});const data=await r.json().catch(()=>({}));latest=data;if(!r.ok||!data.ok){setStatus(data.error||data.detail||'Signup failed','small err');el('raw').textContent=JSON.stringify(data,null,2);return}setStatus('Created. Owner session is active.','small ok');el('result').classList.remove('hidden');el('summary').innerHTML='Tenant: <b>'+data.tenant_id+'</b><br/>Owner: '+data.owner_email+'<br/>Owner session created: '+data.owner_session_created+'<br/>Magic link ready: '+!!data.owner_magic_link_url;el('raw').textContent=JSON.stringify(data,null,2)}function openOwner(){if(latest&&latest.links&&latest.links.owner_dashboard){window.location=latest.links.owner_dashboard}}async function copyCode(){if(!latest||!latest.owner_login_code)return;try{await navigator.clipboard.writeText(latest.owner_login_code)}catch(e){}}el('readiness').textContent='readiness: '+(READINESS.status||'-')+' · public_signup_boundary_ready='+READINESS.public_signup_boundary_ready+' · public_saas_ready='+READINESS.public_saas_ready;
 </script></body></html>
     """.replace("__READINESS_JSON__", readiness_json)
     return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
@@ -18035,15 +18562,22 @@ async def stage72_public_signup_submit(request: Request):
         "owner_session_created": True,
         "owner_login_code": owner_bootstrap.get("login_code"),
         "owner_login_code_returned_once": bool(owner_bootstrap.get("login_code")),
+        "owner_magic_link_url": owner_bootstrap.get("magic_link_url"),
+        "owner_magic_link_token": owner_bootstrap.get("magic_link_token"),
+        "owner_magic_link_token_returned_once": bool(owner_bootstrap.get("magic_link_token")),
+        "email_verification_magic_link_foundation_ready": bool(owner_bootstrap.get("magic_link_token")),
         "login_code_hash_exposed": False,
+        "magic_link_token_hash_exposed": False,
         "secret_values_exposed": False,
         "public_saas_ready": False,
-        "public_saas_ready_reason": "false_until_email_verification_magic_link_and_full_client_superadmin_separation_are_done",
+        "public_saas_ready_reason": "false_until_client_owner_vs_super_admin_separation_and_final_launch_gate_are_done",
         "onboarding": created.get("onboarding"),
         "readiness": created.get("readiness"),
         "links": {
             "owner_dashboard": next_path,
             "owner_login": f"/owner/login?tenant_id={urllib.parse.quote(tenant_id)}",
+            "owner_magic_login": f"/owner/magic-login?tenant_id={urllib.parse.quote(tenant_id)}",
+            "email_readiness": f"/email/readiness?tenant_id={urllib.parse.quote(tenant_id)}",
             "onboarding_wizard": f"/onboarding/wizard/ui?tenant_id={urllib.parse.quote(tenant_id)}",
             "control_center": f"/control-center/ui?tenant_id={urllib.parse.quote(tenant_id)}",
             "tenant_config": f"/tenant/config/ui?tenant_id={urllib.parse.quote(tenant_id)}",
@@ -18052,7 +18586,8 @@ async def stage72_public_signup_submit(request: Request):
         },
         "rate_limit": {"ip_hash_exposed": False, "hourly_limit": stage72_public_signup_hourly_limit(), "email_daily_limit": stage72_public_signup_email_daily_limit()},
         "abuse_protection": {"stage": "75", "enabled": bool(stage75_abuse_protection_enabled()), "ip_hash_exposed": False, "subject_hash_exposed": False},
-        "note": "Stage 72 returns the owner login code once for this foundation build and also sets an HttpOnly owner session cookie. Stage 75 records safe abuse/rate-limit metadata without exposing raw IPs or subject hashes. Save the code locally; do not paste it into chat logs.",
+        "email_verification": {"stage": "76", "magic_link_foundation_ready": bool(owner_bootstrap.get("magic_link_token")), "email_delivery_provider_configured": bool(stage76_email_delivery_provider_configured()), "email_delivery_attempted": False, "token_hash_exposed": False, "raw_token_stored": False},
+        "note": "Stage 76 returns a one-time owner magic link/token in addition to the legacy setup code and sets an HttpOnly owner session cookie. Save credentials locally; do not paste codes or magic tokens into chat logs.",
     }
     response = JSONResponse(content=content, headers={"Cache-Control": "no-store"})
     stage71_set_owner_session_cookie(response, owner_email=owner_email, tenant_id=tenant_id, role="owner")
