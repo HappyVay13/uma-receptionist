@@ -1754,7 +1754,7 @@ def stage77_client_owner_superadmin_separation_readiness_payload(tenant_id: str 
             "owner_safe_surfaces": sorted(STAGE77_OWNER_SAFE_SURFACE_PATHS),
             "owner_session_required_surfaces": sorted(STAGE71_OWNER_PROTECTED_EXACT_PATHS),
             "admin_only_surfaces": sorted(STAGE77_ADMIN_ONLY_SURFACE_PATHS),
-            "public_auth_surfaces": sorted(STAGE76_PUBLIC_MAGIC_LOGIN_PATHS | STAGE72_PUBLIC_SIGNUP_PUBLIC_PATHS),
+            "public_auth_surfaces": sorted(set(STAGE76_PUBLIC_MAGIC_LOGIN_PATHS) | set(STAGE72_PUBLIC_SIGNUP_PUBLIC_PATHS)),
             "external_webhooks_not_owner_or_admin_ui": sorted(STAGE74_EXTERNAL_WEBHOOK_WRITE_PATHS),
         },
         "owner_safe_ui": {

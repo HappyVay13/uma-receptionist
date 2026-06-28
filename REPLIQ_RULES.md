@@ -513,3 +513,8 @@ If a price question is asked inside an active booking flow and the current langu
 - Do not change booking routing, slot generation, date/time parsing, side-question handling, confirmation, cancellation, rescheduling, Google Calendar event runtime, Telegram webhook handling, billing semantics, CSRF semantics, abuse/rate-limit semantics, LLM orchestration, or regression evaluator rules.
 - `public_saas_ready` must remain false after Stage 77 until the final Stage 78 public SaaS readiness lock is closed.
 - Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+
+
+## Stage 77.1 rule note
+
+Stage 77.1 is a narrow readiness endpoint hotfix only. It fixes a runtime type mismatch in the Stage 77 owner/admin separation readiness payload. It must not change receptionist dialogue, booking, calendar, Telegram, billing, CSRF, abuse/rate-limit, or magic-link flows.

@@ -959,3 +959,12 @@ Expected verification:
 - `/public-saas/readiness?tenant_id=clinic_demo` includes Stage 77 separation readiness while `public_saas_ready=false` remains.
 
 Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, billing semantics, CSRF semantics, abuse/rate-limit semantics, dialogue QA evaluator, LLM orchestration, and voice/calls were not changed.
+
+
+## Stage 77.1 — Owner/Admin Separation Readiness Type Hotfix
+
+Status: packaged hotfix.
+
+Purpose: fix `/owner-admin-separation/readiness` and aliases returning 500 after Stage 77 due to a set/tuple union in readiness payload construction.
+
+Fix: convert both public auth surface collections to sets before union. No receptionist dialogue, booking, Telegram, Google Calendar, billing, CSRF, abuse/rate-limit, or magic-link semantics changed.
