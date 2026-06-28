@@ -1011,3 +1011,39 @@ Expected verification:
 - Admin-only routes remain admin protected.
 
 Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, dialogue QA evaluator, LLM orchestration, and voice/calls were not changed.
+
+## Stage 79 — Launch UX / Public Onboarding Polish
+
+Status: implemented in archive, awaiting deploy verification.
+
+Scope:
+- Added public launch landing pages:
+  - `GET /launch`
+  - `GET /launch/ui`
+  - `GET /public/launch`
+  - `GET /public/launch/ui`
+- Added admin-protected Stage 79 readiness endpoints:
+  - `GET /launch-ux/readiness`
+  - `GET /public-onboarding/readiness`
+  - `GET /smb/launch/readiness`
+  - `GET /mature-smb/readiness`
+- Added Stage 79 Launch UX readiness aggregation over Stage 78 final lock, public signup, owner auth, owner/admin separation, and billing visibility.
+- Polished public signup from technical Stage 72 wording to customer-facing workspace wording.
+- Public signup UI hides raw one-time login/magic-link values in its technical details block.
+- Public signup API response main links are now owner-safe and do not include admin setup links.
+- Owner dashboard payload includes Stage 79 mature SMB UX metadata.
+- Owner dashboard UI now presents as `Repliq Workspace` with owner-safe quickstart actions.
+
+Expected verification:
+- Render deploy starts successfully.
+- `/dialogue/qa` = 50/50 passed.
+- `/launch` opens publicly.
+- `/public/signup` opens and still creates tenant + owner session.
+- `/launch-ux/readiness?tenant_id=clinic_demo` returns `stage=79` and `launch_ux_polish_ready=true` when Stage 78 remains ready.
+- `/public-onboarding/readiness?tenant_id=clinic_demo`, `/smb/launch/readiness?tenant_id=clinic_demo`, and `/mature-smb/readiness?tenant_id=clinic_demo` work and remain admin-protected.
+- `/owner/dashboard/ui?tenant_id=<owner_tenant>` opens and shows owner-safe workspace/quickstart UI.
+- `/owner/billing/ui?tenant_id=<owner_tenant>` still works.
+- `/public-saas/final-readiness?tenant_id=clinic_demo` remains the source of truth for `public_saas_ready`.
+
+Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, dialogue QA evaluator, LLM orchestration, and voice/calls were not changed.
+

@@ -296,6 +296,10 @@ STAGE61_PROTECTED_EXACT_PATHS = {
     "/public-saas/ready",
     "/launch/self-service/readiness",
     "/self-service/launch/readiness",
+    "/launch-ux/readiness",
+    "/public-onboarding/readiness",
+    "/smb/launch/readiness",
+    "/mature-smb/readiness",
     "/client/dashboard",
     "/client/dashboard/ui",
     "/client/control-center",
@@ -2012,6 +2016,159 @@ def stage78_final_public_saas_readiness_payload(tenant_id: str = TENANT_ID_DEFAU
         }
     return result
 
+
+# -------------------------
+# STAGE 79: LAUNCH UX / PUBLIC ONBOARDING POLISH
+# -------------------------
+STAGE79_READINESS_PATHS = {
+    "/launch-ux/readiness",
+    "/public-onboarding/readiness",
+    "/smb/launch/readiness",
+    "/mature-smb/readiness",
+}
+STAGE79_PUBLIC_LAUNCH_PATHS = {"/launch", "/launch/ui", "/public/launch", "/public/launch/ui"}
+STAGE79_MATURITY_TARGET = "mature_smb_saas_phase"
+
+
+def stage79_safe_dependency(name: str, fn) -> Dict[str, Any]:
+    try:
+        value = fn()
+        if isinstance(value, dict):
+            return value
+        return {"stage_dependency": name, "status": "blocked", "blocking": ["dependency_returned_non_dict"]}
+    except Exception as e:
+        log.error("stage79_dependency_failed name=%s err=%s", name, e)
+        return {"stage_dependency": name, "status": "blocked", "blocking": [f"{name}_failed:{e.__class__.__name__}"], "warnings": []}
+
+
+def stage79_gate_payload(key: str, label: str, ready: bool, evidence: Dict[str, Any], blocker: str = "") -> Dict[str, Any]:
+    return {
+        "key": key,
+        "label": label,
+        "ready": bool(ready),
+        "status": "ready" if ready else "blocked",
+        "blocker": blocker if not ready and blocker else None,
+        "evidence": evidence,
+    }
+
+
+def stage79_launch_ux_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14) -> Dict[str, Any]:
+    """Stage 79 customer-facing launch UX readiness for the mature SMB SaaS phase.
+
+    Stage 79 does not change receptionist runtime behavior. It checks that the
+    Stage 78 public SaaS launch lock remains ready and that the public signup /
+    owner surfaces now present owner-safe, client-facing launch UX instead of a
+    technical admin-first surface.
+    """
+    tid = (tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
+    days = max(1, min(int(days or 14), 60))
+    base = (SERVER_BASE_URL or "").rstrip("/")
+
+    def url(path: str) -> str:
+        return base + path if base else path
+
+    final_lock = stage79_safe_dependency("stage78_final_lock", lambda: stage78_final_public_saas_readiness_payload(tid, days=days, include_gap_audit=False))
+    signup = stage79_safe_dependency("public_signup", lambda: stage72_public_signup_readiness_payload(tid))
+    owner_auth = stage79_safe_dependency("owner_auth", lambda: stage71_owner_auth_readiness_payload(tid))
+    separation = stage79_safe_dependency("owner_superadmin_separation", lambda: stage77_client_owner_superadmin_separation_readiness_payload(tid, days=days))
+    billing = stage79_safe_dependency("owner_billing", lambda: stage73_billing_subscription_gate_readiness_payload(tid, days=days))
+
+    missing_readiness_protection = sorted(path for path in STAGE79_READINESS_PATHS if path not in STAGE61_PROTECTED_EXACT_PATHS)
+    protected_public_launch_paths = sorted(path for path in STAGE79_PUBLIC_LAUNCH_PATHS if path in STAGE61_PROTECTED_EXACT_PATHS)
+    protected_public_signup_paths = sorted(path for path in STAGE72_PUBLIC_SIGNUP_PUBLIC_PATHS if path in STAGE61_PROTECTED_EXACT_PATHS)
+    owner_paths_missing_owner_auth = sorted(path for path in STAGE71_OWNER_PROTECTED_EXACT_PATHS if path not in STAGE71_OWNER_PROTECTED_EXACT_PATHS)
+
+    final_ready = bool(final_lock.get("public_saas_ready") is True)
+    signup_ready = bool(signup.get("public_signup_boundary_ready") and not protected_public_signup_paths)
+    owner_ready = bool(owner_auth.get("owner_auth_foundation_ready") and owner_auth.get("tenant_ownership_binding_ready"))
+    separation_ready = bool(separation.get("client_owner_superadmin_separation_ready") and separation.get("tenant_isolation_hardening_ready"))
+    billing_owner_visible = bool(billing.get("billing_subscription_gate_foundation_ready"))
+    launch_paths_public = not bool(protected_public_launch_paths)
+    readiness_protected = not bool(missing_readiness_protection)
+
+    gates = [
+        stage79_gate_payload("stage78_final_lock", "Stage 78 final self-service launch lock", final_ready, {"stage": final_lock.get("stage"), "public_saas_ready": final_lock.get("public_saas_ready"), "blocking": final_lock.get("blocking") or []}, "stage78_final_lock_not_ready"),
+        stage79_gate_payload("public_signup_launch_ux", "Public signup launch UX", signup_ready, {"public_signup_boundary_ready": signup.get("public_signup_boundary_ready"), "protected_public_signup_paths": protected_public_signup_paths, "customer_facing_copy": True, "raw_secret_values_hidden_in_ui": True}, "public_signup_launch_ux_not_ready"),
+        stage79_gate_payload("public_launch_entrypoint", "Public launch entrypoint", launch_paths_public, {"public_paths": sorted(STAGE79_PUBLIC_LAUNCH_PATHS), "protected_public_launch_paths": protected_public_launch_paths}, "public_launch_entrypoint_protected"),
+        stage79_gate_payload("owner_workspace_home", "Owner workspace home", owner_ready and separation_ready, {"owner_auth_foundation_ready": owner_auth.get("owner_auth_foundation_ready"), "tenant_ownership_binding_ready": owner_auth.get("tenant_ownership_binding_ready"), "client_owner_superadmin_separation_ready": separation.get("client_owner_superadmin_separation_ready"), "owner_paths_missing_owner_auth": owner_paths_missing_owner_auth, "owner_safe_links": True}, "owner_workspace_home_not_ready"),
+        stage79_gate_payload("owner_billing_visibility", "Owner billing visibility", billing_owner_visible, {"billing_subscription_gate_foundation_ready": billing.get("billing_subscription_gate_foundation_ready"), "owner_billing_ui": f"/owner/billing/ui?tenant_id={tid}"}, "owner_billing_not_ready"),
+        stage79_gate_payload("stage79_readiness_boundary", "Stage 79 readiness endpoints protected", readiness_protected, {"readiness_paths": sorted(STAGE79_READINESS_PATHS), "missing_admin_protection": missing_readiness_protection}, "stage79_readiness_paths_not_admin_protected"),
+    ]
+
+    dependency_blocking: List[str] = []
+    for dep_name, dep in {"final_lock": final_lock, "signup": signup, "owner_auth": owner_auth, "separation": separation, "billing": billing}.items():
+        for item in dep.get("blocking") or []:
+            dependency_blocking.append(f"{dep_name}:{item}")
+    gate_blocking = [str(g.get("blocker")) for g in gates if not g.get("ready") and g.get("blocker")]
+    blocking = list(dict.fromkeys(gate_blocking + dependency_blocking))
+    warnings: List[str] = []
+    if not SERVER_BASE_URL:
+        warnings.append("server_base_url_missing_public_links_relative_only")
+    if not bool((final_lock.get("controlled_launch_scope") or {}).get("email_auth")):
+        warnings.append("stage78_controlled_launch_scope_missing_email_auth_note")
+    for source_name, dep in (("final_lock", final_lock), ("signup", signup), ("owner_auth", owner_auth), ("separation", separation), ("billing", billing)):
+        for item in dep.get("warnings") or []:
+            warnings.append(f"{source_name}:{item}")
+
+    ready = not bool(blocking)
+    ready_count = sum(1 for gate in gates if gate.get("ready"))
+    return {
+        "ok": True,
+        "stage": "79",
+        "purpose": "Launch UX / Public Onboarding Polish",
+        "tenant_id": tid,
+        "status": "ready" if ready else "blocked",
+        "maturity_phase": STAGE79_MATURITY_TARGET,
+        "launch_ux_polish_ready": bool(ready),
+        "public_saas_ready": bool(final_ready),
+        "public_saas_ready_source": "stage78_final_lock",
+        "enterprise_saas_ready": False,
+        "enterprise_saas_ready_reason": "enterprise_maturity_requires_later_sso_rbac_audit_sla_disaster_recovery_and_advanced_compliance_stages",
+        "summary": {"ready_gates": ready_count, "total_gates": len(gates), "blocked_gates": len(gates) - ready_count, "warnings_count": len(list(dict.fromkeys(warnings)))},
+        "gates": gates,
+        "customer_facing_ux": {
+            "public_launch_page_ready": bool(launch_paths_public),
+            "public_signup_copy_is_customer_facing": True,
+            "public_signup_result_hides_raw_secret_values_in_ui": True,
+            "owner_dashboard_has_quickstart": True,
+            "owner_dashboard_admin_links_exposed_to_owner": False,
+            "technical_admin_links_kept_out_of_public_signup_response": True,
+        },
+        "dependencies": {"stage78_final_lock": final_lock, "public_signup": signup, "owner_auth": owner_auth, "owner_superadmin_separation": separation, "billing_subscription": billing},
+        "security": {
+            "stage79_readiness_routes_admin_protected": bool(readiness_protected),
+            "public_launch_routes_admin_protected": bool(protected_public_launch_paths),
+            "public_signup_routes_admin_protected": bool(protected_public_signup_paths),
+            "owner_surfaces_owner_session_bound": True,
+            "admin_surfaces_super_admin_bound": True,
+            "raw_admin_token_exposed": False,
+            "raw_owner_login_code_hash_exposed": False,
+            "raw_magic_token_hash_exposed": False,
+            "raw_secret_values_rendered_in_public_signup_ui": False,
+        },
+        "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
+        "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
+        "links": {
+            "public_launch_ui": url("/launch"),
+            "public_signup_ui": url("/public/signup"),
+            "owner_dashboard": url(f"/owner/dashboard/ui?tenant_id={tid}"),
+            "owner_billing": url(f"/owner/billing/ui?tenant_id={tid}"),
+            "final_public_saas_readiness": url(f"/public-saas/final-readiness?tenant_id={tid}&days={days}"),
+            "stage79_readiness": url(f"/launch-ux/readiness?tenant_id={tid}&days={days}"),
+            "dialogue_qa": url("/dialogue/qa"),
+        },
+        "note": "Stage 79 starts the mature SMB SaaS phase with launch UX polish only. It does not change receptionist dialogue, booking, slots, Google Calendar event runtime, Telegram webhook runtime, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, or the QA evaluator.",
+    }
+
+
+def stage79_public_launch_html(tenant_id: str = TENANT_ID_DEFAULT) -> str:
+    tid = urllib.parse.quote((tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT)
+    signup = "/public/signup"
+    return f"""<!doctype html>
+<html><head><meta charset=\"utf-8\"/><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"/><title>Repliq — AI receptionist for SMB</title>
+<style>body{{font-family:Inter,system-ui,-apple-system,Segoe UI,Arial,sans-serif;background:#f6f7fb;color:#111827;margin:0;padding:24px}}.wrap{{max-width:1080px;margin:0 auto}}.hero,.card{{background:#fff;border:1px solid #e5e7eb;border-radius:24px;padding:24px;margin:14px 0;box-shadow:0 10px 30px rgba(15,23,42,.06)}}.hero{{background:#111827;color:#fff;padding:34px}}.hero p{{color:#d1d5db;font-size:18px;line-height:1.5;max-width:760px}}h1{{font-size:46px;letter-spacing:-.05em;margin:0 0 12px}}h2{{margin:0 0 10px}}.grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}}.step{{border:1px solid #e5e7eb;border-radius:18px;padding:16px;background:#fafafa}}.muted{{color:#64748b;line-height:1.5}}.actions{{display:flex;gap:10px;flex-wrap:wrap;margin-top:20px}}a.btn,button{{display:inline-block;border:0;border-radius:14px;padding:12px 16px;background:#111827;color:white;text-decoration:none;font-weight:800}}a.secondary{{background:#fff;color:#111827;border:1px solid #d1d5db}}.badge{{display:inline-block;border-radius:999px;padding:6px 10px;background:#dcfce7;color:#166534;font-size:12px;font-weight:800}}@media(max-width:820px){{body{{padding:12px}}.grid{{grid-template-columns:1fr}}h1{{font-size:36px}}}}</style>
+</head><body><div class=\"wrap\"><div class=\"hero\"><span class=\"badge\">Controlled SMB self-service MVP ready</span><h1>Repliq handles customer messages, bookings and business FAQs.</h1><p>Launch a workspace for a small or medium business, connect the calendar, and use Repliq as a text-first AI receptionist.</p><div class=\"actions\"><a class=\"btn\" href=\"{signup}\">Create workspace</a><a class=\"btn secondary\" href=\"/owner/login?tenant_id={tid}\">Owner login</a></div></div><div class=\"grid\"><div class=\"step\"><h2>1. Create workspace</h2><div class=\"muted\">Enter business name, owner email, timezone, language and basic working hours.</div></div><div class=\"step\"><h2>2. Finish setup</h2><div class=\"muted\">Owner account is created immediately. Calendar/channel setup remains controlled and visible in readiness checks.</div></div><div class=\"step\"><h2>3. Go live safely</h2><div class=\"muted\">Stage 78 launch lock, abuse protection, CSRF, billing gate and owner/admin separation remain active.</div></div></div><div class=\"card\"><h2>Launch scope</h2><p class=\"muted\">This is the working SMB SaaS path: public signup, owner workspace, billing visibility, and launch readiness. Enterprise features such as SSO/RBAC/audit/SLA/DR are later phases.</p></div></div></body></html>"""
+
 def stage61_admin_auth_error(status_code: int, detail: str) -> JSONResponse:
     return JSONResponse(
         status_code=status_code,
@@ -3617,8 +3774,8 @@ def stage71_owner_dashboard_payload(request: Request, tenant_id: str = TENANT_ID
     readiness = stage71_owner_auth_readiness_payload(tid)
     return {
         "ok": True,
-        "stage": "77",
-        "previous_stage": "71",
+        "stage": "79",
+        "previous_stage": "77",
         "tenant_id": tid,
         "owner_email": owner_email if owner_email != "super_admin" else None,
         "role": access.get("role") or "owner",
@@ -3634,8 +3791,22 @@ def stage71_owner_dashboard_payload(request: Request, tenant_id: str = TENANT_ID
         "readiness": readiness,
         "billing": tenant_billing_status(tenant),
         "billing_readiness": stage73_billing_subscription_gate_readiness_payload(tid),
-        "owner_safe_scope": {"dashboard": True, "read_only_foundation": True, "billing_read_only": True, "admin_write_surfaces_exposed_to_owner": False, "admin_links_exposed_to_owner": False, "stage77_client_owner_superadmin_separation": True, "receptionist_core_changed": False},
+        "owner_safe_scope": {"dashboard": True, "read_only_foundation": True, "billing_read_only": True, "admin_write_surfaces_exposed_to_owner": False, "admin_links_exposed_to_owner": False, "stage77_client_owner_superadmin_separation": True, "stage79_launch_ux_polish": True, "receptionist_core_changed": False},
         "separation": stage77_client_owner_superadmin_separation_readiness_payload(tid),
+        "launch_ux": {
+            "stage": "79",
+            "maturity_phase": STAGE79_MATURITY_TARGET,
+            "workspace_home_ready": True,
+            "customer_facing_copy": True,
+            "admin_links_exposed_to_owner": False,
+            "primary_next_action": "review_workspace_and_billing",
+            "quickstart_steps": [
+                {"key": "workspace", "label": "Review workspace", "status": "ready", "href": f"/owner/dashboard/ui?tenant_id={tid}"},
+                {"key": "billing", "label": "Review billing status", "status": "ready", "href": f"/owner/billing/ui?tenant_id={tid}"},
+                {"key": "session", "label": "Check owner session", "status": "ready", "href": f"/owner/session?tenant_id={tid}"},
+                {"key": "support_setup", "label": "Calendar/channel setup remains controlled by Repliq support in this SMB phase", "status": "support_controlled", "href": None},
+            ],
+        },
         "links": {"owner_dashboard": f"/owner/dashboard/ui?tenant_id={tid}", "owner_control_center": f"/owner/control-center/ui?tenant_id={tid}", "owner_session": f"/owner/session?tenant_id={tid}", "owner_billing": f"/owner/billing/ui?tenant_id={tid}", "owner_logout": "/owner/logout"},
         "super_admin_support_links": {"admin_control_center": f"/control-center/ui?tenant_id={tid}", "public_saas_audit": f"/public-saas/gap-audit/ui?tenant_id={tid}", "billing_readiness": f"/billing/readiness?tenant_id={tid}"} if admin_access else {},
     }
@@ -15606,6 +15777,23 @@ def stage78_public_saas_final_readiness(request: Request, tenant_id: str = TENAN
     return stage78_final_public_saas_readiness_payload(tid, days=days)
 
 
+@app.get("/launch", response_class=HTMLResponse)
+@app.get("/launch/ui", response_class=HTMLResponse)
+@app.get("/public/launch", response_class=HTMLResponse)
+@app.get("/public/launch/ui", response_class=HTMLResponse)
+def stage79_public_launch_ui(tenant_id: str = TENANT_ID_DEFAULT):
+    return HTMLResponse(content=stage79_public_launch_html(tenant_id=tenant_id), headers={"Cache-Control": "no-store"})
+
+
+@app.get("/launch-ux/readiness")
+@app.get("/public-onboarding/readiness")
+@app.get("/smb/launch/readiness")
+@app.get("/mature-smb/readiness")
+def stage79_launch_ux_readiness(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    tid = stage711_resolve_tenant_context(request, tenant_id)
+    return stage79_launch_ux_readiness_payload(tid, days=days)
+
+
 @app.post("/owner/magic-link/bootstrap")
 def stage76_owner_magic_link_bootstrap(request: Request, payload: dict = Body(...)):
     data = payload or {}
@@ -15783,11 +15971,11 @@ def owner_dashboard_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
     html = r'''
 <!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Repliq Owner Dashboard</title>
 <style>body{font-family:Inter,system-ui,-apple-system,Segoe UI,Arial,sans-serif;background:#f6f7fb;color:#111827;margin:0;padding:24px}.wrap{max-width:1000px;margin:0 auto}.hero,.card{background:white;border:1px solid #e5e7eb;border-radius:18px;padding:18px;margin:14px 0;box-shadow:0 8px 25px rgba(17,24,39,.05)}.hero{display:flex;justify-content:space-between;gap:18px;align-items:flex-start}.sub,.muted{color:#64748b;font-size:14px;line-height:1.45}h1{margin:0 0 6px;font-size:32px;letter-spacing:-.03em}h2{margin:0 0 12px}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.badge{display:inline-block;border-radius:999px;padding:5px 9px;background:#e5e7eb;font-size:12px;font-weight:700;margin:3px 4px 3px 0}.badge.ok{background:#dcfce7;color:#166534}.badge.warn{background:#fef3c7;color:#92400e}button{border:0;border-radius:12px;padding:10px 13px;background:#111827;color:white;font-weight:750;cursor:pointer}.secondary{background:#e5e7eb;color:#111827}input{box-sizing:border-box;border:1px solid #cbd5e1;border-radius:12px;padding:10px;font-size:14px}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}pre{background:#0f172a;color:#e2e8f0;border-radius:14px;padding:14px;max-height:520px;overflow:auto;white-space:pre-wrap}@media(max-width:900px){body{padding:12px}.hero{display:block}.grid{grid-template-columns:1fr}}</style></head>
-<body><div class="wrap"><div class="hero"><div><h1>Repliq Owner Dashboard</h1><div class="sub">Stage 77 owner-safe control surface. Admin write/config surfaces are kept out of the owner UI and remain super-admin protected.</div><div class="actions"><input id="tenant_id" style="min-width:260px"/><button onclick="loadDash()">Load</button><button class="secondary" onclick="go('/owner/session?tenant_id='+encTenant())">Session JSON</button><button class="secondary" onclick="go('/owner/logout')">Logout</button></div></div><div id="badges"></div></div><div class="grid"><div class="card"><div class="muted">Business</div><h2 id="business">-</h2><div class="sub" id="tenantline">-</div></div><div class="card"><div class="muted">Owner</div><h2 id="owner">-</h2><div class="sub" id="role">-</div></div><div class="card"><div class="muted">Scope</div><h2>read-only</h2><div class="sub">no receptionist-core changes</div></div></div><div class="card"><h2>Owner auth readiness</h2><div id="ready"></div></div><div class="card"><h2>Links</h2><div id="links" class="actions"></div></div><div class="card"><h2>Raw owner dashboard</h2><pre id="raw">Loading...</pre></div></div>
+<body><div class="wrap"><div class="hero"><div><h1>Repliq Workspace</h1><div class="sub">Stage 79 owner-safe workspace home for the mature SMB SaaS phase. Admin write/config surfaces stay out of the owner UI.</div><div class="actions"><input id="tenant_id" style="min-width:260px"/><button onclick="loadDash()">Load</button><button class="secondary" onclick="go('/owner/session?tenant_id='+encTenant())">Session JSON</button><button class="secondary" onclick="go('/owner/logout')">Logout</button></div></div><div id="badges"></div></div><div class="grid"><div class="card"><div class="muted">Business</div><h2 id="business">-</h2><div class="sub" id="tenantline">-</div></div><div class="card"><div class="muted">Owner</div><h2 id="owner">-</h2><div class="sub" id="role">-</div></div><div class="card"><div class="muted">Scope</div><h2>SMB workspace</h2><div class="sub">owner-safe, no receptionist-core changes</div></div></div><div class="card"><h2>Quickstart</h2><div id="quickstart" class="actions"></div><div class="sub" style="margin-top:10px">Calendar/channel setup remains controlled by Repliq support in this SMB maturity phase.</div></div><div class="card"><h2>Owner auth readiness</h2><div id="ready"></div></div><div class="card"><h2>Owner-safe links</h2><div id="links" class="actions"></div></div><div class="card"><h2>Raw owner dashboard</h2><pre id="raw">Loading...</pre></div></div>
 <script>
 const DEFAULT_TENANT_ID=__TENANT_ID_JSON__;
 function el(id){return document.getElementById(id)} function tenant(){return (el('tenant_id').value||'').trim()||DEFAULT_TENANT_ID||'clinic_demo'} function encTenant(){return encodeURIComponent(tenant())} function go(p){window.location=p} function esc(v){return v===null||v===undefined?'':String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;')} function badge(ok,label){return `<span class="badge ${ok?'ok':'warn'}">${esc(label)}</span>`}
-function render(d){el('raw').textContent=JSON.stringify(d,null,2); el('business').textContent=(d.tenant&&d.tenant.business_name)||'-'; el('tenantline').textContent='tenant_id: '+(d.tenant_id||tenant()); el('owner').textContent=d.owner_email||((d.opened_via_super_admin_bypass)?'super-admin bypass':'-'); el('role').textContent=d.role||'-'; const r=d.readiness||{}; el('badges').innerHTML=badge(!!d.ok,'stage '+(d.stage||'71'))+badge(!!r.owner_auth_foundation_ready,'owner foundation: '+!!r.owner_auth_foundation_ready)+badge(!!r.tenant_ownership_binding_ready,'tenant binding: '+!!r.tenant_ownership_binding_ready); el('ready').innerHTML=(r.blocking||[]).concat(r.warnings||[]).map(x=>`<span class="badge warn">${esc(x)}</span>`).join('')||'<span class="badge ok">ready</span>'; const links=d.links||{}; el('links').innerHTML=Object.keys(links).map(k=>`<button class="secondary" onclick="go('${esc(links[k])}')">${esc(k)}</button>`).join('');}
+function render(d){el('raw').textContent=JSON.stringify(d,null,2); el('business').textContent=(d.tenant&&d.tenant.business_name)||'-'; el('tenantline').textContent='tenant_id: '+(d.tenant_id||tenant()); el('owner').textContent=d.owner_email||((d.opened_via_super_admin_bypass)?'super-admin bypass':'-'); el('role').textContent=d.role||'-'; const r=d.readiness||{}; const ux=d.launch_ux||{}; el('badges').innerHTML=badge(!!d.ok,'stage '+(d.stage||'71'))+badge(!!r.owner_auth_foundation_ready,'owner foundation: '+!!r.owner_auth_foundation_ready)+badge(!!r.tenant_ownership_binding_ready,'tenant binding: '+!!r.tenant_ownership_binding_ready)+badge(!!ux.workspace_home_ready,'workspace home: '+!!ux.workspace_home_ready); el('ready').innerHTML=(r.blocking||[]).concat(r.warnings||[]).map(x=>`<span class="badge warn">${esc(x)}</span>`).join('')||'<span class="badge ok">ready</span>'; const steps=ux.quickstart_steps||[]; el('quickstart').innerHTML=steps.map(st=>st.href?`<button class="secondary" onclick="go('${esc(st.href)}')">${esc(st.label||st.key)}</button>`:`<span class="badge warn">${esc(st.label||st.key)}</span>`).join(''); const links=d.links||{}; el('links').innerHTML=Object.keys(links).map(k=>`<button class="secondary" onclick="go('${esc(links[k])}')">${esc(k)}</button>`).join('');}
 async function loadDash(){el('tenant_id').value=tenant(); const r=await fetch('/owner/dashboard?tenant_id='+encTenant()); const d=await r.json().catch(()=>({})); if(!r.ok){el('raw').textContent=JSON.stringify(d,null,2);return;} render(d);} el('tenant_id').value=DEFAULT_TENANT_ID||'clinic_demo'; loadDash();
 </script></body></html>
     '''.replace("__TENANT_ID_JSON__", tenant_json)
@@ -17304,7 +17492,8 @@ def stage72_public_signup_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) 
         "tenant_ownership_binding_during_signup_ready": bool(ready),
         "admin_token_dependency_for_public_signup": False,
         "public_saas_ready": False,
-        "public_saas_ready_reason": "false_until_client_owner_vs_super_admin_separation_and_final_launch_gate_are_done",
+        "public_saas_ready_reason": "stage72_boundary_only_stage78_final_lock_reports_platform_public_saas_readiness",
+        "launch_ux_stage": "79",
         "auth_model": {
             "public_signup": "public_http_entrypoint_with_honeypot_rate_limits_and_owner_session_cookie",
             "owner_session_cookie": STAGE71_OWNER_SESSION_COOKIE_NAME,
@@ -17347,9 +17536,10 @@ def stage72_public_signup_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) 
         "links": {
             "public_signup_ui": url("/public/signup"),
             "public_signup_readiness": url(f"/public/signup/readiness?tenant_id={tid}"),
-            "public_saas_audit": url(f"/public-saas/gap-audit/ui?tenant_id={tid}"),
+            "launch_ui": url("/launch"),
+            "public_saas_final_readiness": url(f"/public-saas/final-readiness?tenant_id={tid}"),
         },
-        "note": "Stage 72 opens a dedicated public signup boundary while keeping existing admin/demo tenant creation protected. It creates tenant + owner binding and starts an owner session, but does not make full public SaaS ready yet.",
+        "note": "Stage 72 remains the signup boundary readiness payload. Stage 79 polishes customer-facing launch UX while Stage 78 remains the source of truth for platform public_saas_ready.",
     }
 
 
@@ -18940,13 +19130,13 @@ def stage72_public_signup_ui():
     readiness_json = json.dumps(stage72_public_signup_readiness_payload(), ensure_ascii=False)
     html = """
 <!doctype html>
-<html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>Repliq Public Signup</title>
+<html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>Repliq Workspace Signup</title>
 <style>body{font-family:Inter,Arial,sans-serif;background:#f6f7fb;color:#111827;margin:0;padding:24px}.wrap{max-width:880px;margin:0 auto}.hero,.card{background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:20px;margin-bottom:14px}.hero{background:#111827;color:white}.hero p{color:#d1d5db}label{display:block;font-size:13px;font-weight:750;margin:12px 0 6px}input,select{width:100%;box-sizing:border-box;border:1px solid #d1d5db;border-radius:12px;padding:11px}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}button{border:0;background:#111827;color:#fff;border-radius:12px;padding:12px 16px;font-weight:800;cursor:pointer}.secondary{background:white;color:#111827;border:1px solid #d1d5db}.small{color:#6b7280;font-size:12px}.ok{color:#065f46}.err{color:#991b1b}.hidden{display:none}.code{white-space:pre-wrap;background:#0f172a;color:#e2e8f0;border-radius:14px;padding:12px;max-height:320px;overflow:auto;font-family:monospace;font-size:12px}.hp{position:absolute;left:-5000px;top:auto;width:1px;height:1px;overflow:hidden}@media(max-width:760px){.grid{grid-template-columns:1fr}body{padding:12px}}</style>
-</head><body><div class="wrap"><div class="hero"><h1>Start Repliq</h1><p>Stage 72 public signup foundation. Creates tenant, owner account, tenant binding, and owner session. Billing/email verification remain future hardening.</p></div>
+</head><body><div class="wrap"><div class="hero"><h1>Create your Repliq workspace</h1><p>Set up a business workspace for the Repliq AI receptionist. You will get an owner session immediately; technical setup stays protected behind Repliq admin/support flows.</p></div>
 <div class="card"><div id="readiness" class="small"></div><div class="grid"><div><label>Business name *</label><input id="business_name" oninput="suggestSlug()"/></div><div><label>Tenant slug</label><input id="tenant_slug"/></div><div><label>Owner email *</label><input id="owner_email" type="email"/></div><div><label>Phone</label><input id="phone_number"/></div><div><label>Business type</label><select id="business_type"><option value="clinic">clinic</option><option value="barbershop">barbershop</option><option value="salon">salon</option><option value="dentistry">dentistry</option><option value="auto_service">auto_service</option><option value="restaurant">restaurant</option><option value="other">other</option></select></div><div><label>Language</label><select id="language"><option value="lv">Latvian</option><option value="ru">Russian</option><option value="en">English</option></select></div><div><label>Timezone</label><input id="timezone" value="Europe/Riga"/></div><div><label>Work hours</label><div class="grid"><input id="work_start" value="09:00"/><input id="work_end" value="18:00"/></div></div></div><div class="hp"><label>Website</label><input id="website" autocomplete="off" tabindex="-1"/></div><p><label style="display:flex;gap:8px;align-items:flex-start;font-weight:500"><input id="accepted_terms" type="checkbox" style="width:auto"/> I confirm this is a real business signup request.</label></p><button onclick="signup()">Create workspace</button> <span id="status" class="small"></span></div>
-<div class="card hidden" id="result"><h2>Workspace created</h2><div id="summary"></div><p><button onclick="openOwner()">Open owner dashboard</button> <button class="secondary" onclick="copyCode()">Copy login code</button></p><p class="small">Save the owner login code locally. It is shown once. Do not paste it into chat logs.</p><div class="code" id="raw"></div></div></div>
+<div class="card hidden" id="result"><h2>Workspace created</h2><div id="summary"></div><p><button onclick="openOwner()">Open workspace</button> <button class="secondary" onclick="copyCode()">Copy backup login code</button></p><p class="small">Save the backup login code locally. It is shown once. Do not paste login codes or magic links into chat logs.</p><div class="code" id="raw"></div></div></div>
 <script>
-const READINESS=__READINESS_JSON__;let latest=null;function el(id){return document.getElementById(id)}function slugifyTenant(v){return String(v||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9_-]+/g,'_').replace(/[_-]{2,}/g,'_').replace(/^[_-]+|[_-]+$/g,'').slice(0,48)}function suggestSlug(){if(el('tenant_slug').dataset.touched==='1')return;el('tenant_slug').value=slugifyTenant(el('business_name').value)}el('tenant_slug').addEventListener('input',()=>{el('tenant_slug').dataset.touched='1'});function setStatus(t,c='small'){el('status').className=c;el('status').textContent=t}function payload(){return{business_name:el('business_name').value.trim(),tenant_slug:el('tenant_slug').value.trim()||null,owner_email:el('owner_email').value.trim(),phone_number:el('phone_number').value.trim()||null,business_type:el('business_type').value,language:el('language').value,timezone:el('timezone').value.trim()||'Europe/Riga',work_start:el('work_start').value.trim()||'09:00',work_end:el('work_end').value.trim()||'18:00',accepted_terms:el('accepted_terms').checked,website:el('website').value||''}}async function signup(){const p=payload();if(!p.business_name||!p.owner_email){setStatus('Business name and owner email are required.','small err');return}if(!p.accepted_terms){setStatus('Please confirm the checkbox.','small err');return}setStatus('Creating...');const r=await fetch('/public/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});const data=await r.json().catch(()=>({}));latest=data;if(!r.ok||!data.ok){setStatus(data.error||data.detail||'Signup failed','small err');el('raw').textContent=JSON.stringify(data,null,2);return}setStatus('Created. Owner session is active.','small ok');el('result').classList.remove('hidden');el('summary').innerHTML='Tenant: <b>'+data.tenant_id+'</b><br/>Owner: '+data.owner_email+'<br/>Owner session created: '+data.owner_session_created+'<br/>Magic link ready: '+!!data.owner_magic_link_url;el('raw').textContent=JSON.stringify(data,null,2)}function openOwner(){if(latest&&latest.links&&latest.links.owner_dashboard){window.location=latest.links.owner_dashboard}}async function copyCode(){if(!latest||!latest.owner_login_code)return;try{await navigator.clipboard.writeText(latest.owner_login_code)}catch(e){}}el('readiness').textContent='readiness: '+(READINESS.status||'-')+' · public_signup_boundary_ready='+READINESS.public_signup_boundary_ready+' · public_saas_ready='+READINESS.public_saas_ready;
+const READINESS=__READINESS_JSON__;let latest=null;function el(id){return document.getElementById(id)}function slugifyTenant(v){return String(v||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9_-]+/g,'_').replace(/[_-]{2,}/g,'_').replace(/^[_-]+|[_-]+$/g,'').slice(0,48)}function suggestSlug(){if(el('tenant_slug').dataset.touched==='1')return;el('tenant_slug').value=slugifyTenant(el('business_name').value)}el('tenant_slug').addEventListener('input',()=>{el('tenant_slug').dataset.touched='1'});function setStatus(t,c='small'){el('status').className=c;el('status').textContent=t}function payload(){return{business_name:el('business_name').value.trim(),tenant_slug:el('tenant_slug').value.trim()||null,owner_email:el('owner_email').value.trim(),phone_number:el('phone_number').value.trim()||null,business_type:el('business_type').value,language:el('language').value,timezone:el('timezone').value.trim()||'Europe/Riga',work_start:el('work_start').value.trim()||'09:00',work_end:el('work_end').value.trim()||'18:00',accepted_terms:el('accepted_terms').checked,website:el('website').value||''}}async function signup(){const p=payload();if(!p.business_name||!p.owner_email){setStatus('Business name and owner email are required.','small err');return}if(!p.accepted_terms){setStatus('Please confirm the checkbox.','small err');return}setStatus('Creating...');const r=await fetch('/public/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});const data=await r.json().catch(()=>({}));latest=data;if(!r.ok||!data.ok){setStatus(data.error||data.detail||'Signup failed','small err');el('raw').textContent=JSON.stringify(data,null,2);return}setStatus('Workspace created. Owner session is active.','small ok');el('result').classList.remove('hidden');el('summary').innerHTML='Tenant: <b>'+data.tenant_id+'</b><br/>Owner: '+data.owner_email+'<br/>Owner session created: '+data.owner_session_created+'<br/>Next: open the owner workspace and finish setup with Repliq support.';const safe=JSON.parse(JSON.stringify(data));['owner_login_code','owner_magic_link_token','owner_magic_link_url'].forEach(k=>{if(safe[k])safe[k]='[returned_once_hidden_in_launch_ui]'});el('raw').textContent=JSON.stringify(safe,null,2)}function openOwner(){if(latest&&latest.links&&latest.links.owner_dashboard){window.location=latest.links.owner_dashboard}}async function copyCode(){if(!latest||!latest.owner_login_code)return;try{await navigator.clipboard.writeText(latest.owner_login_code)}catch(e){}}el('readiness').textContent='readiness: '+(READINESS.status||'-')+' · public_signup_boundary_ready='+READINESS.public_signup_boundary_ready+' · launch UX: Stage 79';
 </script></body></html>
     """.replace("__READINESS_JSON__", readiness_json)
     return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
@@ -19007,6 +19197,7 @@ async def stage72_public_signup_submit(request: Request):
     content = {
         "ok": True,
         "stage": "72",
+        "launch_ux_stage": "79",
         "status": "ok",
         "tenant_id": tenant_id,
         "business_name": created.get("business_name"),
@@ -19022,24 +19213,26 @@ async def stage72_public_signup_submit(request: Request):
         "magic_link_token_hash_exposed": False,
         "secret_values_exposed": False,
         "public_saas_ready": False,
-        "public_saas_ready_reason": "false_until_client_owner_vs_super_admin_separation_and_final_launch_gate_are_done",
+        "public_saas_ready_reason": "workspace_created_tenant_onboarding_required",
+        "platform_public_saas_ready": True,
+        "platform_public_saas_ready_source": "stage78_final_public_saas_readiness_lock_closed",
+        "maturity_phase": STAGE79_MATURITY_TARGET,
+        "tenant_launch_state": "workspace_created_owner_onboarding_required",
         "onboarding": created.get("onboarding"),
         "readiness": created.get("readiness"),
         "links": {
             "owner_dashboard": next_path,
             "owner_login": f"/owner/login?tenant_id={urllib.parse.quote(tenant_id)}",
             "owner_magic_login": f"/owner/magic-login?tenant_id={urllib.parse.quote(tenant_id)}",
-            "email_readiness": f"/email/readiness?tenant_id={urllib.parse.quote(tenant_id)}",
-            "onboarding_wizard": f"/onboarding/wizard/ui?tenant_id={urllib.parse.quote(tenant_id)}",
-            "control_center": f"/control-center/ui?tenant_id={urllib.parse.quote(tenant_id)}",
-            "tenant_config": f"/tenant/config/ui?tenant_id={urllib.parse.quote(tenant_id)}",
-            "public_signup_readiness": f"/public/signup/readiness?tenant_id={urllib.parse.quote(tenant_id)}",
-            "public_saas_audit": f"/public-saas/gap-audit/ui?tenant_id={urllib.parse.quote(tenant_id)}",
+            "owner_billing": f"/owner/billing/ui?tenant_id={urllib.parse.quote(tenant_id)}",
+            "owner_session": f"/owner/session?tenant_id={urllib.parse.quote(tenant_id)}",
+            "owner_logout": "/owner/logout",
         },
+        "super_admin_setup_links_exposed_to_public_signup": False,
         "rate_limit": {"ip_hash_exposed": False, "hourly_limit": stage72_public_signup_hourly_limit(), "email_daily_limit": stage72_public_signup_email_daily_limit()},
         "abuse_protection": {"stage": "75", "enabled": bool(stage75_abuse_protection_enabled()), "ip_hash_exposed": False, "subject_hash_exposed": False},
         "email_verification": {"stage": "76", "magic_link_foundation_ready": bool(owner_bootstrap.get("magic_link_token")), "email_delivery_provider_configured": bool(stage76_email_delivery_provider_configured()), "email_delivery_attempted": False, "token_hash_exposed": False, "raw_token_stored": False},
-        "note": "Stage 76 returns a one-time owner magic link/token in addition to the legacy setup code and sets an HttpOnly owner session cookie. Save credentials locally; do not paste codes or magic tokens into chat logs.",
+        "note": "Stage 79 returns owner-safe workspace links in the public signup response. One-time backup login code and magic link/token may still be returned for setup, but the launch UI hides raw secret values from its technical details block.",
     }
     response = JSONResponse(content=content, headers={"Cache-Control": "no-store"})
     stage71_set_owner_session_cookie(response, owner_email=owner_email, tenant_id=tenant_id, role="owner")

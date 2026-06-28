@@ -533,3 +533,23 @@ Stage 77.1 is a narrow readiness endpoint hotfix only. It fixes a runtime type m
 - Stage 78 may integrate into Stage 70 `/public-saas/readiness` and the Control Center readiness payload.
 - Stage 78 must not change receptionist dialogue, booking routing, slot generation, date/time parsing, side-question handling, confirmation, cancellation, rescheduling, Google Calendar event runtime, Telegram webhook handling, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, LLM orchestration, or regression evaluator rules.
 - Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+
+## Stage 79 — Launch UX / Public Onboarding Polish Rules
+
+- Stage 79 starts the Mature SMB SaaS phase after Stage 78.
+- Stage 79 may polish public launch/signup UI, owner workspace UI, owner-safe links, and readiness/audit metadata only.
+- Stage 79 must keep Stage 78 as the source of truth for `public_saas_ready`.
+- Stage 79 must keep `enterprise_saas_ready=false`; enterprise maturity is a later phase.
+- Stage 79 readiness endpoints must be protected by Stage 61/62 admin auth:
+  - `/launch-ux/readiness`
+  - `/public-onboarding/readiness`
+  - `/smb/launch/readiness`
+  - `/mature-smb/readiness`
+- Public launch pages may be public GET pages only and must not expose secrets or admin state.
+- Public signup must remain public, same-origin safe, abuse/rate-limit protected, and usable.
+- Public signup UI must not render raw login codes, magic-link tokens, token hashes, admin tokens, CSRF secrets, raw IPs, Telegram tokens, or Google credentials in its visible technical details block.
+- Public signup response main links should remain owner-safe; admin setup links must not be exposed as primary public signup links.
+- Owner dashboard and owner billing must remain bound to Stage 71 owner session and tenant ownership binding.
+- Owner UI must not expose admin write/config links in primary owner navigation.
+- Do not change receptionist dialogue, booking routing, slot generation, date/time parsing, side-question handling, confirmation, cancellation, rescheduling, Google Calendar event runtime, Telegram webhook handling, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, LLM orchestration, or regression evaluator rules.
+- Current protected baseline remains `/dialogue/qa = 50/50 passed`.
