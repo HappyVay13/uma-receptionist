@@ -291,6 +291,11 @@ STAGE61_PROTECTED_EXACT_PATHS = {
     "/client-owner/separation/readiness",
     "/security/owner-admin-separation/readiness",
     "/tenant/isolation/readiness",
+    "/public-saas/final-readiness",
+    "/public-saas/launch-readiness",
+    "/public-saas/ready",
+    "/launch/self-service/readiness",
+    "/self-service/launch/readiness",
     "/client/dashboard",
     "/client/dashboard/ui",
     "/client/control-center",
@@ -1793,6 +1798,219 @@ def stage77_client_owner_superadmin_separation_readiness_payload(tenant_id: str 
         "note": "Stage 77 hardens the boundary between client-owner surfaces and super-admin surfaces. It does not change receptionist dialogue, booking, slots, Google Calendar event runtime, Telegram webhook runtime, billing semantics, CSRF semantics, abuse/rate-limit semantics, or QA evaluator behavior.",
     }
 
+
+
+# -------------------------
+# STAGE 78: FINAL PUBLIC SAAS READINESS LOCK
+# -------------------------
+STAGE78_READINESS_PATHS = {
+    "/public-saas/final-readiness",
+    "/public-saas/launch-readiness",
+    "/public-saas/ready",
+    "/launch/self-service/readiness",
+    "/self-service/launch/readiness",
+}
+STAGE78_LAUNCH_MODE = "controlled_public_self_service_mvp"
+STAGE78_NOT_ENTERPRISE_READY_NOTE = "Stage 78 is a controlled public self-service SMB MVP launch lock, not a mature enterprise SaaS certification."
+
+
+def stage78_safe_dependency(name: str, fn) -> Dict[str, Any]:
+    try:
+        value = fn()
+        if isinstance(value, dict):
+            return value
+        return {"stage_dependency": name, "status": "blocked", "blocking": ["dependency_returned_non_dict"]}
+    except Exception as e:
+        log.error("stage78_dependency_failed name=%s err=%s", name, e)
+        return {
+            "stage_dependency": name,
+            "status": "blocked",
+            "blocking": [f"{name}_failed:{e.__class__.__name__}"],
+            "warnings": [],
+        }
+
+
+def stage78_gate_payload(key: str, label: str, ready: bool, evidence: Dict[str, Any], blocker: str = "") -> Dict[str, Any]:
+    return {
+        "key": key,
+        "label": label,
+        "ready": bool(ready),
+        "status": "ready" if ready else "blocked",
+        "blocker": blocker if not ready and blocker else None,
+        "evidence": evidence,
+    }
+
+
+def stage78_final_public_saas_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14, include_gap_audit: bool = True) -> Dict[str, Any]:
+    """Final controlled public self-service MVP launch lock.
+
+    Stage 78 does not change receptionist runtime behavior. It aggregates the
+    self-serve, billing, browser-write, abuse, magic-link, and owner/admin
+    separation foundations and is the first stage allowed to declare
+    public_saas_ready=true for a controlled SMB self-service MVP launch.
+    """
+    tid = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    days = max(1, min(int(days or 14), 60))
+    base = (SERVER_BASE_URL or "").rstrip("/")
+
+    def url(path: str) -> str:
+        return base + path if base else path
+
+    tenant_lookup_error = ""
+    try:
+        tenant = get_existing_tenant(tid)
+    except Exception as e:
+        log.error("stage78_tenant_lookup_failed tenant_id=%s err=%s", tid, e)
+        tenant = {}
+        tenant_lookup_error = e.__class__.__name__
+    tenant_found = bool(tenant.get("_id"))
+    tenant_id_clean = str(tenant.get("_id") or tenant.get("id") or tid).strip() or tid
+    tenant_runtime = stage78_safe_dependency("tenant_runtime", lambda: tenant_ready_status_payload(tenant) if tenant_found else {"ready": False, "missing": ["tenant_not_found"], "error": tenant_lookup_error or None})
+    admin_access = stage78_safe_dependency("admin_access_enforcement", lambda: stage61_admin_access_enforcement_payload(tenant_id_clean))
+    admin_session = stage78_safe_dependency("admin_session", lambda: stage62_admin_session_readiness_payload(tenant_id_clean))
+    owner_auth = stage78_safe_dependency("owner_auth", lambda: stage71_owner_auth_readiness_payload(tenant_id_clean))
+    public_signup = stage78_safe_dependency("public_signup", lambda: stage72_public_signup_readiness_payload(tenant_id_clean))
+    billing = stage78_safe_dependency("billing_subscription", lambda: stage73_billing_subscription_gate_readiness_payload(tenant_id_clean, days=days))
+    csrf = stage78_safe_dependency("csrf_browser_write_hardening", lambda: stage74_csrf_write_hardening_readiness_payload(tenant_id_clean))
+    abuse = stage78_safe_dependency("abuse_rate_limits", lambda: stage75_abuse_rate_limits_readiness_payload(tenant_id_clean, hours=24))
+    email_auth = stage78_safe_dependency("email_magic_link_auth", lambda: stage76_email_magic_link_readiness_payload(tenant_id_clean, hours=24))
+    separation = stage78_safe_dependency("owner_superadmin_separation", lambda: stage77_client_owner_superadmin_separation_readiness_payload(tenant_id_clean, days=days))
+
+    readiness_missing_admin = sorted(path for path in STAGE78_READINESS_PATHS if path not in STAGE61_PROTECTED_EXACT_PATHS)
+    billing_status = (billing.get("billing") or {}) if isinstance(billing.get("billing"), dict) else {}
+    runtime_gate = (billing_status.get("runtime_gate") or {}) if isinstance(billing_status.get("runtime_gate"), dict) else {}
+    admin_session_ready = bool(admin_session.get("admin_session_layer_ready") or admin_session.get("private_admin_ready"))
+    control_center_ready = bool("/control-center/ui" in STAGE61_PROTECTED_EXACT_PATHS and "/control-center/readiness" in STAGE61_PROTECTED_EXACT_PATHS)
+    owner_auth_ready = bool(owner_auth.get("owner_auth_foundation_ready") and owner_auth.get("tenant_ownership_binding_ready"))
+    public_signup_ready = bool(public_signup.get("public_signup_boundary_ready"))
+    billing_ready = bool(billing.get("billing_subscription_gate_foundation_ready") and runtime_gate.get("allowed") is True)
+    csrf_ready = bool(csrf.get("csrf_browser_write_hardening_ready") and csrf.get("csrf_enforcement_enabled"))
+    abuse_ready = bool(abuse.get("abuse_rate_limits_ready") and abuse.get("enforcement_enabled"))
+    email_ready = bool(email_auth.get("email_verification_magic_link_foundation_ready") and email_auth.get("owner_magic_login_ready"))
+    separation_ready = bool(separation.get("client_owner_superadmin_separation_ready") and separation.get("tenant_isolation_hardening_ready"))
+
+    gates = [
+        stage78_gate_payload("tenant_profile", "Tenant exists", tenant_found, {"tenant_id": tenant_id_clean, "business_name": tenant.get("business_name") if tenant_found else None, "lookup_error": tenant_lookup_error or None}, "tenant_not_found"),
+        stage78_gate_payload("tenant_runtime_config", "Tenant runtime config", bool(tenant_runtime.get("ready")), {"missing": tenant_runtime.get("missing") or [], "status": tenant_runtime.get("status")}, "tenant_runtime_not_ready"),
+        stage78_gate_payload("admin_auth", "Admin auth/session boundary", bool(admin_access.get("admin_access_enforced") and admin_session_ready), {"admin_access_enforced": admin_access.get("admin_access_enforced"), "admin_session_ready": admin_session_ready}, "admin_auth_boundary_not_ready"),
+        stage78_gate_payload("control_center", "Self-serve control center", control_center_ready, {"admin_protected_ui": "/control-center/ui" in STAGE61_PROTECTED_EXACT_PATHS, "admin_protected_readiness": "/control-center/readiness" in STAGE61_PROTECTED_EXACT_PATHS}, "control_center_not_ready"),
+        stage78_gate_payload("owner_auth", "Owner auth and tenant binding", owner_auth_ready, {"owner_auth_foundation_ready": owner_auth.get("owner_auth_foundation_ready"), "tenant_ownership_binding_ready": owner_auth.get("tenant_ownership_binding_ready")}, "owner_auth_or_tenant_binding_not_ready"),
+        stage78_gate_payload("public_signup", "Public signup boundary", public_signup_ready, {"stage": public_signup.get("stage"), "public_signup_boundary_ready": public_signup.get("public_signup_boundary_ready")}, "public_signup_boundary_not_ready"),
+        stage78_gate_payload("billing_subscription", "Billing/subscription gate", billing_ready, {"stage": billing.get("stage"), "billing_subscription_gate_foundation_ready": billing.get("billing_subscription_gate_foundation_ready"), "runtime_gate_allowed": runtime_gate.get("allowed"), "runtime_gate_reason": runtime_gate.get("reason"), "subscription_status": billing_status.get("subscription_status"), "effective_status": billing_status.get("effective_status"), "plan": billing_status.get("plan")}, "billing_gate_not_allowed"),
+        stage78_gate_payload("csrf_browser_write_hardening", "CSRF/browser write hardening", csrf_ready, {"stage": csrf.get("stage"), "csrf_browser_write_hardening_ready": csrf.get("csrf_browser_write_hardening_ready"), "csrf_enforcement_enabled": csrf.get("csrf_enforcement_enabled")}, "csrf_browser_write_hardening_not_ready"),
+        stage78_gate_payload("abuse_rate_limits", "Abuse/rate-limit protection", abuse_ready, {"stage": abuse.get("stage"), "abuse_rate_limits_ready": abuse.get("abuse_rate_limits_ready"), "enforcement_enabled": abuse.get("enforcement_enabled")}, "abuse_rate_limits_not_ready"),
+        stage78_gate_payload("email_magic_link_auth", "Email verification / magic-link auth", email_ready, {"stage": email_auth.get("stage"), "email_verification_magic_link_foundation_ready": email_auth.get("email_verification_magic_link_foundation_ready"), "owner_magic_login_ready": email_auth.get("owner_magic_login_ready"), "email_delivery_provider_configured": email_auth.get("email_delivery_provider_configured")}, "email_magic_link_auth_not_ready"),
+        stage78_gate_payload("owner_superadmin_separation", "Owner vs super-admin separation", separation_ready, {"stage": separation.get("stage"), "client_owner_superadmin_separation_ready": separation.get("client_owner_superadmin_separation_ready"), "tenant_isolation_hardening_ready": separation.get("tenant_isolation_hardening_ready"), "tenant_id_parameter_is_not_auth": separation.get("tenant_id_parameter_is_not_auth")}, "owner_superadmin_separation_not_ready"),
+        stage78_gate_payload("stage78_readiness_boundary", "Final lock endpoints protected", not bool(readiness_missing_admin), {"readiness_paths": sorted(STAGE78_READINESS_PATHS), "missing_admin_protection": readiness_missing_admin}, "stage78_readiness_paths_not_admin_protected"),
+    ]
+
+    dependency_blocking: List[str] = []
+    for dep_name, dep in {
+        "tenant_runtime": tenant_runtime,
+        "admin_access": admin_access,
+        "admin_session": admin_session,
+        "owner_auth": owner_auth,
+        "public_signup": public_signup,
+        "billing": billing,
+        "csrf": csrf,
+        "abuse": abuse,
+        "email_auth": email_auth,
+        "separation": separation,
+    }.items():
+        for item in dep.get("blocking") or []:
+            dependency_blocking.append(f"{dep_name}:{item}")
+
+    gate_blocking = [str(g.get("blocker")) for g in gates if not g.get("ready") and g.get("blocker")]
+    blocking = list(dict.fromkeys(gate_blocking + dependency_blocking))
+    warnings: List[str] = []
+    if str((admin_access.get("auth_model") or {}).get("type") or "") == "shared_admin_token_mvp":
+        warnings.append("admin_auth_uses_shared_token_mvp_acceptable_for_controlled_self_service_mvp")
+    if ALLOW_DEFAULT_TENANT_FALLBACK:
+        warnings.append("default_tenant_fallback_enabled_private_demo_compatibility")
+    if not bool(email_auth.get("email_delivery_provider_configured")):
+        warnings.append("email_delivery_provider_not_configured_magic_link_returned_once_foundation")
+    if not bool(billing.get("provider_integration_live")):
+        warnings.append("billing_provider_not_live_manual_subscription_foundation")
+    for source_name, dep in (("csrf", csrf), ("abuse", abuse), ("email_auth", email_auth), ("owner_auth", owner_auth), ("separation", separation)):
+        for item in dep.get("warnings") or []:
+            warnings.append(f"{source_name}:{item}")
+
+    public_saas_ready = bool(not blocking)
+    ready_count = sum(1 for gate in gates if gate.get("ready"))
+    result = {
+        "ok": True,
+        "stage": "78",
+        "purpose": "Final Public SaaS Readiness Lock",
+        "tenant_id": tenant_id_clean,
+        "status": "ready" if public_saas_ready else "blocked",
+        "launch_mode": STAGE78_LAUNCH_MODE,
+        "public_saas_ready": bool(public_saas_ready),
+        "public_saas_ready_reason": "ready_for_controlled_public_self_service_mvp" if public_saas_ready else "blocked_until_all_stage78_gates_are_ready",
+        "public_saas_level": "controlled_self_service_smb_mvp" if public_saas_ready else "not_ready",
+        "enterprise_saas_ready": False,
+        "enterprise_saas_ready_reason": "enterprise_maturity_requires_later_sso_rbac_audit_sla_disaster_recovery_and_advanced_compliance_stages",
+        "summary": {
+            "ready_gates": ready_count,
+            "total_gates": len(gates),
+            "blocked_gates": len(gates) - ready_count,
+            "warnings_count": len(list(dict.fromkeys(warnings))),
+        },
+        "gates": gates,
+        "security": {
+            "tenant_id_parameter_is_not_auth": True,
+            "owner_surfaces_owner_session_bound": bool(separation.get("owner_surfaces_owner_session_bound")),
+            "admin_surfaces_super_admin_bound": bool(separation.get("admin_surfaces_super_admin_bound")),
+            "owner_admin_links_exposed_to_owner": bool((separation.get("owner_safe_ui") or {}).get("owner_dashboard_admin_links_exposed_to_owner")),
+            "raw_admin_token_exposed": False,
+            "raw_owner_login_code_exposed": False,
+            "raw_magic_token_hash_exposed": False,
+            "raw_ip_exposed": False,
+            "csrf_secret_exposed": False,
+            "stage78_readiness_routes_admin_protected": not bool(readiness_missing_admin),
+        },
+        "controlled_launch_scope": {
+            "product": "text-first AI receptionist SaaS for SMB",
+            "primary_external_channel": "Telegram text",
+            "calendar_runtime": "Google Calendar self-serve foundation",
+            "billing": "manual subscription gate foundation",
+            "email_auth": "one-time magic-link foundation; outbound email provider can be added later",
+            "voice_calls_scope": "future_phase",
+            "not_enterprise_ready_note": STAGE78_NOT_ENTERPRISE_READY_NOTE,
+        },
+        "dependencies": {
+            "tenant_runtime": tenant_runtime,
+            "admin_access_enforcement": admin_access,
+            "admin_session": admin_session,
+            "owner_auth": owner_auth,
+            "public_signup": public_signup,
+            "billing_subscription": billing,
+            "csrf_browser_write_hardening": csrf,
+            "abuse_rate_limits": abuse,
+            "email_magic_link_auth": email_auth,
+            "owner_superadmin_separation": separation,
+        },
+        "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
+        "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
+        "links": {
+            "final_readiness": url(f"/public-saas/final-readiness?tenant_id={tenant_id_clean}&days={days}"),
+            "launch_readiness": url(f"/public-saas/launch-readiness?tenant_id={tenant_id_clean}&days={days}"),
+            "public_saas_readiness": url(f"/public-saas/readiness?tenant_id={tenant_id_clean}&days={days}"),
+            "control_center": url(f"/control-center/ui?tenant_id={tenant_id_clean}&days={days}"),
+            "public_signup": url("/public/signup"),
+            "owner_login": url(f"/owner/login?tenant_id={tenant_id_clean}"),
+            "owner_magic_login": url(f"/owner/magic-login?tenant_id={tenant_id_clean}"),
+            "owner_dashboard": url(f"/owner/dashboard/ui?tenant_id={tenant_id_clean}"),
+            "owner_billing": url(f"/owner/billing/ui?tenant_id={tenant_id_clean}"),
+            "dialogue_qa": url("/dialogue/qa"),
+        },
+        "note": "Stage 78 is a read-only launch lock. It does not change receptionist dialogue, booking, slots, Google Calendar event runtime, Telegram webhook runtime, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, or QA evaluator behavior.",
+    }
+    if include_gap_audit:
+        result["gap_audit_reference"] = {
+            "endpoint": url(f"/public-saas/gap-audit?tenant_id={tenant_id_clean}&days={days}"),
+            "note": "The Stage 70 gap audit remains available for historical/detail view; Stage 78 is the final lock that can set public_saas_ready=true.",
+        }
+    return result
 
 def stage61_admin_auth_error(status_code: int, detail: str) -> JSONResponse:
     return JSONResponse(
@@ -14083,6 +14301,7 @@ def stage68_telegram_setup_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT,
         "telegram_effective_runtime_ready": bool(effective_runtime_ready),
         "private_admin_ready": bool(not blocking),
         "public_saas_ready": False,
+        "public_saas_ready_reason": "false_until_final_public_saas_readiness_lock_stage_is_done",
         "auth_model": "admin_session_or_shared_token_mvp",
         "current_mvp_scope": {
             "channel": "text",
@@ -14296,6 +14515,7 @@ def stage69_client_control_center_payload(tenant_id: str = TENANT_ID_DEFAULT, da
     abuse = stage69_safe_dependency("abuse_rate_limits", lambda: stage75_abuse_rate_limits_readiness_payload(tenant_id_clean, hours=24))
     email_auth = stage69_safe_dependency("email_magic_link_auth", lambda: stage76_email_magic_link_readiness_payload(tenant_id_clean, hours=24))
     separation = stage69_safe_dependency("owner_superadmin_separation", lambda: stage77_client_owner_superadmin_separation_readiness_payload(tenant_id_clean, days=days))
+    final_lock = stage69_safe_dependency("final_public_saas_launch_lock", lambda: stage78_final_public_saas_readiness_payload(tenant_id_clean, days=days, include_gap_audit=False))
     launch = stage69_safe_dependency("launch_readiness", lambda: stage54_launch_readiness_lock_payload(tenant_id_clean))
     access = stage69_safe_dependency("access_boundaries", lambda: stage58_access_boundaries_readiness_payload(tenant_id_clean))
 
@@ -14415,6 +14635,15 @@ def stage69_client_control_center_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             url(f"/owner/control-center/ui?tenant_id={tenant_id_clean}"),
             "Owner-safe surfaces are separated from super-admin write/config surfaces and tenant_id is not treated as authentication.",
         ),
+        stage69_step_payload(
+            "final_public_saas_launch_lock",
+            "Final public SaaS launch lock",
+            final_lock,
+            bool(final_lock.get("public_saas_ready")),
+            url(f"/public-saas/final-readiness?tenant_id={tenant_id_clean}&days={days}"),
+            url(f"/public-saas/readiness?tenant_id={tenant_id_clean}&days={days}"),
+            "Final Stage 78 gate that can declare controlled public self-service MVP readiness.",
+        ),
     ]
 
     ready_count = sum(1 for step in steps if step.get("ready"))
@@ -14442,7 +14671,8 @@ def stage69_client_control_center_payload(tenant_id: str = TENANT_ID_DEFAULT, da
         "status": status,
         "control_center_ready": bool(status in {"ready", "attention"} and not blocking),
         "private_admin_ready": bool(not blocking),
-        "public_saas_ready": False,
+        "public_saas_ready": bool(final_lock.get("public_saas_ready") is True),
+        "public_saas_ready_reason": final_lock.get("public_saas_ready_reason") or "blocked_until_stage78_final_launch_lock_passes",
         "auth_model": "admin_session_or_shared_token_mvp",
         "current_mvp_scope": {
             "product": "text-first AI receptionist SaaS",
@@ -14481,6 +14711,7 @@ def stage69_client_control_center_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "abuse_rate_limits": abuse,
             "email_magic_link_auth": email_auth,
             "owner_superadmin_separation": separation,
+            "final_public_saas_launch_lock": final_lock,
             "launch_readiness": launch,
             "access_boundaries": access,
         },
@@ -14497,6 +14728,7 @@ def stage69_client_control_center_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "abuse_rate_limits_ready": bool(abuse.get("abuse_rate_limits_ready")),
             "email_verification_magic_link_foundation_ready": bool(email_auth.get("email_verification_magic_link_foundation_ready")),
             "client_owner_superadmin_separation_ready": bool(separation.get("client_owner_superadmin_separation_ready")),
+            "final_public_saas_launch_lock_ready": bool(final_lock.get("public_saas_ready") is True),
             "owner_admin_links_exposed_to_owner": bool((separation.get("owner_safe_ui") or {}).get("owner_dashboard_admin_links_exposed_to_owner")),
         },
         "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
@@ -14521,6 +14753,7 @@ def stage69_client_control_center_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "rate_limits_readiness": url(f"/rate-limits/readiness?tenant_id={tenant_id_clean}"),
             "public_saas_gap_audit": url(f"/public-saas/gap-audit/ui?tenant_id={tenant_id_clean}&days={days}"),
             "owner_admin_separation": url(f"/owner-admin-separation/readiness?tenant_id={tenant_id_clean}"),
+            "final_launch_lock": url(f"/public-saas/final-readiness?tenant_id={tenant_id_clean}&days={days}"),
             "dialogue_qa": url("/dialogue/qa"),
         },
         "note": "Stage 69 is an aggregate dashboard/control-center layer only. It does not change receptionist routing, slot generation, price side-questions, Google Calendar event runtime, Telegram webhook runtime, or voice/calls.",
@@ -14680,8 +14913,8 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "legacy_signup_routes_still_protected": "/signup" in STAGE61_PROTECTED_EXACT_PATHS and "/tenant/create" in STAGE61_PROTECTED_EXACT_PATHS,
             "public_signup_paths": (public_signup.get("public_paths") or {}),
         },
-        "Continue hardening public signup with email verification/magic-link auth, billing gate, and production abuse controls before declaring public SaaS ready.",
-        severity="blocker",
+        "Public signup boundary is available for the controlled self-service MVP once Stage 78 final lock passes.",
+        severity="major" if public_signup.get("public_signup_boundary_ready") else "blocker",
     ))
     gaps.append(stage70_gap_payload(
         "email_verification_magic_link",
@@ -14703,7 +14936,7 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
     gaps.append(stage70_gap_payload(
         "billing_subscription",
         "Billing and subscription lifecycle",
-        "foundation" if billing.get("billing_subscription_gate_foundation_ready") else "foundation_only",
+        "ready" if billing.get("billing_subscription_gate_foundation_ready") else "foundation_only",
         {
             "billing_stage": billing.get("stage"),
             "billing_subscription_gate_foundation_ready": bool(billing.get("billing_subscription_gate_foundation_ready")),
@@ -14715,8 +14948,8 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "billing_provider_integration_found": bool(billing.get("provider_integration_live")),
             "usage_is_marked_non_billing_proof": True,
         },
-        "Continue from manual billing foundation to payment-provider integration, invoices/receipts, webhook sync, and failure-handling automation before mature SaaS launch.",
-        severity="blocker",
+        "Manual billing/subscription foundation is enough for controlled self-service MVP; payment-provider integration remains later mature SaaS work.",
+        severity="major" if billing.get("billing_subscription_gate_foundation_ready") else "blocker",
     ))
     gaps.append(stage70_gap_payload(
         "browser_write_hardening",
@@ -14791,20 +15024,26 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
     if ready_self_serve_count < len(self_serve_blocks):
         warnings.append("some_self_serve_blocks_not_ready")
 
+    stage78_lock = stage70_safe_dependency("final_public_saas_launch_lock", lambda: stage78_final_public_saas_readiness_payload(tenant_id_clean, days=days, include_gap_audit=False))
     public_blocking_keys = [item["key"] for item in gaps if item.get("severity") == "blocker" and item.get("status") != "ready"]
-    public_saas_ready = False
+    if stage78_lock.get("public_saas_ready") is True:
+        public_blocking_keys = []
+    public_saas_ready = bool(stage78_lock.get("public_saas_ready") is True)
     private_admin_ready = bool(tenant_found and not missing_protection and admin_access_enforced and admin_session_ready and not raw_secrets_exposed)
     audit_ready = bool(private_admin_ready and control_center.get("private_admin_ready") is not False)
 
     return {
-        "stage": "70",
-        "purpose": "Public SaaS Readiness Gap Audit",
+        "stage": "78" if public_saas_ready else "70",
+        "previous_stage": "70",
+        "purpose": "Public SaaS Readiness Gap Audit + Final Launch Lock",
         "tenant_id": tenant_id_clean,
-        "status": "blocked" if blockers else "attention",
+        "status": "ready" if public_saas_ready else "blocked" if blockers else "attention",
         "gap_audit_ready": bool(audit_ready),
+        "final_launch_lock_ready": bool(stage78_lock.get("public_saas_ready") is True),
         "private_admin_ready": bool(private_admin_ready),
         "public_saas_ready": bool(public_saas_ready),
-        "public_saas_ready_reason": "false_until_client_owner_vs_super_admin_separation_and_final_launch_gate_are_done",
+        "public_saas_ready_reason": stage78_lock.get("public_saas_ready_reason") or "blocked_until_stage78_final_launch_lock_passes",
+        "launch_mode": stage78_lock.get("launch_mode") or STAGE78_LAUNCH_MODE,
         "current_scope": {
             "product": "text-first AI receptionist SaaS",
             "external_channel": "Telegram text",
@@ -14860,9 +15099,10 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "abuse_rate_limits": abuse,
             "email_magic_link_auth": email_auth,
             "owner_superadmin_separation": separation,
+            "final_public_saas_launch_lock": stage78_lock,
         },
-        "recommended_next_stages": [
-            "Stage 78 — Final Public SaaS Readiness Lock",
+        "recommended_next_stages": [] if public_saas_ready else [
+            "Fix any Stage 78 final launch lock blockers before public self-service launch",
         ],
         "blocking": list(dict.fromkeys([str(x) for x in blockers if str(x)])),
         "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
@@ -14882,6 +15122,7 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "control_center": url(f"/control-center/ui?tenant_id={tenant_id_clean}&days={days}"),
             "access_readiness": url(f"/access/readiness?tenant_id={tenant_id_clean}"),
             "owner_admin_separation": url(f"/owner-admin-separation/readiness?tenant_id={tenant_id_clean}"),
+            "final_launch_lock": url(f"/public-saas/final-readiness?tenant_id={tenant_id_clean}&days={days}"),
             "tenant_config_ui": url(f"/tenant/config/ui?tenant_id={tenant_id_clean}"),
             "dashboard": url(f"/dashboard?tenant_id={tenant_id_clean}"),
             "dialogue_qa": url("/dialogue/qa"),
@@ -15353,6 +15594,16 @@ def stage76_email_magic_link_readiness(request: Request, tenant_id: str = TENANT
 def stage77_owner_admin_separation_readiness(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
     tid = stage711_resolve_tenant_context(request, tenant_id)
     return stage77_client_owner_superadmin_separation_readiness_payload(tid, days=days)
+
+
+@app.get("/public-saas/final-readiness")
+@app.get("/public-saas/launch-readiness")
+@app.get("/public-saas/ready")
+@app.get("/launch/self-service/readiness")
+@app.get("/self-service/launch/readiness")
+def stage78_public_saas_final_readiness(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    tid = stage711_resolve_tenant_context(request, tenant_id)
+    return stage78_final_public_saas_readiness_payload(tid, days=days)
 
 
 @app.post("/owner/magic-link/bootstrap")

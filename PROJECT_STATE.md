@@ -968,3 +968,46 @@ Status: packaged hotfix.
 Purpose: fix `/owner-admin-separation/readiness` and aliases returning 500 after Stage 77 due to a set/tuple union in readiness payload construction.
 
 Fix: convert both public auth surface collections to sets before union. No receptionist dialogue, booking, Telegram, Google Calendar, billing, CSRF, abuse/rate-limit, or magic-link semantics changed.
+
+## Stage 78 — Final Public SaaS Readiness Lock
+
+Status: implemented in archive, awaiting deploy verification.
+
+Scope:
+- Added final controlled public self-service SMB MVP readiness lock.
+- Added admin-protected final readiness endpoints:
+  - `GET /public-saas/final-readiness`
+  - `GET /public-saas/launch-readiness`
+  - `GET /public-saas/ready`
+  - `GET /launch/self-service/readiness`
+  - `GET /self-service/launch/readiness`
+- Integrated the Stage 78 final lock into `/public-saas/readiness` and `/public-saas/gap-audit` while keeping the Stage 70 detailed audit available.
+- Integrated the Stage 78 final lock into the Control Center readiness payload.
+- Stage 78 can set `public_saas_ready=true` only when all final gates are ready.
+- Stage 78 explicitly marks `enterprise_saas_ready=false`; enterprise maturity is a later phase.
+
+Final gates:
+- Tenant exists.
+- Tenant runtime config is ready.
+- Admin auth/session boundary is ready.
+- Control Center routes are protected.
+- Owner auth and tenant ownership binding are ready.
+- Public signup boundary is ready.
+- Billing/subscription foundation exists and runtime gate allows the tenant.
+- CSRF/browser write hardening is enabled.
+- Abuse/rate-limit protection is enabled.
+- Email verification / magic-link foundation is ready.
+- Owner vs super-admin separation and tenant isolation are ready.
+- Stage 78 readiness endpoints are admin protected.
+
+Expected verification:
+- Render deploy starts successfully.
+- `/dialogue/qa` = 50/50 passed.
+- `/public-saas/final-readiness?tenant_id=clinic_demo` returns `stage=78`.
+- `/public-saas/final-readiness?tenant_id=clinic_demo` returns `public_saas_ready=true` only when every gate is ready.
+- `/public-saas/readiness?tenant_id=clinic_demo` returns final launch lock integration and can surface `public_saas_ready=true`.
+- `/control-center/ui?tenant_id=clinic_demo` still opens.
+- Owner dashboard/billing surfaces remain owner-safe.
+- Admin-only routes remain admin protected.
+
+Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, dialogue QA evaluator, LLM orchestration, and voice/calls were not changed.

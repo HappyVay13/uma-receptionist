@@ -518,3 +518,18 @@ If a price question is asked inside an active booking flow and the current langu
 ## Stage 77.1 rule note
 
 Stage 77.1 is a narrow readiness endpoint hotfix only. It fixes a runtime type mismatch in the Stage 77 owner/admin separation readiness payload. It must not change receptionist dialogue, booking, calendar, Telegram, billing, CSRF, abuse/rate-limit, or magic-link flows.
+
+## Stage 78 — Final Public SaaS Readiness Lock Rules
+
+- Stage 78 is a read-only final launch readiness gate for controlled public self-service SMB MVP.
+- Stage 78 may set `public_saas_ready=true` only when all final gates are ready.
+- Stage 78 must keep `enterprise_saas_ready=false`; enterprise maturity is a later phase.
+- Stage 78 readiness endpoints must be admin-protected:
+  - `/public-saas/final-readiness`
+  - `/public-saas/launch-readiness`
+  - `/public-saas/ready`
+  - `/launch/self-service/readiness`
+  - `/self-service/launch/readiness`
+- Stage 78 may integrate into Stage 70 `/public-saas/readiness` and the Control Center readiness payload.
+- Stage 78 must not change receptionist dialogue, booking routing, slot generation, date/time parsing, side-question handling, confirmation, cancellation, rescheduling, Google Calendar event runtime, Telegram webhook handling, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, LLM orchestration, or regression evaluator rules.
+- Current protected baseline remains `/dialogue/qa = 50/50 passed`.
