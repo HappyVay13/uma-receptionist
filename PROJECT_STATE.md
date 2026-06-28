@@ -872,7 +872,7 @@ Receptionist core was not changed. Booking routing, slots, date/time parsing, pr
 
 ## Stage 76 — Email Verification / Magic Link Auth Foundation
 
-Status: implemented in archive, awaiting deploy verification.
+Status: deployed and verified. `/dialogue/qa` = 50/50 passed. Stage 76 is closed.
 
 Scope:
 - Added one-time owner magic-link auth foundation.
@@ -897,3 +897,65 @@ Expected verification:
 - `/public-saas/readiness?tenant_id=clinic_demo` includes email/magic-link readiness while `public_saas_ready=false` remains.
 
 Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, billing semantics, CSRF semantics, dialogue QA evaluator, LLM orchestration, and voice/calls were not changed.
+
+
+## Stage 77 — Client-owner vs Super-admin Separation Hardening
+
+Status: implemented in archive, awaiting deploy verification.
+
+Scope:
+- Added owner/super-admin separation readiness endpoints:
+  - `GET /owner-admin-separation/readiness`
+  - `GET /client-owner/separation/readiness`
+  - `GET /security/owner-admin-separation/readiness`
+  - `GET /tenant/isolation/readiness`
+- Added explicit route/surface map for owner-safe surfaces, admin-only surfaces, public auth surfaces, and external webhook surfaces.
+- Hardened owner dashboard links so client owners no longer receive admin Control Center/Public SaaS/Billing readiness links in the owner `links` block.
+- Hardened owner billing UI links in owner mode so it shows only owner-safe navigation.
+- Added Stage 77 separation metadata to owner dashboard payload.
+- Added Control Center integration.
+- Added Public SaaS gap audit integration.
+- `public_saas_ready` remains false by design until Stage 78 final launch readiness lock.
+
+Expected verification:
+- Render deploy starts successfully.
+- `/dialogue/qa` = 50/50 passed.
+- `/owner-admin-separation/readiness?tenant_id=clinic_demo` returns `stage=77` and `client_owner_superadmin_separation_ready=true`.
+- `/tenant/isolation/readiness?tenant_id=clinic_demo` works and is admin protected.
+- `/owner/dashboard/ui?tenant_id=<owner_tenant>` opens for an owner session and does not show admin Control Center/Public SaaS audit links.
+- `/owner/billing/ui?tenant_id=<owner_tenant>` opens read-only for an owner session and does not show admin Control Center/Public SaaS audit links.
+- Admin-only routes like `/control-center/ui`, `/tenant/billing/ui`, `/public-saas/readiness`, `/owner/accounts/bootstrap`, and `/tenants/ui` remain admin protected.
+- `/public-saas/readiness?tenant_id=clinic_demo` includes Stage 77 separation readiness while `public_saas_ready=false` remains.
+
+Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, billing semantics, CSRF semantics, abuse/rate-limit semantics, dialogue QA evaluator, LLM orchestration, and voice/calls were not changed.
+
+
+## Stage 77 — Client-owner vs Super-admin Separation Hardening
+
+Status: implemented in archive, awaiting deploy verification.
+
+Scope:
+- Added owner/super-admin separation readiness endpoints:
+  - `GET /owner-admin-separation/readiness`
+  - `GET /client-owner/separation/readiness`
+  - `GET /security/owner-admin-separation/readiness`
+  - `GET /tenant/isolation/readiness`
+- Added explicit route/surface map for owner-safe surfaces, admin-only surfaces, public auth surfaces, and external webhook surfaces.
+- Hardened owner dashboard links so client owners no longer receive admin Control Center/Public SaaS/Billing readiness links in the owner `links` block.
+- Hardened owner billing UI links in owner mode so it shows only owner-safe navigation.
+- Added Stage 77 separation metadata to owner dashboard payload.
+- Added Control Center integration.
+- Added Public SaaS gap audit integration.
+- `public_saas_ready` remains false by design until Stage 78 final launch readiness lock.
+
+Expected verification:
+- Render deploy starts successfully.
+- `/dialogue/qa` = 50/50 passed.
+- `/owner-admin-separation/readiness?tenant_id=clinic_demo` returns `stage=77` and `client_owner_superadmin_separation_ready=true`.
+- `/tenant/isolation/readiness?tenant_id=clinic_demo` works and is admin protected.
+- `/owner/dashboard/ui?tenant_id=<owner_tenant>` opens for an owner session and does not show admin Control Center/Public SaaS audit links.
+- `/owner/billing/ui?tenant_id=<owner_tenant>` opens read-only for an owner session and does not show admin Control Center/Public SaaS audit links.
+- Admin-only routes like `/control-center/ui`, `/tenant/billing/ui`, `/public-saas/readiness`, `/owner/accounts/bootstrap`, and `/tenants/ui` remain admin protected.
+- `/public-saas/readiness?tenant_id=clinic_demo` includes Stage 77 separation readiness while `public_saas_ready=false` remains.
+
+Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, billing semantics, CSRF semantics, abuse/rate-limit semantics, dialogue QA evaluator, LLM orchestration, and voice/calls were not changed.

@@ -479,3 +479,37 @@ If a price question is asked inside an active booking flow and the current langu
 - Legacy owner setup-code login remains supported during this foundation stage.
 - Real outbound email delivery is not required for Stage 76 foundation; absence of an email provider may be a readiness warning, not a dialogue/runtime blocker.
 - Public SaaS readiness remains false until client-owner vs super-admin separation and final launch gate stages are closed.
+
+
+## Stage 77 — Client-owner vs Super-admin Separation Hardening Rules
+
+- Stage 77 may add readiness/audit metadata, route/surface maps, and owner-safe UI link hardening only.
+- Owner surfaces must remain bound to the Stage 71 signed owner session and `owner_tenant_access`; `tenant_id` query params must never be treated as authentication.
+- Super-admin/admin surfaces must remain protected by Stage 61/62 admin auth.
+- Owner-facing dashboards and billing pages must not expose admin write/config links in their primary owner `links`/UI navigation.
+- Super-admin support bypass may remain for private support/admin review, but it must be explicit and marked as a bypass.
+- Stage 77 readiness endpoints must be admin-protected:
+  - `/owner-admin-separation/readiness`
+  - `/client-owner/separation/readiness`
+  - `/security/owner-admin-separation/readiness`
+  - `/tenant/isolation/readiness`
+- Do not change booking routing, slot generation, date/time parsing, side-question handling, confirmation, cancellation, rescheduling, Google Calendar event runtime, Telegram webhook handling, billing semantics, CSRF semantics, abuse/rate-limit semantics, LLM orchestration, or regression evaluator rules.
+- `public_saas_ready` must remain false after Stage 77 until the final Stage 78 public SaaS readiness lock is closed.
+- Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+
+
+## Stage 77 — Client-owner vs Super-admin Separation Hardening Rules
+
+- Stage 77 may add readiness/audit metadata, route/surface maps, and owner-safe UI link hardening only.
+- Owner surfaces must remain bound to the Stage 71 signed owner session and `owner_tenant_access`; `tenant_id` query params must never be treated as authentication.
+- Super-admin/admin surfaces must remain protected by Stage 61/62 admin auth.
+- Owner-facing dashboards and billing pages must not expose admin write/config links in their primary owner `links`/UI navigation.
+- Super-admin support bypass may remain for private support/admin review, but it must be explicit and marked as a bypass.
+- Stage 77 readiness endpoints must be admin-protected:
+  - `/owner-admin-separation/readiness`
+  - `/client-owner/separation/readiness`
+  - `/security/owner-admin-separation/readiness`
+  - `/tenant/isolation/readiness`
+- Do not change booking routing, slot generation, date/time parsing, side-question handling, confirmation, cancellation, rescheduling, Google Calendar event runtime, Telegram webhook handling, billing semantics, CSRF semantics, abuse/rate-limit semantics, LLM orchestration, or regression evaluator rules.
+- `public_saas_ready` must remain false after Stage 77 until the final Stage 78 public SaaS readiness lock is closed.
+- Current protected baseline remains `/dialogue/qa = 50/50 passed`.

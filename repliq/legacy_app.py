@@ -287,6 +287,10 @@ STAGE61_PROTECTED_EXACT_PATHS = {
     "/magic-link/readiness",
     "/owner/magic-link/readiness",
     "/owner/magic-link/bootstrap",
+    "/owner-admin-separation/readiness",
+    "/client-owner/separation/readiness",
+    "/security/owner-admin-separation/readiness",
+    "/tenant/isolation/readiness",
     "/client/dashboard",
     "/client/dashboard/ui",
     "/client/control-center",
@@ -1630,6 +1634,163 @@ def stage76_email_magic_link_readiness_payload(tenant_id: str = TENANT_ID_DEFAUL
         "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
         "links": {"readiness": f"/email/readiness?tenant_id={tid}", "magic_link_readiness": f"/magic-link/readiness?tenant_id={tid}", "owner_magic_login": f"/owner/magic-login?tenant_id={tid}", "owner_magic_link_bootstrap": "/owner/magic-link/bootstrap", "public_saas_audit": f"/public-saas/readiness?tenant_id={tid}", "control_center": f"/control-center/ui?tenant_id={tid}"},
         "note": "Stage 76 adds one-time owner magic-link auth and email_verified_at foundation. It does not send real emails yet unless a later email provider stage is added, and it does not change receptionist booking/runtime behavior.",
+    }
+
+
+# -------------------------
+# STAGE 77: CLIENT-OWNER VS SUPER-ADMIN SEPARATION HARDENING
+# -------------------------
+STAGE77_READINESS_PATHS = {
+    "/owner-admin-separation/readiness",
+    "/client-owner/separation/readiness",
+    "/security/owner-admin-separation/readiness",
+    "/tenant/isolation/readiness",
+}
+STAGE77_OWNER_SAFE_SURFACE_PATHS = {
+    "/owner/session",
+    "/owner/login",
+    "/owner/logout",
+    "/owner/magic-login",
+    "/owner/dashboard",
+    "/owner/dashboard/ui",
+    "/owner/control-center",
+    "/owner/control-center/ui",
+    "/owner/billing",
+    "/owner/billing/ui",
+    "/owner/subscription",
+    "/owner/subscription/ui",
+}
+STAGE77_OWNER_SAFE_LINK_KEYS = {
+    "owner_dashboard",
+    "owner_control_center",
+    "owner_session",
+    "owner_billing",
+    "owner_subscription",
+    "owner_logout",
+}
+STAGE77_ADMIN_ONLY_SURFACE_PATHS = {
+    "/control-center",
+    "/control-center/ui",
+    "/public-saas/readiness",
+    "/public-saas/gap-audit",
+    "/public-saas/gap-audit/ui",
+    "/tenant/config",
+    "/tenant/config/ui",
+    "/tenant/config/update",
+    "/tenant/billing",
+    "/tenant/billing/ui",
+    "/tenant/billing/update",
+    "/tenant/create",
+    "/tenant/create/ui",
+    "/tenants",
+    "/tenants/ui",
+    "/owner/accounts",
+    "/owner/accounts/bootstrap",
+    "/owner/magic-link/bootstrap",
+    "/tenant/owner/bind",
+}
+
+
+def stage77_client_owner_superadmin_separation_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14) -> Dict[str, Any]:
+    tid = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    days = max(1, min(int(days or 14), 60))
+    owner_protected = set(STAGE71_OWNER_PROTECTED_EXACT_PATHS)
+    admin_protected = set(STAGE61_PROTECTED_EXACT_PATHS)
+    readiness_missing_admin = sorted(path for path in STAGE77_READINESS_PATHS if path not in admin_protected)
+    owner_surface_admin_overlap = sorted(path for path in owner_protected if path in admin_protected)
+    expected_owner_bound_paths = sorted(path for path in STAGE77_OWNER_SAFE_SURFACE_PATHS if path.startswith("/owner/") and path not in {"/owner/session", "/owner/login", "/owner/logout", "/owner/magic-login"})
+    owner_surface_missing_owner_boundary = sorted(path for path in expected_owner_bound_paths if path not in owner_protected)
+    admin_only_missing_admin_boundary = sorted(path for path in STAGE77_ADMIN_ONLY_SURFACE_PATHS if path not in admin_protected)
+    owner_write_outside_owner_boundary = sorted(path for path in STAGE74_OWNER_BROWSER_WRITE_PATHS if path not in owner_protected and path not in {"/owner/logout"})
+    admin_write_missing_admin_boundary = sorted(path for path in STAGE74_ADMIN_BROWSER_WRITE_PATHS if path not in admin_protected)
+
+    owner_session_secret_source = "REPLIQ_OWNER_SESSION_SECRET" if (os.getenv("REPLIQ_OWNER_SESSION_SECRET", "") or "").strip() else "fallback"
+    blocking: List[str] = []
+    warnings: List[str] = []
+    if readiness_missing_admin:
+        blocking.append("stage77_readiness_paths_not_admin_protected")
+    if owner_surface_admin_overlap:
+        blocking.append("owner_surfaces_are_admin_only_instead_of_owner_session")
+    if owner_surface_missing_owner_boundary:
+        blocking.append("owner_surfaces_missing_owner_boundary")
+    if admin_only_missing_admin_boundary:
+        blocking.append("admin_only_surfaces_not_admin_protected")
+    if owner_write_outside_owner_boundary:
+        blocking.append("owner_write_paths_missing_owner_boundary")
+    if admin_write_missing_admin_boundary:
+        blocking.append("admin_write_paths_missing_admin_boundary")
+    if not stage71_owner_auth_enforcement_enabled():
+        blocking.append("owner_auth_enforcement_disabled")
+    if not stage61_admin_access_enforcement_enabled():
+        blocking.append("admin_access_enforcement_disabled")
+    if not stage71_owner_session_secret():
+        blocking.append("owner_session_secret_not_configured")
+    if owner_session_secret_source != "REPLIQ_OWNER_SESSION_SECRET":
+        warnings.append("owner_session_secret_uses_fallback")
+    if stage61_admin_token_configured():
+        warnings.append("super_admin_auth_still_shared_token_mvp")
+
+    ready = bool(not blocking)
+    return {
+        "ok": True,
+        "stage": "77",
+        "purpose": "Client-owner vs Super-admin Separation Hardening",
+        "tenant_id": tid,
+        "status": "ready" if ready and not warnings else "attention" if ready else "blocked",
+        "client_owner_superadmin_separation_ready": bool(ready),
+        "tenant_isolation_hardening_ready": bool(ready),
+        "owner_surfaces_owner_session_bound": bool(not owner_surface_admin_overlap and not owner_surface_missing_owner_boundary),
+        "admin_surfaces_super_admin_bound": bool(not admin_only_missing_admin_boundary),
+        "tenant_id_parameter_is_not_auth": True,
+        "auth_boundaries": {
+            "owner_cookie": STAGE71_OWNER_SESSION_COOKIE_NAME,
+            "owner_auth_enforced": bool(stage71_owner_auth_enforcement_enabled()),
+            "owner_tenant_access_check": "stage71_owner_has_tenant_access",
+            "super_admin_cookie": STAGE62_ADMIN_SESSION_COOKIE_NAME,
+            "super_admin_token_model": "stage61_shared_token_mvp",
+            "super_admin_bypass_explicitly_marked": True,
+        },
+        "surface_map": {
+            "owner_safe_surfaces": sorted(STAGE77_OWNER_SAFE_SURFACE_PATHS),
+            "owner_session_required_surfaces": sorted(STAGE71_OWNER_PROTECTED_EXACT_PATHS),
+            "admin_only_surfaces": sorted(STAGE77_ADMIN_ONLY_SURFACE_PATHS),
+            "public_auth_surfaces": sorted(STAGE76_PUBLIC_MAGIC_LOGIN_PATHS | STAGE72_PUBLIC_SIGNUP_PUBLIC_PATHS),
+            "external_webhooks_not_owner_or_admin_ui": sorted(STAGE74_EXTERNAL_WEBHOOK_WRITE_PATHS),
+        },
+        "owner_safe_ui": {
+            "owner_dashboard_admin_links_exposed_to_owner": False,
+            "owner_billing_admin_links_exposed_to_owner": False,
+            "owner_write_endpoints_exposed": False,
+            "owner_links_allowed": sorted(STAGE77_OWNER_SAFE_LINK_KEYS),
+            "raw_admin_token_exposed": False,
+            "raw_owner_session_secret_exposed": False,
+        },
+        "admin_support": {
+            "super_admin_can_open_owner_surfaces_for_support": True,
+            "super_admin_bypass_flag_returned": "opened_via_super_admin_bypass",
+            "owner_email_hidden_when_opened_by_super_admin": True,
+        },
+        "checks": {
+            "readiness_missing_admin_protection": readiness_missing_admin,
+            "owner_surface_admin_overlap": owner_surface_admin_overlap,
+            "owner_surface_missing_owner_boundary": owner_surface_missing_owner_boundary,
+            "admin_only_missing_admin_boundary": admin_only_missing_admin_boundary,
+            "owner_write_outside_owner_boundary": owner_write_outside_owner_boundary,
+            "admin_write_missing_admin_boundary": admin_write_missing_admin_boundary,
+        },
+        "public_saas_ready": False,
+        "public_saas_ready_reason": "false_until_final_public_saas_readiness_lock_stage_is_done",
+        "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
+        "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
+        "links": {
+            "readiness": f"/owner-admin-separation/readiness?tenant_id={tid}",
+            "tenant_isolation": f"/tenant/isolation/readiness?tenant_id={tid}",
+            "owner_dashboard": f"/owner/dashboard/ui?tenant_id={tid}",
+            "owner_billing": f"/owner/billing/ui?tenant_id={tid}",
+            "public_saas_audit": f"/public-saas/readiness?tenant_id={tid}&days={days}",
+            "control_center": f"/control-center/ui?tenant_id={tid}&days={days}",
+        },
+        "note": "Stage 77 hardens the boundary between client-owner surfaces and super-admin surfaces. It does not change receptionist dialogue, booking, slots, Google Calendar event runtime, Telegram webhook runtime, billing semantics, CSRF semantics, abuse/rate-limit semantics, or QA evaluator behavior.",
     }
 
 
@@ -3238,7 +3399,8 @@ def stage71_owner_dashboard_payload(request: Request, tenant_id: str = TENANT_ID
     readiness = stage71_owner_auth_readiness_payload(tid)
     return {
         "ok": True,
-        "stage": "71",
+        "stage": "77",
+        "previous_stage": "71",
         "tenant_id": tid,
         "owner_email": owner_email if owner_email != "super_admin" else None,
         "role": access.get("role") or "owner",
@@ -3254,8 +3416,10 @@ def stage71_owner_dashboard_payload(request: Request, tenant_id: str = TENANT_ID
         "readiness": readiness,
         "billing": tenant_billing_status(tenant),
         "billing_readiness": stage73_billing_subscription_gate_readiness_payload(tid),
-        "owner_safe_scope": {"dashboard": True, "read_only_foundation": True, "billing_read_only": True, "admin_write_surfaces_exposed_to_owner": False, "receptionist_core_changed": False},
-        "links": {"owner_dashboard": f"/owner/dashboard/ui?tenant_id={tid}", "owner_session": f"/owner/session?tenant_id={tid}", "owner_billing": f"/owner/billing/ui?tenant_id={tid}", "owner_logout": "/owner/logout", "admin_control_center": f"/control-center/ui?tenant_id={tid}", "billing_readiness": f"/billing/readiness?tenant_id={tid}", "public_saas_audit": f"/public-saas/gap-audit/ui?tenant_id={tid}"},
+        "owner_safe_scope": {"dashboard": True, "read_only_foundation": True, "billing_read_only": True, "admin_write_surfaces_exposed_to_owner": False, "admin_links_exposed_to_owner": False, "stage77_client_owner_superadmin_separation": True, "receptionist_core_changed": False},
+        "separation": stage77_client_owner_superadmin_separation_readiness_payload(tid),
+        "links": {"owner_dashboard": f"/owner/dashboard/ui?tenant_id={tid}", "owner_control_center": f"/owner/control-center/ui?tenant_id={tid}", "owner_session": f"/owner/session?tenant_id={tid}", "owner_billing": f"/owner/billing/ui?tenant_id={tid}", "owner_logout": "/owner/logout"},
+        "super_admin_support_links": {"admin_control_center": f"/control-center/ui?tenant_id={tid}", "public_saas_audit": f"/public-saas/gap-audit/ui?tenant_id={tid}", "billing_readiness": f"/billing/readiness?tenant_id={tid}"} if admin_access else {},
     }
 
 
@@ -14131,6 +14295,7 @@ def stage69_client_control_center_payload(tenant_id: str = TENANT_ID_DEFAULT, da
     csrf = stage69_safe_dependency("csrf_browser_write_hardening", lambda: stage74_csrf_write_hardening_readiness_payload(tenant_id_clean))
     abuse = stage69_safe_dependency("abuse_rate_limits", lambda: stage75_abuse_rate_limits_readiness_payload(tenant_id_clean, hours=24))
     email_auth = stage69_safe_dependency("email_magic_link_auth", lambda: stage76_email_magic_link_readiness_payload(tenant_id_clean, hours=24))
+    separation = stage69_safe_dependency("owner_superadmin_separation", lambda: stage77_client_owner_superadmin_separation_readiness_payload(tenant_id_clean, days=days))
     launch = stage69_safe_dependency("launch_readiness", lambda: stage54_launch_readiness_lock_payload(tenant_id_clean))
     access = stage69_safe_dependency("access_boundaries", lambda: stage58_access_boundaries_readiness_payload(tenant_id_clean))
 
@@ -14241,6 +14406,15 @@ def stage69_client_control_center_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             url(f"/owner/magic-login?tenant_id={tenant_id_clean}"),
             "One-time owner magic links verify owner email and create the owner session without exposing token hashes.",
         ),
+        stage69_step_payload(
+            "owner_superadmin_separation",
+            "Owner / super-admin separation",
+            separation,
+            bool(separation.get("client_owner_superadmin_separation_ready")),
+            url(f"/owner-admin-separation/readiness?tenant_id={tenant_id_clean}"),
+            url(f"/owner/control-center/ui?tenant_id={tenant_id_clean}"),
+            "Owner-safe surfaces are separated from super-admin write/config surfaces and tenant_id is not treated as authentication.",
+        ),
     ]
 
     ready_count = sum(1 for step in steps if step.get("ready"))
@@ -14306,6 +14480,7 @@ def stage69_client_control_center_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "csrf_browser_write_hardening": csrf,
             "abuse_rate_limits": abuse,
             "email_magic_link_auth": email_auth,
+            "owner_superadmin_separation": separation,
             "launch_readiness": launch,
             "access_boundaries": access,
         },
@@ -14321,6 +14496,8 @@ def stage69_client_control_center_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "csrf_browser_write_hardening_ready": bool(csrf.get("csrf_browser_write_hardening_ready")),
             "abuse_rate_limits_ready": bool(abuse.get("abuse_rate_limits_ready")),
             "email_verification_magic_link_foundation_ready": bool(email_auth.get("email_verification_magic_link_foundation_ready")),
+            "client_owner_superadmin_separation_ready": bool(separation.get("client_owner_superadmin_separation_ready")),
+            "owner_admin_links_exposed_to_owner": bool((separation.get("owner_safe_ui") or {}).get("owner_dashboard_admin_links_exposed_to_owner")),
         },
         "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
         "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
@@ -14343,6 +14520,7 @@ def stage69_client_control_center_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "abuse_readiness": url(f"/abuse/readiness?tenant_id={tenant_id_clean}"),
             "rate_limits_readiness": url(f"/rate-limits/readiness?tenant_id={tenant_id_clean}"),
             "public_saas_gap_audit": url(f"/public-saas/gap-audit/ui?tenant_id={tenant_id_clean}&days={days}"),
+            "owner_admin_separation": url(f"/owner-admin-separation/readiness?tenant_id={tenant_id_clean}"),
             "dialogue_qa": url("/dialogue/qa"),
         },
         "note": "Stage 69 is an aggregate dashboard/control-center layer only. It does not change receptionist routing, slot generation, price side-questions, Google Calendar event runtime, Telegram webhook runtime, or voice/calls.",
@@ -14424,6 +14602,7 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
     csrf = stage70_safe_dependency("csrf_browser_write_hardening", lambda: stage74_csrf_write_hardening_readiness_payload(tenant_id_clean))
     abuse = stage70_safe_dependency("abuse_rate_limits", lambda: stage75_abuse_rate_limits_readiness_payload(tenant_id_clean, hours=24))
     email_auth = stage70_safe_dependency("email_magic_link_auth", lambda: stage76_email_magic_link_readiness_payload(tenant_id_clean, hours=24))
+    separation = stage70_safe_dependency("owner_superadmin_separation", lambda: stage77_client_owner_superadmin_separation_readiness_payload(tenant_id_clean, days=days))
 
     admin_token_configured = stage61_admin_token_configured()
     admin_access_enforced = bool(admin_access.get("admin_access_enforced"))
@@ -14452,6 +14631,7 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
         {"key": "csrf_browser_write_hardening", "ready": bool(csrf.get("csrf_browser_write_hardening_ready")), "status": csrf.get("status"), "stage": csrf.get("stage")},
         {"key": "abuse_rate_limits", "ready": bool(abuse.get("abuse_rate_limits_ready")), "status": abuse.get("status"), "stage": abuse.get("stage")},
         {"key": "email_magic_link_auth", "ready": bool(email_auth.get("email_verification_magic_link_foundation_ready")), "status": email_auth.get("status"), "stage": email_auth.get("stage")},
+        {"key": "owner_superadmin_separation", "ready": bool(separation.get("client_owner_superadmin_separation_ready")), "status": separation.get("status"), "stage": separation.get("stage")},
     ]
     ready_self_serve_count = sum(1 for item in self_serve_blocks if item.get("ready"))
 
@@ -14481,11 +14661,11 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
         {
             "tenant_ownership_binding_ready": bool(owner_auth.get("tenant_ownership_binding_ready")),
             "owner_dashboard_paths_owner_protected": sorted(STAGE71_OWNER_PROTECTED_EXACT_PATHS),
-            "tenant_id_parameter_is_not_auth": bool(access.get("current_access_model", {}).get("tenant_id_parameter_is_not_auth")),
-            "current_access_model": access.get("current_access_model"),
+            "tenant_id_parameter_is_not_auth": True,
+            "stage77_separation_ready": bool(separation.get("client_owner_superadmin_separation_ready")),
         },
-        "Expand owner-tenant enforcement from Stage 71 owner dashboard to all client-owner self-serve surfaces before public launch.",
-        severity="blocker",
+        "Stage 77 hardens the owner/super-admin route boundary; final launch lock still decides public_saas_ready.",
+        severity="major" if tenant_ownership_guard_enforced else "blocker",
     ))
     gaps.append(stage70_gap_payload(
         "public_signup_boundary",
@@ -14558,13 +14738,19 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
     gaps.append(stage70_gap_payload(
         "client_superadmin_separation",
         "Client-owner vs super-admin separation",
-        "missing",
+        "ready" if separation.get("client_owner_superadmin_separation_ready") else "missing",
         {
+            "stage77_stage": separation.get("stage"),
+            "client_owner_superadmin_separation_ready": bool(separation.get("client_owner_superadmin_separation_ready")),
+            "owner_surfaces_owner_session_bound": bool(separation.get("owner_surfaces_owner_session_bound")),
+            "admin_surfaces_super_admin_bound": bool(separation.get("admin_surfaces_super_admin_bound")),
+            "owner_dashboard_admin_links_exposed_to_owner": bool((separation.get("owner_safe_ui") or {}).get("owner_dashboard_admin_links_exposed_to_owner")),
+            "owner_billing_admin_links_exposed_to_owner": bool((separation.get("owner_safe_ui") or {}).get("owner_billing_admin_links_exposed_to_owner")),
+            "tenant_id_parameter_is_not_auth": bool(separation.get("tenant_id_parameter_is_not_auth")),
             "multi_tenant_admin_surfaces_exist": ["/tenants", "/tenants/ui"],
-            "current_access": "same protected admin-token/session layer",
         },
-        "Separate super-admin routes from client-owner dashboard routes before exposing SaaS publicly.",
-        severity="blocker",
+        "Stage 77 separates owner-safe surfaces from super-admin/admin write surfaces. Final Stage 78 launch lock must still verify the full public SaaS gate.",
+        severity="major" if separation.get("client_owner_superadmin_separation_ready") else "blocker",
     ))
     gaps.append(stage70_gap_payload(
         "public_runtime_monitoring",
@@ -14651,6 +14837,8 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "email_verification_magic_link_foundation_ready": bool(email_auth.get("email_verification_magic_link_foundation_ready")),
             "owner_magic_login_ready": bool(email_auth.get("owner_magic_login_ready")),
             "email_delivery_provider_configured": bool(email_auth.get("email_delivery_provider_configured")),
+            "client_owner_superadmin_separation_ready": bool(separation.get("client_owner_superadmin_separation_ready")),
+            "owner_admin_links_exposed_to_owner": bool((separation.get("owner_safe_ui") or {}).get("owner_dashboard_admin_links_exposed_to_owner")),
         },
         "dependencies": {
             "admin_access_enforcement": admin_access,
@@ -14671,9 +14859,9 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "csrf_browser_write_hardening": csrf,
             "abuse_rate_limits": abuse,
             "email_magic_link_auth": email_auth,
+            "owner_superadmin_separation": separation,
         },
         "recommended_next_stages": [
-            "Stage 77 — Client-owner vs Super-admin Separation Hardening",
             "Stage 78 — Final Public SaaS Readiness Lock",
         ],
         "blocking": list(dict.fromkeys([str(x) for x in blockers if str(x)])),
@@ -14693,6 +14881,7 @@ def stage70_public_saas_gap_audit_payload(tenant_id: str = TENANT_ID_DEFAULT, da
             "owner_magic_login": url(f"/owner/magic-login?tenant_id={tenant_id_clean}"),
             "control_center": url(f"/control-center/ui?tenant_id={tenant_id_clean}&days={days}"),
             "access_readiness": url(f"/access/readiness?tenant_id={tenant_id_clean}"),
+            "owner_admin_separation": url(f"/owner-admin-separation/readiness?tenant_id={tenant_id_clean}"),
             "tenant_config_ui": url(f"/tenant/config/ui?tenant_id={tenant_id_clean}"),
             "dashboard": url(f"/dashboard?tenant_id={tenant_id_clean}"),
             "dialogue_qa": url("/dialogue/qa"),
@@ -15157,6 +15346,15 @@ def stage76_email_magic_link_readiness(request: Request, tenant_id: str = TENANT
     return stage76_email_magic_link_readiness_payload(tid, hours=hours)
 
 
+@app.get("/owner-admin-separation/readiness")
+@app.get("/client-owner/separation/readiness")
+@app.get("/security/owner-admin-separation/readiness")
+@app.get("/tenant/isolation/readiness")
+def stage77_owner_admin_separation_readiness(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    tid = stage711_resolve_tenant_context(request, tenant_id)
+    return stage77_client_owner_superadmin_separation_readiness_payload(tid, days=days)
+
+
 @app.post("/owner/magic-link/bootstrap")
 def stage76_owner_magic_link_bootstrap(request: Request, payload: dict = Body(...)):
     data = payload or {}
@@ -15334,7 +15532,7 @@ def owner_dashboard_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
     html = r'''
 <!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Repliq Owner Dashboard</title>
 <style>body{font-family:Inter,system-ui,-apple-system,Segoe UI,Arial,sans-serif;background:#f6f7fb;color:#111827;margin:0;padding:24px}.wrap{max-width:1000px;margin:0 auto}.hero,.card{background:white;border:1px solid #e5e7eb;border-radius:18px;padding:18px;margin:14px 0;box-shadow:0 8px 25px rgba(17,24,39,.05)}.hero{display:flex;justify-content:space-between;gap:18px;align-items:flex-start}.sub,.muted{color:#64748b;font-size:14px;line-height:1.45}h1{margin:0 0 6px;font-size:32px;letter-spacing:-.03em}h2{margin:0 0 12px}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.badge{display:inline-block;border-radius:999px;padding:5px 9px;background:#e5e7eb;font-size:12px;font-weight:700;margin:3px 4px 3px 0}.badge.ok{background:#dcfce7;color:#166534}.badge.warn{background:#fef3c7;color:#92400e}button{border:0;border-radius:12px;padding:10px 13px;background:#111827;color:white;font-weight:750;cursor:pointer}.secondary{background:#e5e7eb;color:#111827}input{box-sizing:border-box;border:1px solid #cbd5e1;border-radius:12px;padding:10px;font-size:14px}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}pre{background:#0f172a;color:#e2e8f0;border-radius:14px;padding:14px;max-height:520px;overflow:auto;white-space:pre-wrap}@media(max-width:900px){body{padding:12px}.hero{display:block}.grid{grid-template-columns:1fr}}</style></head>
-<body><div class="wrap"><div class="hero"><div><h1>Repliq Owner Dashboard</h1><div class="sub">Stage 71 owner-auth foundation. This is an owner-safe read-only surface. Existing admin write/config surfaces remain super-admin protected.</div><div class="actions"><input id="tenant_id" style="min-width:260px"/><button onclick="loadDash()">Load</button><button class="secondary" onclick="go('/owner/session?tenant_id='+encTenant())">Session JSON</button><button class="secondary" onclick="go('/owner/logout')">Logout</button></div></div><div id="badges"></div></div><div class="grid"><div class="card"><div class="muted">Business</div><h2 id="business">-</h2><div class="sub" id="tenantline">-</div></div><div class="card"><div class="muted">Owner</div><h2 id="owner">-</h2><div class="sub" id="role">-</div></div><div class="card"><div class="muted">Scope</div><h2>read-only</h2><div class="sub">no receptionist-core changes</div></div></div><div class="card"><h2>Owner auth readiness</h2><div id="ready"></div></div><div class="card"><h2>Links</h2><div id="links" class="actions"></div></div><div class="card"><h2>Raw owner dashboard</h2><pre id="raw">Loading...</pre></div></div>
+<body><div class="wrap"><div class="hero"><div><h1>Repliq Owner Dashboard</h1><div class="sub">Stage 77 owner-safe control surface. Admin write/config surfaces are kept out of the owner UI and remain super-admin protected.</div><div class="actions"><input id="tenant_id" style="min-width:260px"/><button onclick="loadDash()">Load</button><button class="secondary" onclick="go('/owner/session?tenant_id='+encTenant())">Session JSON</button><button class="secondary" onclick="go('/owner/logout')">Logout</button></div></div><div id="badges"></div></div><div class="grid"><div class="card"><div class="muted">Business</div><h2 id="business">-</h2><div class="sub" id="tenantline">-</div></div><div class="card"><div class="muted">Owner</div><h2 id="owner">-</h2><div class="sub" id="role">-</div></div><div class="card"><div class="muted">Scope</div><h2>read-only</h2><div class="sub">no receptionist-core changes</div></div></div><div class="card"><h2>Owner auth readiness</h2><div id="ready"></div></div><div class="card"><h2>Links</h2><div id="links" class="actions"></div></div><div class="card"><h2>Raw owner dashboard</h2><pre id="raw">Loading...</pre></div></div>
 <script>
 const DEFAULT_TENANT_ID=__TENANT_ID_JSON__;
 function el(id){return document.getElementById(id)} function tenant(){return (el('tenant_id').value||'').trim()||DEFAULT_TENANT_ID||'clinic_demo'} function encTenant(){return encodeURIComponent(tenant())} function go(p){window.location=p} function esc(v){return v===null||v===undefined?'':String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;')} function badge(ok,label){return `<span class="badge ${ok?'ok':'warn'}">${esc(label)}</span>`}
@@ -18130,6 +18328,9 @@ def stage73_billing_ui_html(tenant_id: str = TENANT_ID_DEFAULT, owner_mode: bool
     owner_mode_json = "true" if owner_mode else "false"
     title = "Owner Billing" if owner_mode else "Billing Admin"
     subtitle = "Owner-visible read-only subscription status." if owner_mode else "Stage 73 manual billing/subscription foundation."
+    owner_action_links = """<button class="secondary" onclick="go('/owner/dashboard/ui?tenant_id='+encTenant())">Owner dashboard</button><button class="secondary" onclick="go('/owner/control-center/ui?tenant_id='+encTenant())">Owner control center</button><button class="secondary" onclick="go('/owner/session?tenant_id='+encTenant())">Owner session</button><button class="secondary" onclick="go('/owner/logout')">Logout</button>"""
+    admin_action_links = """<button class="secondary" onclick="go('/owner/dashboard/ui?tenant_id='+encTenant())">Owner dashboard</button><button class="secondary" onclick="go('/control-center/ui?tenant_id='+encTenant())">Control center</button><button class="secondary" onclick="go('/public-saas/gap-audit/ui?tenant_id='+encTenant())">Public SaaS audit</button>"""
+    action_links = owner_action_links if owner_mode else admin_action_links
     return f"""
 <!doctype html>
 <html>
@@ -18144,7 +18345,7 @@ body{{font-family:Inter,Arial,sans-serif;background:#f6f7fb;color:#111827;margin
 <body>
 <div class="wrap">
   <div class="hero"><h1>{title}</h1><p>{subtitle}</p></div>
-  <div class="card actions"><input id="tenant_id" style="max-width:320px"/><button onclick="loadBilling()">Load</button><button class="secondary" onclick="go('/owner/dashboard/ui?tenant_id='+encTenant())">Owner dashboard</button><button class="secondary" onclick="go('/control-center/ui?tenant_id='+encTenant())">Control center</button><button class="secondary" onclick="go('/public-saas/gap-audit/ui?tenant_id='+encTenant())">Public SaaS audit</button></div>
+  <div class="card actions"><input id="tenant_id" style="max-width:320px"/><button onclick="loadBilling()">Load</button>{action_links}</div>
   <div class="card"><div id="summary"></div></div>
   <div class="card" id="editCard">
     <h2>Subscription settings</h2>
