@@ -578,3 +578,28 @@ Stage 77.1 is a narrow readiness endpoint hotfix only. It fixes a runtime type m
 - Do not expose raw admin tokens, owner login codes, magic tokens, magic-token hashes, CSRF secrets, raw IPs, subject hashes, Telegram tokens, or Google credentials.
 - Do not change receptionist dialogue, booking routing, slot generation, date/time parsing, side-question handling, confirmation, cancellation, rescheduling, Google Calendar event runtime, Telegram webhook handling, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, LLM orchestration, or regression evaluator rules.
 - Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+
+
+## Stage 81 — Tenant Business Profile / Workspace Settings UX Rules
+
+- Stage 81 continues the Mature SMB SaaS phase after Stage 80.
+- Stage 81 may add owner-safe business profile/workspace settings UX, readiness metadata, and links only.
+- Owner editable fields are limited to non-secret business profile fields: `business_name`, `language`, `timezone`, `work_start`, `work_end`.
+- Stage 81 readiness endpoints must be protected by Stage 61/62 admin auth:
+  - `/business-profile/readiness`
+  - `/owner-business-profile/readiness`
+  - `/workspace-settings/readiness`
+  - `/tenant/business-profile/readiness`
+- Stage 81 owner settings endpoints must be protected by Stage 71 owner session and tenant binding:
+  - `/owner/business-profile`
+  - `/owner/business-profile/ui`
+  - `/owner/workspace/settings`
+  - `/owner/workspace/settings/ui`
+  - `/owner/business-profile/update`
+- `POST /owner/business-profile/update` must remain protected by Stage 74 owner browser write/CSRF hardening.
+- Owner-facing profile/settings UI must not expose super-admin tenant config links in primary owner navigation.
+- Do not expose raw admin tokens, owner login codes, magic tokens, magic-token hashes, CSRF secrets, raw IPs, subject hashes, Telegram tokens, Google credentials, or other tenant secrets.
+- Stage 78 remains the source of truth for `public_saas_ready`.
+- `enterprise_saas_ready` remains false; enterprise maturity is a later phase.
+- Do not change receptionist dialogue, booking routing, slot generation, date/time parsing, side-question handling, confirmation, cancellation, rescheduling, Google Calendar event runtime, Telegram webhook handling, billing semantics, abuse/rate-limit semantics, magic-link semantics, LLM orchestration, or regression evaluator rules.
+- Current protected baseline remains `/dialogue/qa = 50/50 passed`.

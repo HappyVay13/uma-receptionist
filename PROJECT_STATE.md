@@ -1051,7 +1051,7 @@ Receptionist core was not changed. Booking routing, slots, date/time parsing, pr
 
 ## Stage 80 — Tenant Workspace UX / Owner Setup Completion
 
-Status: implemented in archive, awaiting deploy verification.
+Status: closed after deploy verification. User reported `/dialogue/qa` = 50/50 passed and all Stage 80 checks OK. The `clinic_demo` workspace checklist correctly showed `workspace_setup_complete=false` only because `business_profile.language` was missing; this was expected tenant data attention, not a Stage 80 failure.
 
 Scope:
 - Added owner-safe workspace/setup endpoints:
@@ -1081,3 +1081,35 @@ Expected verification:
 - Stage 78 remains the source of truth for `public_saas_ready`.
 
 Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, dialogue QA evaluator, LLM orchestration, and voice/calls were not changed.
+
+
+## Stage 81 — Tenant Business Profile / Workspace Settings UX
+
+Status: implemented in archive, awaiting deploy verification.
+
+Scope:
+- Added owner-safe business profile/settings endpoints:
+  - `GET /owner/business-profile`
+  - `GET /owner/business-profile/ui`
+  - `GET /owner/workspace/settings`
+  - `GET /owner/workspace/settings/ui`
+  - `POST /owner/business-profile/update`
+- Added admin-protected readiness endpoints:
+  - `GET /business-profile/readiness`
+  - `GET /owner-business-profile/readiness`
+  - `GET /workspace-settings/readiness`
+  - `GET /tenant/business-profile/readiness`
+- Owner update is limited to non-secret business profile fields: business name, language, timezone, work_start and work_end.
+- Integrated business profile edit links into owner workspace/dashboard setup flow.
+- Added Stage 74 owner-scope CSRF/browser-write protection for the owner business profile write endpoint.
+
+Expected verification:
+- Render deploy starts successfully.
+- `/dialogue/qa` = 50/50 passed.
+- `/business-profile/readiness?tenant_id=clinic_demo` returns `stage=81`.
+- `/owner/business-profile/ui?tenant_id=<owner_tenant>` opens with valid owner session.
+- Saving language/profile fields through owner UI returns `ok=true`.
+- `/tenant-workspace/readiness?tenant_id=clinic_demo` reflects the updated business profile completion state.
+- Owner dashboard/workspace/billing remain owner-safe.
+
+Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, billing semantics, abuse/rate-limit semantics, magic-link semantics, dialogue QA evaluator, LLM orchestration, and voice/calls were not changed.
