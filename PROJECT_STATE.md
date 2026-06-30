@@ -1122,7 +1122,7 @@ Receptionist core was not changed. Booking routing, slots, date/time parsing, pr
 
 ## Stage 82 — Service Catalog Owner UX / Setup Completion Polish
 
-Status: implemented in archive, awaiting deploy verification.
+Status: closed after deploy verification. User reported `/dialogue/qa` = 50/50 passed and all Stage 82 checks OK.
 
 Scope:
 - Added owner-safe service catalog endpoints:
@@ -1152,6 +1152,42 @@ Expected verification:
 - Saving services through owner UI returns `ok=true` and keeps at least one active runtime service.
 - `/tenant-workspace/readiness?tenant_id=clinic_demo` points the service catalog next-action to owner-safe `/owner/services/ui` instead of admin builder.
 - Owner dashboard/workspace/billing remain owner-safe.
+- Stage 78 remains the source of truth for `public_saas_ready`; `enterprise_saas_ready=false` remains explicit.
+
+Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, dialogue QA evaluator, LLM orchestration, and voice/calls were not changed.
+
+## Stage 83 — Business Memory / FAQ Owner UX Polish
+
+Status: implemented in archive, awaiting deploy verification.
+
+Scope:
+- Added owner-safe Business Memory / FAQ endpoints:
+  - `GET /owner/business-memory`
+  - `GET /owner/business-memory/ui`
+  - `GET /owner/faq`
+  - `GET /owner/faq/ui`
+  - `POST /owner/business-memory/update`
+  - `POST /owner/faq/update`
+- Added admin-protected readiness endpoints:
+  - `GET /owner-business-memory/readiness`
+  - `GET /owner-faq/readiness`
+  - `GET /business-memory/owner/readiness`
+  - `GET /workspace/memory/readiness`
+- Added owner-safe business memory/FAQ model, setup completion, language coverage, next actions, and UI for receptionist facts.
+- Owner update is limited to non-secret business memory/FAQ fields: multilingual business memory, FAQ, booking rules, generic memory, generic FAQ, booking rules, and policies.
+- Integrated Business Memory / FAQ links into owner dashboard/workspace/setup flow.
+- Stage 80 business_memory next_action now points to owner-safe `/owner/business-memory/ui` instead of requiring support/admin builder.
+- Added Stage 74 owner-scope CSRF/browser-write protection for owner memory/FAQ write endpoints.
+
+Expected verification:
+- Render deploy starts successfully.
+- `/dialogue/qa` = 50/50 passed.
+- `/owner-business-memory/readiness?tenant_id=clinic_demo` returns `stage=83` and `business_memory_owner_ux_ready=true` when routes/security are ready.
+- `/owner-faq/readiness?tenant_id=clinic_demo`, `/business-memory/owner/readiness?tenant_id=clinic_demo`, and `/workspace/memory/readiness?tenant_id=clinic_demo` work and remain admin-protected.
+- `/owner/business-memory/ui?tenant_id=<owner_tenant>` opens with a valid owner session or super-admin bypass.
+- Saving memory/FAQ through owner UI returns `ok=true` and updates readiness/content completion.
+- `/tenant-workspace/readiness?tenant_id=clinic_demo` points the business_memory next-action to owner-safe `/owner/business-memory/ui`.
+- Owner dashboard/workspace/services/billing remain owner-safe.
 - Stage 78 remains the source of truth for `public_saas_ready`; `enterprise_saas_ready=false` remains explicit.
 
 Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, dialogue QA evaluator, LLM orchestration, and voice/calls were not changed.

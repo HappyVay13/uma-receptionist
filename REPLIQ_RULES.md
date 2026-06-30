@@ -635,3 +635,29 @@ Stage 77.1 is a narrow readiness endpoint hotfix only. It fixes a runtime type m
 - `enterprise_saas_ready` remains false; enterprise maturity is a later phase.
 - Do not change receptionist dialogue, booking routing, slot generation, date/time parsing, side-question handling, confirmation, cancellation, rescheduling, Google Calendar event runtime, Telegram webhook handling, billing semantics, abuse/rate-limit semantics, magic-link semantics, LLM orchestration, or regression evaluator rules.
 - Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+
+## Stage 83 — Business Memory / FAQ Owner UX Polish Rules
+
+- Stage 83 continues the Mature SMB SaaS phase after Stage 82.
+- Stage 83 may add owner-safe Business Memory / FAQ UX, owner memory setup completion metadata, readiness endpoints, and owner dashboard/workspace links only.
+- Owner editable memory fields are limited to non-secret receptionist fact fields: `business_memory_lv`, `business_memory_ru`, `business_memory_en`, `faq_lv`, `faq_ru`, `faq_en`, `booking_rules_lv`, `booking_rules_ru`, `booking_rules_en`, `business_memory`, `faq`, `booking_rules`, `policies`.
+- Stage 83 readiness endpoints must be protected by Stage 61/62 admin auth:
+  - `/owner-business-memory/readiness`
+  - `/owner-faq/readiness`
+  - `/business-memory/owner/readiness`
+  - `/workspace/memory/readiness`
+- Stage 83 owner memory/FAQ endpoints must be protected by Stage 71 owner session and tenant binding:
+  - `/owner/business-memory`
+  - `/owner/business-memory/ui`
+  - `/owner/faq`
+  - `/owner/faq/ui`
+  - `/owner/business-memory/update`
+  - `/owner/faq/update`
+- `POST /owner/business-memory/update` and `POST /owner/faq/update` must remain protected by Stage 74 owner browser write/CSRF hardening.
+- Owner-facing memory/FAQ UI must not expose super-admin tenant config links or admin Business Memory builder links in primary owner navigation.
+- Super-admin support links may appear only when opened through explicit admin/session bypass and must be clearly separated from owner links.
+- Do not expose raw admin tokens, owner login codes, magic tokens, magic-token hashes, CSRF secrets, raw IPs, subject hashes, Telegram tokens, Google credentials, or other tenant secrets.
+- Stage 78 remains the source of truth for `public_saas_ready`.
+- `enterprise_saas_ready` remains false; enterprise maturity is a later phase.
+- Do not change receptionist dialogue, booking routing, slot generation, date/time parsing, side-question handling, confirmation, cancellation, rescheduling, Google Calendar event runtime, Telegram webhook handling, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, LLM orchestration, or regression evaluator rules.
+- Current protected baseline remains `/dialogue/qa = 50/50 passed`.
