@@ -609,3 +609,29 @@ Stage 77.1 is a narrow readiness endpoint hotfix only. It fixes a runtime type m
 - Ensures `tenants.language` exists, backfills empty values to `lv`, and sets `lv` as the default for future rows.
 - Does not change receptionist booking/dialogue/calendar/Telegram/billing/runtime semantics.
 
+
+## Stage 82 — Service Catalog Owner UX / Setup Completion Polish Rules
+
+- Stage 82 continues the Mature SMB SaaS phase after Stage 81.1.
+- Stage 82 may add owner-safe service catalog UX, owner service setup completion metadata, readiness endpoints, and owner dashboard/workspace links only.
+- Owner editable service fields are limited to non-secret service catalog fields: `key`, `active`, `name_lv`, `name_ru`, `name_en`, `duration_min`, `price`, `currency`, `aliases_lv`, `aliases_ru`, `aliases_en`, `description_lv`, `description_ru`, `description_en`.
+- Stage 82 readiness endpoints must be protected by Stage 61/62 admin auth:
+  - `/owner-services/readiness`
+  - `/owner-service-catalog/readiness`
+  - `/service-catalog/owner/readiness`
+  - `/workspace/services/readiness`
+- Stage 82 owner service endpoints must be protected by Stage 71 owner session and tenant binding:
+  - `/owner/services`
+  - `/owner/services/ui`
+  - `/owner/service-catalog`
+  - `/owner/service-catalog/ui`
+  - `/owner/services/update`
+  - `/owner/service-catalog/update`
+- `POST /owner/services/update` and `POST /owner/service-catalog/update` must remain protected by Stage 74 owner browser write/CSRF hardening.
+- Owner-facing service UI must not expose super-admin tenant config links or admin service catalog builder links in primary owner navigation.
+- Super-admin support links may appear only when opened through explicit admin/session bypass and must be clearly separated from owner links.
+- Do not expose raw admin tokens, owner login codes, magic tokens, magic-token hashes, CSRF secrets, raw IPs, subject hashes, Telegram tokens, Google credentials, or other tenant secrets.
+- Stage 78 remains the source of truth for `public_saas_ready`.
+- `enterprise_saas_ready` remains false; enterprise maturity is a later phase.
+- Do not change receptionist dialogue, booking routing, slot generation, date/time parsing, side-question handling, confirmation, cancellation, rescheduling, Google Calendar event runtime, Telegram webhook handling, billing semantics, abuse/rate-limit semantics, magic-link semantics, LLM orchestration, or regression evaluator rules.
+- Current protected baseline remains `/dialogue/qa = 50/50 passed`.

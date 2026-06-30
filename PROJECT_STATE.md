@@ -1085,7 +1085,7 @@ Receptionist core was not changed. Booking routing, slots, date/time parsing, pr
 
 ## Stage 81 — Tenant Business Profile / Workspace Settings UX
 
-Status: implemented in archive, awaiting deploy verification.
+Status: closed after deploy verification and Stage 81.1 hotfix. User reported `/dialogue/qa` = 50/50 passed and all Stage 81/81.1 checks OK.
 
 Scope:
 - Added owner-safe business profile/settings endpoints:
@@ -1119,3 +1119,39 @@ Receptionist core was not changed. Booking routing, slots, date/time parsing, pr
 - Ensures `tenants.language` exists, backfills empty values to `lv`, and sets `lv` as the default for future rows.
 - Does not change receptionist booking/dialogue/calendar/Telegram/billing/runtime semantics.
 
+
+## Stage 82 — Service Catalog Owner UX / Setup Completion Polish
+
+Status: implemented in archive, awaiting deploy verification.
+
+Scope:
+- Added owner-safe service catalog endpoints:
+  - `GET /owner/services`
+  - `GET /owner/services/ui`
+  - `GET /owner/service-catalog`
+  - `GET /owner/service-catalog/ui`
+  - `POST /owner/services/update`
+  - `POST /owner/service-catalog/update`
+- Added admin-protected readiness endpoints:
+  - `GET /owner-services/readiness`
+  - `GET /owner-service-catalog/readiness`
+  - `GET /service-catalog/owner/readiness`
+  - `GET /workspace/services/readiness`
+- Added owner-safe service catalog model, setup completion status, next actions, and service JSON editor UI.
+- Owner update is limited to non-secret service catalog fields: names, aliases, descriptions, duration, price, currency, active status, and service key.
+- Owner service update syncs runtime service lists and managed price facts through the existing Stage 66 service catalog logic.
+- Integrated owner services links into owner dashboard/workspace setup flow.
+- Added Stage 74 owner-scope CSRF/browser-write protection for owner service catalog write endpoints.
+
+Expected verification:
+- Render deploy starts successfully.
+- `/dialogue/qa` = 50/50 passed.
+- `/owner-services/readiness?tenant_id=clinic_demo` returns `stage=82` and `service_catalog_owner_ux_ready=true` when routes/security are ready.
+- `/owner-service-catalog/readiness?tenant_id=clinic_demo`, `/service-catalog/owner/readiness?tenant_id=clinic_demo`, and `/workspace/services/readiness?tenant_id=clinic_demo` work and remain admin-protected.
+- `/owner/services/ui?tenant_id=<owner_tenant>` opens with valid owner session or super-admin bypass.
+- Saving services through owner UI returns `ok=true` and keeps at least one active runtime service.
+- `/tenant-workspace/readiness?tenant_id=clinic_demo` points the service catalog next-action to owner-safe `/owner/services/ui` instead of admin builder.
+- Owner dashboard/workspace/billing remain owner-safe.
+- Stage 78 remains the source of truth for `public_saas_ready`; `enterprise_saas_ready=false` remains explicit.
+
+Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, dialogue QA evaluator, LLM orchestration, and voice/calls were not changed.

@@ -175,6 +175,12 @@ STAGE71_OWNER_SESSION_COOKIE_NAME = "repliq_owner_session"
 STAGE71_OWNER_SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7
 STAGE71_OWNER_SESSION_VERSION = 1
 STAGE71_OWNER_PROTECTED_EXACT_PATHS = {
+    "/owner/services",
+    "/owner/services/ui",
+    "/owner/services/update",
+    "/owner/service-catalog",
+    "/owner/service-catalog/ui",
+    "/owner/service-catalog/update",
     "/owner/dashboard",
     "/owner/dashboard/ui",
     "/owner/control-center",
@@ -319,6 +325,10 @@ STAGE61_PROTECTED_EXACT_PATHS = {
     "/owner-business-profile/readiness",
     "/workspace-settings/readiness",
     "/tenant/business-profile/readiness",
+    "/owner-services/readiness",
+    "/owner-service-catalog/readiness",
+    "/service-catalog/owner/readiness",
+    "/workspace/services/readiness",
     "/client/dashboard",
     "/client/dashboard/ui",
     "/client/control-center",
@@ -708,6 +718,8 @@ STAGE74_ADMIN_BROWSER_WRITE_PATHS = {
     "/dev/dialogue-simulate",
 }
 STAGE74_OWNER_BROWSER_WRITE_PATHS = {
+    "/owner/services/update",
+    "/owner/service-catalog/update",
     "/owner/business-profile/update",
     "/owner/logout",
 }
@@ -1676,6 +1688,10 @@ STAGE77_READINESS_PATHS = {
     "/tenant/isolation/readiness",
 }
 STAGE77_OWNER_SAFE_SURFACE_PATHS = {
+    "/owner/services",
+    "/owner/services/ui",
+    "/owner/service-catalog",
+    "/owner/service-catalog/ui",
     "/owner/session",
     "/owner/login",
     "/owner/logout",
@@ -1701,6 +1717,8 @@ STAGE77_OWNER_SAFE_SURFACE_PATHS = {
     "/owner/subscription/ui",
 }
 STAGE77_OWNER_SAFE_LINK_KEYS = {
+    "owner_services",
+    "owner_service_catalog",
     "owner_dashboard",
     "owner_control_center",
     "owner_session",
@@ -3847,13 +3865,14 @@ def stage71_owner_dashboard_payload(request: Request, tenant_id: str = TENANT_ID
             "quickstart_steps": [
                 {"key": "workspace", "label": "Review workspace", "status": "ready", "href": f"/owner/workspace/ui?tenant_id={tid}"},
                 {"key": "business_profile", "label": "Edit business profile", "status": "ready", "href": f"/owner/business-profile/ui?tenant_id={tid}"},
+                {"key": "services", "label": "Review services", "status": "ready", "href": f"/owner/services/ui?tenant_id={tid}"},
                 {"key": "setup", "label": "Open setup checklist", "status": "ready", "href": f"/owner/setup/ui?tenant_id={tid}"},
                 {"key": "billing", "label": "Review billing status", "status": "ready", "href": f"/owner/billing/ui?tenant_id={tid}"},
                 {"key": "session", "label": "Check owner session", "status": "ready", "href": f"/owner/session?tenant_id={tid}"},
                 {"key": "support_setup", "label": "Calendar/channel setup remains controlled by Repliq support in this SMB phase", "status": "support_controlled", "href": None},
             ],
         },
-        "links": {"owner_dashboard": f"/owner/dashboard/ui?tenant_id={tid}", "owner_workspace": f"/owner/workspace/ui?tenant_id={tid}", "owner_setup": f"/owner/setup/ui?tenant_id={tid}", "owner_business_profile": f"/owner/business-profile/ui?tenant_id={tid}", "owner_workspace_settings": f"/owner/workspace/settings/ui?tenant_id={tid}", "owner_control_center": f"/owner/control-center/ui?tenant_id={tid}", "owner_session": f"/owner/session?tenant_id={tid}", "owner_billing": f"/owner/billing/ui?tenant_id={tid}", "owner_logout": "/owner/logout"},
+        "links": {"owner_dashboard": f"/owner/dashboard/ui?tenant_id={tid}", "owner_workspace": f"/owner/workspace/ui?tenant_id={tid}", "owner_setup": f"/owner/setup/ui?tenant_id={tid}", "owner_business_profile": f"/owner/business-profile/ui?tenant_id={tid}", "owner_services": f"/owner/services/ui?tenant_id={tid}", "owner_service_catalog": f"/owner/service-catalog/ui?tenant_id={tid}", "owner_workspace_settings": f"/owner/workspace/settings/ui?tenant_id={tid}", "owner_control_center": f"/owner/control-center/ui?tenant_id={tid}", "owner_session": f"/owner/session?tenant_id={tid}", "owner_billing": f"/owner/billing/ui?tenant_id={tid}", "owner_logout": "/owner/logout"},
         "super_admin_support_links": {"admin_control_center": f"/control-center/ui?tenant_id={tid}", "public_saas_audit": f"/public-saas/gap-audit/ui?tenant_id={tid}", "billing_readiness": f"/billing/readiness?tenant_id={tid}"} if admin_access else {},
     }
 
@@ -3955,7 +3974,7 @@ def stage80_workspace_setup_core(tenant_id: str = TENANT_ID_DEFAULT, days: int =
 
     tasks = [
         stage80_owner_task_payload("business_profile", "Business profile", profile_complete, "Business name, language, timezone and working hours are present.", "Edit business profile", f"/owner/business-profile/ui?tenant_id={tenant_id_clean}", False, {"checks": business_fields, "missing": [k for k, v in business_fields.items() if not v]}),
-        stage80_owner_task_payload("service_catalog", "Services", service_complete, "Services are available to the receptionist runtime.", "Ask Repliq support to update services" if not service_complete else "Review workspace", f"/owner/workspace/ui?tenant_id={tenant_id_clean}" if service_complete else None, not service_complete, {"runtime_service_catalog_ready": catalog.get("runtime_service_catalog_ready"), "items_active": (catalog.get("counts") or {}).get("items_active"), "admin_builder_hidden_from_owner": True}),
+        stage80_owner_task_payload("service_catalog", "Services", service_complete, "Services are available to the receptionist runtime.", "Edit services", f"/owner/services/ui?tenant_id={tenant_id_clean}", False, {"runtime_service_catalog_ready": catalog.get("runtime_service_catalog_ready"), "items_active": (catalog.get("counts") or {}).get("items_active"), "owner_service_catalog_ui": True, "admin_builder_hidden_from_owner": True}),
         stage80_owner_task_payload("business_memory", "Business memory / FAQ", memory_complete, "FAQ/business facts are present for receptionist side-questions.", "Ask Repliq support to update business memory" if not memory_complete else "Review workspace", f"/owner/workspace/ui?tenant_id={tenant_id_clean}" if memory_complete else None, not memory_complete, {"business_memory_content_ready": memory.get("business_memory_content_ready"), "configured_language_count": memory.get("configured_language_count"), "admin_builder_hidden_from_owner": True}),
         stage80_owner_task_payload("google_calendar", "Google Calendar", google_complete, "Google Calendar connection and working calendar selection are ready.", "Ask Repliq support to finish calendar setup" if not google_complete else "Review workspace", f"/owner/workspace/ui?tenant_id={tenant_id_clean}" if google_complete else None, not google_complete, {"google_connected": google.get("connection", {}).get("google_connected") if isinstance(google.get("connection"), dict) else None, "calendar_selected": google.get("calendar", {}).get("calendar_selected") if isinstance(google.get("calendar"), dict) else None, "admin_oauth_links_hidden_from_owner": True}),
         stage80_owner_task_payload("telegram_channel", "Telegram text channel", telegram_complete, "Tenant Telegram bot/channel runtime has token/secret and webhook status metadata.", "Ask Repliq support to finish Telegram setup" if not telegram_complete else "Review workspace", f"/owner/workspace/ui?tenant_id={tenant_id_clean}" if telegram_complete else None, not telegram_complete, {"telegram_effective_runtime_ready": telegram.get("telegram_effective_runtime_ready"), "telegram_bot_self_serve_ready": telegram.get("telegram_bot_self_serve_ready"), "raw_bot_token_exposed": False, "admin_setup_links_hidden_from_owner": True}),
@@ -4023,7 +4042,7 @@ def stage80_workspace_setup_core(tenant_id: str = TENANT_ID_DEFAULT, days: int =
         "security": {"owner_workspace_routes_owner_session_bound": bool(not missing_owner_protection and not owner_admin_overlap), "stage80_readiness_routes_admin_protected": bool(not missing_readiness_protection), "tenant_id_parameter_is_not_auth": True, "owner_admin_links_exposed_to_owner": False, "admin_config_links_hidden_from_owner": True, "raw_admin_token_exposed": False, "raw_owner_login_code_exposed": False, "raw_magic_token_exposed": False, "raw_magic_token_hash_exposed": False, "telegram_token_exposed": False, "google_credentials_exposed": False},
         "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
         "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
-        "links": {"owner_workspace": url(f"/owner/workspace/ui?tenant_id={tenant_id_clean}"), "owner_setup": url(f"/owner/setup/ui?tenant_id={tenant_id_clean}"), "owner_business_profile": url(f"/owner/business-profile/ui?tenant_id={tenant_id_clean}"), "owner_workspace_settings": url(f"/owner/workspace/settings/ui?tenant_id={tenant_id_clean}"), "owner_dashboard": url(f"/owner/dashboard/ui?tenant_id={tenant_id_clean}"), "owner_billing": url(f"/owner/billing/ui?tenant_id={tenant_id_clean}"), "owner_session": url(f"/owner/session?tenant_id={tenant_id_clean}"), "stage80_readiness": url(f"/tenant-workspace/readiness?tenant_id={tenant_id_clean}&days={days}"), "stage79_readiness": url(f"/launch-ux/readiness?tenant_id={tenant_id_clean}&days={days}"), "final_public_saas_readiness": url(f"/public-saas/final-readiness?tenant_id={tenant_id_clean}&days={days}")},
+        "links": {"owner_workspace": url(f"/owner/workspace/ui?tenant_id={tenant_id_clean}"), "owner_setup": url(f"/owner/setup/ui?tenant_id={tenant_id_clean}"), "owner_business_profile": url(f"/owner/business-profile/ui?tenant_id={tenant_id_clean}"), "owner_services": url(f"/owner/services/ui?tenant_id={tenant_id_clean}"), "owner_service_catalog": url(f"/owner/service-catalog/ui?tenant_id={tenant_id_clean}"), "owner_workspace_settings": url(f"/owner/workspace/settings/ui?tenant_id={tenant_id_clean}"), "owner_dashboard": url(f"/owner/dashboard/ui?tenant_id={tenant_id_clean}"), "owner_billing": url(f"/owner/billing/ui?tenant_id={tenant_id_clean}"), "owner_session": url(f"/owner/session?tenant_id={tenant_id_clean}"), "stage80_readiness": url(f"/tenant-workspace/readiness?tenant_id={tenant_id_clean}&days={days}"), "stage79_readiness": url(f"/launch-ux/readiness?tenant_id={tenant_id_clean}&days={days}"), "final_public_saas_readiness": url(f"/public-saas/final-readiness?tenant_id={tenant_id_clean}&days={days}")},
         "note": "Stage 80 adds owner-safe workspace setup completion UX/readiness only. It does not expose admin setup links to owners and does not change receptionist dialogue, booking, slots, Google Calendar event runtime, Telegram webhook runtime, billing semantics, CSRF, abuse/rate-limits, magic-link semantics, LLM orchestration, or QA evaluator behavior.",
     }
 
@@ -4330,6 +4349,297 @@ def stage81_owner_business_profile_html(tenant_id: str = TENANT_ID_DEFAULT) -> s
 async function csrf(){const r=await fetch('/csrf/token?scope=owner&tenant_id='+encTenant(),{credentials:'include'});const d=await r.json().catch(()=>({}));return d.csrf_token||''}
 async function loadProfile(){el('tenant_id').value=tenant();const r=await fetch('/owner/business-profile?tenant_id='+encTenant(),{credentials:'include'});const d=await r.json().catch(()=>({}));if(!r.ok){el('raw').textContent=JSON.stringify(d,null,2);setMsg('err',d.detail||d.error||'Load failed');return;}fill(d);setMsg('ok','Loaded');}
 async function saveProfile(){setMsg('warn','Saving...');const token=await csrf();const payload={tenant_id:tenant(),business_name:el('business_name').value,language:el('language').value,timezone:el('timezone').value,work_start:el('work_start').value,work_end:el('work_end').value};const r=await fetch('/owner/business-profile/update?tenant_id='+encTenant(),{method:'POST',headers:{'Content-Type':'application/json','X-Repliq-CSRF-Token':token},credentials:'include',body:JSON.stringify(payload)});const d=await r.json().catch(()=>({}));el('raw').textContent=JSON.stringify(d,null,2);if(!r.ok||!d.ok){setMsg('err',(d.detail&&d.detail.error)||d.error||'Save failed');return;}setMsg('ok','Saved');await loadProfile();}el('tenant_id').value=DEFAULT_TENANT_ID||'clinic_demo';loadProfile();</script></body></html>'''
+    return html.replace("__TENANT_ID_JSON__", tenant_id_json)
+
+
+# -------------------------
+# STAGE 82: SERVICE CATALOG OWNER UX / SETUP COMPLETION POLISH
+# -------------------------
+STAGE82_READINESS_PATHS = {
+    "/owner-services/readiness",
+    "/owner-service-catalog/readiness",
+    "/service-catalog/owner/readiness",
+    "/workspace/services/readiness",
+}
+STAGE82_OWNER_SERVICE_PATHS = {
+    "/owner/services",
+    "/owner/services/ui",
+    "/owner/service-catalog",
+    "/owner/service-catalog/ui",
+}
+STAGE82_OWNER_SERVICE_WRITE_PATHS = {
+    "/owner/services/update",
+    "/owner/service-catalog/update",
+}
+STAGE82_MATURITY_TARGET = "mature_smb_saas_owner_service_catalog_phase"
+
+
+def stage82_owner_service_catalog_core(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14) -> Dict[str, Any]:
+    tid = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    days = max(1, min(int(days or 14), 60))
+    base = (SERVER_BASE_URL or "").rstrip("/")
+
+    def url(path: str) -> str:
+        return base + path if base else path
+
+    try:
+        tenant = get_existing_tenant(tid)
+    except Exception as e:
+        log.error("stage82_tenant_lookup_failed tenant_id=%s err=%s", tid, e)
+        tenant = {}
+    tenant_found = bool((tenant or {}).get("_id"))
+    tenant_id_clean = str((tenant or {}).get("_id") or (tenant or {}).get("id") or tid).strip() or tid
+    source, all_items, source_valid = stage66_service_catalog_source(tenant or {}) if tenant_found else ("missing:tenant", [], False)
+    runtime_items = stage66_runtime_catalog_from_builder_items(all_items)
+    active_items = [item for item in all_items if bool(item.get("active", True))]
+    inactive_items = [item for item in all_items if not bool(item.get("active", True))]
+    missing_prices = [str(item.get("key") or item.get("name_lv") or "service") for item in active_items if not str(item.get("price") or "").strip()]
+    missing_duration = [str(item.get("key") or item.get("name_lv") or "service") for item in active_items if not item.get("duration_min")]
+    missing_names: List[str] = []
+    for item in active_items:
+        if not any(str(item.get(f"name_{lang}") or "").strip() for lang in ("lv", "ru", "en")):
+            missing_names.append(str(item.get("key") or "service"))
+    catalog_ready = bool(tenant_found and source_valid and runtime_items)
+    completion_missing: List[str] = []
+    if not tenant_found:
+        completion_missing.append("tenant")
+    if not source_valid:
+        completion_missing.append("service_catalog_source_valid")
+    if not runtime_items:
+        completion_missing.append("active_services")
+    if missing_prices:
+        completion_missing.append("service_prices_optional")
+    if missing_duration:
+        completion_missing.append("service_duration")
+    if missing_names:
+        completion_missing.append("service_names")
+    return {
+        "stage": "82",
+        "tenant_id": tenant_id_clean,
+        "tenant_found": bool(tenant_found),
+        "source": source,
+        "source_valid": bool(source_valid),
+        "service_catalog_owner_ux_ready": bool(catalog_ready),
+        "owner_service_catalog_update_ready": bool(catalog_ready),
+        "runtime_service_catalog_ready": bool(runtime_items),
+        "service_setup_complete": bool(catalog_ready and not missing_prices and not missing_duration and not missing_names),
+        "completion": {
+            "active_services": len(active_items),
+            "inactive_services": len(inactive_items),
+            "total_services": len(all_items),
+            "runtime_items": len(runtime_items),
+            "missing_prices_count": len(missing_prices),
+            "missing_duration_count": len(missing_duration),
+            "missing_names_count": len(missing_names),
+            "completion_missing": completion_missing,
+        },
+        "items": all_items,
+        "runtime_items": runtime_items,
+        "next_actions": [
+            item for item in [
+                {"key": "active_services", "label": "Add at least one active service", "complete": bool(runtime_items), "owner_action_url": f"/owner/services/ui?tenant_id={tenant_id_clean}"},
+                {"key": "prices", "label": "Add prices for active services", "complete": not bool(missing_prices), "owner_action_url": f"/owner/services/ui?tenant_id={tenant_id_clean}", "missing": missing_prices[:10]},
+                {"key": "duration", "label": "Check service durations", "complete": not bool(missing_duration), "owner_action_url": f"/owner/services/ui?tenant_id={tenant_id_clean}", "missing": missing_duration[:10]},
+            ] if not item.get("complete")
+        ][:3],
+        "security": {
+            "owner_safe_service_fields_only": True,
+            "admin_config_links_exposed_to_owner": False,
+            "secret_fields_exposed": False,
+            "raw_admin_token_exposed": False,
+            "raw_owner_login_code_exposed": False,
+            "raw_magic_token_exposed": False,
+            "telegram_token_exposed": False,
+            "google_credentials_exposed": False,
+            "receptionist_core_changed": False,
+        },
+        "links": {
+            "owner_services": url(f"/owner/services/ui?tenant_id={tenant_id_clean}"),
+            "owner_service_catalog": url(f"/owner/service-catalog/ui?tenant_id={tenant_id_clean}"),
+            "owner_workspace": url(f"/owner/workspace/ui?tenant_id={tenant_id_clean}"),
+            "owner_setup": url(f"/owner/setup/ui?tenant_id={tenant_id_clean}"),
+            "stage82_readiness": url(f"/owner-services/readiness?tenant_id={tenant_id_clean}&days={days}"),
+            "stage66_admin_readiness": url(f"/service-catalog/readiness?tenant_id={tenant_id_clean}"),
+        },
+    }
+
+
+def stage82_owner_service_catalog_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14) -> Dict[str, Any]:
+    tid = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    days = max(1, min(int(days or 14), 60))
+    core = stage82_owner_service_catalog_core(tid, days=days)
+    tenant_id_clean = str(core.get("tenant_id") or tid)
+    stage81 = stage80_safe_dependency("stage81_business_profile", lambda: stage81_business_profile_readiness_payload(tenant_id_clean, days=days))
+    final_lock = stage80_safe_dependency("stage78_final_lock", lambda: stage78_final_public_saas_readiness_payload(tenant_id_clean, days=days, include_gap_audit=False))
+    stage80 = stage80_safe_dependency("stage80_workspace", lambda: stage80_workspace_setup_core(tenant_id_clean, days=days))
+    readiness_missing_admin = sorted(path for path in STAGE82_READINESS_PATHS if path not in STAGE61_PROTECTED_EXACT_PATHS)
+    owner_all_paths = STAGE82_OWNER_SERVICE_PATHS | STAGE82_OWNER_SERVICE_WRITE_PATHS
+    owner_paths_missing_owner_boundary = sorted(path for path in owner_all_paths if path not in STAGE71_OWNER_PROTECTED_EXACT_PATHS)
+    owner_paths_admin_overlap = sorted(path for path in owner_all_paths if path in STAGE61_PROTECTED_EXACT_PATHS)
+    owner_write_missing_csrf = sorted(path for path in STAGE82_OWNER_SERVICE_WRITE_PATHS if path not in STAGE74_OWNER_BROWSER_WRITE_PATHS)
+    blocking: List[str] = []
+    warnings: List[str] = []
+    if readiness_missing_admin:
+        blocking.append("stage82_readiness_paths_not_admin_protected")
+    if owner_paths_missing_owner_boundary or owner_paths_admin_overlap:
+        blocking.append("owner_service_catalog_paths_not_owner_safe")
+    if owner_write_missing_csrf:
+        blocking.append("owner_service_catalog_write_not_csrf_protected")
+    if not core.get("tenant_found"):
+        blocking.append("tenant_not_found")
+    if not stage81.get("tenant_business_profile_settings_ready"):
+        blocking.append("stage81_business_profile_settings_not_ready")
+    if not core.get("runtime_service_catalog_ready"):
+        warnings.append("service_catalog_has_no_active_runtime_items")
+    if core.get("completion", {}).get("missing_prices_count"):
+        warnings.append("service_catalog_prices_incomplete")
+    for item in stage80.get("blocking") or []:
+        warnings.append(f"stage80:{item}")
+    ready = bool(not blocking)
+    return {
+        "ok": True,
+        "stage": "82",
+        "previous_stage": "81.1",
+        "purpose": "Service Catalog Owner UX / Setup Completion Polish",
+        "tenant_id": tenant_id_clean,
+        "status": "ready" if ready and core.get("service_setup_complete") else "attention" if ready else "blocked",
+        "maturity_phase": STAGE82_MATURITY_TARGET,
+        "service_catalog_owner_ux_ready": bool(ready),
+        "owner_service_catalog_update_ready": bool(ready),
+        "owner_service_setup_completion_ready": bool(ready),
+        "runtime_service_catalog_ready": bool(core.get("runtime_service_catalog_ready")),
+        "service_setup_complete": bool(core.get("service_setup_complete")),
+        "completion": core.get("completion") or {},
+        "source": core.get("source"),
+        "source_valid": bool(core.get("source_valid")),
+        "items_preview": (core.get("items") or [])[:20],
+        "next_actions": core.get("next_actions") or [],
+        "public_saas_ready": bool(final_lock.get("public_saas_ready") is True),
+        "public_saas_ready_source": "stage78_final_lock",
+        "enterprise_saas_ready": False,
+        "gates": [
+            stage80_gate_payload("stage81_business_profile", "Stage 81 business profile/settings remains ready", bool(stage81.get("tenant_business_profile_settings_ready")), {"stage": stage81.get("stage"), "tenant_business_profile_settings_ready": stage81.get("tenant_business_profile_settings_ready"), "blocking": stage81.get("blocking") or []}, "stage81_business_profile_settings_not_ready"),
+            stage80_gate_payload("stage82_readiness_boundary", "Stage 82 readiness routes are admin-protected", not readiness_missing_admin, {"readiness_paths": sorted(STAGE82_READINESS_PATHS), "missing_admin_protection": readiness_missing_admin}, "stage82_readiness_paths_not_admin_protected"),
+            stage80_gate_payload("owner_service_routes", "Owner service routes are owner-protected", not owner_paths_missing_owner_boundary and not owner_paths_admin_overlap, {"owner_paths": sorted(owner_all_paths), "missing_owner_protection": owner_paths_missing_owner_boundary, "wrongly_admin_protected": owner_paths_admin_overlap}, "owner_service_catalog_paths_not_owner_safe"),
+            stage80_gate_payload("owner_service_write_csrf", "Owner service write is CSRF/browser-write hardened", not owner_write_missing_csrf, {"owner_write_paths": sorted(STAGE82_OWNER_SERVICE_WRITE_PATHS), "missing_owner_csrf_protection": owner_write_missing_csrf}, "owner_service_catalog_write_not_csrf_protected"),
+            stage80_gate_payload("service_catalog_model", "Owner service catalog model renders", bool(core.get("tenant_found")), {"tenant_found": core.get("tenant_found"), "runtime_service_catalog_ready": core.get("runtime_service_catalog_ready"), "completion": core.get("completion") or {}}, "service_catalog_model_not_ready"),
+        ],
+        "security": core.get("security") or {},
+        "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
+        "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
+        "links": core.get("links") or {},
+        "note": "Stage 82 adds owner-safe service catalog UX/update flow for non-secret service fields only. It does not change receptionist dialogue, booking, slots, calendar event runtime, Telegram webhook runtime, billing semantics, CSRF semantics, abuse/rate-limits, magic-link semantics, LLM orchestration, or QA evaluator behavior.",
+    }
+
+
+def stage82_owner_service_catalog_payload(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14) -> Dict[str, Any]:
+    admin_access = bool(stage61_token_valid(stage61_request_token(request)) or stage62_request_has_valid_session(request))
+    if admin_access:
+        tid = stage711_resolve_tenant_context(request, tenant_id)
+        access = {"ok": True, "tenant_id": tid, "owner_email": "super_admin", "role": "super_admin"}
+    else:
+        access = stage71_owner_request_access(request, path="/owner/services")
+        if not access.get("ok"):
+            raise HTTPException(status_code=401, detail=access.get("error") or "owner_login_required")
+        tid = str(access.get("tenant_id") or tenant_id or "").strip() or TENANT_ID_DEFAULT
+    readiness = stage82_owner_service_catalog_readiness_payload(tid, days=days)
+    core = stage82_owner_service_catalog_core(tid, days=days)
+    readiness["auth_model"] = "owner_session_or_super_admin_bypass"
+    readiness["owner_email"] = stage71_normalize_email(access.get("owner_email") or "") if not admin_access else None
+    readiness["role"] = access.get("role") or "owner"
+    readiness["opened_via_super_admin_bypass"] = bool(admin_access)
+    readiness["items"] = core.get("items") or []
+    readiness["runtime_items"] = core.get("runtime_items") or []
+    readiness["owner_safe_scope"] = {"service_catalog": True, "owner_editable_non_secret_service_fields": True, "admin_write_surfaces_exposed_to_owner": False, "admin_links_exposed_to_owner": False, "stage82_service_catalog_owner_ux": True, "receptionist_core_changed": False}
+    readiness["super_admin_support_links"] = {"admin_service_catalog_builder": f"/service-catalog/builder?tenant_id={tid}", "tenant_config_ui": f"/tenant/config/ui?tenant_id={tid}", "control_center": f"/control-center/ui?tenant_id={tid}"} if admin_access else {}
+    return readiness
+
+
+def stage82_apply_owner_service_catalog_update(request: Request, data: Dict[str, Any]) -> Dict[str, Any]:
+    data = data or {}
+    admin_access = bool(stage61_token_valid(stage61_request_token(request)) or stage62_request_has_valid_session(request))
+    if admin_access:
+        tenant_id = stage711_resolve_tenant_context(request, str(data.get("tenant_id") or ""))
+    else:
+        access = stage71_owner_request_access(request, path="/owner/services/update")
+        if not access.get("ok"):
+            raise HTTPException(status_code=401, detail=access.get("error") or "owner_login_required")
+        tenant_id = str(access.get("tenant_id") or "").strip() or TENANT_ID_DEFAULT
+    tenant = get_existing_tenant(tenant_id)
+    if not tenant.get("_id"):
+        raise HTTPException(status_code=404, detail={"stage": "82", "error": "tenant_not_found", "tenant_id": tenant_id})
+    raw_items = data.get("services") if data.get("services") is not None else data.get("service_catalog")
+    if raw_items is None and data.get("service_catalog_json") is not None:
+        try:
+            raw_items = json.loads(str(data.get("service_catalog_json") or "[]"))
+        except Exception:
+            raise HTTPException(status_code=400, detail={"stage": "82", "error": "service_catalog_json_invalid"})
+    if raw_items is None:
+        _, current_items, _ = stage66_service_catalog_source(tenant)
+        raw_items = current_items
+    all_items = stage66_normalize_service_catalog_items(raw_items, include_inactive=True)
+    active_items = stage66_runtime_catalog_from_builder_items(all_items)
+    if not active_items:
+        raise HTTPException(status_code=400, detail={"stage": "82", "error": "at_least_one_active_service_required"})
+    cols = tenants_columns()
+    pk = tenants_pk(cols)
+    col_names = {c["name"] for c in cols}
+    updates: List[str] = []
+    params: Dict[str, Any] = {"tid": tenant_id}
+    catalog_json = json.dumps(all_items, ensure_ascii=False, indent=2)
+    if "service_catalog_json" in col_names:
+        updates.append("service_catalog_json=:service_catalog_json")
+        params["service_catalog_json"] = catalog_json
+    elif "service_catalog" in col_names:
+        updates.append("service_catalog=:service_catalog")
+        params["service_catalog"] = catalog_json
+    else:
+        raise HTTPException(status_code=500, detail={"stage": "82", "error": "no_service_catalog_column_available"})
+    if bool(data.get("sync_services_fields", True)):
+        for lang in ("lv", "ru", "en"):
+            field = f"services_{lang}"
+            if field in col_names:
+                updates.append(f"{field}=:{field}")
+                params[field] = stage66_services_by_language(all_items, lang)
+    if bool(data.get("sync_business_memory_prices", True)):
+        for lang in ("lv", "ru", "en"):
+            field = f"business_memory_{lang}"
+            if field in col_names:
+                existing_value = tenant.get(field)
+                lines = stage66_price_lines_for_lang(all_items, lang)
+                updates.append(f"{field}=:{field}")
+                params[field] = stage66_replace_managed_price_block(existing_value, lines)
+    if "updated_at" in col_names:
+        updates.append("updated_at=NOW()")
+    with engine.begin() as conn:
+        conn.execute(text(f"UPDATE tenants SET {', '.join(updates)} WHERE {pk}=:tid"), params)
+    updated = get_tenant(tenant_id)
+    core = stage82_owner_service_catalog_core(tenant_id)
+    workspace = stage80_workspace_setup_core(tenant_id)
+    return {
+        "ok": True,
+        "stage": "82",
+        "tenant_id": tenant_id,
+        "updated_services": len(all_items),
+        "active_services": len(active_items),
+        "service_setup_complete": bool(core.get("service_setup_complete")),
+        "runtime_service_catalog_ready": bool(core.get("runtime_service_catalog_ready")),
+        "completion": core.get("completion") or {},
+        "workspace_setup_complete": bool(workspace.get("workspace_setup_complete")),
+        "workspace_completion": workspace.get("completion") or {},
+        "service_catalog": {"items": core.get("items") or [], "runtime_items": core.get("runtime_items") or []},
+        "tenant": _jsonable_tenant_view(updated),
+        "links": {"owner_services": f"/owner/services/ui?tenant_id={tenant_id}", "owner_workspace": f"/owner/workspace/ui?tenant_id={tenant_id}", "owner_setup": f"/owner/setup/ui?tenant_id={tenant_id}", "stage82_readiness": f"/owner-services/readiness?tenant_id={tenant_id}"},
+        "security": {"owner_session_or_super_admin_bypass": True, "secret_fields_exposed": False, "admin_links_exposed_to_owner": False, "csrf_browser_write_hardening": "stage74_owner_scope"},
+    }
+
+
+def stage82_owner_service_catalog_html(tenant_id: str = TENANT_ID_DEFAULT) -> str:
+    tenant_id_json = json.dumps((tenant_id or "").strip() or TENANT_ID_DEFAULT, ensure_ascii=False)
+    html = r'''<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Repliq Services</title>
+<style>body{font-family:Inter,system-ui,-apple-system,Segoe UI,Arial,sans-serif;background:#f6f7fb;color:#111827;margin:0;padding:24px}.wrap{max-width:1100px;margin:0 auto}.hero,.card{background:#fff;border:1px solid #e5e7eb;border-radius:20px;padding:18px;margin:14px 0;box-shadow:0 8px 25px rgba(17,24,39,.05)}.hero{background:#111827;color:white}.hero p{color:#d1d5db}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.sub{color:#64748b;font-size:14px;line-height:1.45}label{display:block;font-size:12px;font-weight:800;margin:8px 0 5px;color:#334155}input,textarea{width:100%;box-sizing:border-box;border:1px solid #cbd5e1;border-radius:12px;padding:10px;font-size:14px}textarea{min-height:260px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}button{border:0;border-radius:12px;padding:10px 13px;background:#111827;color:white;font-weight:800;cursor:pointer}.secondary{background:#e5e7eb;color:#111827}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.badge{display:inline-block;border-radius:999px;padding:5px 9px;background:#e5e7eb;font-size:12px;font-weight:800;margin:3px 4px 3px 0}.ok{background:#dcfce7;color:#166534}.warn{background:#fef3c7;color:#92400e}.err{background:#fee2e2;color:#991b1b}pre{background:#0f172a;color:#e2e8f0;border-radius:14px;padding:14px;max-height:420px;overflow:auto;white-space:pre-wrap}@media(max-width:760px){body{padding:12px}.grid{grid-template-columns:1fr}}</style></head>
+<body><div class="wrap"><div class="hero"><h1>Services</h1><p>Owner-safe service catalog. Edit services without opening admin configuration screens.</p><div class="actions"><input id="tenant_id" style="max-width:280px"/><button onclick="loadServices()">Load</button><button class="secondary" onclick="go('/owner/workspace/ui?tenant_id='+encTenant())">Workspace</button><button class="secondary" onclick="go('/owner/setup/ui?tenant_id='+encTenant())">Setup</button><button class="secondary" onclick="go('/owner/logout')">Logout</button></div></div><div class="card"><h2>Service setup</h2><div id="badges"></div><div class="sub" id="summary"></div><div class="actions"><button onclick="addExample()">Add example service</button><button onclick="saveServices()">Save services</button><button class="secondary" onclick="loadServices()">Reset</button></div><div id="msg" class="sub"></div></div><div class="card"><label>Services JSON</label><textarea id="services_json"></textarea><div class="sub">Allowed fields: key, active, name_lv, name_ru, name_en, duration_min, price, currency, aliases_lv/ru/en, description_lv/ru/en. Secrets are not accepted here.</div></div><div class="card"><h2>Raw readiness</h2><pre id="raw">Loading...</pre></div></div>
+<script>const DEFAULT_TENANT_ID=__TENANT_ID_JSON__;function el(id){return document.getElementById(id)}function tenant(){return (el('tenant_id').value||'').trim()||DEFAULT_TENANT_ID||'clinic_demo'}function encTenant(){return encodeURIComponent(tenant())}function go(p){window.location=p}function badge(ok,label){return '<span class="badge '+(ok?'ok':'warn')+'">'+String(label).replaceAll('<','&lt;')+'</span>'}function setMsg(kind,text){el('msg').innerHTML='<span class="badge '+kind+'">'+String(text).replaceAll('<','&lt;')+'</span>'}async function csrf(){const r=await fetch('/csrf/token?scope=owner&tenant_id='+encTenant(),{credentials:'include'});const d=await r.json().catch(()=>({}));return d.csrf_token||''}function render(d){el('raw').textContent=JSON.stringify(d,null,2);el('services_json').value=JSON.stringify(d.items||[],null,2);const c=d.completion||{};el('badges').innerHTML=badge(!!d.service_catalog_owner_ux_ready,'owner UX: '+!!d.service_catalog_owner_ux_ready)+badge(!!d.runtime_service_catalog_ready,'runtime catalog: '+!!d.runtime_service_catalog_ready)+badge(!!d.service_setup_complete,'setup complete: '+!!d.service_setup_complete);el('summary').textContent=(c.active_services||0)+' active / '+(c.total_services||0)+' total services · missing prices: '+(c.missing_prices_count||0)}async function loadServices(){el('tenant_id').value=tenant();const r=await fetch('/owner/services?tenant_id='+encTenant(),{credentials:'include'});const d=await r.json().catch(()=>({}));if(!r.ok){el('raw').textContent=JSON.stringify(d,null,2);setMsg('err',d.detail||d.error||'Load failed');return;}render(d);setMsg('ok','Loaded')}function addExample(){let arr=[];try{arr=JSON.parse(el('services_json').value||'[]')||[]}catch(e){arr=[]}arr.push({key:'new_service',active:true,name_lv:'Jauns pakalpojums',name_ru:'Новая услуга',name_en:'New service',duration_min:60,price:'25',currency:'EUR',aliases_lv:[],aliases_ru:[],aliases_en:[]});el('services_json').value=JSON.stringify(arr,null,2)}async function saveServices(){setMsg('warn','Saving...');let arr=[];try{arr=JSON.parse(el('services_json').value||'[]')||[]}catch(e){setMsg('err','Invalid JSON');return;}const token=await csrf();const payload={tenant_id:tenant(),services:arr,sync_services_fields:true,sync_business_memory_prices:true};const r=await fetch('/owner/services/update?tenant_id='+encTenant(),{method:'POST',headers:{'Content-Type':'application/json','X-Repliq-CSRF-Token':token},credentials:'include',body:JSON.stringify(payload)});const d=await r.json().catch(()=>({}));el('raw').textContent=JSON.stringify(d,null,2);if(!r.ok||!d.ok){setMsg('err',(d.detail&&d.detail.error)||d.error||'Save failed');return;}setMsg('ok','Saved');await loadServices()}el('tenant_id').value=DEFAULT_TENANT_ID||'clinic_demo';loadServices();</script></body></html>'''
     return html.replace("__TENANT_ID_JSON__", tenant_id_json)
 
 # -------------------------
@@ -16348,6 +16658,34 @@ def stage81_owner_business_profile_ui(request: Request, tenant_id: str = TENANT_
 @app.post("/owner/business-profile/update")
 def stage81_owner_business_profile_update(request: Request, payload: dict = Body(...)):
     return stage81_apply_owner_business_profile_update(request=request, data=payload or {})
+
+
+@app.get("/owner-services/readiness")
+@app.get("/owner-service-catalog/readiness")
+@app.get("/service-catalog/owner/readiness")
+@app.get("/workspace/services/readiness")
+def stage82_owner_service_catalog_readiness(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    tid = stage711_resolve_tenant_context(request, tenant_id)
+    return stage82_owner_service_catalog_readiness_payload(tid, days=days)
+
+
+@app.get("/owner/services")
+@app.get("/owner/service-catalog")
+def stage82_owner_service_catalog_json(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    return stage82_owner_service_catalog_payload(request=request, tenant_id=tenant_id, days=days)
+
+
+@app.get("/owner/services/ui", response_class=HTMLResponse)
+@app.get("/owner/service-catalog/ui", response_class=HTMLResponse)
+def stage82_owner_service_catalog_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
+    tid = stage711_resolve_tenant_context(request, tenant_id)
+    return HTMLResponse(content=stage82_owner_service_catalog_html(tenant_id=tid), headers={"Cache-Control": "no-store"})
+
+
+@app.post("/owner/services/update")
+@app.post("/owner/service-catalog/update")
+def stage82_owner_service_catalog_update(request: Request, payload: dict = Body(...)):
+    return stage82_apply_owner_service_catalog_update(request=request, data=payload or {})
 
 
 @app.post("/owner/magic-link/bootstrap")
