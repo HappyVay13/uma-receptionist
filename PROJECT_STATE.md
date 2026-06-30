@@ -1158,7 +1158,7 @@ Receptionist core was not changed. Booking routing, slots, date/time parsing, pr
 
 ## Stage 83 — Business Memory / FAQ Owner UX Polish
 
-Status: implemented in archive, awaiting deploy verification.
+Status: closed after deploy verification. User reported `/dialogue/qa` = 50/50 passed and all Stage 83 checks OK.
 
 Scope:
 - Added owner-safe Business Memory / FAQ endpoints:
@@ -1188,6 +1188,40 @@ Expected verification:
 - Saving memory/FAQ through owner UI returns `ok=true` and updates readiness/content completion.
 - `/tenant-workspace/readiness?tenant_id=clinic_demo` points the business_memory next-action to owner-safe `/owner/business-memory/ui`.
 - Owner dashboard/workspace/services/billing remain owner-safe.
+- Stage 78 remains the source of truth for `public_saas_ready`; `enterprise_saas_ready=false` remains explicit.
+
+Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, dialogue QA evaluator, LLM orchestration, and voice/calls were not changed.
+
+
+## Stage 84 — Service Catalog / Business Memory Consistency Guard
+
+Status: implemented in archive, awaiting deploy verification.
+
+Scope:
+- Added read-only consistency guard between service catalog prices and Business Memory / FAQ text.
+- Added admin-protected readiness endpoints:
+  - `GET /service-memory/consistency/readiness`
+  - `GET /catalog-memory/consistency/readiness`
+  - `GET /price-consistency/readiness`
+  - `GET /workspace/price-consistency/readiness`
+- Added owner-safe read-only endpoints:
+  - `GET /owner/price-consistency`
+  - `GET /owner/price-consistency/ui`
+  - `GET /owner/catalog-memory-consistency`
+  - `GET /owner/catalog-memory-consistency/ui`
+- Integrated price consistency metadata into owner Business Memory JSON/UI and owner service/memory update responses.
+- Service Catalog remains the source of truth for prices. Business Memory remains contextual text for policies, FAQ, exceptions and explanations.
+- Stage 84 does not auto-delete or rewrite owner memory; it surfaces conflicts, duplicates, stale managed blocks and unmatched manual price lines as attention metadata.
+
+Expected verification:
+- Render deploy starts successfully.
+- `/dialogue/qa` = 50/50 passed.
+- `/service-memory/consistency/readiness?tenant_id=clinic_demo` returns `stage=84` and `service_catalog_memory_consistency_ready=true` when infrastructure is ready.
+- `/catalog-memory/consistency/readiness?tenant_id=clinic_demo`, `/price-consistency/readiness?tenant_id=clinic_demo`, and `/workspace/price-consistency/readiness?tenant_id=clinic_demo` work and remain admin-protected.
+- `/owner/price-consistency/ui?tenant_id=<owner_tenant>` opens with valid owner session or super-admin bypass.
+- `/owner/business-memory?tenant_id=<owner_tenant>` includes `price_consistency`.
+- `/owner/business-memory/ui?tenant_id=<owner_tenant>` shows price consistency status.
+- Owner services, memory, workspace, dashboard and billing remain OK.
 - Stage 78 remains the source of truth for `public_saas_ready`; `enterprise_saas_ready=false` remains explicit.
 
 Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, dialogue QA evaluator, LLM orchestration, and voice/calls were not changed.

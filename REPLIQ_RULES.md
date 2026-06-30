@@ -661,3 +661,32 @@ Stage 77.1 is a narrow readiness endpoint hotfix only. It fixes a runtime type m
 - `enterprise_saas_ready` remains false; enterprise maturity is a later phase.
 - Do not change receptionist dialogue, booking routing, slot generation, date/time parsing, side-question handling, confirmation, cancellation, rescheduling, Google Calendar event runtime, Telegram webhook handling, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, LLM orchestration, or regression evaluator rules.
 - Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+
+
+## Stage 84 — Service Catalog / Business Memory Consistency Guard Rules
+
+- Stage 84 continues the Mature SMB SaaS phase after Stage 83.
+- Service Catalog is the source of truth for service prices, durations and active service availability.
+- Business Memory / FAQ is contextual text for policies, exceptions, address, booking rules and explanatory FAQ.
+- Stage 84 may add read-only consistency checks, readiness metadata, owner-safe guidance UI and owner/dashboard/workspace links only.
+- Stage 84 must not auto-delete, auto-overwrite, or silently rewrite owner Business Memory content.
+- The managed block between `# Repliq service catalog prices` and `# /Repliq service catalog prices` remains generated from service catalog prices.
+- Manual price-like lines outside the managed block must be surfaced as warnings/attention when they conflict with service catalog prices, duplicate catalog prices, or do not match any active catalog service.
+- Stage 84 readiness endpoints must be protected by Stage 61/62 admin auth:
+  - `/service-memory/consistency/readiness`
+  - `/catalog-memory/consistency/readiness`
+  - `/price-consistency/readiness`
+  - `/workspace/price-consistency/readiness`
+- Stage 84 owner consistency endpoints must be protected by Stage 71 owner session and tenant binding:
+  - `/owner/price-consistency`
+  - `/owner/price-consistency/ui`
+  - `/owner/catalog-memory-consistency`
+  - `/owner/catalog-memory-consistency/ui`
+- No new write endpoint is allowed in Stage 84.
+- Owner-facing consistency UI must not expose super-admin tenant config links or admin builder links in primary owner navigation.
+- Super-admin support links may appear only when opened through explicit admin/session bypass and must be clearly separated from owner links.
+- Do not expose raw admin tokens, owner login codes, magic tokens, magic-token hashes, CSRF secrets, raw IPs, subject hashes, Telegram tokens, Google credentials, or other tenant secrets.
+- Stage 78 remains the source of truth for `public_saas_ready`.
+- `enterprise_saas_ready` remains false; enterprise maturity is a later phase.
+- Do not change receptionist dialogue, booking routing, slot generation, date/time parsing, side-question handling, confirmation, cancellation, rescheduling, Google Calendar event runtime, Telegram webhook handling, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, LLM orchestration, or regression evaluator rules.
+- Current protected baseline remains `/dialogue/qa = 50/50 passed`.

@@ -181,6 +181,10 @@ STAGE71_OWNER_PROTECTED_EXACT_PATHS = {
     "/owner/faq",
     "/owner/faq/ui",
     "/owner/faq/update",
+    "/owner/price-consistency",
+    "/owner/price-consistency/ui",
+    "/owner/catalog-memory-consistency",
+    "/owner/catalog-memory-consistency/ui",
     "/owner/services",
     "/owner/services/ui",
     "/owner/services/update",
@@ -339,6 +343,10 @@ STAGE61_PROTECTED_EXACT_PATHS = {
     "/owner-faq/readiness",
     "/business-memory/owner/readiness",
     "/workspace/memory/readiness",
+    "/service-memory/consistency/readiness",
+    "/catalog-memory/consistency/readiness",
+    "/price-consistency/readiness",
+    "/workspace/price-consistency/readiness",
     "/client/dashboard",
     "/client/dashboard/ui",
     "/client/control-center",
@@ -4648,6 +4656,7 @@ def stage82_apply_owner_service_catalog_update(request: Request, data: Dict[str,
         "completion": core.get("completion") or {},
         "workspace_setup_complete": bool(workspace.get("workspace_setup_complete")),
         "workspace_completion": workspace.get("completion") or {},
+        "price_consistency": stage84_catalog_memory_consistency_core(tenant_id),
         "service_catalog": {"items": core.get("items") or [], "runtime_items": core.get("runtime_items") or []},
         "tenant": _jsonable_tenant_view(updated),
         "links": {"owner_services": f"/owner/services/ui?tenant_id={tenant_id}", "owner_workspace": f"/owner/workspace/ui?tenant_id={tenant_id}", "owner_setup": f"/owner/setup/ui?tenant_id={tenant_id}", "stage82_readiness": f"/owner-services/readiness?tenant_id={tenant_id}"},
@@ -4918,7 +4927,12 @@ def stage83_owner_business_memory_payload(request: Request, tenant_id: str = TEN
     readiness["role"] = access.get("role") or "owner"
     readiness["opened_via_super_admin_bypass"] = bool(admin_access)
     readiness["fields"] = core.get("fields") or {}
-    readiness["owner_safe_scope"] = {"business_memory_faq": True, "owner_editable_non_secret_memory_fields": True, "admin_write_surfaces_exposed_to_owner": False, "admin_links_exposed_to_owner": False, "stage83_business_memory_owner_ux": True, "receptionist_core_changed": False}
+    readiness["owner_safe_scope"] = {"business_memory_faq": True, "owner_editable_non_secret_memory_fields": True, "admin_write_surfaces_exposed_to_owner": False, "admin_links_exposed_to_owner": False, "stage83_business_memory_owner_ux": True, "stage84_price_consistency_guard": True, "receptionist_core_changed": False}
+    try:
+        readiness["price_consistency"] = stage84_catalog_memory_consistency_core(tid, days=days)
+    except Exception as e:
+        log.error("stage84_price_consistency_attach_failed tenant_id=%s err=%s", tid, e)
+        readiness["price_consistency"] = {"stage": "84", "status": "error", "error": "price_consistency_unavailable", "secret_fields_exposed": False}
     readiness["super_admin_support_links"] = {"admin_business_memory_builder": f"/business-memory/builder?tenant_id={tid}", "tenant_config_ui": f"/tenant/config/ui?tenant_id={tid}", "control_center": f"/control-center/ui?tenant_id={tid}"} if admin_access else {}
     return readiness
 
@@ -4967,6 +4981,7 @@ def stage83_apply_owner_business_memory_update(request: Request, data: Dict[str,
         "workspace_setup_complete": bool(workspace.get("workspace_setup_complete")),
         "workspace_completion": workspace.get("completion") or {},
         "fields": core.get("fields") or {},
+        "price_consistency": stage84_catalog_memory_consistency_core(tenant_id),
         "tenant": _jsonable_tenant_view(updated),
         "links": {"owner_business_memory": f"/owner/business-memory/ui?tenant_id={tenant_id}", "owner_faq": f"/owner/faq/ui?tenant_id={tenant_id}", "owner_workspace": f"/owner/workspace/ui?tenant_id={tenant_id}", "owner_setup": f"/owner/setup/ui?tenant_id={tenant_id}", "stage83_readiness": f"/owner-business-memory/readiness?tenant_id={tenant_id}"},
         "security": {"owner_session_or_super_admin_bypass": True, "secret_fields_exposed": False, "admin_links_exposed_to_owner": False, "csrf_browser_write_hardening": "stage74_owner_scope"},
@@ -4978,7 +4993,366 @@ def stage83_owner_business_memory_html(tenant_id: str = TENANT_ID_DEFAULT) -> st
     html = r'''<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Repliq Business Memory / FAQ</title>
 <style>body{font-family:Inter,system-ui,-apple-system,Segoe UI,Arial,sans-serif;background:#f6f7fb;color:#111827;margin:0;padding:24px}.wrap{max-width:1180px;margin:0 auto}.hero,.card{background:#fff;border:1px solid #e5e7eb;border-radius:20px;padding:18px;margin:14px 0;box-shadow:0 8px 25px rgba(17,24,39,.05)}.hero{background:#111827;color:white}.hero p{color:#d1d5db}.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.sub{color:#64748b;font-size:14px;line-height:1.45}label{display:block;font-size:12px;font-weight:800;margin:8px 0 5px;color:#334155}input,textarea{width:100%;box-sizing:border-box;border:1px solid #cbd5e1;border-radius:12px;padding:10px;font-size:14px}textarea{min-height:190px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.generic textarea{min-height:140px}button{border:0;border-radius:12px;padding:10px 13px;background:#111827;color:white;font-weight:800;cursor:pointer}.secondary{background:#e5e7eb;color:#111827}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.badge{display:inline-block;border-radius:999px;padding:5px 9px;background:#e5e7eb;font-size:12px;font-weight:800;margin:3px 4px 3px 0}.ok{background:#dcfce7;color:#166534}.warn{background:#fef3c7;color:#92400e}.err{background:#fee2e2;color:#991b1b}pre{background:#0f172a;color:#e2e8f0;border-radius:14px;padding:14px;max-height:420px;overflow:auto;white-space:pre-wrap}@media(max-width:900px){body{padding:12px}.grid{grid-template-columns:1fr}}</style></head>
 <body><div class="wrap"><div class="hero"><h1>Business Memory / FAQ</h1><p>Owner-safe receptionist facts: FAQ, policies, prices, address, and booking rules used in customer conversations.</p><div class="actions"><input id="tenant_id" style="max-width:280px"/><button onclick="loadMemory()">Load</button><button class="secondary" onclick="go('/owner/workspace/ui?tenant_id='+encTenant())">Workspace</button><button class="secondary" onclick="go('/owner/services/ui?tenant_id='+encTenant())">Services</button><button class="secondary" onclick="go('/owner/setup/ui?tenant_id='+encTenant())">Setup</button><button class="secondary" onclick="go('/owner/logout')">Logout</button></div></div><div class="card"><h2>Memory setup</h2><div id="badges"></div><div class="sub" id="summary"></div><div class="actions"><button onclick="addExamples()">Add examples</button><button onclick="saveMemory()">Save memory / FAQ</button><button class="secondary" onclick="loadMemory()">Reset</button></div><div id="msg" class="sub"></div></div><div class="grid"><div class="card"><h3>Latvian</h3><label>Business memory LV</label><textarea id="business_memory_lv"></textarea><label>FAQ LV</label><textarea id="faq_lv"></textarea><label>Booking rules LV</label><textarea id="booking_rules_lv"></textarea></div><div class="card"><h3>Russian</h3><label>Business memory RU</label><textarea id="business_memory_ru"></textarea><label>FAQ RU</label><textarea id="faq_ru"></textarea><label>Booking rules RU</label><textarea id="booking_rules_ru"></textarea></div><div class="card"><h3>English</h3><label>Business memory EN</label><textarea id="business_memory_en"></textarea><label>FAQ EN</label><textarea id="faq_en"></textarea><label>Booking rules EN</label><textarea id="booking_rules_en"></textarea></div></div><div class="card generic"><h3>Generic optional fields</h3><div class="grid"><div><label>Business memory</label><textarea id="business_memory"></textarea></div><div><label>FAQ</label><textarea id="faq"></textarea></div><div><label>Policies</label><textarea id="policies"></textarea></div></div><label>Booking rules</label><textarea id="booking_rules"></textarea><div class="sub">Use public business facts only. Do not paste API keys, tokens, passwords, private customer data, or internal credentials.</div></div><div class="card"><h2>Raw readiness</h2><pre id="raw">Loading...</pre></div></div>
-<script>const DEFAULT_TENANT_ID=__TENANT_ID_JSON__;const fields=['business_memory_lv','business_memory_ru','business_memory_en','faq_lv','faq_ru','faq_en','booking_rules_lv','booking_rules_ru','booking_rules_en','business_memory','faq','booking_rules','policies'];function el(id){return document.getElementById(id)}function tenant(){return (el('tenant_id').value||'').trim()||DEFAULT_TENANT_ID||'clinic_demo'}function encTenant(){return encodeURIComponent(tenant())}function go(p){window.location=p}function esc(v){return v===null||v===undefined?'':String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;')}function badge(ok,label){return '<span class="badge '+(ok?'ok':'warn')+'">'+esc(label)+'</span>'}function setMsg(kind,text){el('msg').innerHTML='<span class="badge '+kind+'">'+esc(text)+'</span>'}async function csrf(){const r=await fetch('/csrf/token?scope=owner&tenant_id='+encTenant(),{credentials:'include'});const d=await r.json().catch(()=>({}));return d.csrf_token||''}function render(d){el('raw').textContent=JSON.stringify(d,null,2);const f=d.fields||{};fields.forEach(k=>{if(el(k))el(k).value=f[k]||''});const c=d.completion||{};el('badges').innerHTML=badge(!!d.business_memory_owner_ux_ready,'owner UX: '+!!d.business_memory_owner_ux_ready)+badge(!!d.business_memory_content_ready,'content: '+!!d.business_memory_content_ready)+badge(!!d.business_memory_setup_complete,'setup complete: '+!!d.business_memory_setup_complete);el('summary').textContent=(c.total_line_count||0)+' total lines · languages '+(c.configured_languages||0)+'/'+(c.total_languages||3)+' · FAQ lines '+(c.faq_line_count||0)}async function loadMemory(){el('tenant_id').value=tenant();const r=await fetch('/owner/business-memory?tenant_id='+encTenant(),{credentials:'include'});const d=await r.json().catch(()=>({}));if(!r.ok){el('raw').textContent=JSON.stringify(d,null,2);setMsg('err',d.detail||d.error||'Load failed');return;}render(d);setMsg('ok','Loaded')}function addExamples(){const examples={business_memory_lv:'Adrese: Rēzekne\nDarba laiks: 09:00-18:00',faq_lv:'Cik maksā konsultācija? Konsultācija maksā 10 eiro.',booking_rules_lv:'Atcelšana: vismaz 2 stundas iepriekš.',business_memory_ru:'Адрес: Резекне\nВремя работы: 09:00-18:00',faq_ru:'Сколько стоит консультация? Консультация стоит 10 евро.',booking_rules_ru:'Отмена: минимум за 2 часа.',business_memory_en:'Address: Rezekne\nWorking hours: 09:00-18:00',faq_en:'How much is consultation? Consultation is 10 euro.',booking_rules_en:'Cancellation: at least 2 hours before.'};Object.entries(examples).forEach(([k,v])=>{if(el(k)&&!el(k).value.trim())el(k).value=v})}async function saveMemory(){setMsg('warn','Saving...');const token=await csrf();const payload={tenant_id:tenant()};fields.forEach(k=>{if(el(k))payload[k]=el(k).value});const r=await fetch('/owner/business-memory/update?tenant_id='+encTenant(),{method:'POST',headers:{'Content-Type':'application/json','X-Repliq-CSRF-Token':token},credentials:'include',body:JSON.stringify(payload)});const d=await r.json().catch(()=>({}));el('raw').textContent=JSON.stringify(d,null,2);if(!r.ok||!d.ok){setMsg('err',(d.detail&&d.detail.error)||d.error||'Save failed');return;}setMsg('ok','Saved');await loadMemory()}el('tenant_id').value=DEFAULT_TENANT_ID||'clinic_demo';loadMemory();</script></body></html>'''
+<script>const DEFAULT_TENANT_ID=__TENANT_ID_JSON__;const fields=['business_memory_lv','business_memory_ru','business_memory_en','faq_lv','faq_ru','faq_en','booking_rules_lv','booking_rules_ru','booking_rules_en','business_memory','faq','booking_rules','policies'];function el(id){return document.getElementById(id)}function tenant(){return (el('tenant_id').value||'').trim()||DEFAULT_TENANT_ID||'clinic_demo'}function encTenant(){return encodeURIComponent(tenant())}function go(p){window.location=p}function esc(v){return v===null||v===undefined?'':String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;')}function badge(ok,label){return '<span class="badge '+(ok?'ok':'warn')+'">'+esc(label)+'</span>'}function setMsg(kind,text){el('msg').innerHTML='<span class="badge '+kind+'">'+esc(text)+'</span>'}async function csrf(){const r=await fetch('/csrf/token?scope=owner&tenant_id='+encTenant(),{credentials:'include'});const d=await r.json().catch(()=>({}));return d.csrf_token||''}function render(d){el('raw').textContent=JSON.stringify(d,null,2);const f=d.fields||{};fields.forEach(k=>{if(el(k))el(k).value=f[k]||''});const c=d.completion||{};const pc=d.price_consistency||{};const pcc=pc.completion||{};const priceIssues=(pcc.conflict_count||0)+(pcc.stale_managed_block_count||0);el('badges').innerHTML=badge(!!d.business_memory_owner_ux_ready,'owner UX: '+!!d.business_memory_owner_ux_ready)+badge(!!d.business_memory_content_ready,'content: '+!!d.business_memory_content_ready)+badge(!!d.business_memory_setup_complete,'setup complete: '+!!d.business_memory_setup_complete)+badge(!priceIssues,'price consistency: '+(!priceIssues));el('summary').textContent=(c.total_line_count||0)+' total lines · languages '+(c.configured_languages||0)+'/'+(c.total_languages||3)+' · FAQ lines '+(c.faq_line_count||0)+' · price issues '+priceIssues}async function loadMemory(){el('tenant_id').value=tenant();const r=await fetch('/owner/business-memory?tenant_id='+encTenant(),{credentials:'include'});const d=await r.json().catch(()=>({}));if(!r.ok){el('raw').textContent=JSON.stringify(d,null,2);setMsg('err',d.detail||d.error||'Load failed');return;}render(d);setMsg('ok','Loaded')}function addExamples(){const examples={business_memory_lv:'Adrese: Rēzekne\nDarba laiks: 09:00-18:00',faq_lv:'Cik maksā konsultācija? Konsultācija maksā 10 eiro.',booking_rules_lv:'Atcelšana: vismaz 2 stundas iepriekš.',business_memory_ru:'Адрес: Резекне\nВремя работы: 09:00-18:00',faq_ru:'Сколько стоит консультация? Консультация стоит 10 евро.',booking_rules_ru:'Отмена: минимум за 2 часа.',business_memory_en:'Address: Rezekne\nWorking hours: 09:00-18:00',faq_en:'How much is consultation? Consultation is 10 euro.',booking_rules_en:'Cancellation: at least 2 hours before.'};Object.entries(examples).forEach(([k,v])=>{if(el(k)&&!el(k).value.trim())el(k).value=v})}async function saveMemory(){setMsg('warn','Saving...');const token=await csrf();const payload={tenant_id:tenant()};fields.forEach(k=>{if(el(k))payload[k]=el(k).value});const r=await fetch('/owner/business-memory/update?tenant_id='+encTenant(),{method:'POST',headers:{'Content-Type':'application/json','X-Repliq-CSRF-Token':token},credentials:'include',body:JSON.stringify(payload)});const d=await r.json().catch(()=>({}));el('raw').textContent=JSON.stringify(d,null,2);if(!r.ok||!d.ok){setMsg('err',(d.detail&&d.detail.error)||d.error||'Save failed');return;}setMsg('ok','Saved');await loadMemory()}el('tenant_id').value=DEFAULT_TENANT_ID||'clinic_demo';loadMemory();</script></body></html>'''
+    return html.replace("__TENANT_ID_JSON__", tenant_id_json)
+
+
+# -------------------------
+# STAGE 84: SERVICE CATALOG / BUSINESS MEMORY CONSISTENCY GUARD
+# -------------------------
+STAGE84_READINESS_PATHS = {
+    "/service-memory/consistency/readiness",
+    "/catalog-memory/consistency/readiness",
+    "/price-consistency/readiness",
+    "/workspace/price-consistency/readiness",
+}
+STAGE84_OWNER_PATHS = {
+    "/owner/price-consistency",
+    "/owner/price-consistency/ui",
+    "/owner/catalog-memory-consistency",
+    "/owner/catalog-memory-consistency/ui",
+}
+STAGE84_MATURITY_TARGET = "mature_smb_saas_catalog_memory_consistency_phase"
+STAGE84_PRICE_PHRASE_RE = re.compile(r"(?:\d+[\.,]?\d*\s*(?:eiro|euro|eur|евро|€)|p[eē]c\s+piepras[iī]juma|по\s+запросу|upon\s+request|on\s+request|price\s+on\s+request)", re.IGNORECASE)
+STAGE84_PRICE_AMOUNT_RE = re.compile(r"(\d+[\.,]?\d*)")
+
+
+def stage84_normalize_label(value: Any) -> str:
+    txt = str(value or "").strip().lower()
+    txt = unicodedata.normalize("NFKD", txt)
+    txt = "".join(ch for ch in txt if not unicodedata.combining(ch))
+    txt = re.sub(r"[^a-z0-9а-яё]+", "", txt, flags=re.I)
+    return txt
+
+
+def stage84_price_amount(value: Any) -> Optional[float]:
+    m = STAGE84_PRICE_AMOUNT_RE.search(str(value or ""))
+    if not m:
+        return None
+    try:
+        return float(m.group(1).replace(",", "."))
+    except Exception:
+        return None
+
+
+def stage84_strip_managed_price_block(value: Any) -> Tuple[str, List[str], bool]:
+    text_value = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    pattern = re.compile(
+        re.escape(STAGE66_SERVICE_PRICE_BLOCK_START) + r"(.*?)" + re.escape(STAGE66_SERVICE_PRICE_BLOCK_END),
+        flags=re.S,
+    )
+    managed_lines: List[str] = []
+    found = False
+
+    def repl(match: re.Match) -> str:
+        nonlocal managed_lines, found
+        found = True
+        body = match.group(1) or ""
+        managed_lines = [line.strip() for line in body.splitlines() if line.strip()]
+        return "\n"
+
+    manual_text = pattern.sub(repl, text_value)
+    return manual_text.strip(), managed_lines, found
+
+
+def stage84_catalog_label_index(items: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    index: Dict[str, Dict[str, Any]] = {}
+    for item in items or []:
+        if not item.get("active", True):
+            continue
+        labels: List[str] = []
+        for key in ("key", "name", "name_lv", "name_ru", "name_en"):
+            value = str(item.get(key) or "").strip()
+            if value:
+                labels.append(value)
+        for key in ("aliases", "aliases_lv", "aliases_ru", "aliases_en"):
+            for alias in _ensure_list(item.get(key)):
+                alias_value = str(alias or "").strip()
+                if alias_value:
+                    labels.append(alias_value)
+        for label in labels:
+            norm = stage84_normalize_label(label)
+            if norm and norm not in index:
+                index[norm] = item
+    return index
+
+
+def stage84_parse_manual_price_line(line: str, label_index: Dict[str, Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    raw = str(line or "").strip()
+    if not raw or raw.startswith("#"):
+        return None
+    if not STAGE84_PRICE_PHRASE_RE.search(raw):
+        return None
+    match = re.match(r"^\s*(?P<label>[^:：\-–—?]{2,100}?)\s*(?:[:：\-–—])\s*(?P<price>.+)$", raw)
+    if match:
+        label = match.group("label").strip()
+        price_text = match.group("price").strip()
+    else:
+        label = ""
+        price_text = raw
+    label_norm = stage84_normalize_label(label)
+    matched_item = label_index.get(label_norm) if label_norm else None
+    return {
+        "line": raw[:240],
+        "label": label[:120],
+        "label_norm": label_norm,
+        "price_text": price_text[:160],
+        "amount": stage84_price_amount(price_text),
+        "price_on_request": bool(re.search(r"p[eē]c\s+piepras[iī]juma|по\s+запросу|upon\s+request|on\s+request|price\s+on\s+request", price_text, flags=re.I)),
+        "matched_service_key": (matched_item or {}).get("key"),
+        "matched_service_name": (matched_item or {}).get("name_lv") or (matched_item or {}).get("name") or (matched_item or {}).get("key"),
+    }
+
+
+def stage84_catalog_memory_consistency_core(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14) -> Dict[str, Any]:
+    tid = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    days = max(1, min(int(days or 14), 60))
+    base = (SERVER_BASE_URL or "").rstrip("/")
+
+    def url(path: str) -> str:
+        return base + path if base else path
+
+    try:
+        tenant = get_existing_tenant(tid)
+    except Exception as e:
+        log.error("stage84_tenant_lookup_failed tenant_id=%s err=%s", tid, e)
+        tenant = {}
+    tenant_found = bool((tenant or {}).get("_id"))
+    tenant_id_clean = str((tenant or {}).get("_id") or (tenant or {}).get("id") or tid).strip() or tid
+    tenant_norm = normalize_tenant_saas_fields(tenant or {}) if tenant_found else {}
+    source, all_items, source_valid = stage66_service_catalog_source(tenant_norm or tenant or {})
+    active_items = [item for item in all_items if item.get("active", True)]
+    label_index = stage84_catalog_label_index(active_items)
+
+    catalog_price_lines_by_language = {lang: stage66_price_lines_for_lang(all_items, lang) for lang in ("lv", "ru", "en")}
+    manual_price_lines: Dict[str, List[Dict[str, Any]]] = {}
+    managed_price_blocks: Dict[str, Any] = {}
+    conflicts: List[Dict[str, Any]] = []
+    duplicate_manual_price_lines: List[Dict[str, Any]] = []
+    orphan_manual_price_lines: List[Dict[str, Any]] = []
+    stale_managed_blocks: List[Dict[str, Any]] = []
+
+    fields_to_scan = ["business_memory_lv", "business_memory_ru", "business_memory_en", "business_memory"]
+    for field in fields_to_scan:
+        lang = field.rsplit("_", 1)[-1] if field in {"business_memory_lv", "business_memory_ru", "business_memory_en"} else "generic"
+        value = tenant_norm.get(field) if tenant_norm else ""
+        manual_text, managed_lines, managed_present = stage84_strip_managed_price_block(value)
+        expected_lines = catalog_price_lines_by_language.get(lang, []) if lang in ("lv", "ru", "en") else []
+        managed_price_blocks[field] = {
+            "present": bool(managed_present),
+            "line_count": len(managed_lines),
+            "expected_line_count": len(expected_lines),
+            "managed_lines_preview": managed_lines[:10],
+            "expected_lines_preview": expected_lines[:10],
+            "in_sync_with_service_catalog": bool(set(managed_lines) == set(expected_lines)) if managed_present or expected_lines else True,
+        }
+        if lang in ("lv", "ru", "en") and (managed_present or expected_lines) and set(managed_lines) != set(expected_lines):
+            stale_managed_blocks.append({
+                "field": field,
+                "language": lang,
+                "managed_lines_preview": managed_lines[:10],
+                "expected_lines_preview": expected_lines[:10],
+                "owner_action_url": f"/owner/services/ui?tenant_id={tenant_id_clean}",
+            })
+        field_manual_candidates: List[Dict[str, Any]] = []
+        for line in stage67_text_lines(manual_text):
+            candidate = stage84_parse_manual_price_line(line, label_index)
+            if not candidate:
+                continue
+            candidate["field"] = field
+            candidate["language"] = lang
+            field_manual_candidates.append(candidate)
+            service_key = candidate.get("matched_service_key")
+            if not service_key:
+                orphan_manual_price_lines.append(candidate)
+                continue
+            item = next((it for it in active_items if str(it.get("key")) == str(service_key)), {})
+            catalog_amount = stage84_price_amount(item.get("price"))
+            catalog_price_display = stage66_price_display_for_lang(str(item.get("price") or ""), str(item.get("currency") or "EUR"), lang if lang in ("lv", "ru", "en") else "lv")
+            manual_amount = candidate.get("amount")
+            conflict = False
+            conflict_type = ""
+            if candidate.get("price_on_request") and catalog_amount is not None:
+                conflict = True
+                conflict_type = "manual_price_on_request_vs_catalog_numeric_price"
+            elif manual_amount is not None and catalog_amount is not None and abs(float(manual_amount) - float(catalog_amount)) > 0.009:
+                conflict = True
+                conflict_type = "manual_numeric_price_differs_from_catalog_price"
+            if conflict:
+                conflicts.append({
+                    "field": field,
+                    "language": lang,
+                    "service_key": service_key,
+                    "service_name": candidate.get("matched_service_name"),
+                    "manual_line": candidate.get("line"),
+                    "manual_amount": manual_amount,
+                    "catalog_price": item.get("price"),
+                    "catalog_price_display": catalog_price_display,
+                    "conflict_type": conflict_type,
+                    "owner_action_url": f"/owner/business-memory/ui?tenant_id={tenant_id_clean}",
+                    "source_of_truth_url": f"/owner/services/ui?tenant_id={tenant_id_clean}",
+                })
+            else:
+                duplicate_manual_price_lines.append({
+                    "field": field,
+                    "language": lang,
+                    "service_key": service_key,
+                    "service_name": candidate.get("matched_service_name"),
+                    "manual_line": candidate.get("line"),
+                    "catalog_price_display": catalog_price_display,
+                    "recommendation": "remove_manual_duplicate_and_keep_price_in_service_catalog",
+                })
+        manual_price_lines[field] = field_manual_candidates[:20]
+
+    warnings: List[str] = []
+    blocking: List[str] = []
+    if not tenant_found:
+        blocking.append("tenant_not_found")
+    if not source_valid:
+        blocking.append("service_catalog_source_invalid")
+    if conflicts:
+        warnings.append("manual_business_memory_price_conflicts_with_service_catalog")
+    if duplicate_manual_price_lines:
+        warnings.append("manual_business_memory_price_duplicates_catalog_price")
+    if orphan_manual_price_lines:
+        warnings.append("manual_business_memory_price_lines_not_matched_to_catalog_service")
+    if stale_managed_blocks:
+        warnings.append("managed_service_catalog_price_block_out_of_sync")
+
+    consistency_clean = bool(not conflicts and not stale_managed_blocks)
+    status = "ready" if not blocking and consistency_clean else "attention" if not blocking else "blocked"
+    return {
+        "ok": True,
+        "stage": "84",
+        "previous_stage": "83",
+        "purpose": "Service Catalog / Business Memory Consistency Guard",
+        "tenant_id": tenant_id_clean,
+        "tenant_found": bool(tenant_found),
+        "status": status,
+        "maturity_phase": STAGE84_MATURITY_TARGET,
+        "service_catalog_memory_consistency_ready": bool(not blocking),
+        "service_catalog_is_price_source_of_truth": True,
+        "business_memory_is_context_not_price_source_of_truth": True,
+        "price_consistency_clean": bool(consistency_clean),
+        "catalog_source": source,
+        "catalog_source_valid": bool(source_valid),
+        "catalog_counts": {"items_total": len(all_items), "items_active": len(active_items), "catalog_price_lines": {lang: len(catalog_price_lines_by_language[lang]) for lang in ("lv", "ru", "en")}},
+        "catalog_price_lines_by_language": catalog_price_lines_by_language,
+        "managed_price_blocks": managed_price_blocks,
+        "manual_price_lines": manual_price_lines,
+        "conflicts": conflicts[:20],
+        "duplicate_manual_price_lines": duplicate_manual_price_lines[:20],
+        "orphan_manual_price_lines": orphan_manual_price_lines[:20],
+        "stale_managed_blocks": stale_managed_blocks[:10],
+        "completion": {
+            "conflict_count": len(conflicts),
+            "duplicate_manual_price_line_count": len(duplicate_manual_price_lines),
+            "orphan_manual_price_line_count": len(orphan_manual_price_lines),
+            "stale_managed_block_count": len(stale_managed_blocks),
+            "manual_price_line_count": sum(len(v) for v in manual_price_lines.values()),
+            "scanned_fields": fields_to_scan,
+        },
+        "next_actions": [
+            item for item in [
+                {"key": "price_conflicts", "label": "Remove or neutralize manual price lines that conflict with service catalog", "complete": not bool(conflicts), "owner_action_url": f"/owner/business-memory/ui?tenant_id={tenant_id_clean}", "source_of_truth_url": f"/owner/services/ui?tenant_id={tenant_id_clean}"},
+                {"key": "managed_price_block", "label": "Re-save services to refresh managed price block", "complete": not bool(stale_managed_blocks), "owner_action_url": f"/owner/services/ui?tenant_id={tenant_id_clean}"},
+                {"key": "manual_price_duplicates", "label": "Optional: remove duplicate manual price lines from business memory", "complete": not bool(duplicate_manual_price_lines), "owner_action_url": f"/owner/business-memory/ui?tenant_id={tenant_id_clean}"},
+                {"key": "orphan_price_lines", "label": "Optional: move unmatched manual price facts into service catalog or neutral policy text", "complete": not bool(orphan_manual_price_lines), "owner_action_url": f"/owner/business-memory/ui?tenant_id={tenant_id_clean}", "source_of_truth_url": f"/owner/services/ui?tenant_id={tenant_id_clean}"},
+            ] if not item.get("complete")
+        ][:4],
+        "owner_guidance": {
+            "rule": "Edit prices in /owner/services/ui. Use Business Memory for policies, exceptions, addresses, and FAQ context.",
+            "safe_business_memory_price_text_example_lv": "Cenas ir norādītas pakalpojumu katalogā. Nestandarta pakalpojumiem cena tiek precizēta individuāli.",
+            "managed_block_markers": {"start": STAGE66_SERVICE_PRICE_BLOCK_START, "end": STAGE66_SERVICE_PRICE_BLOCK_END},
+        },
+        "security": {"owner_safe_read_only_check": True, "secret_fields_exposed": False, "admin_links_exposed_to_owner": False, "receptionist_core_changed": False},
+        "links": {
+            "owner_price_consistency": url(f"/owner/price-consistency?tenant_id={tenant_id_clean}"),
+            "owner_price_consistency_ui": url(f"/owner/price-consistency/ui?tenant_id={tenant_id_clean}"),
+            "owner_services": url(f"/owner/services/ui?tenant_id={tenant_id_clean}"),
+            "owner_business_memory": url(f"/owner/business-memory/ui?tenant_id={tenant_id_clean}"),
+            "stage84_readiness": url(f"/service-memory/consistency/readiness?tenant_id={tenant_id_clean}&days={days}"),
+        },
+        "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
+        "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
+        "note": "Stage 84 adds a read-only consistency guard. It does not auto-delete owner memory, does not change receptionist core dialogue, and keeps service catalog as the source of truth for prices.",
+    }
+
+
+def stage84_catalog_memory_consistency_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14) -> Dict[str, Any]:
+    tid = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    days = max(1, min(int(days or 14), 60))
+    core = stage84_catalog_memory_consistency_core(tid, days=days)
+    tenant_id_clean = str(core.get("tenant_id") or tid)
+    stage82 = stage80_safe_dependency("stage82_owner_services", lambda: stage82_owner_service_catalog_readiness_payload(tenant_id_clean, days=days))
+    stage83 = stage80_safe_dependency("stage83_owner_memory", lambda: stage83_business_memory_owner_readiness_payload(tenant_id_clean, days=days))
+    final_lock = stage80_safe_dependency("stage78_final_lock", lambda: stage78_final_public_saas_readiness_payload(tenant_id_clean, days=days, include_gap_audit=False))
+    readiness_missing_admin = sorted(path for path in STAGE84_READINESS_PATHS if path not in STAGE61_PROTECTED_EXACT_PATHS)
+    owner_paths_missing_owner_boundary = sorted(path for path in STAGE84_OWNER_PATHS if path not in STAGE71_OWNER_PROTECTED_EXACT_PATHS)
+    owner_paths_admin_overlap = sorted(path for path in STAGE84_OWNER_PATHS if path in STAGE61_PROTECTED_EXACT_PATHS)
+
+    blocking: List[str] = list(core.get("blocking") or [])
+    warnings: List[str] = list(core.get("warnings") or [])
+    if readiness_missing_admin:
+        blocking.append("stage84_readiness_paths_not_admin_protected")
+    if owner_paths_missing_owner_boundary or owner_paths_admin_overlap:
+        blocking.append("stage84_owner_paths_not_owner_safe")
+    if not stage82.get("service_catalog_owner_ux_ready"):
+        warnings.append("stage82_owner_services_not_ready")
+    if not stage83.get("business_memory_owner_ux_ready"):
+        warnings.append("stage83_owner_memory_not_ready")
+
+    infrastructure_ready = bool(not blocking)
+    status = "ready" if infrastructure_ready and core.get("price_consistency_clean") else "attention" if infrastructure_ready else "blocked"
+    return {
+        **core,
+        "ok": True,
+        "stage": "84",
+        "status": status,
+        "service_catalog_memory_consistency_ready": bool(infrastructure_ready),
+        "price_consistency_clean": bool(core.get("price_consistency_clean")),
+        "public_saas_ready": bool(final_lock.get("public_saas_ready") is True),
+        "public_saas_ready_source": "stage78_final_lock",
+        "enterprise_saas_ready": False,
+        "gates": [
+            stage80_gate_payload("stage82_owner_services", "Stage 82 owner service catalog UX remains ready", bool(stage82.get("service_catalog_owner_ux_ready")), {"stage": stage82.get("stage"), "blocking": stage82.get("blocking") or []}, "stage82_owner_services_not_ready"),
+            stage80_gate_payload("stage83_owner_memory", "Stage 83 owner Business Memory / FAQ UX remains ready", bool(stage83.get("business_memory_owner_ux_ready")), {"stage": stage83.get("stage"), "blocking": stage83.get("blocking") or []}, "stage83_owner_memory_not_ready"),
+            stage80_gate_payload("stage84_readiness_boundary", "Stage 84 readiness routes are admin-protected", not readiness_missing_admin, {"readiness_paths": sorted(STAGE84_READINESS_PATHS), "missing_admin_protection": readiness_missing_admin}, "stage84_readiness_paths_not_admin_protected"),
+            stage80_gate_payload("stage84_owner_boundary", "Stage 84 owner consistency routes are owner-protected", not owner_paths_missing_owner_boundary and not owner_paths_admin_overlap, {"owner_paths": sorted(STAGE84_OWNER_PATHS), "missing_owner_protection": owner_paths_missing_owner_boundary, "wrongly_admin_protected": owner_paths_admin_overlap}, "stage84_owner_paths_not_owner_safe"),
+            stage80_gate_payload("price_conflict_guard", "Service catalog and Business Memory price consistency guard runs", bool(infrastructure_ready), {"price_consistency_clean": core.get("price_consistency_clean"), "completion": core.get("completion") or {}}, "price_consistency_guard_not_ready"),
+        ],
+        "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
+        "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
+        "dependencies": {"stage82_owner_services": stage82, "stage83_owner_memory": stage83, "stage78_final_lock": final_lock},
+    }
+
+
+def stage84_owner_price_consistency_payload(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14) -> Dict[str, Any]:
+    admin_access = bool(stage61_token_valid(stage61_request_token(request)) or stage62_request_has_valid_session(request))
+    if admin_access:
+        tid = stage711_resolve_tenant_context(request, tenant_id)
+        access = {"ok": True, "tenant_id": tid, "owner_email": "super_admin", "role": "super_admin"}
+    else:
+        request_path = str(getattr(request.url, "path", "") or "/owner/price-consistency")
+        access = stage71_owner_request_access(request, path=request_path if request_path in STAGE84_OWNER_PATHS else "/owner/price-consistency")
+        if not access.get("ok"):
+            raise HTTPException(status_code=401, detail=access.get("error") or "owner_login_required")
+        tid = str(access.get("tenant_id") or tenant_id or "").strip() or TENANT_ID_DEFAULT
+    payload = stage84_catalog_memory_consistency_core(tid, days=days)
+    payload["auth_model"] = "owner_session_or_super_admin_bypass"
+    payload["owner_email"] = stage71_normalize_email(access.get("owner_email") or "") if not admin_access else None
+    payload["role"] = access.get("role") or "owner"
+    payload["opened_via_super_admin_bypass"] = bool(admin_access)
+    payload["super_admin_support_links"] = {"admin_service_catalog_builder": f"/service-catalog/builder?tenant_id={tid}", "admin_business_memory_builder": f"/business-memory/builder?tenant_id={tid}", "control_center": f"/control-center/ui?tenant_id={tid}"} if admin_access else {}
+    return payload
+
+
+def stage84_owner_price_consistency_html(tenant_id: str = TENANT_ID_DEFAULT) -> str:
+    tenant_id_json = json.dumps((tenant_id or "").strip() or TENANT_ID_DEFAULT, ensure_ascii=False)
+    html = r'''<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Repliq Price Consistency</title>
+<style>body{font-family:Inter,system-ui,-apple-system,Segoe UI,Arial,sans-serif;background:#f6f7fb;color:#111827;margin:0;padding:24px}.wrap{max-width:1100px;margin:0 auto}.hero,.card{background:#fff;border:1px solid #e5e7eb;border-radius:20px;padding:18px;margin:14px 0;box-shadow:0 8px 25px rgba(17,24,39,.05)}.hero{background:#111827;color:white}.hero p{color:#d1d5db}.sub{color:#64748b;font-size:14px;line-height:1.45}input{width:100%;box-sizing:border-box;border:1px solid #cbd5e1;border-radius:12px;padding:10px;font-size:14px}button{border:0;border-radius:12px;padding:10px 13px;background:#111827;color:white;font-weight:800;cursor:pointer}.secondary{background:#e5e7eb;color:#111827}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.badge{display:inline-block;border-radius:999px;padding:5px 9px;background:#e5e7eb;font-size:12px;font-weight:800;margin:3px 4px 3px 0}.ok{background:#dcfce7;color:#166534}.warn{background:#fef3c7;color:#92400e}.err{background:#fee2e2;color:#991b1b}.item{border:1px solid #e5e7eb;border-radius:14px;padding:10px;margin:8px 0;background:#f8fafc}pre{background:#0f172a;color:#e2e8f0;border-radius:14px;padding:14px;max-height:460px;overflow:auto;white-space:pre-wrap}@media(max-width:760px){body{padding:12px}}</style></head>
+<body><div class="wrap"><div class="hero"><h1>Price consistency</h1><p>Service catalog is the source of truth for prices. Business Memory should explain rules and exceptions, not duplicate conflicting price lists.</p><div class="actions"><input id="tenant_id" style="max-width:280px"/><button onclick="loadCheck()">Load</button><button class="secondary" onclick="go('/owner/services/ui?tenant_id='+encTenant())">Edit services</button><button class="secondary" onclick="go('/owner/business-memory/ui?tenant_id='+encTenant())">Edit memory</button><button class="secondary" onclick="go('/owner/workspace/ui?tenant_id='+encTenant())">Workspace</button></div></div><div class="card"><h2>Status</h2><div id="badges"></div><div class="sub" id="summary"></div><div id="actions"></div></div><div class="card"><h2>Raw consistency payload</h2><pre id="raw">Loading...</pre></div></div>
+<script>const DEFAULT_TENANT_ID=__TENANT_ID_JSON__;function el(id){return document.getElementById(id)}function tenant(){return (el('tenant_id').value||'').trim()||DEFAULT_TENANT_ID||'clinic_demo'}function encTenant(){return encodeURIComponent(tenant())}function go(p){window.location=p}function esc(v){return v===null||v===undefined?'':String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;')}function badge(ok,label){return '<span class="badge '+(ok?'ok':'warn')+'">'+esc(label)+'</span>'}function render(d){el('raw').textContent=JSON.stringify(d,null,2);const c=d.completion||{};el('badges').innerHTML=badge(!!d.service_catalog_memory_consistency_ready,'guard ready: '+!!d.service_catalog_memory_consistency_ready)+badge(!!d.price_consistency_clean,'clean: '+!!d.price_consistency_clean)+badge(!!d.service_catalog_is_price_source_of_truth,'catalog source: '+!!d.service_catalog_is_price_source_of_truth);el('summary').textContent='conflicts '+(c.conflict_count||0)+' · stale managed blocks '+(c.stale_managed_block_count||0)+' · duplicate manual lines '+(c.duplicate_manual_price_line_count||0)+' · orphan manual lines '+(c.orphan_manual_price_line_count||0);el('actions').innerHTML=(d.next_actions||[]).map(a=>'<div class="item"><strong>'+esc(a.label)+'</strong><div class="sub">'+esc(a.key)+'</div><div class="actions">'+(a.owner_action_url?'<button onclick="go(\''+esc(a.owner_action_url)+'\')">Open</button>':'')+(a.source_of_truth_url?'<button class="secondary" onclick="go(\''+esc(a.source_of_truth_url)+'\')">Source of truth</button>':'')+'</div></div>').join('')||'<div class="sub">No required actions.</div>'}async function loadCheck(){el('tenant_id').value=tenant();const r=await fetch('/owner/price-consistency?tenant_id='+encTenant(),{credentials:'include'});const d=await r.json().catch(()=>({}));if(!r.ok){el('raw').textContent=JSON.stringify(d,null,2);return;}render(d)}el('tenant_id').value=DEFAULT_TENANT_ID||'clinic_demo';loadCheck();</script></body></html>'''
     return html.replace("__TENANT_ID_JSON__", tenant_id_json)
 
 # -------------------------
@@ -17053,6 +17427,28 @@ def stage83_owner_business_memory_ui(request: Request, tenant_id: str = TENANT_I
 @app.post("/owner/faq/update")
 def stage83_owner_business_memory_update(request: Request, payload: dict = Body(...)):
     return stage83_apply_owner_business_memory_update(request=request, data=payload or {})
+
+
+@app.get("/service-memory/consistency/readiness")
+@app.get("/catalog-memory/consistency/readiness")
+@app.get("/price-consistency/readiness")
+@app.get("/workspace/price-consistency/readiness")
+def stage84_catalog_memory_consistency_readiness(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    tid = stage711_resolve_tenant_context(request, tenant_id)
+    return stage84_catalog_memory_consistency_readiness_payload(tid, days=days)
+
+
+@app.get("/owner/price-consistency")
+@app.get("/owner/catalog-memory-consistency")
+def stage84_owner_price_consistency_json(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    return stage84_owner_price_consistency_payload(request=request, tenant_id=tenant_id, days=days)
+
+
+@app.get("/owner/price-consistency/ui", response_class=HTMLResponse)
+@app.get("/owner/catalog-memory-consistency/ui", response_class=HTMLResponse)
+def stage84_owner_price_consistency_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
+    tid = stage711_resolve_tenant_context(request, tenant_id)
+    return HTMLResponse(content=stage84_owner_price_consistency_html(tenant_id=tid), headers={"Cache-Control": "no-store"})
 
 
 @app.post("/owner/magic-link/bootstrap")
