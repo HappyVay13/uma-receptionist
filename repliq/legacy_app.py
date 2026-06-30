@@ -2980,6 +2980,12 @@ def ensure_tenants_lifecycle_columns() -> None:
             conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS billing_last_event_at TIMESTAMPTZ"))
             conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS billing_notes TEXT"))
             conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS owner_email TEXT"))
+            # Stage 81.1: ensure owner business-profile language can persist.
+            # Older tenants table revisions may not have a dedicated language column;
+            # Stage 81 UI defaulted the select to lv, but the value could not be stored.
+            conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS language TEXT"))
+            conn.execute(text("UPDATE tenants SET language='lv' WHERE language IS NULL OR TRIM(language)=''"))
+            conn.execute(text("ALTER TABLE tenants ALTER COLUMN language SET DEFAULT 'lv'"))
             conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS telegram_bot_token TEXT"))
             conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS telegram_webhook_secret TEXT"))
             conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS telegram_webhook_url TEXT"))

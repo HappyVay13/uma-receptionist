@@ -603,3 +603,9 @@ Stage 77.1 is a narrow readiness endpoint hotfix only. It fixes a runtime type m
 - `enterprise_saas_ready` remains false; enterprise maturity is a later phase.
 - Do not change receptionist dialogue, booking routing, slot generation, date/time parsing, side-question handling, confirmation, cancellation, rescheduling, Google Calendar event runtime, Telegram webhook handling, billing semantics, abuse/rate-limit semantics, magic-link semantics, LLM orchestration, or regression evaluator rules.
 - Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+
+## Stage 81.1 — Business Profile Language Persistence Hotfix
+- Fixes Stage 81 owner business-profile UX where the language selector could show `lv` but readiness still reported `missing=language` on older tenant schemas.
+- Ensures `tenants.language` exists, backfills empty values to `lv`, and sets `lv` as the default for future rows.
+- Does not change receptionist booking/dialogue/calendar/Telegram/billing/runtime semantics.
+
