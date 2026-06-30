@@ -1014,7 +1014,7 @@ Receptionist core was not changed. Booking routing, slots, date/time parsing, pr
 
 ## Stage 79 — Launch UX / Public Onboarding Polish
 
-Status: implemented in archive, awaiting deploy verification.
+Status: closed after deploy verification. User reported `/dialogue/qa` = 50/50 passed and all Stage 79 checks OK.
 
 Scope:
 - Added public launch landing pages:
@@ -1047,3 +1047,37 @@ Expected verification:
 
 Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, dialogue QA evaluator, LLM orchestration, and voice/calls were not changed.
 
+
+
+## Stage 80 — Tenant Workspace UX / Owner Setup Completion
+
+Status: implemented in archive, awaiting deploy verification.
+
+Scope:
+- Added owner-safe workspace/setup endpoints:
+  - `GET /owner/setup`
+  - `GET /owner/setup/ui`
+  - `GET /owner/workspace`
+  - `GET /owner/workspace/ui`
+  - `GET /owner/workspace/setup`
+  - `GET /owner/workspace/setup/ui`
+- Added admin-protected Stage 80 readiness endpoints:
+  - `GET /tenant-workspace/readiness`
+  - `GET /workspace/readiness`
+  - `GET /owner-setup/readiness`
+  - `GET /owner/setup-completion/readiness`
+- Added setup-completion task model for business profile, service catalog, business memory/FAQ, Google Calendar, Telegram, billing, owner auth, and Stage 78 launch lock.
+- Added owner-safe setup checklist / next-actions workspace UI.
+- Integrated Stage 80 workspace/setup links and metadata into the owner dashboard payload.
+
+Expected verification:
+- Render deploy starts successfully.
+- `/dialogue/qa` = 50/50 passed.
+- `/tenant-workspace/readiness?tenant_id=clinic_demo` returns `stage=80`.
+- `/owner/setup/ui?tenant_id=<owner_tenant>` opens with a valid owner session.
+- `/owner/workspace/ui?tenant_id=<owner_tenant>` opens with a valid owner session.
+- `/owner/setup?tenant_id=<owner_tenant>` returns Stage 80 setup-completion JSON.
+- Owner dashboard/billing remain owner-safe.
+- Stage 78 remains the source of truth for `public_saas_ready`.
+
+Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, dialogue QA evaluator, LLM orchestration, and voice/calls were not changed.
