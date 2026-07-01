@@ -1403,3 +1403,9 @@ Expected verification:
 - `/dialogue/qa` remains 50/50 passed.
 
 Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, dialogue QA evaluator, LLM orchestration, and voice/calls were not changed.
+
+
+## Stage 87.2 — Launch Review Readiness Fast Path Hotfix
+- Built after Stage 87.1.
+- Replaces deep Stage 87 final-review aggregation with fast owner-safe checklist path to prevent launch-review UI/readiness hanging.
+- Does not change receptionist runtime, booking, Calendar runtime, Telegram runtime, billing semantics, CSRF, abuse limits, magic-link, QA evaluator, LLM or voice.

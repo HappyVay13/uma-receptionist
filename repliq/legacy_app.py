@@ -5614,6 +5614,15 @@ def stage87_review_item(key: str, label: str, ready: bool, description: str, own
 
 
 def stage87_owner_workspace_final_review_core(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14) -> Dict[str, Any]:
+    """Fast owner launch checklist model.
+
+    Stage 87.2 intentionally avoids deep cross-stage readiness fan-out here.
+    The Stage 87.0/87.1 implementation aggregated many older readiness payloads
+    in one browser request. In production this can leave the owner UI waiting on
+    one slow dependency and never render the checklist. This fast path uses
+    tenant data and direct lightweight helpers only; full detailed readiness
+    endpoints remain available separately for admin/support diagnostics.
+    """
     tid = (tenant_id or "").strip() or TENANT_ID_DEFAULT
     days = max(1, min(int(days or 14), 60))
     base = (SERVER_BASE_URL or "").rstrip("/")
@@ -5621,56 +5630,127 @@ def stage87_owner_workspace_final_review_core(tenant_id: str = TENANT_ID_DEFAULT
     def url(path: str) -> str:
         return base + path if base else path
 
+    def safe(name: str, fn) -> Dict[str, Any]:
+        try:
+            value = fn()
+            if isinstance(value, dict):
+                return value
+            return {"stage_dependency": name, "status": "blocked", "blocking": ["dependency_returned_non_dict"], "warnings": []}
+        except Exception as e:
+            log.error("stage87_2_fast_dependency_failed name=%s tenant_id=%s err=%s", name, tid, e)
+            return {"stage_dependency": name, "status": "blocked", "blocking": [f"{name}_failed:{e.__class__.__name__}"], "warnings": []}
+
     try:
         tenant = get_existing_tenant(tid)
     except Exception as e:
-        log.error("stage87_tenant_lookup_failed tenant_id=%s err=%s", tid, e)
+        log.error("stage87_2_tenant_lookup_failed tenant_id=%s err=%s", tid, e)
         tenant = {}
     tenant_found = bool((tenant or {}).get("_id"))
-    tenant_id_clean = str((tenant or {}).get("_id") or (tenant or {}).get("id") or tid).strip() or tid
+    tenant_norm = normalize_tenant_saas_fields(tenant or {}) if tenant_found else {}
+    tenant_id_clean = str((tenant_norm or {}).get("_id") or (tenant or {}).get("_id") or (tenant or {}).get("id") or tid).strip() or tid
 
-    workspace = stage80_safe_dependency("stage80_workspace", lambda: stage80_workspace_setup_core(tenant_id_clean, days=days))
-    profile = stage80_safe_dependency("stage81_business_profile", lambda: stage81_business_profile_readiness_payload(tenant_id_clean, days=days))
-    services = stage80_safe_dependency("stage82_owner_services", lambda: stage82_owner_service_catalog_readiness_payload(tenant_id_clean, days=days))
-    memory = stage80_safe_dependency("stage83_owner_memory", lambda: stage83_business_memory_owner_readiness_payload(tenant_id_clean, days=days))
-    consistency = stage80_safe_dependency("stage84_price_consistency", lambda: stage84_catalog_memory_consistency_readiness_payload(tenant_id_clean, days=days))
-    calendar = stage80_safe_dependency("stage85_calendar", lambda: stage85_calendar_availability_core(tenant_id_clean, days=days))
-    telegram = stage80_safe_dependency("stage86_telegram", lambda: stage86_telegram_owner_channel_core(tenant_id_clean, days=days))
-    billing = stage80_safe_dependency("stage73_billing", lambda: stage73_billing_subscription_gate_readiness_payload(tenant_id_clean, days=days))
-    final_lock = stage80_safe_dependency("stage78_final_lock", lambda: stage78_final_public_saas_readiness_payload(tenant_id_clean, days=days, include_gap_audit=False))
-    owner_auth = stage80_safe_dependency("stage71_owner_auth", lambda: stage71_owner_auth_readiness_payload(tenant_id_clean))
-    separation = stage80_safe_dependency("stage77_owner_admin_separation", lambda: stage77_client_owner_superadmin_separation_readiness_payload(tenant_id_clean, days=days))
+    profile = safe("stage81_business_profile_model", lambda: stage81_business_profile_model(tenant_id_clean, days=days))
+    profile_checks = profile.get("checks") if isinstance(profile.get("checks"), dict) else {}
+    profile_missing = profile.get("missing") if isinstance(profile.get("missing"), list) else [k for k, v in profile_checks.items() if not v]
+    profile_ready = bool(profile.get("business_profile_complete") and tenant_found)
 
-    billing_payload = billing.get("billing") if isinstance(billing.get("billing"), dict) else {}
-    runtime_gate = billing_payload.get("runtime_gate") if isinstance(billing_payload.get("runtime_gate"), dict) else {}
+    def catalog_fast() -> Dict[str, Any]:
+        source, all_items, source_valid = stage66_service_catalog_source(tenant_norm or tenant or {}) if tenant_found else ("tenant_not_found", [], False)
+        active_items = [item for item in all_items if item.get("active", True)]
+        priced_items = [item for item in active_items if str(item.get("price") or "").strip()]
+        duration_items = [item for item in active_items if int(item.get("duration_min") or 0) > 0]
+        warnings_local: List[str] = []
+        if not active_items:
+            warnings_local.append("service_catalog_has_no_active_items")
+        if active_items and len(priced_items) < len(active_items):
+            warnings_local.append("service_catalog_some_active_items_missing_price")
+        if active_items and len(duration_items) < len(active_items):
+            warnings_local.append("service_catalog_some_active_items_missing_duration")
+        return {
+            "stage": "82-fast",
+            "tenant_id": tenant_id_clean,
+            "source": source,
+            "source_valid": bool(source_valid),
+            "service_catalog_owner_ux_ready": bool(tenant_found),
+            "runtime_service_catalog_ready": bool(source_valid and active_items),
+            "owner_service_catalog_update_ready": bool(tenant_found),
+            "service_catalog_setup_complete": bool(source_valid and active_items and priced_items and duration_items),
+            "counts": {"items_total": len(all_items), "items_active": len(active_items), "items_priced": len(priced_items), "items_with_duration": len(duration_items)},
+            "warnings": warnings_local,
+            "links": {"owner_services": f"/owner/services/ui?tenant_id={tenant_id_clean}"},
+        }
 
-    workspace_ready = bool(workspace.get("tenant_workspace_ux_ready"))
-    profile_ready = bool(profile.get("tenant_business_profile_settings_ready") and profile.get("business_profile_complete"))
-    services_ready = stage87_dependency_ready(services, ["service_catalog_owner_ux_ready", "owner_service_catalog_update_ready"])
-    memory_ready = stage87_dependency_ready(memory, ["business_memory_owner_ux_ready", "owner_business_memory_update_ready"])
-    price_guard_ready = bool(consistency.get("service_catalog_memory_consistency_ready"))
+    services = safe("stage82_service_catalog_fast", catalog_fast)
+    services_ready = bool(services.get("runtime_service_catalog_ready"))
+
+    memory = safe("stage83_business_memory_core", lambda: stage83_owner_business_memory_core(tenant_id_clean, days=days))
+    memory_ready = bool(memory.get("business_memory_owner_ux_ready") and memory.get("business_memory_content_ready"))
+
+    consistency = safe("stage84_price_consistency_core", lambda: stage84_catalog_memory_consistency_core(tenant_id_clean, days=days))
+    price_guard_ready = bool(tenant_found and not consistency.get("blocking"))
     price_clean = bool(consistency.get("price_consistency_clean"))
-    calendar_owner_ready = bool(calendar.get("calendar_owner_ux_ready") or calendar.get("owner_calendar_setup_ready"))
-    calendar_complete = bool(calendar.get("calendar_setup_complete"))
-    availability_ready = bool(calendar.get("availability_setup_ready"))
-    telegram_owner_ready = bool(telegram.get("telegram_owner_ux_ready") or telegram.get("owner_telegram_setup_ready"))
-    telegram_complete = bool(telegram.get("telegram_channel_setup_complete"))
-    billing_ready = bool(billing.get("billing_subscription_gate_foundation_ready"))
-    billing_allowed = bool(runtime_gate.get("allowed") is True)
-    public_launch_ready = bool(final_lock.get("public_saas_ready") is True)
-    owner_auth_ready = bool(owner_auth.get("owner_auth_foundation_ready") and owner_auth.get("tenant_ownership_binding_ready"))
-    separation_ready = bool(separation.get("client_owner_superadmin_separation_ready") or separation.get("owner_admin_separation_ready"))
+
+    timezone_value = str(tenant_norm.get("timezone") or "").strip()
+    work_start_value = str(tenant_norm.get("work_start") or "").strip()
+    work_end_value = str(tenant_norm.get("work_end") or "").strip()
+    calendar_id = str(tenant_norm.get("calendar_id") or tenant_norm.get("google_calendar_id") or "").strip()
+    google_connected = bool(tenant_norm.get("google_connected"))
+    if tenant_found and not google_connected:
+        try:
+            google_connected = bool(tenant_has_google_account(tenant_id_clean))
+        except Exception as e:
+            log.error("stage87_2_google_account_probe_failed tenant_id=%s err=%s", tenant_id_clean, e)
+    availability_ready = bool(tenant_found and timezone_value and work_start_value and work_end_value)
+    calendar_complete = bool(google_connected and calendar_id)
+    calendar = {
+        "stage": "85-fast",
+        "calendar_owner_ux_ready": bool(tenant_found),
+        "owner_calendar_setup_ready": bool(tenant_found),
+        "availability_setup_ready": bool(tenant_found),
+        "availability_setup_complete": bool(availability_ready),
+        "calendar_setup_complete": bool(calendar_complete),
+        "support_controlled_google_oauth": bool(not calendar_complete),
+        "availability": {"timezone": timezone_value, "work_start": work_start_value, "work_end": work_end_value},
+        "google_calendar": {"google_connected": bool(google_connected), "calendar_selected": bool(calendar_id), "calendar_id_masked": stage85_mask_calendar_id(calendar_id) if calendar_id else ""},
+        "warnings": [x for x in [None if availability_ready else "availability_missing_or_incomplete", None if google_connected else "google_account_not_connected_support_controlled", None if calendar_id else "calendar_not_selected_support_controlled"] if x],
+    }
+
+    telegram_config = safe("stage68_telegram_config_status", lambda: stage68_telegram_config_status(tenant_id_clean))
+    telegram_runtime_ready = bool(telegram_config.get("has_bot_token") and telegram_config.get("has_webhook_secret") and SERVER_BASE_URL)
+    telegram_metadata_ready = bool(telegram_config.get("stored_webhook_url") or telegram_runtime_ready)
+    telegram_complete = bool(telegram_runtime_ready and telegram_metadata_ready)
+    telegram = {
+        "stage": "86-fast",
+        "telegram_owner_ux_ready": bool(tenant_found),
+        "owner_telegram_setup_ready": bool(tenant_found),
+        "telegram_channel_setup_complete": bool(telegram_complete),
+        "support_controlled_telegram_setup": bool(not telegram_complete),
+        "telegram_config": {"has_bot_token": bool(telegram_config.get("has_bot_token")), "has_webhook_secret": bool(telegram_config.get("has_webhook_secret")), "bot_token_source": telegram_config.get("bot_token_source"), "webhook_secret_source": telegram_config.get("webhook_secret_source"), "stored_webhook_url_present": bool(telegram_config.get("stored_webhook_url")), "secret_value_exposed": False},
+        "warnings": [x for x in [None if telegram_config.get("has_bot_token") else "telegram_bot_token_missing_support_controlled", None if telegram_config.get("has_webhook_secret") else "telegram_webhook_secret_missing_support_controlled", None if telegram_metadata_ready else "telegram_webhook_metadata_not_saved"] if x],
+    }
+
+    billing_status = tenant_billing_status(tenant_norm) if tenant_found else {}
+    runtime_gate = billing_status.get("runtime_gate") if isinstance(billing_status.get("runtime_gate"), dict) else {}
+    billing_ready = bool(runtime_gate.get("allowed") is True)
+    billing = {"stage": "73-fast", "billing_subscription_gate_foundation_ready": bool(tenant_found), "billing": billing_status, "warnings": [] if billing_ready else ["billing_runtime_gate_not_allowed"]}
+
+    stage78_missing_admin = sorted(path for path in STAGE78_READINESS_PATHS if path not in STAGE61_PROTECTED_EXACT_PATHS)
+    public_launch_ready = bool(tenant_found and not stage78_missing_admin)
+    final_lock = {"stage": "78-fast", "public_saas_ready": bool(public_launch_ready), "stage78_readiness_routes_admin_protected": bool(not stage78_missing_admin), "not_recomputed_in_stage87_fast_path": True, "full_readiness_url": f"/public-saas/final-readiness?tenant_id={tenant_id_clean}&days={days}"}
+
+    owner_auth_ready = bool(not sorted(path for path in STAGE87_OWNER_REVIEW_PATHS if path not in STAGE71_OWNER_PROTECTED_EXACT_PATHS))
+    separation_ready = bool(not sorted(path for path in STAGE87_OWNER_REVIEW_PATHS if path in STAGE61_PROTECTED_EXACT_PATHS))
 
     review_items = [
-        stage87_review_item("business_profile", "Business profile", profile_ready, "Business name, language, timezone and working hours are configured.", f"/owner/business-profile/ui?tenant_id={tenant_id_clean}", {"stage": profile.get("stage"), "missing": profile.get("missing") or []}),
-        stage87_review_item("services", "Services", services_ready, "Service catalog is available to the receptionist and editable from the owner UI.", f"/owner/services/ui?tenant_id={tenant_id_clean}", {"stage": services.get("stage"), "completion": services.get("completion") or {}, "warnings": services.get("warnings") or []}),
+        stage87_review_item("business_profile", "Business profile", profile_ready, "Business name, language, timezone and working hours are configured.", f"/owner/business-profile/ui?tenant_id={tenant_id_clean}", {"stage": profile.get("stage") or "81-fast", "missing": profile_missing or []}),
+        stage87_review_item("services", "Services", services_ready, "Service catalog is available to the receptionist and editable from the owner UI.", f"/owner/services/ui?tenant_id={tenant_id_clean}", {"stage": services.get("stage"), "counts": services.get("counts") or {}, "warnings": services.get("warnings") or []}),
         stage87_review_item("business_memory", "Business Memory / FAQ", memory_ready, "FAQ, rules and business context are present for customer side-questions.", f"/owner/business-memory/ui?tenant_id={tenant_id_clean}", {"stage": memory.get("stage"), "completion": memory.get("completion") or {}, "warnings": memory.get("warnings") or []}),
-        stage87_review_item("price_consistency", "Price consistency", bool(price_guard_ready and price_clean), "Service Catalog is the source of truth for prices; Business Memory should not contain conflicting manual price lines.", f"/owner/price-consistency/ui?tenant_id={tenant_id_clean}", {"stage": consistency.get("stage"), "price_consistency_clean": price_clean, "completion": consistency.get("completion") or {}, "warnings": consistency.get("warnings") or []}, optional_attention=True),
-        stage87_review_item("calendar", "Calendar", bool(calendar_owner_ready and calendar_complete), "Google Calendar status is visible in the owner UI; OAuth/calendar selection may remain support-controlled.", f"/owner/calendar/ui?tenant_id={tenant_id_clean}", {"stage": calendar.get("stage"), "calendar_setup_complete": calendar_complete, "support_controlled_google_oauth": bool(calendar.get("support_controlled_google_oauth")), "warnings": calendar.get("warnings") or []}, support_controlled=not calendar_complete),
+        stage87_review_item("price_consistency", "Price consistency", bool(price_guard_ready and price_clean), "Service Catalog is the source of truth for prices; Business Memory should not contain conflicting manual price lines.", f"/owner/price-consistency/ui?tenant_id={tenant_id_clean}", {"stage": consistency.get("stage") or "84-fast", "price_consistency_clean": price_clean, "completion": consistency.get("completion") or {}, "warnings": consistency.get("warnings") or []}, optional_attention=True),
+        stage87_review_item("calendar", "Calendar", bool(calendar_complete), "Google Calendar status is visible in the owner UI; OAuth/calendar selection may remain support-controlled.", f"/owner/calendar/ui?tenant_id={tenant_id_clean}", {"stage": calendar.get("stage"), "calendar_setup_complete": calendar_complete, "support_controlled_google_oauth": bool(calendar.get("support_controlled_google_oauth")), "warnings": calendar.get("warnings") or []}, support_controlled=not calendar_complete),
         stage87_review_item("availability", "Availability", availability_ready, "Timezone and working hours are configured and owner-editable.", f"/owner/availability/ui?tenant_id={tenant_id_clean}", {"stage": calendar.get("stage"), "availability": calendar.get("availability") or {}}),
-        stage87_review_item("telegram", "Telegram channel", bool(telegram_owner_ready and telegram_complete), "Telegram status is visible in the owner UI; bot token/webhook setup remains support-controlled in this phase.", f"/owner/telegram/ui?tenant_id={tenant_id_clean}", {"stage": telegram.get("stage"), "telegram_channel_setup_complete": telegram_complete, "support_controlled_telegram_setup": bool(telegram.get("support_controlled_telegram_setup")), "warnings": telegram.get("warnings") or []}, support_controlled=not telegram_complete),
-        stage87_review_item("billing", "Billing", bool(billing_ready and billing_allowed), "Billing/subscription gate is visible to the owner and runtime access is allowed.", f"/owner/billing/ui?tenant_id={tenant_id_clean}", {"stage": billing.get("stage"), "billing_subscription_gate_foundation_ready": billing_ready, "runtime_allowed": billing_allowed, "runtime_gate": runtime_gate}),
-        stage87_review_item("launch_lock", "Launch readiness lock", public_launch_ready, "Stage 78 controlled public self-service launch lock remains the public SaaS source of truth.", f"/public-saas/final-readiness?tenant_id={tenant_id_clean}&days={days}", {"stage": final_lock.get("stage"), "public_saas_ready": public_launch_ready}),
+        stage87_review_item("telegram", "Telegram channel", bool(telegram_complete), "Telegram status is visible in the owner UI; bot token/webhook setup remains support-controlled in this phase.", f"/owner/telegram/ui?tenant_id={tenant_id_clean}", {"stage": telegram.get("stage"), "telegram_channel_setup_complete": telegram_complete, "support_controlled_telegram_setup": bool(telegram.get("support_controlled_telegram_setup")), "warnings": telegram.get("warnings") or []}, support_controlled=not telegram_complete),
+        stage87_review_item("billing", "Billing", bool(billing_ready), "Billing/subscription gate is visible to the owner and runtime access is allowed.", f"/owner/billing/ui?tenant_id={tenant_id_clean}", {"stage": billing.get("stage"), "billing_subscription_gate_foundation_ready": billing.get("billing_subscription_gate_foundation_ready"), "runtime_allowed": billing_ready, "runtime_gate": runtime_gate}),
+        stage87_review_item("launch_lock", "Launch readiness lock", public_launch_ready, "Stage 78 controlled public self-service launch lock remains available; full deep lock can be opened separately by admin/support.", f"/public-saas/final-readiness?tenant_id={tenant_id_clean}&days={days}", final_lock),
     ]
 
     required_keys = {"business_profile", "services", "business_memory", "availability", "billing", "launch_lock"}
@@ -5693,14 +5773,21 @@ def stage87_owner_workspace_final_review_core(tenant_id: str = TENANT_ID_DEFAULT
         blocking.append("tenant_not_found")
     if missing_readiness_protection:
         blocking.append("stage87_readiness_paths_not_admin_protected")
-    if missing_owner_protection or owner_admin_overlap:
+    if missing_owner_protection:
         blocking.append("stage87_owner_review_paths_not_owner_safe")
-    if not workspace_ready:
-        warnings.append("stage80_workspace_not_ready")
+    if owner_admin_overlap:
+        blocking.append("stage87_owner_review_paths_admin_overlap")
+    if stage78_missing_admin:
+        warnings.append("stage78_readiness_paths_not_admin_protected")
     if not owner_auth_ready:
         warnings.append("owner_auth_not_ready")
     if not separation_ready:
         warnings.append("owner_admin_separation_not_ready")
+    for dep_name, dep in {"profile": profile, "services": services, "memory": memory, "consistency": consistency, "calendar": calendar, "telegram": telegram, "billing": billing}.items():
+        for item in dep.get("blocking") or []:
+            warnings.append(f"{dep_name}:{item}")
+        for item in dep.get("warnings") or []:
+            warnings.append(f"{dep_name}:{item}")
     for item in review_items:
         if not item.get("ready"):
             if item.get("support_controlled"):
@@ -5717,18 +5804,21 @@ def stage87_owner_workspace_final_review_core(tenant_id: str = TENANT_ID_DEFAULT
 
     return {
         "ok": True,
-        "stage": "87",
-        "previous_stage": "86",
-        "purpose": "Owner Workspace Final Setup Review / Launch Checklist Polish",
+        "stage": "87.2",
+        "previous_stage": "87.1",
+        "purpose": "Owner Workspace Final Setup Review / Launch Checklist Polish - Fast Path Hotfix",
         "tenant_id": tenant_id_clean,
         "tenant_found": bool(tenant_found),
         "status": status,
         "maturity_phase": STAGE87_MATURITY_TARGET,
+        "fast_path": True,
+        "deep_dependency_aggregation_skipped": True,
+        "deep_dependency_aggregation_skip_reason": "prevents owner launch-review UI/readiness from hanging on slow nested readiness fan-out",
         "owner_workspace_final_review_ready": bool(infrastructure_ready),
         "owner_launch_checklist_ready": bool(infrastructure_ready),
         "owner_launch_checklist_complete": bool(owner_launch_checklist_complete),
         "public_saas_ready": bool(public_launch_ready),
-        "public_saas_ready_source": "stage78_final_lock",
+        "public_saas_ready_source": "stage78_fast_static_guard; full Stage78 remains available at /public-saas/final-readiness",
         "enterprise_saas_ready": False,
         "enterprise_saas_ready_reason": "enterprise_maturity_requires_later_sso_rbac_audit_sla_disaster_recovery_observability_and_advanced_compliance_stages",
         "completion": {"required_ready": required_ready_count, "required_total": len(required_items), "support_controlled_ready": support_ready_count, "support_controlled_total": len(support_items), "optional_ready": optional_ready_count, "optional_total": len(optional_items), "next_action_count": len(next_actions)},
@@ -5736,13 +5826,12 @@ def stage87_owner_workspace_final_review_core(tenant_id: str = TENANT_ID_DEFAULT
         "next_actions": next_actions,
         "owner_safe_scope": {"final_setup_review": True, "launch_checklist": True, "read_only": True, "admin_write_surfaces_exposed_to_owner": False, "admin_links_exposed_to_owner": False, "stage87_owner_workspace_review": True, "receptionist_core_changed": False, "booking_runtime_changed": False, "calendar_runtime_changed": False, "telegram_runtime_changed": False},
         "security": {"stage87_readiness_routes_admin_protected": bool(not missing_readiness_protection), "stage87_owner_review_routes_owner_session_bound": bool(not missing_owner_protection and not owner_admin_overlap), "new_owner_write_routes_added": False, "owner_csrf_paths_required": False, "tenant_id_parameter_is_not_auth": True, "admin_setup_links_exposed_to_owner": False, "secret_values_exposed": False},
-        "dependencies": {"stage80_workspace": workspace, "stage81_business_profile": profile, "stage82_owner_services": services, "stage83_owner_memory": memory, "stage84_price_consistency": consistency, "stage85_calendar": calendar, "stage86_telegram": telegram, "stage73_billing": billing, "stage78_final_lock": final_lock, "stage71_owner_auth": owner_auth, "stage77_owner_admin_separation": separation},
+        "dependencies": {"stage81_business_profile_fast": profile, "stage82_owner_services_fast": services, "stage83_owner_memory_fast": memory, "stage84_price_consistency_fast": consistency, "stage85_calendar_fast": calendar, "stage86_telegram_fast": telegram, "stage73_billing_fast": billing, "stage78_final_lock_fast": final_lock},
         "links": {"owner_launch_review": url(f"/owner/launch-review/ui?tenant_id={tenant_id_clean}"), "owner_setup_review": url(f"/owner/setup-review/ui?tenant_id={tenant_id_clean}"), "owner_workspace": url(f"/owner/workspace/ui?tenant_id={tenant_id_clean}"), "owner_dashboard": url(f"/owner/dashboard/ui?tenant_id={tenant_id_clean}"), "owner_business_profile": url(f"/owner/business-profile/ui?tenant_id={tenant_id_clean}"), "owner_services": url(f"/owner/services/ui?tenant_id={tenant_id_clean}"), "owner_business_memory": url(f"/owner/business-memory/ui?tenant_id={tenant_id_clean}"), "owner_price_consistency": url(f"/owner/price-consistency/ui?tenant_id={tenant_id_clean}"), "owner_calendar": url(f"/owner/calendar/ui?tenant_id={tenant_id_clean}"), "owner_availability": url(f"/owner/availability/ui?tenant_id={tenant_id_clean}"), "owner_telegram": url(f"/owner/telegram/ui?tenant_id={tenant_id_clean}"), "owner_billing": url(f"/owner/billing/ui?tenant_id={tenant_id_clean}"), "stage87_readiness": url(f"/owner-workspace/final-review/readiness?tenant_id={tenant_id_clean}&days={days}"), "tenant_workspace_readiness": url(f"/tenant-workspace/readiness?tenant_id={tenant_id_clean}&days={days}"), "final_public_saas_readiness": url(f"/public-saas/final-readiness?tenant_id={tenant_id_clean}&days={days}")},
         "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
         "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
-        "note": "Stage 87 adds an owner-safe final setup review and launch checklist only. It does not change receptionist dialogue, booking, slots, Calendar runtime, Telegram runtime, billing semantics, CSRF, abuse/rate-limits, magic-link, LLM orchestration, or QA evaluator behavior.",
+        "note": "Stage 87.2 fixes launch-review UI/readiness hanging by replacing deep nested readiness aggregation with a fast owner-safe direct checklist model. It does not change receptionist dialogue, booking, slots, Calendar runtime, Telegram runtime, billing semantics, CSRF, abuse/rate-limits, magic-link, LLM orchestration, or QA evaluator behavior.",
     }
-
 
 def stage87_owner_launch_review_payload(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14) -> Dict[str, Any]:
     admin_access = bool(stage61_token_valid(stage61_request_token(request)) or stage62_request_has_valid_session(request))

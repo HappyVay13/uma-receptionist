@@ -779,3 +779,7 @@ Stage 77.1 is a narrow readiness endpoint hotfix only. It fixes a runtime type m
 - It must not expose admin setup links or secrets to owner users.
 - It must not change receptionist dialogue, booking routing, slot generation, date/time parsing, side-question handling, confirmation, cancellation, rescheduling, Google Calendar runtime, Telegram webhook handling, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, LLM orchestration, or regression evaluator rules.
 - Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+
+
+## Stage 87.2 Guardrail
+Stage 87 owner launch-review pages must not perform deep cross-stage readiness fan-out in the browser request. Use fast owner-safe checklist data and link to deeper admin/support diagnostics separately.
