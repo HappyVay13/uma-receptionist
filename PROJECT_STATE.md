@@ -1379,3 +1379,27 @@ Expected verification:
 - Stage 78 remains the source of truth for `public_saas_ready`; `enterprise_saas_ready=false` remains explicit.
 
 Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, dialogue QA evaluator, LLM orchestration, and voice/calls were not changed.
+
+## Stage 87.1 — Launch Review UI Bootstrap Hotfix
+
+Status: implemented in archive, awaiting deploy verification.
+
+Reason:
+- After Stage 87 deploy, `/owner/launch-review/ui?tenant_id=clinic_demo` opened but the client-side UI did not initialize: tenant field stayed empty, Load did not fetch, and Workspace/Dashboard/Logout buttons did not respond.
+
+Fix:
+- Replaced only `stage87_owner_launch_review_html()` with a defensive browser bootstrap.
+- Tenant is now read from URL query first, then backend default, then `clinic_demo` fallback.
+- Tenant input is populated immediately on boot.
+- Buttons now use explicit JS bindings by element id.
+- UI no longer relies on fragile nested template-literal rendering for checklist cards.
+- HTML escaping now uses regex replacement instead of `replaceAll()`.
+- Fetch failures and non-OK JSON responses are shown in the Raw launch checklist block.
+
+Expected verification:
+- `/owner/launch-review/ui?tenant_id=clinic_demo` immediately shows `clinic_demo` in the tenant input.
+- Load, Workspace, Dashboard, and Logout buttons respond.
+- `/owner/launch-review?tenant_id=clinic_demo` still returns Stage 87 payload when owner session or super-admin bypass is valid.
+- `/dialogue/qa` remains 50/50 passed.
+
+Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, dialogue QA evaluator, LLM orchestration, and voice/calls were not changed.

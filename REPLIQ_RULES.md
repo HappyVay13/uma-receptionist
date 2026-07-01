@@ -767,3 +767,15 @@ Stage 77.1 is a narrow readiness endpoint hotfix only. It fixes a runtime type m
 - `enterprise_saas_ready` remains false; enterprise maturity is a later phase.
 - Do not change receptionist dialogue, booking routing, slot generation, date/time parsing, side-question handling, confirmation, cancellation, rescheduling, Google Calendar event runtime, Telegram webhook handling, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, LLM orchestration, or regression evaluator rules.
 - Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+
+## Stage 87.1 — Launch Review UI Bootstrap Hotfix Rules
+
+- Stage 87.1 is a narrow UI bootstrap hotfix for the Stage 87 owner launch review page.
+- It may change only the owner launch review HTML/JavaScript bootstrap and documentation.
+- It must not change Stage 87 readiness aggregation semantics.
+- It must not add owner write routes or CSRF paths.
+- It must keep `/owner/launch-review`, `/owner/setup-review`, and `/owner/launch-checklist` protected by Stage 71 owner session and tenant binding.
+- It must keep readiness endpoints admin-protected.
+- It must not expose admin setup links or secrets to owner users.
+- It must not change receptionist dialogue, booking routing, slot generation, date/time parsing, side-question handling, confirmation, cancellation, rescheduling, Google Calendar runtime, Telegram webhook handling, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, LLM orchestration, or regression evaluator rules.
+- Current protected baseline remains `/dialogue/qa = 50/50 passed`.
