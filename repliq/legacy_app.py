@@ -193,6 +193,12 @@ STAGE71_OWNER_PROTECTED_EXACT_PATHS = {
     "/owner/telegram/ui",
     "/owner/channels/telegram",
     "/owner/channels/telegram/ui",
+    "/owner/launch-review",
+    "/owner/launch-review/ui",
+    "/owner/setup-review",
+    "/owner/setup-review/ui",
+    "/owner/launch-checklist",
+    "/owner/launch-checklist/ui",
     "/owner/catalog-memory-consistency/ui",
     "/owner/services",
     "/owner/services/ui",
@@ -369,6 +375,10 @@ STAGE61_PROTECTED_EXACT_PATHS = {
     "/telegram-owner/readiness",
     "/workspace/telegram/readiness",
     "/channels/telegram/owner/readiness",
+    "/owner-workspace/final-review/readiness",
+    "/workspace/final-review/readiness",
+    "/owner-launch-checklist/readiness",
+    "/launch-checklist/owner/readiness",
     "/client/dashboard",
     "/client/dashboard/ui",
     "/client/control-center",
@@ -3917,6 +3927,7 @@ def stage71_owner_dashboard_payload(request: Request, tenant_id: str = TENANT_ID
             "primary_next_action": "review_workspace_and_billing",
             "quickstart_steps": [
                 {"key": "workspace", "label": "Review workspace", "status": "ready", "href": f"/owner/workspace/ui?tenant_id={tid}"},
+                {"key": "launch_review", "label": "Final launch checklist", "status": "ready", "href": f"/owner/launch-review/ui?tenant_id={tid}"},
                 {"key": "business_profile", "label": "Edit business profile", "status": "ready", "href": f"/owner/business-profile/ui?tenant_id={tid}"},
                 {"key": "services", "label": "Review services", "status": "ready", "href": f"/owner/services/ui?tenant_id={tid}"},
                 {"key": "memory", "label": "Edit business memory / FAQ", "status": "ready", "href": f"/owner/business-memory/ui?tenant_id={tid}"},
@@ -3928,7 +3939,7 @@ def stage71_owner_dashboard_payload(request: Request, tenant_id: str = TENANT_ID
                 {"key": "support_setup", "label": "Calendar/channel setup remains controlled by Repliq support in this SMB phase", "status": "support_controlled", "href": None},
             ],
         },
-        "links": {"owner_dashboard": f"/owner/dashboard/ui?tenant_id={tid}", "owner_workspace": f"/owner/workspace/ui?tenant_id={tid}", "owner_setup": f"/owner/setup/ui?tenant_id={tid}", "owner_business_profile": f"/owner/business-profile/ui?tenant_id={tid}", "owner_services": f"/owner/services/ui?tenant_id={tid}", "owner_service_catalog": f"/owner/service-catalog/ui?tenant_id={tid}", "owner_business_memory": f"/owner/business-memory/ui?tenant_id={tid}", "owner_faq": f"/owner/faq/ui?tenant_id={tid}", "owner_workspace_settings": f"/owner/workspace/settings/ui?tenant_id={tid}", "owner_calendar": f"/owner/calendar/ui?tenant_id={tid}", "owner_availability": f"/owner/availability/ui?tenant_id={tid}", "owner_telegram": f"/owner/telegram/ui?tenant_id={tid}", "owner_control_center": f"/owner/control-center/ui?tenant_id={tid}", "owner_session": f"/owner/session?tenant_id={tid}", "owner_billing": f"/owner/billing/ui?tenant_id={tid}", "owner_logout": "/owner/logout"},
+        "links": {"owner_dashboard": f"/owner/dashboard/ui?tenant_id={tid}", "owner_workspace": f"/owner/workspace/ui?tenant_id={tid}", "owner_launch_review": f"/owner/launch-review/ui?tenant_id={tid}", "owner_setup": f"/owner/setup/ui?tenant_id={tid}", "owner_business_profile": f"/owner/business-profile/ui?tenant_id={tid}", "owner_services": f"/owner/services/ui?tenant_id={tid}", "owner_service_catalog": f"/owner/service-catalog/ui?tenant_id={tid}", "owner_business_memory": f"/owner/business-memory/ui?tenant_id={tid}", "owner_faq": f"/owner/faq/ui?tenant_id={tid}", "owner_workspace_settings": f"/owner/workspace/settings/ui?tenant_id={tid}", "owner_calendar": f"/owner/calendar/ui?tenant_id={tid}", "owner_availability": f"/owner/availability/ui?tenant_id={tid}", "owner_telegram": f"/owner/telegram/ui?tenant_id={tid}", "owner_control_center": f"/owner/control-center/ui?tenant_id={tid}", "owner_session": f"/owner/session?tenant_id={tid}", "owner_billing": f"/owner/billing/ui?tenant_id={tid}", "owner_logout": "/owner/logout"},
         "super_admin_support_links": {"admin_control_center": f"/control-center/ui?tenant_id={tid}", "public_saas_audit": f"/public-saas/gap-audit/ui?tenant_id={tid}", "billing_readiness": f"/billing/readiness?tenant_id={tid}"} if admin_access else {},
     }
 
@@ -4098,7 +4109,7 @@ def stage80_workspace_setup_core(tenant_id: str = TENANT_ID_DEFAULT, days: int =
         "security": {"owner_workspace_routes_owner_session_bound": bool(not missing_owner_protection and not owner_admin_overlap), "stage80_readiness_routes_admin_protected": bool(not missing_readiness_protection), "tenant_id_parameter_is_not_auth": True, "owner_admin_links_exposed_to_owner": False, "admin_config_links_hidden_from_owner": True, "raw_admin_token_exposed": False, "raw_owner_login_code_exposed": False, "raw_magic_token_exposed": False, "raw_magic_token_hash_exposed": False, "telegram_token_exposed": False, "google_credentials_exposed": False},
         "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
         "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
-        "links": {"owner_workspace": url(f"/owner/workspace/ui?tenant_id={tenant_id_clean}"), "owner_setup": url(f"/owner/setup/ui?tenant_id={tenant_id_clean}"), "owner_business_profile": url(f"/owner/business-profile/ui?tenant_id={tenant_id_clean}"), "owner_services": url(f"/owner/services/ui?tenant_id={tenant_id_clean}"), "owner_service_catalog": url(f"/owner/service-catalog/ui?tenant_id={tenant_id_clean}"), "owner_business_memory": url(f"/owner/business-memory/ui?tenant_id={tenant_id_clean}"), "owner_faq": url(f"/owner/faq/ui?tenant_id={tenant_id_clean}"), "owner_workspace_settings": url(f"/owner/workspace/settings/ui?tenant_id={tenant_id_clean}"), "owner_calendar": url(f"/owner/calendar/ui?tenant_id={tenant_id_clean}"), "owner_availability": url(f"/owner/availability/ui?tenant_id={tenant_id_clean}"), "owner_telegram": url(f"/owner/telegram/ui?tenant_id={tenant_id_clean}"), "owner_dashboard": url(f"/owner/dashboard/ui?tenant_id={tenant_id_clean}"), "owner_billing": url(f"/owner/billing/ui?tenant_id={tenant_id_clean}"), "owner_session": url(f"/owner/session?tenant_id={tenant_id_clean}"), "stage80_readiness": url(f"/tenant-workspace/readiness?tenant_id={tenant_id_clean}&days={days}"), "stage79_readiness": url(f"/launch-ux/readiness?tenant_id={tenant_id_clean}&days={days}"), "final_public_saas_readiness": url(f"/public-saas/final-readiness?tenant_id={tenant_id_clean}&days={days}")},
+        "links": {"owner_workspace": url(f"/owner/workspace/ui?tenant_id={tenant_id_clean}"), "owner_launch_review": url(f"/owner/launch-review/ui?tenant_id={tenant_id_clean}"), "owner_setup": url(f"/owner/setup/ui?tenant_id={tenant_id_clean}"), "owner_business_profile": url(f"/owner/business-profile/ui?tenant_id={tenant_id_clean}"), "owner_services": url(f"/owner/services/ui?tenant_id={tenant_id_clean}"), "owner_service_catalog": url(f"/owner/service-catalog/ui?tenant_id={tenant_id_clean}"), "owner_business_memory": url(f"/owner/business-memory/ui?tenant_id={tenant_id_clean}"), "owner_faq": url(f"/owner/faq/ui?tenant_id={tenant_id_clean}"), "owner_workspace_settings": url(f"/owner/workspace/settings/ui?tenant_id={tenant_id_clean}"), "owner_calendar": url(f"/owner/calendar/ui?tenant_id={tenant_id_clean}"), "owner_availability": url(f"/owner/availability/ui?tenant_id={tenant_id_clean}"), "owner_telegram": url(f"/owner/telegram/ui?tenant_id={tenant_id_clean}"), "owner_dashboard": url(f"/owner/dashboard/ui?tenant_id={tenant_id_clean}"), "owner_billing": url(f"/owner/billing/ui?tenant_id={tenant_id_clean}"), "owner_session": url(f"/owner/session?tenant_id={tenant_id_clean}"), "stage80_readiness": url(f"/tenant-workspace/readiness?tenant_id={tenant_id_clean}&days={days}"), "stage79_readiness": url(f"/launch-ux/readiness?tenant_id={tenant_id_clean}&days={days}"), "final_public_saas_readiness": url(f"/public-saas/final-readiness?tenant_id={tenant_id_clean}&days={days}")},
         "note": "Stage 80 adds owner-safe workspace setup completion UX/readiness only. It does not expose admin setup links to owners and does not change receptionist dialogue, booking, slots, Google Calendar event runtime, Telegram webhook runtime, billing semantics, CSRF, abuse/rate-limits, magic-link semantics, LLM orchestration, or QA evaluator behavior.",
     }
 
@@ -5557,6 +5568,208 @@ def stage86_owner_telegram_payload(request: Request, tenant_id: str = TENANT_ID_
 def stage86_owner_telegram_html(tenant_id: str = TENANT_ID_DEFAULT) -> str:
     tenant_id_json = json.dumps((tenant_id or "").strip() or TENANT_ID_DEFAULT, ensure_ascii=False)
     html = """<!doctype html><html><head><meta charset='utf-8'/><meta name='viewport' content='width=device-width,initial-scale=1'/><title>Repliq Telegram Channel</title><style>body{font-family:Inter,system-ui,-apple-system,Segoe UI,Arial,sans-serif;background:#f6f7fb;color:#111827;margin:0;padding:24px}.wrap{max-width:980px;margin:0 auto}.hero,.card{background:#fff;border:1px solid #e5e7eb;border-radius:20px;padding:18px;margin:14px 0;box-shadow:0 8px 25px rgba(17,24,39,.05)}.hero{background:#111827;color:white}.hero p{color:#d1d5db}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.sub,.muted{color:#64748b;font-size:14px;line-height:1.45}button{border:0;border-radius:12px;padding:10px 13px;background:#111827;color:white;font-weight:800;cursor:pointer}.secondary{background:#e5e7eb;color:#111827}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}input{box-sizing:border-box;border:1px solid #cbd5e1;border-radius:12px;padding:10px;font-size:14px}.badge{display:inline-block;border-radius:999px;padding:5px 9px;background:#e5e7eb;font-size:12px;font-weight:800;margin:3px 4px 3px 0}.ok{background:#dcfce7;color:#166534}.warn{background:#fef3c7;color:#92400e}.err{background:#fee2e2;color:#991b1b}.item{border:1px solid #e5e7eb;border-radius:14px;padding:12px;margin:8px 0;background:#f8fafc}pre{background:#0f172a;color:#e2e8f0;border-radius:14px;padding:14px;max-height:460px;overflow:auto;white-space:pre-wrap}@media(max-width:760px){body{padding:12px}.grid{grid-template-columns:1fr}}</style></head><body><div class='wrap'><div class='hero'><h1>Telegram channel</h1><p>Owner-safe Telegram status. Bot tokens, webhook secrets and admin setup links are hidden from owners.</p><div class='actions'><input id='tenant_id' style='max-width:280px'/><button onclick='loadTelegram()'>Load</button><button class='secondary' onclick=\"go('/owner/workspace/ui?tenant_id='+encTenant())\">Workspace</button><button class='secondary' onclick=\"go('/owner/setup/ui?tenant_id='+encTenant())\">Setup</button><button class='secondary' onclick=\"go('/owner/logout')\">Logout</button></div></div><div class='card'><h2>Channel status</h2><div id='badges'></div><div id='summary' class='sub'></div></div><div class='grid'><div class='card'><h2>Webhook</h2><div id='webhook'></div></div><div class='card'><h2>Usage</h2><div id='usage'></div></div></div><div class='card'><h2>Next actions</h2><div id='next'></div></div><div class='card'><h2>Raw Telegram readiness</h2><pre id='raw'>Loading...</pre></div></div><script>const DEFAULT_TENANT_ID=__TENANT_ID_JSON__;function el(id){return document.getElementById(id)}function tenant(){return (el('tenant_id').value||'').trim()||DEFAULT_TENANT_ID||'clinic_demo'}function encTenant(){return encodeURIComponent(tenant())}function go(p){window.location=p}function esc(v){return v===null||v===undefined?'':String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;')}function badge(ok,label){return `<span class='badge ${ok?'ok':'warn'}'>${esc(label)}</span>`}function render(d){el('raw').textContent=JSON.stringify(d,null,2);const ch=d.telegram_channel||{}, wh=d.webhook||{}, u=d.usage||{};el('badges').innerHTML=badge(!!d.telegram_owner_ux_ready,'owner UX: '+!!d.telegram_owner_ux_ready)+badge(!!d.telegram_channel_setup_complete,'setup complete: '+!!d.telegram_channel_setup_complete)+badge(!!d.telegram_effective_runtime_ready,'runtime: '+!!d.telegram_effective_runtime_ready)+badge(!!ch.has_bot_token,'bot token configured: '+!!ch.has_bot_token)+badge(!!ch.has_webhook_secret,'webhook secret configured: '+!!ch.has_webhook_secret);el('summary').innerHTML='Telegram is used as a text channel only. Raw bot token and webhook secret are never shown. Bot token source: '+esc(ch.bot_token_source||'unknown')+' · webhook secret source: '+esc(ch.webhook_secret_source||'unknown')+'.';el('webhook').innerHTML=badge(!!wh.stored_webhook_url_present,'stored webhook: '+!!wh.stored_webhook_url_present)+badge(wh.stored_webhook_url_matches_recommended!==false,'matches recommended: '+String(wh.stored_webhook_url_matches_recommended))+'<div class=\"sub\">Runtime endpoint: '+esc(wh.runtime_webhook_endpoint||'')+'</div>'+(d.support_controlled_telegram_setup?'<span class=\"badge warn\">Telegram setup is support-controlled in this SMB phase</span>':'<span class=\"badge ok\">Telegram metadata is ready</span>');el('usage').innerHTML=badge(!!u.telegram_activity_seen,'activity seen: '+!!u.telegram_activity_seen)+'<div class=\"sub\">Window: '+esc(u.window_days||0)+' days · messages: '+esc(u.message_count||0)+'</div>';el('next').innerHTML=(d.next_actions||[]).map(x=>`<div class='item'><strong>${esc(x.label||x.key)}</strong><div class='sub'>${esc(x.description||'')}</div>${x.support_controlled?'<span class=\"badge warn\">support controlled</span>':''}${x.owner_action_url?`<button class='secondary' onclick=\"go('${esc(x.owner_action_url)}')\">${esc(x.owner_action_label||'Open')}</button>`:''}</div>`).join('')||'<span class=\"badge ok\">No next actions</span>'}async function loadTelegram(){el('tenant_id').value=tenant();const r=await fetch('/owner/telegram?tenant_id='+encTenant(),{credentials:'include'});const d=await r.json().catch(()=>({}));if(!r.ok){el('raw').textContent=JSON.stringify(d,null,2);return;}render(d)}el('tenant_id').value=DEFAULT_TENANT_ID||'clinic_demo';loadTelegram();</script></body></html>"""
+    return html.replace("__TENANT_ID_JSON__", tenant_id_json)
+
+# -------------------------
+# STAGE 87: OWNER WORKSPACE FINAL SETUP REVIEW / LAUNCH CHECKLIST POLISH
+# -------------------------
+STAGE87_READINESS_PATHS = {
+    "/owner-workspace/final-review/readiness",
+    "/workspace/final-review/readiness",
+    "/owner-launch-checklist/readiness",
+    "/launch-checklist/owner/readiness",
+}
+STAGE87_OWNER_REVIEW_PATHS = {
+    "/owner/launch-review",
+    "/owner/launch-review/ui",
+    "/owner/setup-review",
+    "/owner/setup-review/ui",
+    "/owner/launch-checklist",
+    "/owner/launch-checklist/ui",
+}
+STAGE87_MATURITY_TARGET = "mature_smb_saas_final_setup_review_phase"
+
+
+def stage87_dependency_ready(payload: Dict[str, Any], preferred_keys: List[str]) -> bool:
+    for key in preferred_keys:
+        if payload.get(key) is True:
+            return True
+    return False
+
+
+def stage87_review_item(key: str, label: str, ready: bool, description: str, owner_action_url: str, evidence: Dict[str, Any], support_controlled: bool = False, optional_attention: bool = False) -> Dict[str, Any]:
+    return {
+        "key": key,
+        "label": label,
+        "ready": bool(ready),
+        "status": "ready" if ready else "attention",
+        "description": description,
+        "owner_action_label": "Open" if not support_controlled else "Review with support",
+        "owner_action_url": owner_action_url,
+        "support_controlled": bool(support_controlled),
+        "optional_attention": bool(optional_attention),
+        "admin_link_exposed_to_owner": False,
+        "evidence": evidence or {},
+    }
+
+
+def stage87_owner_workspace_final_review_core(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14) -> Dict[str, Any]:
+    tid = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    days = max(1, min(int(days or 14), 60))
+    base = (SERVER_BASE_URL or "").rstrip("/")
+
+    def url(path: str) -> str:
+        return base + path if base else path
+
+    try:
+        tenant = get_existing_tenant(tid)
+    except Exception as e:
+        log.error("stage87_tenant_lookup_failed tenant_id=%s err=%s", tid, e)
+        tenant = {}
+    tenant_found = bool((tenant or {}).get("_id"))
+    tenant_id_clean = str((tenant or {}).get("_id") or (tenant or {}).get("id") or tid).strip() or tid
+
+    workspace = stage80_safe_dependency("stage80_workspace", lambda: stage80_workspace_setup_core(tenant_id_clean, days=days))
+    profile = stage80_safe_dependency("stage81_business_profile", lambda: stage81_business_profile_readiness_payload(tenant_id_clean, days=days))
+    services = stage80_safe_dependency("stage82_owner_services", lambda: stage82_owner_service_catalog_readiness_payload(tenant_id_clean, days=days))
+    memory = stage80_safe_dependency("stage83_owner_memory", lambda: stage83_business_memory_owner_readiness_payload(tenant_id_clean, days=days))
+    consistency = stage80_safe_dependency("stage84_price_consistency", lambda: stage84_catalog_memory_consistency_readiness_payload(tenant_id_clean, days=days))
+    calendar = stage80_safe_dependency("stage85_calendar", lambda: stage85_calendar_availability_core(tenant_id_clean, days=days))
+    telegram = stage80_safe_dependency("stage86_telegram", lambda: stage86_telegram_owner_channel_core(tenant_id_clean, days=days))
+    billing = stage80_safe_dependency("stage73_billing", lambda: stage73_billing_subscription_gate_readiness_payload(tenant_id_clean, days=days))
+    final_lock = stage80_safe_dependency("stage78_final_lock", lambda: stage78_final_public_saas_readiness_payload(tenant_id_clean, days=days, include_gap_audit=False))
+    owner_auth = stage80_safe_dependency("stage71_owner_auth", lambda: stage71_owner_auth_readiness_payload(tenant_id_clean))
+    separation = stage80_safe_dependency("stage77_owner_admin_separation", lambda: stage77_client_owner_superadmin_separation_readiness_payload(tenant_id_clean, days=days))
+
+    billing_payload = billing.get("billing") if isinstance(billing.get("billing"), dict) else {}
+    runtime_gate = billing_payload.get("runtime_gate") if isinstance(billing_payload.get("runtime_gate"), dict) else {}
+
+    workspace_ready = bool(workspace.get("tenant_workspace_ux_ready"))
+    profile_ready = bool(profile.get("tenant_business_profile_settings_ready") and profile.get("business_profile_complete"))
+    services_ready = stage87_dependency_ready(services, ["service_catalog_owner_ux_ready", "owner_service_catalog_update_ready"])
+    memory_ready = stage87_dependency_ready(memory, ["business_memory_owner_ux_ready", "owner_business_memory_update_ready"])
+    price_guard_ready = bool(consistency.get("service_catalog_memory_consistency_ready"))
+    price_clean = bool(consistency.get("price_consistency_clean"))
+    calendar_owner_ready = bool(calendar.get("calendar_owner_ux_ready") or calendar.get("owner_calendar_setup_ready"))
+    calendar_complete = bool(calendar.get("calendar_setup_complete"))
+    availability_ready = bool(calendar.get("availability_setup_ready"))
+    telegram_owner_ready = bool(telegram.get("telegram_owner_ux_ready") or telegram.get("owner_telegram_setup_ready"))
+    telegram_complete = bool(telegram.get("telegram_channel_setup_complete"))
+    billing_ready = bool(billing.get("billing_subscription_gate_foundation_ready"))
+    billing_allowed = bool(runtime_gate.get("allowed") is True)
+    public_launch_ready = bool(final_lock.get("public_saas_ready") is True)
+    owner_auth_ready = bool(owner_auth.get("owner_auth_foundation_ready") and owner_auth.get("tenant_ownership_binding_ready"))
+    separation_ready = bool(separation.get("client_owner_superadmin_separation_ready") or separation.get("owner_admin_separation_ready"))
+
+    review_items = [
+        stage87_review_item("business_profile", "Business profile", profile_ready, "Business name, language, timezone and working hours are configured.", f"/owner/business-profile/ui?tenant_id={tenant_id_clean}", {"stage": profile.get("stage"), "missing": profile.get("missing") or []}),
+        stage87_review_item("services", "Services", services_ready, "Service catalog is available to the receptionist and editable from the owner UI.", f"/owner/services/ui?tenant_id={tenant_id_clean}", {"stage": services.get("stage"), "completion": services.get("completion") or {}, "warnings": services.get("warnings") or []}),
+        stage87_review_item("business_memory", "Business Memory / FAQ", memory_ready, "FAQ, rules and business context are present for customer side-questions.", f"/owner/business-memory/ui?tenant_id={tenant_id_clean}", {"stage": memory.get("stage"), "completion": memory.get("completion") or {}, "warnings": memory.get("warnings") or []}),
+        stage87_review_item("price_consistency", "Price consistency", bool(price_guard_ready and price_clean), "Service Catalog is the source of truth for prices; Business Memory should not contain conflicting manual price lines.", f"/owner/price-consistency/ui?tenant_id={tenant_id_clean}", {"stage": consistency.get("stage"), "price_consistency_clean": price_clean, "completion": consistency.get("completion") or {}, "warnings": consistency.get("warnings") or []}, optional_attention=True),
+        stage87_review_item("calendar", "Calendar", bool(calendar_owner_ready and calendar_complete), "Google Calendar status is visible in the owner UI; OAuth/calendar selection may remain support-controlled.", f"/owner/calendar/ui?tenant_id={tenant_id_clean}", {"stage": calendar.get("stage"), "calendar_setup_complete": calendar_complete, "support_controlled_google_oauth": bool(calendar.get("support_controlled_google_oauth")), "warnings": calendar.get("warnings") or []}, support_controlled=not calendar_complete),
+        stage87_review_item("availability", "Availability", availability_ready, "Timezone and working hours are configured and owner-editable.", f"/owner/availability/ui?tenant_id={tenant_id_clean}", {"stage": calendar.get("stage"), "availability": calendar.get("availability") or {}}),
+        stage87_review_item("telegram", "Telegram channel", bool(telegram_owner_ready and telegram_complete), "Telegram status is visible in the owner UI; bot token/webhook setup remains support-controlled in this phase.", f"/owner/telegram/ui?tenant_id={tenant_id_clean}", {"stage": telegram.get("stage"), "telegram_channel_setup_complete": telegram_complete, "support_controlled_telegram_setup": bool(telegram.get("support_controlled_telegram_setup")), "warnings": telegram.get("warnings") or []}, support_controlled=not telegram_complete),
+        stage87_review_item("billing", "Billing", bool(billing_ready and billing_allowed), "Billing/subscription gate is visible to the owner and runtime access is allowed.", f"/owner/billing/ui?tenant_id={tenant_id_clean}", {"stage": billing.get("stage"), "billing_subscription_gate_foundation_ready": billing_ready, "runtime_allowed": billing_allowed, "runtime_gate": runtime_gate}),
+        stage87_review_item("launch_lock", "Launch readiness lock", public_launch_ready, "Stage 78 controlled public self-service launch lock remains the public SaaS source of truth.", f"/public-saas/final-readiness?tenant_id={tenant_id_clean}&days={days}", {"stage": final_lock.get("stage"), "public_saas_ready": public_launch_ready}),
+    ]
+
+    required_keys = {"business_profile", "services", "business_memory", "availability", "billing", "launch_lock"}
+    support_controlled_keys = {"calendar", "telegram"}
+    optional_attention_keys = {"price_consistency"}
+    required_items = [item for item in review_items if item.get("key") in required_keys]
+    support_items = [item for item in review_items if item.get("key") in support_controlled_keys]
+    optional_items = [item for item in review_items if item.get("key") in optional_attention_keys]
+    required_ready_count = sum(1 for item in required_items if item.get("ready"))
+    support_ready_count = sum(1 for item in support_items if item.get("ready"))
+    optional_ready_count = sum(1 for item in optional_items if item.get("ready"))
+
+    missing_readiness_protection = sorted(path for path in STAGE87_READINESS_PATHS if path not in STAGE61_PROTECTED_EXACT_PATHS)
+    missing_owner_protection = sorted(path for path in STAGE87_OWNER_REVIEW_PATHS if path not in STAGE71_OWNER_PROTECTED_EXACT_PATHS)
+    owner_admin_overlap = sorted(path for path in STAGE87_OWNER_REVIEW_PATHS if path in STAGE61_PROTECTED_EXACT_PATHS)
+
+    blocking: List[str] = []
+    warnings: List[str] = []
+    if not tenant_found:
+        blocking.append("tenant_not_found")
+    if missing_readiness_protection:
+        blocking.append("stage87_readiness_paths_not_admin_protected")
+    if missing_owner_protection or owner_admin_overlap:
+        blocking.append("stage87_owner_review_paths_not_owner_safe")
+    if not workspace_ready:
+        warnings.append("stage80_workspace_not_ready")
+    if not owner_auth_ready:
+        warnings.append("owner_auth_not_ready")
+    if not separation_ready:
+        warnings.append("owner_admin_separation_not_ready")
+    for item in review_items:
+        if not item.get("ready"):
+            if item.get("support_controlled"):
+                warnings.append(f"{item.get('key')}_support_controlled_attention")
+            elif item.get("optional_attention"):
+                warnings.append(f"{item.get('key')}_optional_attention")
+            else:
+                warnings.append(f"{item.get('key')}_not_ready")
+
+    infrastructure_ready = bool(not blocking)
+    owner_launch_checklist_complete = bool(infrastructure_ready and required_ready_count == len(required_items) and public_launch_ready)
+    status = "ready" if infrastructure_ready and owner_launch_checklist_complete else "attention" if infrastructure_ready else "blocked"
+    next_actions = [item for item in review_items if not item.get("ready")]
+
+    return {
+        "ok": True,
+        "stage": "87",
+        "previous_stage": "86",
+        "purpose": "Owner Workspace Final Setup Review / Launch Checklist Polish",
+        "tenant_id": tenant_id_clean,
+        "tenant_found": bool(tenant_found),
+        "status": status,
+        "maturity_phase": STAGE87_MATURITY_TARGET,
+        "owner_workspace_final_review_ready": bool(infrastructure_ready),
+        "owner_launch_checklist_ready": bool(infrastructure_ready),
+        "owner_launch_checklist_complete": bool(owner_launch_checklist_complete),
+        "public_saas_ready": bool(public_launch_ready),
+        "public_saas_ready_source": "stage78_final_lock",
+        "enterprise_saas_ready": False,
+        "enterprise_saas_ready_reason": "enterprise_maturity_requires_later_sso_rbac_audit_sla_disaster_recovery_observability_and_advanced_compliance_stages",
+        "completion": {"required_ready": required_ready_count, "required_total": len(required_items), "support_controlled_ready": support_ready_count, "support_controlled_total": len(support_items), "optional_ready": optional_ready_count, "optional_total": len(optional_items), "next_action_count": len(next_actions)},
+        "review_items": review_items,
+        "next_actions": next_actions,
+        "owner_safe_scope": {"final_setup_review": True, "launch_checklist": True, "read_only": True, "admin_write_surfaces_exposed_to_owner": False, "admin_links_exposed_to_owner": False, "stage87_owner_workspace_review": True, "receptionist_core_changed": False, "booking_runtime_changed": False, "calendar_runtime_changed": False, "telegram_runtime_changed": False},
+        "security": {"stage87_readiness_routes_admin_protected": bool(not missing_readiness_protection), "stage87_owner_review_routes_owner_session_bound": bool(not missing_owner_protection and not owner_admin_overlap), "new_owner_write_routes_added": False, "owner_csrf_paths_required": False, "tenant_id_parameter_is_not_auth": True, "admin_setup_links_exposed_to_owner": False, "secret_values_exposed": False},
+        "dependencies": {"stage80_workspace": workspace, "stage81_business_profile": profile, "stage82_owner_services": services, "stage83_owner_memory": memory, "stage84_price_consistency": consistency, "stage85_calendar": calendar, "stage86_telegram": telegram, "stage73_billing": billing, "stage78_final_lock": final_lock, "stage71_owner_auth": owner_auth, "stage77_owner_admin_separation": separation},
+        "links": {"owner_launch_review": url(f"/owner/launch-review/ui?tenant_id={tenant_id_clean}"), "owner_setup_review": url(f"/owner/setup-review/ui?tenant_id={tenant_id_clean}"), "owner_workspace": url(f"/owner/workspace/ui?tenant_id={tenant_id_clean}"), "owner_dashboard": url(f"/owner/dashboard/ui?tenant_id={tenant_id_clean}"), "owner_business_profile": url(f"/owner/business-profile/ui?tenant_id={tenant_id_clean}"), "owner_services": url(f"/owner/services/ui?tenant_id={tenant_id_clean}"), "owner_business_memory": url(f"/owner/business-memory/ui?tenant_id={tenant_id_clean}"), "owner_price_consistency": url(f"/owner/price-consistency/ui?tenant_id={tenant_id_clean}"), "owner_calendar": url(f"/owner/calendar/ui?tenant_id={tenant_id_clean}"), "owner_availability": url(f"/owner/availability/ui?tenant_id={tenant_id_clean}"), "owner_telegram": url(f"/owner/telegram/ui?tenant_id={tenant_id_clean}"), "owner_billing": url(f"/owner/billing/ui?tenant_id={tenant_id_clean}"), "stage87_readiness": url(f"/owner-workspace/final-review/readiness?tenant_id={tenant_id_clean}&days={days}"), "tenant_workspace_readiness": url(f"/tenant-workspace/readiness?tenant_id={tenant_id_clean}&days={days}"), "final_public_saas_readiness": url(f"/public-saas/final-readiness?tenant_id={tenant_id_clean}&days={days}")},
+        "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
+        "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
+        "note": "Stage 87 adds an owner-safe final setup review and launch checklist only. It does not change receptionist dialogue, booking, slots, Calendar runtime, Telegram runtime, billing semantics, CSRF, abuse/rate-limits, magic-link, LLM orchestration, or QA evaluator behavior.",
+    }
+
+
+def stage87_owner_launch_review_payload(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14) -> Dict[str, Any]:
+    admin_access = bool(stage61_token_valid(stage61_request_token(request)) or stage62_request_has_valid_session(request))
+    if admin_access:
+        tid = stage711_resolve_tenant_context(request, tenant_id)
+        access = {"ok": True, "tenant_id": tid, "owner_email": "super_admin", "role": "super_admin"}
+    else:
+        request_path = str(getattr(request.url, "path", "") or "/owner/launch-review")
+        access = stage71_owner_request_access(request, path=request_path if request_path in STAGE87_OWNER_REVIEW_PATHS else "/owner/launch-review")
+        if not access.get("ok"):
+            raise HTTPException(status_code=401, detail=access.get("error") or "owner_login_required")
+        tid = str(access.get("tenant_id") or tenant_id or "").strip() or TENANT_ID_DEFAULT
+    payload = stage87_owner_workspace_final_review_core(tid, days=days)
+    payload["auth_model"] = "owner_session_or_super_admin_bypass"
+    payload["owner_email"] = stage71_normalize_email(access.get("owner_email") or "") if not admin_access else None
+    payload["role"] = access.get("role") or "owner"
+    payload["opened_via_super_admin_bypass"] = bool(admin_access)
+    payload["super_admin_support_links"] = {"admin_control_center": f"/control-center/ui?tenant_id={tid}", "public_saas_audit": f"/public-saas/gap-audit/ui?tenant_id={tid}", "billing_readiness": f"/billing/readiness?tenant_id={tid}", "telegram_setup": f"/telegram/setup/ui?tenant_id={tid}", "google_connect": f"/google/connect?tenant_id={tid}"} if admin_access else {}
+    return payload
+
+
+def stage87_owner_launch_review_html(tenant_id: str = TENANT_ID_DEFAULT) -> str:
+    tenant_id_json = json.dumps((tenant_id or "").strip() or TENANT_ID_DEFAULT, ensure_ascii=False)
+    html = """<!doctype html><html><head><meta charset='utf-8'/><meta name='viewport' content='width=device-width,initial-scale=1'/><title>Repliq Launch Checklist</title>
+<style>body{font-family:Inter,system-ui,-apple-system,Segoe UI,Arial,sans-serif;background:#f6f7fb;color:#111827;margin:0;padding:24px}.wrap{max-width:1120px;margin:0 auto}.hero,.card{background:#fff;border:1px solid #e5e7eb;border-radius:20px;padding:18px;margin:14px 0;box-shadow:0 8px 25px rgba(17,24,39,.05)}.hero{background:#111827;color:white}.hero p{color:#d1d5db}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.sub,.muted{color:#64748b;font-size:14px;line-height:1.45}button{border:0;border-radius:12px;padding:10px 13px;background:#111827;color:white;font-weight:800;cursor:pointer}.secondary{background:#e5e7eb;color:#111827}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}input{box-sizing:border-box;border:1px solid #cbd5e1;border-radius:12px;padding:10px;font-size:14px}.badge{display:inline-block;border-radius:999px;padding:5px 9px;background:#e5e7eb;font-size:12px;font-weight:800;margin:3px 4px 3px 0}.ok{background:#dcfce7;color:#166534}.warn{background:#fef3c7;color:#92400e}.err{background:#fee2e2;color:#991b1b}.item{border:1px solid #e5e7eb;border-radius:16px;padding:14px;margin:8px 0;background:#f8fafc}.item h3{margin:0 0 6px}pre{background:#0f172a;color:#e2e8f0;border-radius:14px;padding:14px;max-height:460px;overflow:auto;white-space:pre-wrap}@media(max-width:820px){body{padding:12px}.grid{grid-template-columns:1fr}}</style></head>
+<body><div class='wrap'><div class='hero'><h1>Final launch checklist</h1><p>Owner-safe review of business profile, services, FAQ, price consistency, calendar, Telegram, billing and public launch readiness. Admin setup links and secrets are hidden.</p><div class='actions'><input id='tenant_id' style='max-width:280px'/><button onclick='loadReview()'>Load</button><button class='secondary' onclick=\"go('/owner/workspace/ui?tenant_id='+encTenant())\">Workspace</button><button class='secondary' onclick=\"go('/owner/dashboard/ui?tenant_id='+encTenant())\">Dashboard</button><button class='secondary' onclick=\"go('/owner/logout')\">Logout</button></div></div><div class='card'><h2>Status</h2><div id='badges'></div><div id='summary' class='sub'></div></div><div class='card'><h2>Review items</h2><div id='items' class='grid'></div></div><div class='card'><h2>Next actions</h2><div id='next'></div><div class='sub'>Calendar and Telegram setup may stay support-controlled in this SMB phase. That is shown as attention instead of exposing admin configuration to owners.</div></div><div class='card'><h2>Raw launch checklist</h2><pre id='raw'>Loading...</pre></div></div>
+<script>const DEFAULT_TENANT_ID=__TENANT_ID_JSON__;function el(id){return document.getElementById(id)}function tenant(){return (el('tenant_id').value||'').trim()||DEFAULT_TENANT_ID||'clinic_demo'}function encTenant(){return encodeURIComponent(tenant())}function go(p){window.location=p}function esc(v){return v===null||v===undefined?'':String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;')}function badge(ok,label){return `<span class='badge ${ok?'ok':'warn'}'>${esc(label)}</span>`}function itemCard(x){const b=badge(!!x.ready,(x.status||'attention'))+(x.support_controlled?badge(false,'support controlled'):'')+(x.optional_attention?badge(false,'optional attention'):'');const btn=x.owner_action_url?`<button class='secondary' onclick=\"go('${esc(x.owner_action_url)}')\">${esc(x.owner_action_label||'Open')}</button>`:'';return `<div class='item'><h3>${esc(x.label||x.key)}</h3><div>${b}</div><p class='muted'>${esc(x.description||'')}</p><div class='actions'>${btn}</div></div>`}function render(d){el('raw').textContent=JSON.stringify(d,null,2);const c=d.completion||{};el('badges').innerHTML=badge(!!d.owner_workspace_final_review_ready,'review ready: '+!!d.owner_workspace_final_review_ready)+badge(!!d.owner_launch_checklist_complete,'launch checklist complete: '+!!d.owner_launch_checklist_complete)+badge(!!d.public_saas_ready,'public SaaS: '+!!d.public_saas_ready)+badge(!d.enterprise_saas_ready,'enterprise later phase');el('summary').textContent='Required: '+(c.required_ready||0)+'/'+(c.required_total||0)+' · Support-controlled: '+(c.support_controlled_ready||0)+'/'+(c.support_controlled_total||0)+' · Optional: '+(c.optional_ready||0)+'/'+(c.optional_total||0)+' · Next actions: '+(c.next_action_count||0);el('items').innerHTML=(d.review_items||[]).map(itemCard).join('')||'<div class=\'muted\'>No review items returned.</div>';el('next').innerHTML=(d.next_actions||[]).map(x=>`<div class='item'><strong>${esc(x.label||x.key)}</strong><div class='sub'>${esc(x.description||'')}</div>${x.support_controlled?'<span class=\"badge warn\">support controlled</span>':''}${x.optional_attention?'<span class=\"badge warn\">optional attention</span>':''}${x.owner_action_url?`<button class='secondary' onclick=\"go('${esc(x.owner_action_url)}')\">${esc(x.owner_action_label||'Open')}</button>`:''}</div>`).join('')||'<span class=\"badge ok\">No next actions</span>'}async function loadReview(){el('tenant_id').value=tenant();const r=await fetch('/owner/launch-review?tenant_id='+encTenant(),{credentials:'include'});const d=await r.json().catch(()=>({}));if(!r.ok){el('raw').textContent=JSON.stringify(d,null,2);return;}render(d)}el('tenant_id').value=DEFAULT_TENANT_ID||'clinic_demo';loadReview();</script></body></html>"""
     return html.replace("__TENANT_ID_JSON__", tenant_id_json)
 
 
@@ -17932,6 +18145,30 @@ def stage86_owner_telegram_json(request: Request, tenant_id: str = TENANT_ID_DEF
 def stage86_owner_telegram_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
     tid = stage711_resolve_tenant_context(request, tenant_id)
     return HTMLResponse(content=stage86_owner_telegram_html(tenant_id=tid), headers={"Cache-Control": "no-store"})
+
+
+@app.get("/owner-workspace/final-review/readiness")
+@app.get("/workspace/final-review/readiness")
+@app.get("/owner-launch-checklist/readiness")
+@app.get("/launch-checklist/owner/readiness")
+def stage87_owner_workspace_final_review_readiness(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    tid = stage711_resolve_tenant_context(request, tenant_id)
+    return stage87_owner_workspace_final_review_core(tid, days=days)
+
+
+@app.get("/owner/launch-review")
+@app.get("/owner/setup-review")
+@app.get("/owner/launch-checklist")
+def stage87_owner_launch_review_json(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    return stage87_owner_launch_review_payload(request=request, tenant_id=tenant_id, days=days)
+
+
+@app.get("/owner/launch-review/ui", response_class=HTMLResponse)
+@app.get("/owner/setup-review/ui", response_class=HTMLResponse)
+@app.get("/owner/launch-checklist/ui", response_class=HTMLResponse)
+def stage87_owner_launch_review_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
+    tid = stage711_resolve_tenant_context(request, tenant_id)
+    return HTMLResponse(content=stage87_owner_launch_review_html(tenant_id=tid), headers={"Cache-Control": "no-store"})
 
 
 @app.post("/owner/magic-link/bootstrap")

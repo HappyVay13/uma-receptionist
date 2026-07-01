@@ -740,3 +740,30 @@ Stage 77.1 is a narrow readiness endpoint hotfix only. It fixes a runtime type m
 - Stage 78 remains the source of truth for `public_saas_ready`.
 - `enterprise_saas_ready` remains false; enterprise maturity is a later phase.
 - Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+
+## Stage 87 — Owner Workspace Final Setup Review / Launch Checklist Polish Rules
+
+- Stage 87 continues the Mature SMB SaaS phase after Stage 86.
+- Stage 87 may add owner-safe final setup review UX, launch checklist readiness metadata, owner/dashboard/workspace links, and owner-visible next actions only.
+- Stage 87 must aggregate existing readiness from prior stages instead of changing receptionist runtime behavior.
+- Stage 87 readiness must include business profile, services, Business Memory / FAQ, price consistency, calendar/availability, Telegram, billing, owner auth, owner/admin separation, workspace setup and Stage 78 public launch lock.
+- Stage 87 must not add owner write endpoints.
+- Stage 87 must not expose raw admin tokens, owner login codes, magic tokens, magic-token hashes, CSRF secrets, raw IPs, subject hashes, Telegram tokens, Google credentials, service account JSON, webhook secrets, billing provider secrets, or other tenant secrets.
+- Stage 87 owner launch review endpoints must be protected by Stage 71 owner session and tenant binding:
+  - `/owner/launch-review`
+  - `/owner/launch-review/ui`
+  - `/owner/setup-review`
+  - `/owner/setup-review/ui`
+  - `/owner/launch-checklist`
+  - `/owner/launch-checklist/ui`
+- Stage 87 readiness endpoints must be protected by Stage 61/62 admin auth:
+  - `/owner-workspace/final-review/readiness`
+  - `/workspace/final-review/readiness`
+  - `/owner-launch-checklist/readiness`
+  - `/launch-checklist/owner/readiness`
+- No new Stage 74 owner CSRF/browser-write path is required because Stage 87 adds no owner write endpoint.
+- Calendar and Telegram support-controlled setup states may appear as owner-visible attention items, but owner UI must not expose admin OAuth/setup links or secret write actions.
+- Stage 78 remains the source of truth for `public_saas_ready`.
+- `enterprise_saas_ready` remains false; enterprise maturity is a later phase.
+- Do not change receptionist dialogue, booking routing, slot generation, date/time parsing, side-question handling, confirmation, cancellation, rescheduling, Google Calendar event runtime, Telegram webhook handling, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, LLM orchestration, or regression evaluator rules.
+- Current protected baseline remains `/dialogue/qa = 50/50 passed`.

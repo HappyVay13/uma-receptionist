@@ -1320,3 +1320,62 @@ Expected verification:
 - Stage 78 remains the source of truth for `public_saas_ready`; `enterprise_saas_ready=false` remains explicit.
 
 Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, dialogue QA evaluator, LLM orchestration, and voice/calls were not changed.
+
+## Stage 86 — Telegram Owner UX / Channel Setup Polish Verification Update
+
+Status: closed after deploy verification. User reported `/dialogue/qa` = 50/50 passed and all Stage 86 checks OK.
+
+Verified:
+- Owner Telegram readiness works.
+- Telegram owner readiness works.
+- Workspace Telegram readiness works.
+- Channels Telegram owner readiness works.
+- Owner Telegram UI works.
+- Owner Telegram/channel UI works.
+- Owner workspace, dashboard and billing remain OK.
+- Stage 80 Telegram channel next-action points to owner-safe `/owner/telegram/ui`.
+
+## Stage 87 — Owner Workspace Final Setup Review / Launch Checklist Polish
+
+Status: implemented in archive, awaiting deploy verification.
+
+Scope:
+- Added owner-safe final setup review endpoints:
+  - `GET /owner/launch-review`
+  - `GET /owner/launch-review/ui`
+  - `GET /owner/setup-review`
+  - `GET /owner/setup-review/ui`
+  - `GET /owner/launch-checklist`
+  - `GET /owner/launch-checklist/ui`
+- Added admin-protected readiness endpoints:
+  - `GET /owner-workspace/final-review/readiness`
+  - `GET /workspace/final-review/readiness`
+  - `GET /owner-launch-checklist/readiness`
+  - `GET /launch-checklist/owner/readiness`
+- Added owner-safe final checklist aggregation across:
+  - Stage 80 workspace setup
+  - Stage 81 business profile
+  - Stage 82 services
+  - Stage 83 Business Memory / FAQ
+  - Stage 84 price consistency
+  - Stage 85 calendar/availability
+  - Stage 86 Telegram
+  - Stage 73 billing
+  - Stage 78 public launch lock
+  - Stage 71 owner auth
+  - Stage 77 owner/admin separation
+- Added owner launch review link into owner dashboard/workspace link payloads.
+- No new owner write endpoint was added.
+- Calendar and Telegram support-controlled states are shown as owner-visible attention items without exposing admin setup links or secrets.
+
+Expected verification:
+- Render deploy starts successfully.
+- `/dialogue/qa` = 50/50 passed.
+- `/owner-workspace/final-review/readiness?tenant_id=clinic_demo` returns `stage=87` and `owner_workspace_final_review_ready=true` when route/security wiring is ready.
+- `/workspace/final-review/readiness?tenant_id=clinic_demo`, `/owner-launch-checklist/readiness?tenant_id=clinic_demo`, and `/launch-checklist/owner/readiness?tenant_id=clinic_demo` work and remain admin-protected.
+- `/owner/launch-review/ui?tenant_id=clinic_demo`, `/owner/setup-review/ui?tenant_id=clinic_demo`, and `/owner/launch-checklist/ui?tenant_id=clinic_demo` open with valid owner session or super-admin bypass.
+- Owner dashboard/workspace links include owner-safe launch review link.
+- Owner services, business memory, price consistency, calendar, Telegram and billing remain owner-safe.
+- Stage 78 remains the source of truth for `public_saas_ready`; `enterprise_saas_ready=false` remains explicit.
+
+Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, dialogue QA evaluator, LLM orchestration, and voice/calls were not changed.
