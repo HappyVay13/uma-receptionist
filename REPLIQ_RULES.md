@@ -690,3 +690,29 @@ Stage 77.1 is a narrow readiness endpoint hotfix only. It fixes a runtime type m
 - `enterprise_saas_ready` remains false; enterprise maturity is a later phase.
 - Do not change receptionist dialogue, booking routing, slot generation, date/time parsing, side-question handling, confirmation, cancellation, rescheduling, Google Calendar event runtime, Telegram webhook handling, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, LLM orchestration, or regression evaluator rules.
 - Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+
+## Stage 85 — Calendar Owner UX / Availability Setup Polish Rules
+
+- Stage 85 continues the Mature SMB SaaS phase after Stage 84.
+- Stage 85 may add owner-safe calendar status UX, availability setup UX, availability readiness metadata, owner/dashboard/workspace links, and an owner availability update endpoint only.
+- Owner editable availability fields are limited to non-secret scheduling fields: `timezone`, `work_start`, and `work_end`.
+- Stage 85 must not change Google Calendar event creation, update, delete, slot generation, booking routing, cancellation or reschedule runtime logic.
+- Google OAuth connection and working calendar selection remain support-controlled in Stage 85 unless a later owner OAuth flow is explicitly implemented.
+- Owner-facing calendar UI must not expose Google access tokens, refresh tokens, service account JSON, raw credential material, admin OAuth setup links, or super-admin config links in primary owner navigation.
+- Stage 85 readiness endpoints must be protected by Stage 61/62 admin auth:
+  - `/owner-calendar/readiness`
+  - `/calendar-owner/readiness`
+  - `/availability/readiness`
+  - `/workspace/calendar/readiness`
+- Stage 85 owner calendar/availability endpoints must be protected by Stage 71 owner session and tenant binding:
+  - `/owner/calendar`
+  - `/owner/calendar/ui`
+  - `/owner/availability`
+  - `/owner/availability/ui`
+  - `/owner/availability/update`
+- `POST /owner/availability/update` must remain protected by Stage 74 owner browser write/CSRF hardening.
+- Super-admin support links may appear only when opened through explicit admin/session bypass and must be clearly separated from owner links.
+- Do not expose raw admin tokens, owner login codes, magic tokens, magic-token hashes, CSRF secrets, raw IPs, subject hashes, Telegram tokens, Google credentials, or other tenant secrets.
+- Stage 78 remains the source of truth for `public_saas_ready`.
+- `enterprise_saas_ready` remains false; enterprise maturity is a later phase.
+- Current protected baseline remains `/dialogue/qa = 50/50 passed`.

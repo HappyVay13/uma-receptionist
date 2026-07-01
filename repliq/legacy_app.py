@@ -184,6 +184,11 @@ STAGE71_OWNER_PROTECTED_EXACT_PATHS = {
     "/owner/price-consistency",
     "/owner/price-consistency/ui",
     "/owner/catalog-memory-consistency",
+    "/owner/calendar",
+    "/owner/calendar/ui",
+    "/owner/availability",
+    "/owner/availability/ui",
+    "/owner/availability/update",
     "/owner/catalog-memory-consistency/ui",
     "/owner/services",
     "/owner/services/ui",
@@ -198,6 +203,11 @@ STAGE71_OWNER_PROTECTED_EXACT_PATHS = {
     "/owner/business-profile",
     "/owner/business-profile/ui",
     "/owner/business-profile/update",
+    "/owner/calendar",
+    "/owner/calendar/ui",
+    "/owner/availability",
+    "/owner/availability/ui",
+    "/owner/availability/update",
     "/owner/workspace/settings",
     "/owner/workspace/settings/ui",
     "/owner/billing",
@@ -347,6 +357,10 @@ STAGE61_PROTECTED_EXACT_PATHS = {
     "/catalog-memory/consistency/readiness",
     "/price-consistency/readiness",
     "/workspace/price-consistency/readiness",
+    "/owner-calendar/readiness",
+    "/calendar-owner/readiness",
+    "/availability/readiness",
+    "/workspace/calendar/readiness",
     "/client/dashboard",
     "/client/dashboard/ui",
     "/client/control-center",
@@ -741,6 +755,7 @@ STAGE74_OWNER_BROWSER_WRITE_PATHS = {
     "/owner/services/update",
     "/owner/service-catalog/update",
     "/owner/business-profile/update",
+    "/owner/availability/update",
     "/owner/logout",
 }
 STAGE74_PUBLIC_BROWSER_WRITE_PATHS = {
@@ -1754,6 +1769,8 @@ STAGE77_OWNER_SAFE_LINK_KEYS = {
     "owner_setup",
     "owner_workspace",
     "owner_business_profile",
+    "owner_calendar",
+    "owner_availability",
     "owner_workspace_settings",
     "owner_subscription",
     "owner_logout",
@@ -3895,13 +3912,14 @@ def stage71_owner_dashboard_payload(request: Request, tenant_id: str = TENANT_ID
                 {"key": "business_profile", "label": "Edit business profile", "status": "ready", "href": f"/owner/business-profile/ui?tenant_id={tid}"},
                 {"key": "services", "label": "Review services", "status": "ready", "href": f"/owner/services/ui?tenant_id={tid}"},
                 {"key": "memory", "label": "Edit business memory / FAQ", "status": "ready", "href": f"/owner/business-memory/ui?tenant_id={tid}"},
+                {"key": "calendar", "label": "Review calendar / availability", "status": "ready", "href": f"/owner/calendar/ui?tenant_id={tid}"},
                 {"key": "setup", "label": "Open setup checklist", "status": "ready", "href": f"/owner/setup/ui?tenant_id={tid}"},
                 {"key": "billing", "label": "Review billing status", "status": "ready", "href": f"/owner/billing/ui?tenant_id={tid}"},
                 {"key": "session", "label": "Check owner session", "status": "ready", "href": f"/owner/session?tenant_id={tid}"},
                 {"key": "support_setup", "label": "Calendar/channel setup remains controlled by Repliq support in this SMB phase", "status": "support_controlled", "href": None},
             ],
         },
-        "links": {"owner_dashboard": f"/owner/dashboard/ui?tenant_id={tid}", "owner_workspace": f"/owner/workspace/ui?tenant_id={tid}", "owner_setup": f"/owner/setup/ui?tenant_id={tid}", "owner_business_profile": f"/owner/business-profile/ui?tenant_id={tid}", "owner_services": f"/owner/services/ui?tenant_id={tid}", "owner_service_catalog": f"/owner/service-catalog/ui?tenant_id={tid}", "owner_business_memory": f"/owner/business-memory/ui?tenant_id={tid}", "owner_faq": f"/owner/faq/ui?tenant_id={tid}", "owner_workspace_settings": f"/owner/workspace/settings/ui?tenant_id={tid}", "owner_control_center": f"/owner/control-center/ui?tenant_id={tid}", "owner_session": f"/owner/session?tenant_id={tid}", "owner_billing": f"/owner/billing/ui?tenant_id={tid}", "owner_logout": "/owner/logout"},
+        "links": {"owner_dashboard": f"/owner/dashboard/ui?tenant_id={tid}", "owner_workspace": f"/owner/workspace/ui?tenant_id={tid}", "owner_setup": f"/owner/setup/ui?tenant_id={tid}", "owner_business_profile": f"/owner/business-profile/ui?tenant_id={tid}", "owner_services": f"/owner/services/ui?tenant_id={tid}", "owner_service_catalog": f"/owner/service-catalog/ui?tenant_id={tid}", "owner_business_memory": f"/owner/business-memory/ui?tenant_id={tid}", "owner_faq": f"/owner/faq/ui?tenant_id={tid}", "owner_workspace_settings": f"/owner/workspace/settings/ui?tenant_id={tid}", "owner_calendar": f"/owner/calendar/ui?tenant_id={tid}", "owner_availability": f"/owner/availability/ui?tenant_id={tid}", "owner_control_center": f"/owner/control-center/ui?tenant_id={tid}", "owner_session": f"/owner/session?tenant_id={tid}", "owner_billing": f"/owner/billing/ui?tenant_id={tid}", "owner_logout": "/owner/logout"},
         "super_admin_support_links": {"admin_control_center": f"/control-center/ui?tenant_id={tid}", "public_saas_audit": f"/public-saas/gap-audit/ui?tenant_id={tid}", "billing_readiness": f"/billing/readiness?tenant_id={tid}"} if admin_access else {},
     }
 
@@ -4005,7 +4023,7 @@ def stage80_workspace_setup_core(tenant_id: str = TENANT_ID_DEFAULT, days: int =
         stage80_owner_task_payload("business_profile", "Business profile", profile_complete, "Business name, language, timezone and working hours are present.", "Edit business profile", f"/owner/business-profile/ui?tenant_id={tenant_id_clean}", False, {"checks": business_fields, "missing": [k for k, v in business_fields.items() if not v]}),
         stage80_owner_task_payload("service_catalog", "Services", service_complete, "Services are available to the receptionist runtime.", "Edit services", f"/owner/services/ui?tenant_id={tenant_id_clean}", False, {"runtime_service_catalog_ready": catalog.get("runtime_service_catalog_ready"), "items_active": (catalog.get("counts") or {}).get("items_active"), "owner_service_catalog_ui": True, "admin_builder_hidden_from_owner": True}),
         stage80_owner_task_payload("business_memory", "Business memory / FAQ", memory_complete, "FAQ/business facts are present for receptionist side-questions.", "Edit business memory / FAQ", f"/owner/business-memory/ui?tenant_id={tenant_id_clean}", False, {"business_memory_content_ready": memory.get("business_memory_content_ready"), "configured_language_count": memory.get("configured_language_count"), "owner_business_memory_ui": True, "admin_builder_hidden_from_owner": True}),
-        stage80_owner_task_payload("google_calendar", "Google Calendar", google_complete, "Google Calendar connection and working calendar selection are ready.", "Ask Repliq support to finish calendar setup" if not google_complete else "Review workspace", f"/owner/workspace/ui?tenant_id={tenant_id_clean}" if google_complete else None, not google_complete, {"google_connected": google.get("connection", {}).get("google_connected") if isinstance(google.get("connection"), dict) else None, "calendar_selected": google.get("calendar", {}).get("calendar_selected") if isinstance(google.get("calendar"), dict) else None, "admin_oauth_links_hidden_from_owner": True}),
+        stage80_owner_task_payload("google_calendar", "Google Calendar / availability", google_complete, "Google Calendar connection, selected working calendar, timezone and availability are visible in an owner-safe calendar setup screen.", "Review calendar setup" if not google_complete else "Review calendar", f"/owner/calendar/ui?tenant_id={tenant_id_clean}", not google_complete, {"google_connected": google.get("connection", {}).get("google_connected") if isinstance(google.get("connection"), dict) else None, "calendar_selected": google.get("calendar", {}).get("calendar_selected") if isinstance(google.get("calendar"), dict) else None, "owner_calendar_ui": True, "admin_oauth_links_hidden_from_owner": True}),
         stage80_owner_task_payload("telegram_channel", "Telegram text channel", telegram_complete, "Tenant Telegram bot/channel runtime has token/secret and webhook status metadata.", "Ask Repliq support to finish Telegram setup" if not telegram_complete else "Review workspace", f"/owner/workspace/ui?tenant_id={tenant_id_clean}" if telegram_complete else None, not telegram_complete, {"telegram_effective_runtime_ready": telegram.get("telegram_effective_runtime_ready"), "telegram_bot_self_serve_ready": telegram.get("telegram_bot_self_serve_ready"), "raw_bot_token_exposed": False, "admin_setup_links_hidden_from_owner": True}),
         stage80_owner_task_payload("billing", "Billing / subscription", billing_complete, "Subscription gate allows receptionist runtime for this workspace.", "Review billing", f"/owner/billing/ui?tenant_id={tenant_id_clean}", False, {"runtime_gate_allowed": runtime_gate.get("allowed"), "plan": billing_payload.get("plan"), "effective_status": billing_payload.get("effective_status")}),
         stage80_owner_task_payload("owner_auth", "Owner access", owner_auth_complete, "Owner auth, tenant ownership binding and magic-link foundation are available.", "Check owner session", f"/owner/session?tenant_id={tenant_id_clean}", False, {"owner_auth_foundation_ready": owner_auth.get("owner_auth_foundation_ready"), "tenant_ownership_binding_ready": owner_auth.get("tenant_ownership_binding_ready")}),
@@ -4071,7 +4089,7 @@ def stage80_workspace_setup_core(tenant_id: str = TENANT_ID_DEFAULT, days: int =
         "security": {"owner_workspace_routes_owner_session_bound": bool(not missing_owner_protection and not owner_admin_overlap), "stage80_readiness_routes_admin_protected": bool(not missing_readiness_protection), "tenant_id_parameter_is_not_auth": True, "owner_admin_links_exposed_to_owner": False, "admin_config_links_hidden_from_owner": True, "raw_admin_token_exposed": False, "raw_owner_login_code_exposed": False, "raw_magic_token_exposed": False, "raw_magic_token_hash_exposed": False, "telegram_token_exposed": False, "google_credentials_exposed": False},
         "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
         "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
-        "links": {"owner_workspace": url(f"/owner/workspace/ui?tenant_id={tenant_id_clean}"), "owner_setup": url(f"/owner/setup/ui?tenant_id={tenant_id_clean}"), "owner_business_profile": url(f"/owner/business-profile/ui?tenant_id={tenant_id_clean}"), "owner_services": url(f"/owner/services/ui?tenant_id={tenant_id_clean}"), "owner_service_catalog": url(f"/owner/service-catalog/ui?tenant_id={tenant_id_clean}"), "owner_business_memory": url(f"/owner/business-memory/ui?tenant_id={tenant_id_clean}"), "owner_faq": url(f"/owner/faq/ui?tenant_id={tenant_id_clean}"), "owner_workspace_settings": url(f"/owner/workspace/settings/ui?tenant_id={tenant_id_clean}"), "owner_dashboard": url(f"/owner/dashboard/ui?tenant_id={tenant_id_clean}"), "owner_billing": url(f"/owner/billing/ui?tenant_id={tenant_id_clean}"), "owner_session": url(f"/owner/session?tenant_id={tenant_id_clean}"), "stage80_readiness": url(f"/tenant-workspace/readiness?tenant_id={tenant_id_clean}&days={days}"), "stage79_readiness": url(f"/launch-ux/readiness?tenant_id={tenant_id_clean}&days={days}"), "final_public_saas_readiness": url(f"/public-saas/final-readiness?tenant_id={tenant_id_clean}&days={days}")},
+        "links": {"owner_workspace": url(f"/owner/workspace/ui?tenant_id={tenant_id_clean}"), "owner_setup": url(f"/owner/setup/ui?tenant_id={tenant_id_clean}"), "owner_business_profile": url(f"/owner/business-profile/ui?tenant_id={tenant_id_clean}"), "owner_services": url(f"/owner/services/ui?tenant_id={tenant_id_clean}"), "owner_service_catalog": url(f"/owner/service-catalog/ui?tenant_id={tenant_id_clean}"), "owner_business_memory": url(f"/owner/business-memory/ui?tenant_id={tenant_id_clean}"), "owner_faq": url(f"/owner/faq/ui?tenant_id={tenant_id_clean}"), "owner_workspace_settings": url(f"/owner/workspace/settings/ui?tenant_id={tenant_id_clean}"), "owner_calendar": url(f"/owner/calendar/ui?tenant_id={tenant_id_clean}"), "owner_availability": url(f"/owner/availability/ui?tenant_id={tenant_id_clean}"), "owner_dashboard": url(f"/owner/dashboard/ui?tenant_id={tenant_id_clean}"), "owner_billing": url(f"/owner/billing/ui?tenant_id={tenant_id_clean}"), "owner_session": url(f"/owner/session?tenant_id={tenant_id_clean}"), "stage80_readiness": url(f"/tenant-workspace/readiness?tenant_id={tenant_id_clean}&days={days}"), "stage79_readiness": url(f"/launch-ux/readiness?tenant_id={tenant_id_clean}&days={days}"), "final_public_saas_readiness": url(f"/public-saas/final-readiness?tenant_id={tenant_id_clean}&days={days}")},
         "note": "Stage 80 adds owner-safe workspace setup completion UX/readiness only. It does not expose admin setup links to owners and does not change receptionist dialogue, booking, slots, Google Calendar event runtime, Telegram webhook runtime, billing semantics, CSRF, abuse/rate-limits, magic-link semantics, LLM orchestration, or QA evaluator behavior.",
     }
 
@@ -5360,6 +5378,235 @@ def stage84_owner_price_consistency_html(tenant_id: str = TENANT_ID_DEFAULT) -> 
 # -------------------------
 def oauth_ready() -> bool:
     return bool(GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET and GOOGLE_OAUTH_REDIRECT_URI)
+
+
+# -------------------------
+# STAGE 85: CALENDAR OWNER UX / AVAILABILITY SETUP POLISH
+# -------------------------
+STAGE85_READINESS_PATHS = {
+    "/owner-calendar/readiness",
+    "/calendar-owner/readiness",
+    "/availability/readiness",
+    "/workspace/calendar/readiness",
+}
+STAGE85_OWNER_CALENDAR_PATHS = {
+    "/owner/calendar",
+    "/owner/calendar/ui",
+    "/owner/availability",
+    "/owner/availability/ui",
+}
+STAGE85_OWNER_AVAILABILITY_WRITE_PATHS = {
+    "/owner/availability/update",
+}
+STAGE85_MATURITY_TARGET = "mature_smb_saas_owner_calendar_availability_phase"
+
+
+def stage85_mask_calendar_id(value: Any) -> Optional[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if len(raw) <= 12:
+        return raw
+    return raw[:5] + "..." + raw[-5:]
+
+
+def stage85_calendar_availability_core(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14) -> Dict[str, Any]:
+    tid = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    days = max(1, min(int(days or 14), 60))
+    base = (SERVER_BASE_URL or "").rstrip("/")
+
+    def url(path: str) -> str:
+        return base + path if base else path
+
+    try:
+        tenant = get_existing_tenant(tid)
+    except Exception as e:
+        log.error("stage85_tenant_lookup_failed tenant_id=%s err=%s", tid, e)
+        tenant = {}
+    tenant_found = bool((tenant or {}).get("_id"))
+    tenant_norm = normalize_tenant_saas_fields(tenant or {}) if tenant_found else {}
+    tenant_id_clean = str((tenant_norm or {}).get("_id") or tid).strip() or tid
+
+    google = stage80_safe_dependency("stage65_google_calendar", lambda: stage65_google_calendar_self_serve_readiness_payload(tenant_id_clean))
+    workspace = stage80_safe_dependency("stage80_workspace", lambda: stage80_workspace_setup_core(tenant_id_clean, days=days))
+    profile = stage80_safe_dependency("stage81_business_profile", lambda: stage81_business_profile_model(tenant_id_clean, days=days))
+    final_lock = stage80_safe_dependency("stage78_final_lock", lambda: stage78_final_public_saas_readiness_payload(tenant_id_clean, days=days))
+
+    timezone_value = str(tenant_norm.get("timezone") or "").strip()
+    work_start_value = str(tenant_norm.get("work_start") or "").strip()
+    work_end_value = str(tenant_norm.get("work_end") or "").strip()
+    weekly_hours_value = str(tenant_norm.get("weekly_hours_json") or "").strip()
+    calendar_id = str(tenant_norm.get("calendar_id") or tenant_norm.get("google_calendar_id") or "").strip()
+
+    availability_checks = {"timezone": bool(timezone_value), "work_start": bool(work_start_value), "work_end": bool(work_end_value)}
+    availability_missing = [k for k, ok in availability_checks.items() if not ok]
+    availability_complete = bool(tenant_found and not availability_missing)
+
+    connection = google.get("connection") if isinstance(google.get("connection"), dict) else {}
+    calendar = google.get("calendar") if isinstance(google.get("calendar"), dict) else {}
+    google_connected = bool(connection.get("google_connected") or tenant_google_connected_effective(tenant_norm)) if tenant_found else False
+    google_account_saved = bool(connection.get("google_account_saved") or tenant_has_google_account(tenant_id_clean)) if tenant_found else False
+    calendar_selected = bool(calendar.get("calendar_selected") or calendar_id)
+    google_setup_complete = bool(google.get("google_calendar_setup_complete") or google.get("calendar_ready"))
+
+    owner_all_paths = STAGE85_OWNER_CALENDAR_PATHS | STAGE85_OWNER_AVAILABILITY_WRITE_PATHS
+    missing_readiness_protection = sorted(path for path in STAGE85_READINESS_PATHS if path not in STAGE61_PROTECTED_EXACT_PATHS)
+    missing_owner_protection = sorted(path for path in owner_all_paths if path not in STAGE71_OWNER_PROTECTED_EXACT_PATHS)
+    owner_admin_overlap = sorted(path for path in owner_all_paths if path in STAGE61_PROTECTED_EXACT_PATHS)
+    missing_owner_csrf = sorted(path for path in STAGE85_OWNER_AVAILABILITY_WRITE_PATHS if path not in STAGE74_OWNER_BROWSER_WRITE_PATHS)
+
+    next_actions: List[Dict[str, Any]] = []
+    if not availability_complete:
+        next_actions.append({"key": "availability", "label": "Review availability", "status": "attention", "complete": False, "description": "Timezone and working hours are required for reliable booking availability.", "owner_action_label": "Edit availability", "owner_action_url": f"/owner/availability/ui?tenant_id={tenant_id_clean}", "support_controlled": False, "admin_link_exposed_to_owner": False, "evidence": {"checks": availability_checks, "missing": availability_missing}})
+    if not google_connected:
+        next_actions.append({"key": "google_connect", "label": "Google account connection", "status": "attention", "complete": False, "description": "Google OAuth connection remains support-controlled in this SMB phase; owner can view status without seeing admin/OAuth setup links.", "owner_action_label": "Review calendar status", "owner_action_url": f"/owner/calendar/ui?tenant_id={tenant_id_clean}", "support_controlled": True, "admin_link_exposed_to_owner": False, "evidence": {"google_connected": google_connected, "google_account_saved": google_account_saved}})
+    elif not calendar_selected:
+        next_actions.append({"key": "calendar_selection", "label": "Working calendar selection", "status": "attention", "complete": False, "description": "A Google account is connected, but no working calendar is selected yet.", "owner_action_label": "Review calendar status", "owner_action_url": f"/owner/calendar/ui?tenant_id={tenant_id_clean}", "support_controlled": True, "admin_link_exposed_to_owner": False, "evidence": {"google_connected": google_connected, "calendar_selected": calendar_selected, "calendar_id_masked": stage85_mask_calendar_id(calendar_id)}})
+
+    blocking: List[str] = []
+    if missing_readiness_protection:
+        blocking.append("stage85_readiness_paths_not_admin_protected")
+    if missing_owner_protection:
+        blocking.append("stage85_owner_calendar_paths_not_owner_safe")
+    if owner_admin_overlap:
+        blocking.append("stage85_owner_calendar_paths_admin_overlap")
+    if missing_owner_csrf:
+        blocking.append("stage85_owner_availability_write_not_csrf_protected")
+
+    warnings: List[str] = []
+    if not tenant_found:
+        warnings.append("tenant_not_found")
+    if availability_missing:
+        warnings.extend([f"availability_missing:{x}" for x in availability_missing])
+    if not google_setup_complete:
+        warnings.append("google_calendar_setup_attention")
+    if not google_connected:
+        warnings.append("google_account_not_connected_support_controlled")
+    if google_connected and not calendar_selected:
+        warnings.append("calendar_not_selected_support_controlled")
+    for item in google.get("blocking") or []:
+        warnings.append(f"stage65_google:{item}")
+
+    owner_calendar_ux_ready = bool(not blocking)
+    calendar_setup_complete = bool(google_setup_complete and calendar_selected)
+    setup_complete = bool(owner_calendar_ux_ready and availability_complete and calendar_setup_complete)
+    status = "ready" if owner_calendar_ux_ready and setup_complete else "attention" if owner_calendar_ux_ready else "blocked"
+    complete_steps = int(availability_complete) + int(calendar_setup_complete)
+
+    return {
+        "ok": True,
+        "stage": "85",
+        "previous_stage": "84",
+        "purpose": "Calendar Owner UX / Availability Setup Polish",
+        "tenant_id": tenant_id_clean,
+        "status": status,
+        "maturity_phase": STAGE85_MATURITY_TARGET,
+        "calendar_owner_ux_ready": bool(owner_calendar_ux_ready),
+        "owner_calendar_setup_ready": bool(owner_calendar_ux_ready),
+        "availability_setup_ready": bool(owner_calendar_ux_ready),
+        "availability_setup_complete": bool(availability_complete),
+        "calendar_setup_complete": bool(calendar_setup_complete),
+        "owner_visible_calendar_status": True,
+        "support_controlled_google_oauth": bool(not google_setup_complete),
+        "public_saas_ready": bool(final_lock.get("public_saas_ready") is True),
+        "public_saas_ready_source": "stage78_final_lock",
+        "enterprise_saas_ready": False,
+        "tenant": {"business_name": tenant_norm.get("business_name") if tenant_found else None, "language": tenant_norm.get("language") if tenant_found else None, "timezone": timezone_value or None, "work_start": work_start_value or None, "work_end": work_end_value or None},
+        "availability": {"timezone": timezone_value or None, "work_start": work_start_value or None, "work_end": work_end_value or None, "weekly_hours_present": bool(weekly_hours_value), "checks": availability_checks, "missing": availability_missing, "owner_editable_fields": ["timezone", "work_start", "work_end"]},
+        "google_calendar": {"google_connected": bool(google_connected), "google_account_saved": bool(google_account_saved), "google_email": connection.get("google_email"), "has_refresh_token": bool(connection.get("has_refresh_token")), "token_expiry": connection.get("token_expiry"), "calendar_selected": bool(calendar_selected), "calendar_id_masked": stage85_mask_calendar_id(calendar_id or calendar.get("calendar_id")), "calendar_id_raw_exposed_to_owner": False, "access_token_exposed": False, "refresh_token_exposed": False, "credentials_exposed": False},
+        "completion": {"complete_steps": complete_steps, "total_steps": 2, "completion_percent": int(round((complete_steps / 2) * 100)), "next_action_count": len(next_actions)},
+        "next_actions": next_actions[:4],
+        "dependencies": {"stage65_google_calendar": google, "stage80_workspace": workspace, "stage81_business_profile": profile, "stage78_final_lock": final_lock},
+        "security": {"owner_calendar_routes_owner_session_bound": bool(not missing_owner_protection and not owner_admin_overlap), "owner_availability_write_csrf_protected": bool(not missing_owner_csrf), "stage85_readiness_routes_admin_protected": bool(not missing_readiness_protection), "tenant_id_parameter_is_not_auth": True, "admin_oauth_links_exposed_to_owner": False, "google_tokens_exposed": False, "service_account_credentials_exposed": False, "receptionist_calendar_runtime_changed": False},
+        "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
+        "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
+        "links": {"owner_calendar": url(f"/owner/calendar/ui?tenant_id={tenant_id_clean}"), "owner_availability": url(f"/owner/availability/ui?tenant_id={tenant_id_clean}"), "owner_workspace": url(f"/owner/workspace/ui?tenant_id={tenant_id_clean}"), "owner_setup": url(f"/owner/setup/ui?tenant_id={tenant_id_clean}"), "owner_business_profile": url(f"/owner/business-profile/ui?tenant_id={tenant_id_clean}"), "stage85_readiness": url(f"/owner-calendar/readiness?tenant_id={tenant_id_clean}&days={days}"), "stage65_google_readiness": url(f"/google/self-serve/readiness?tenant_id={tenant_id_clean}"), "stage80_workspace_readiness": url(f"/tenant-workspace/readiness?tenant_id={tenant_id_clean}&days={days}")},
+        "note": "Stage 85 adds owner-safe calendar/availability status and working-hours update UX only. Google OAuth/calendar selection remain support-controlled unless a later owner OAuth flow is implemented. It does not change receptionist dialogue, slot generation, or Google Calendar event runtime.",
+    }
+
+
+def stage85_owner_calendar_payload(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14) -> Dict[str, Any]:
+    admin_access = bool(stage61_token_valid(stage61_request_token(request)) or stage62_request_has_valid_session(request))
+    if admin_access:
+        tid = stage711_resolve_tenant_context(request, tenant_id)
+        access = {"ok": True, "tenant_id": tid, "owner_email": "super_admin", "role": "super_admin"}
+    else:
+        access = stage71_owner_request_access(request, path="/owner/calendar")
+        if not access.get("ok"):
+            raise HTTPException(status_code=401, detail=access.get("error") or "owner_login_required")
+        tid = str(access.get("tenant_id") or tenant_id or "").strip() or TENANT_ID_DEFAULT
+    payload = stage85_calendar_availability_core(tid, days=days)
+    payload["auth_model"] = "owner_session_or_super_admin_bypass"
+    payload["owner_email"] = stage71_normalize_email(access.get("owner_email") or "") if not admin_access else None
+    payload["role"] = access.get("role") or "owner"
+    payload["opened_via_super_admin_bypass"] = bool(admin_access)
+    payload["owner_safe_scope"] = {"calendar_status": True, "availability_settings": True, "owner_editable_non_secret_availability_fields": True, "admin_oauth_links_exposed_to_owner": False, "google_tokens_exposed": False, "stage85_calendar_owner_ux": True, "receptionist_core_changed": False, "calendar_runtime_changed": False}
+    payload["super_admin_support_links"] = {"google_connect": f"/google/connect?tenant_id={tid}", "google_calendars_ui": f"/google/calendars/ui?tenant_id={tid}", "google_readiness": f"/google/self-serve/readiness?tenant_id={tid}", "tenant_config_ui": f"/tenant/config/ui?tenant_id={tid}"} if admin_access else {}
+    return payload
+
+
+def stage85_apply_owner_availability_update(request: Request, data: Dict[str, Any]) -> Dict[str, Any]:
+    data = data or {}
+    admin_access = bool(stage61_token_valid(stage61_request_token(request)) or stage62_request_has_valid_session(request))
+    if admin_access:
+        tenant_id = stage711_resolve_tenant_context(request, str(data.get("tenant_id") or ""))
+    else:
+        access = stage71_owner_request_access(request, path="/owner/availability/update")
+        if not access.get("ok"):
+            raise HTTPException(status_code=401, detail=access.get("error") or "owner_login_required")
+        tenant_id = str(access.get("tenant_id") or "").strip() or TENANT_ID_DEFAULT
+    tenant = get_existing_tenant(tenant_id)
+    if not tenant.get("_id"):
+        raise HTTPException(status_code=404, detail={"stage": "85", "error": "tenant_not_found", "tenant_id": tenant_id})
+    cols = tenants_columns()
+    pk = tenants_pk(cols)
+    col_names = {c["name"] for c in cols}
+    updates: List[str] = []
+    params: Dict[str, Any] = {"tid": tenant_id}
+    updated_fields: List[str] = []
+
+    def add_update(field_name: str, value: Any):
+        if field_name in col_names:
+            updates.append(f"{field_name}=:{field_name}")
+            params[field_name] = value
+            updated_fields.append(field_name)
+
+    clean_work_start = None
+    clean_work_end = None
+    if "timezone" in data:
+        clean_timezone = stage81_clean_text(data.get("timezone"), 80)
+        if not clean_timezone:
+            raise HTTPException(status_code=400, detail={"stage": "85", "error": "timezone_required"})
+        add_update("timezone", clean_timezone)
+    if "work_start" in data:
+        try:
+            clean_work_start = stage81_clean_hhmm(data.get("work_start"), "work_start")
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail={"stage": "85", "error": str(e)})
+        add_update("work_start", clean_work_start)
+    if "work_end" in data:
+        try:
+            clean_work_end = stage81_clean_hhmm(data.get("work_end"), "work_end")
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail={"stage": "85", "error": str(e)})
+        add_update("work_end", clean_work_end)
+    if (clean_work_start or clean_work_end) and "weekly_hours_json" in col_names:
+        add_update("weekly_hours_json", _sync_weekly_hours_with_fallback_bounds(tenant.get("weekly_hours_json"), clean_work_start or tenant.get("work_start"), clean_work_end or tenant.get("work_end")))
+    if "updated_at" in col_names:
+        updates.append("updated_at=NOW()")
+    if not updated_fields:
+        raise HTTPException(status_code=400, detail={"stage": "85", "error": "no_supported_availability_fields"})
+    with engine.begin() as conn:
+        conn.execute(text(f"UPDATE tenants SET {', '.join(updates)} WHERE {pk}=:tid"), params)
+    core = stage85_calendar_availability_core(tenant_id)
+    workspace = stage80_workspace_setup_core(tenant_id)
+    return {"ok": True, "stage": "85", "tenant_id": tenant_id, "updated_fields": updated_fields, "availability_setup_complete": bool(core.get("availability_setup_complete")), "calendar_setup_complete": bool(core.get("calendar_setup_complete")), "availability": core.get("availability") or {}, "workspace_setup_complete": bool(workspace.get("workspace_setup_complete")), "workspace_completion": workspace.get("completion") or {}, "security": {"owner_session_or_super_admin_bypass": True, "secret_fields_exposed": False, "admin_oauth_links_exposed_to_owner": False, "csrf_browser_write_hardening": "stage74_owner_scope"}, "links": {"owner_calendar": f"/owner/calendar/ui?tenant_id={tenant_id}", "owner_availability": f"/owner/availability/ui?tenant_id={tenant_id}", "owner_workspace": f"/owner/workspace/ui?tenant_id={tenant_id}", "stage85_readiness": f"/owner-calendar/readiness?tenant_id={tenant_id}"}}
+
+
+def stage85_owner_calendar_html(tenant_id: str = TENANT_ID_DEFAULT) -> str:
+    tenant_id_json = json.dumps((tenant_id or "").strip() or TENANT_ID_DEFAULT, ensure_ascii=False)
+    html = """<!doctype html><html><head><meta charset='utf-8'/><meta name='viewport' content='width=device-width,initial-scale=1'/><title>Repliq Calendar / Availability</title><style>body{font-family:Inter,system-ui,-apple-system,Segoe UI,Arial,sans-serif;background:#f6f7fb;color:#111827;margin:0;padding:24px}.wrap{max-width:980px;margin:0 auto}.hero,.card{background:#fff;border:1px solid #e5e7eb;border-radius:20px;padding:18px;margin:14px 0;box-shadow:0 8px 25px rgba(17,24,39,.05)}.hero{background:#111827;color:white}.hero p{color:#d1d5db}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.sub,.muted{color:#64748b;font-size:14px;line-height:1.45}label{display:block;font-size:13px;font-weight:800;margin:10px 0 6px}input{width:100%;box-sizing:border-box;border:1px solid #cbd5e1;border-radius:12px;padding:11px;font-size:14px}button{border:0;border-radius:12px;padding:10px 13px;background:#111827;color:white;font-weight:800;cursor:pointer}.secondary{background:#e5e7eb;color:#111827}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.badge{display:inline-block;border-radius:999px;padding:5px 9px;background:#e5e7eb;font-size:12px;font-weight:800;margin:3px 4px 3px 0}.ok{background:#dcfce7;color:#166534}.warn{background:#fef3c7;color:#92400e}.err{background:#fee2e2;color:#991b1b}pre{background:#0f172a;color:#e2e8f0;border-radius:14px;padding:14px;max-height:460px;overflow:auto;white-space:pre-wrap}@media(max-width:760px){body{padding:12px}.grid{grid-template-columns:1fr}}</style></head><body><div class='wrap'><div class='hero'><h1>Calendar / availability</h1><p>Owner-safe calendar status and availability settings. Google OAuth/admin setup links stay hidden from owners.</p><div class='actions'><input id='tenant_id' style='max-width:280px'/><button onclick='loadCalendar()'>Load</button><button class='secondary' onclick="go('/owner/workspace/ui?tenant_id='+encTenant())">Workspace</button><button class='secondary' onclick="go('/owner/setup/ui?tenant_id='+encTenant())">Setup</button><button class='secondary' onclick="go('/owner/logout')">Logout</button></div></div><div class='card'><h2>Calendar status</h2><div id='calendar_badges'></div><div id='calendar_text' class='sub'></div><div id='actions' class='actions'></div></div><div class='card'><h2>Availability</h2><div class='grid'><div><label>Timezone</label><input id='timezone' placeholder='Europe/Riga' maxlength='80'/></div><div><label>Working hours</label><div class='grid'><input id='work_start' placeholder='09:00'/><input id='work_end' placeholder='18:00'/></div></div></div><div class='actions'><button onclick='saveAvailability()'>Save availability</button><button class='secondary' onclick='loadCalendar()'>Reset</button></div><div id='msg' class='sub'></div></div><div class='card'><h2>Next actions</h2><div id='next'></div></div><div class='card'><h2>Raw calendar readiness</h2><pre id='raw'>Loading...</pre></div></div><script>const DEFAULT_TENANT_ID=__TENANT_ID_JSON__;function el(id){return document.getElementById(id)}function tenant(){return (el('tenant_id').value||'').trim()||DEFAULT_TENANT_ID||'clinic_demo'}function encTenant(){return encodeURIComponent(tenant())}function go(p){window.location=p}function esc(v){return v===null||v===undefined?'':String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;')}function badge(ok,label){return `<span class='badge ${ok?'ok':'warn'}'>${esc(label)}</span>`}function setMsg(kind,text){el('msg').innerHTML=`<span class='badge ${kind}'>${esc(text)}</span>`}async function csrf(){const r=await fetch('/csrf/token?scope=owner&tenant_id='+encTenant(),{credentials:'include'});const d=await r.json().catch(()=>({}));return d.csrf_token||''}function render(d){el('raw').textContent=JSON.stringify(d,null,2);const a=d.availability||{}, g=d.google_calendar||{};el('timezone').value=a.timezone||'Europe/Riga';el('work_start').value=a.work_start||'09:00';el('work_end').value=a.work_end||'18:00';el('calendar_badges').innerHTML=badge(!!d.calendar_owner_ux_ready,'calendar UX: '+!!d.calendar_owner_ux_ready)+badge(!!d.availability_setup_complete,'availability: '+!!d.availability_setup_complete)+badge(!!d.calendar_setup_complete,'calendar setup: '+!!d.calendar_setup_complete)+badge(!!g.google_connected,'Google connected: '+!!g.google_connected)+badge(!!g.calendar_selected,'calendar selected: '+!!g.calendar_selected);el('calendar_text').innerHTML='Calendar: '+esc(g.calendar_id_masked||'not selected')+(g.google_email?' · Google account: '+esc(g.google_email):'')+'. Tokens and credentials are never shown here.';el('actions').innerHTML=d.support_controlled_google_oauth?'<span class="badge warn">Google connection/selection is support-controlled in this SMB phase</span>':'<span class="badge ok">Calendar is connected</span>';el('next').innerHTML=(d.next_actions||[]).map(x=>`<div class='card'><strong>${esc(x.label||x.key)}</strong><div class='sub'>${esc(x.description||'')}</div>${x.support_controlled?'<span class="badge warn">support controlled</span>':''}${x.owner_action_url?`<button class='secondary' onclick="go('${esc(x.owner_action_url)}')">${esc(x.owner_action_label||'Open')}</button>`:''}</div>`).join('')||'<span class="badge ok">No next actions</span>';}async function loadCalendar(){el('tenant_id').value=tenant();const r=await fetch('/owner/calendar?tenant_id='+encTenant(),{credentials:'include'});const d=await r.json().catch(()=>({}));if(!r.ok){el('raw').textContent=JSON.stringify(d,null,2);setMsg('err',d.detail||d.error||'Load failed');return;}render(d);setMsg('ok','Loaded');}async function saveAvailability(){setMsg('warn','Saving...');const token=await csrf();const payload={tenant_id:tenant(),timezone:el('timezone').value,work_start:el('work_start').value,work_end:el('work_end').value};const r=await fetch('/owner/availability/update?tenant_id='+encTenant(),{method:'POST',headers:{'Content-Type':'application/json','X-Repliq-CSRF-Token':token},credentials:'include',body:JSON.stringify(payload)});const d=await r.json().catch(()=>({}));el('raw').textContent=JSON.stringify(d,null,2);if(!r.ok||!d.ok){setMsg('err',(d.detail&&d.detail.error)||d.error||'Save failed');return;}setMsg('ok','Saved');await loadCalendar();}el('tenant_id').value=DEFAULT_TENANT_ID||'clinic_demo';loadCalendar();</script></body></html>"""
+    return html.replace("__TENANT_ID_JSON__", tenant_id_json)
 
 def upsert_tenant_google_account(
     tenant_id: str,
@@ -17449,6 +17696,33 @@ def stage84_owner_price_consistency_json(request: Request, tenant_id: str = TENA
 def stage84_owner_price_consistency_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
     tid = stage711_resolve_tenant_context(request, tenant_id)
     return HTMLResponse(content=stage84_owner_price_consistency_html(tenant_id=tid), headers={"Cache-Control": "no-store"})
+
+
+@app.get("/owner-calendar/readiness")
+@app.get("/calendar-owner/readiness")
+@app.get("/availability/readiness")
+@app.get("/workspace/calendar/readiness")
+def stage85_calendar_owner_readiness(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    tid = stage711_resolve_tenant_context(request, tenant_id)
+    return stage85_calendar_availability_core(tid, days=days)
+
+
+@app.get("/owner/calendar")
+@app.get("/owner/availability")
+def stage85_owner_calendar_json(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    return stage85_owner_calendar_payload(request=request, tenant_id=tenant_id, days=days)
+
+
+@app.get("/owner/calendar/ui", response_class=HTMLResponse)
+@app.get("/owner/availability/ui", response_class=HTMLResponse)
+def stage85_owner_calendar_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
+    tid = stage711_resolve_tenant_context(request, tenant_id)
+    return HTMLResponse(content=stage85_owner_calendar_html(tenant_id=tid), headers={"Cache-Control": "no-store"})
+
+
+@app.post("/owner/availability/update")
+def stage85_owner_availability_update(request: Request, payload: dict = Body(...)):
+    return stage85_apply_owner_availability_update(request=request, data=payload or {})
 
 
 @app.post("/owner/magic-link/bootstrap")

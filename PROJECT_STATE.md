@@ -1225,3 +1225,51 @@ Expected verification:
 - Stage 78 remains the source of truth for `public_saas_ready`; `enterprise_saas_ready=false` remains explicit.
 
 Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, dialogue QA evaluator, LLM orchestration, and voice/calls were not changed.
+
+## Stage 84 — Service Catalog / Business Memory Consistency Guard Verification Update
+
+Status: closed after deploy verification. User reported `/dialogue/qa` = 50/50 passed and all Stage 84 checks OK.
+
+Verified:
+- Service-memory consistency readiness works.
+- Catalog-memory consistency readiness works.
+- Price consistency readiness works.
+- Owner price consistency UI works.
+- Owner business memory, services, workspace, dashboard and billing remain OK.
+- Service Catalog is treated as the source of truth for prices while Business Memory remains context.
+
+## Stage 85 — Calendar Owner UX / Availability Setup Polish
+
+Status: implemented in archive, awaiting deploy verification.
+
+Scope:
+- Added owner-safe calendar/availability endpoints:
+  - `GET /owner/calendar`
+  - `GET /owner/calendar/ui`
+  - `GET /owner/availability`
+  - `GET /owner/availability/ui`
+  - `POST /owner/availability/update`
+- Added admin-protected readiness endpoints:
+  - `GET /owner-calendar/readiness`
+  - `GET /calendar-owner/readiness`
+  - `GET /availability/readiness`
+  - `GET /workspace/calendar/readiness`
+- Added owner-visible calendar status without exposing Google access tokens, refresh tokens, service account credentials, or raw calendar secrets.
+- Added owner-editable availability fields: `timezone`, `work_start`, `work_end`.
+- Google OAuth connection and working calendar selection remain support-controlled in this SMB phase; owner sees status and next actions without receiving admin OAuth/config links.
+- Integrated Stage 85 calendar/availability links into owner dashboard/workspace/setup flow.
+- Stage 80 Google Calendar next-action now points to owner-safe `/owner/calendar/ui`.
+- Added Stage 74 owner-scope CSRF/browser-write protection for `POST /owner/availability/update`.
+
+Expected verification:
+- Render deploy starts successfully.
+- `/dialogue/qa` = 50/50 passed.
+- `/owner-calendar/readiness?tenant_id=clinic_demo` returns `stage=85` and `calendar_owner_ux_ready=true` when routes/security are ready.
+- `/calendar-owner/readiness?tenant_id=clinic_demo`, `/availability/readiness?tenant_id=clinic_demo`, and `/workspace/calendar/readiness?tenant_id=clinic_demo` work and remain admin-protected.
+- `/owner/calendar/ui?tenant_id=<owner_tenant>` and `/owner/availability/ui?tenant_id=<owner_tenant>` open with valid owner session or super-admin bypass.
+- Saving availability returns `ok=true` and updates timezone/working hours only.
+- `/tenant-workspace/readiness?tenant_id=clinic_demo` points the Google Calendar next-action to owner-safe `/owner/calendar/ui`.
+- Owner dashboard/workspace/services/memory/billing remain owner-safe.
+- Stage 78 remains the source of truth for `public_saas_ready`; `enterprise_saas_ready=false` remains explicit.
+
+Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, dialogue QA evaluator, LLM orchestration, and voice/calls were not changed.
