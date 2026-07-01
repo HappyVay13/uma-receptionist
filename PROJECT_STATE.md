@@ -1273,3 +1273,50 @@ Expected verification:
 - Stage 78 remains the source of truth for `public_saas_ready`; `enterprise_saas_ready=false` remains explicit.
 
 Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, dialogue QA evaluator, LLM orchestration, and voice/calls were not changed.
+
+## Stage 85 — Calendar Owner UX / Availability Setup Polish Verification Update
+
+Status: closed after deploy verification. User reported `/dialogue/qa` = 50/50 passed and all Stage 85 checks OK.
+
+Verified:
+- Owner calendar readiness works.
+- Calendar owner readiness works.
+- Availability readiness works.
+- Workspace calendar readiness works.
+- Owner calendar UI works.
+- Owner availability UI/update works.
+- Owner dashboard, workspace and billing remain OK.
+- Stage 80 Google Calendar next-action points to owner-safe `/owner/calendar/ui`.
+
+## Stage 86 — Telegram Owner UX / Channel Setup Polish
+
+Status: implemented in archive, awaiting deploy verification.
+
+Scope:
+- Added owner-safe Telegram channel endpoints:
+  - `GET /owner/telegram`
+  - `GET /owner/telegram/ui`
+  - `GET /owner/channels/telegram`
+  - `GET /owner/channels/telegram/ui`
+- Added admin-protected readiness endpoints:
+  - `GET /owner-telegram/readiness`
+  - `GET /telegram-owner/readiness`
+  - `GET /workspace/telegram/readiness`
+  - `GET /channels/telegram/owner/readiness`
+- Added owner-visible Telegram status without exposing raw bot token, raw webhook secret, masked token, admin setup links, or webhook setup write actions.
+- Telegram setup remains support-controlled in this SMB phase; owner sees channel status, webhook metadata status, usage/smoke status and next actions.
+- Integrated Stage 86 Telegram links into owner dashboard/workspace/setup flow.
+- Stage 80 Telegram channel next-action now points to owner-safe `/owner/telegram/ui`.
+- No owner write endpoint was added in Stage 86.
+
+Expected verification:
+- Render deploy starts successfully.
+- `/dialogue/qa` = 50/50 passed.
+- `/owner-telegram/readiness?tenant_id=clinic_demo` returns `stage=86` and `telegram_owner_ux_ready=true` when routes/security are ready.
+- `/telegram-owner/readiness?tenant_id=clinic_demo`, `/workspace/telegram/readiness?tenant_id=clinic_demo`, and `/channels/telegram/owner/readiness?tenant_id=clinic_demo` work and remain admin-protected.
+- `/owner/telegram/ui?tenant_id=<owner_tenant>` and `/owner/channels/telegram/ui?tenant_id=<owner_tenant>` open with valid owner session or super-admin bypass.
+- `/tenant-workspace/readiness?tenant_id=clinic_demo` points the Telegram next-action to owner-safe `/owner/telegram/ui`.
+- Owner dashboard/workspace/services/memory/calendar/billing remain owner-safe.
+- Stage 78 remains the source of truth for `public_saas_ready`; `enterprise_saas_ready=false` remains explicit.
+
+Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook runtime, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, dialogue QA evaluator, LLM orchestration, and voice/calls were not changed.

@@ -716,3 +716,27 @@ Stage 77.1 is a narrow readiness endpoint hotfix only. It fixes a runtime type m
 - Stage 78 remains the source of truth for `public_saas_ready`.
 - `enterprise_saas_ready` remains false; enterprise maturity is a later phase.
 - Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+
+## Stage 86 — Telegram Owner UX / Channel Setup Polish Rules
+
+- Stage 86 continues the Mature SMB SaaS phase after Stage 85.
+- Stage 86 may add owner-safe Telegram channel status UX, Telegram readiness metadata, owner/dashboard/workspace links, and owner-visible next actions only.
+- Stage 86 must not add an owner Telegram token/webhook secret write endpoint.
+- Telegram bot token storage, webhook secret generation, webhook setting, and Telegram admin setup remain support-controlled in this SMB phase.
+- Owner-facing Telegram UI must not expose raw Telegram bot tokens, raw webhook secrets, masked token values, admin setup links, webhook setup write actions, or super-admin config links in primary owner navigation.
+- Stage 86 readiness endpoints must be protected by Stage 61/62 admin auth:
+  - `/owner-telegram/readiness`
+  - `/telegram-owner/readiness`
+  - `/workspace/telegram/readiness`
+  - `/channels/telegram/owner/readiness`
+- Stage 86 owner Telegram endpoints must be protected by Stage 71 owner session and tenant binding:
+  - `/owner/telegram`
+  - `/owner/telegram/ui`
+  - `/owner/channels/telegram`
+  - `/owner/channels/telegram/ui`
+- No new Stage 74 owner CSRF/browser-write path is required because Stage 86 adds no owner write endpoint.
+- Super-admin support links may appear only when opened through explicit admin/session bypass and must be clearly separated from owner links.
+- Stage 86 must not change Telegram webhook runtime, Telegram incoming-message handling, Telegram send-message handling, receptionist dialogue, booking routing, slot generation, date/time parsing, side-question handling, confirmation, cancellation, rescheduling, Google Calendar event runtime, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, LLM orchestration, or regression evaluator rules.
+- Stage 78 remains the source of truth for `public_saas_ready`.
+- `enterprise_saas_ready` remains false; enterprise maturity is a later phase.
+- Current protected baseline remains `/dialogue/qa = 50/50 passed`.
