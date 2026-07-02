@@ -185,6 +185,12 @@ STAGE71_OWNER_PROTECTED_EXACT_PATHS = {
     "/owner/analytics/ui",
     "/owner/conversation-insights",
     "/owner/conversation-insights/ui",
+    "/owner/notifications",
+    "/owner/notifications/ui",
+    "/owner/follow-ups",
+    "/owner/follow-ups/ui",
+    "/owner/lead-followup",
+    "/owner/lead-followup/ui",
     "/owner/business-memory",
     "/owner/business-memory/ui",
     "/owner/business-memory/update",
@@ -270,6 +276,10 @@ STAGE61_PROTECTED_EXACT_PATHS = {
     "/workspace/analytics/readiness",
     "/conversation-visibility/readiness",
     "/analytics/owner/readiness",
+    "/owner-notifications/readiness",
+    "/workspace/notifications/readiness",
+    "/lead-follow-up/readiness",
+    "/notifications/owner/readiness",
     "/access/readiness",
     "/admin/access/readiness",
     "/admin/access/enforcement",
@@ -3950,6 +3960,7 @@ def stage71_owner_dashboard_payload(request: Request, tenant_id: str = TENANT_ID
                 {"key": "launch_review", "label": "Final launch checklist", "status": "ready", "href": f"/owner/launch-review/ui?tenant_id={tid}"},
                 {"key": "client_preview", "label": "Client preview / demo mode", "status": "ready", "href": f"/owner/demo/ui?tenant_id={tid}"},
                 {"key": "analytics", "label": "Conversation insights", "status": "ready", "href": f"/owner/analytics/ui?tenant_id={tid}"},
+                {"key": "followups", "label": "Lead follow-up visibility", "status": "ready", "href": f"/owner/follow-ups/ui?tenant_id={tid}"},
                 {"key": "business_profile", "label": "Edit business profile", "status": "ready", "href": f"/owner/business-profile/ui?tenant_id={tid}"},
                 {"key": "services", "label": "Review services", "status": "ready", "href": f"/owner/services/ui?tenant_id={tid}"},
                 {"key": "memory", "label": "Edit business memory / FAQ", "status": "ready", "href": f"/owner/business-memory/ui?tenant_id={tid}"},
@@ -3961,7 +3972,7 @@ def stage71_owner_dashboard_payload(request: Request, tenant_id: str = TENANT_ID
                 {"key": "support_setup", "label": "Calendar/channel setup remains controlled by Repliq support in this SMB phase", "status": "support_controlled", "href": None},
             ],
         },
-        "links": {"owner_dashboard": f"/owner/dashboard/ui?tenant_id={tid}", "owner_workspace": f"/owner/workspace/ui?tenant_id={tid}", "owner_launch_review": f"/owner/launch-review/ui?tenant_id={tid}", "owner_demo": f"/owner/demo/ui?tenant_id={tid}", "owner_client_preview": f"/owner/client-preview/ui?tenant_id={tid}", "owner_analytics": f"/owner/analytics/ui?tenant_id={tid}", "owner_conversation_insights": f"/owner/conversation-insights/ui?tenant_id={tid}", "owner_setup": f"/owner/setup/ui?tenant_id={tid}", "owner_business_profile": f"/owner/business-profile/ui?tenant_id={tid}", "owner_services": f"/owner/services/ui?tenant_id={tid}", "owner_service_catalog": f"/owner/service-catalog/ui?tenant_id={tid}", "owner_business_memory": f"/owner/business-memory/ui?tenant_id={tid}", "owner_faq": f"/owner/faq/ui?tenant_id={tid}", "owner_workspace_settings": f"/owner/workspace/settings/ui?tenant_id={tid}", "owner_calendar": f"/owner/calendar/ui?tenant_id={tid}", "owner_availability": f"/owner/availability/ui?tenant_id={tid}", "owner_telegram": f"/owner/telegram/ui?tenant_id={tid}", "owner_control_center": f"/owner/control-center/ui?tenant_id={tid}", "owner_session": f"/owner/session?tenant_id={tid}", "owner_billing": f"/owner/billing/ui?tenant_id={tid}", "owner_logout": "/owner/logout"},
+        "links": {"owner_dashboard": f"/owner/dashboard/ui?tenant_id={tid}", "owner_workspace": f"/owner/workspace/ui?tenant_id={tid}", "owner_launch_review": f"/owner/launch-review/ui?tenant_id={tid}", "owner_demo": f"/owner/demo/ui?tenant_id={tid}", "owner_client_preview": f"/owner/client-preview/ui?tenant_id={tid}", "owner_analytics": f"/owner/analytics/ui?tenant_id={tid}", "owner_conversation_insights": f"/owner/conversation-insights/ui?tenant_id={tid}", "owner_notifications": f"/owner/notifications/ui?tenant_id={tid}", "owner_followups": f"/owner/follow-ups/ui?tenant_id={tid}", "owner_setup": f"/owner/setup/ui?tenant_id={tid}", "owner_business_profile": f"/owner/business-profile/ui?tenant_id={tid}", "owner_services": f"/owner/services/ui?tenant_id={tid}", "owner_service_catalog": f"/owner/service-catalog/ui?tenant_id={tid}", "owner_business_memory": f"/owner/business-memory/ui?tenant_id={tid}", "owner_faq": f"/owner/faq/ui?tenant_id={tid}", "owner_workspace_settings": f"/owner/workspace/settings/ui?tenant_id={tid}", "owner_calendar": f"/owner/calendar/ui?tenant_id={tid}", "owner_availability": f"/owner/availability/ui?tenant_id={tid}", "owner_telegram": f"/owner/telegram/ui?tenant_id={tid}", "owner_control_center": f"/owner/control-center/ui?tenant_id={tid}", "owner_session": f"/owner/session?tenant_id={tid}", "owner_billing": f"/owner/billing/ui?tenant_id={tid}", "owner_logout": "/owner/logout"},
         "super_admin_support_links": {"admin_control_center": f"/control-center/ui?tenant_id={tid}", "public_saas_audit": f"/public-saas/gap-audit/ui?tenant_id={tid}", "billing_readiness": f"/billing/readiness?tenant_id={tid}"} if admin_access else {},
     }
 
@@ -4131,7 +4142,7 @@ def stage80_workspace_setup_core(tenant_id: str = TENANT_ID_DEFAULT, days: int =
         "security": {"owner_workspace_routes_owner_session_bound": bool(not missing_owner_protection and not owner_admin_overlap), "stage80_readiness_routes_admin_protected": bool(not missing_readiness_protection), "tenant_id_parameter_is_not_auth": True, "owner_admin_links_exposed_to_owner": False, "admin_config_links_hidden_from_owner": True, "raw_admin_token_exposed": False, "raw_owner_login_code_exposed": False, "raw_magic_token_exposed": False, "raw_magic_token_hash_exposed": False, "telegram_token_exposed": False, "google_credentials_exposed": False},
         "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
         "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
-        "links": {"owner_workspace": url(f"/owner/workspace/ui?tenant_id={tenant_id_clean}"), "owner_launch_review": url(f"/owner/launch-review/ui?tenant_id={tenant_id_clean}"), "owner_demo": url(f"/owner/demo/ui?tenant_id={tenant_id_clean}"), "owner_client_preview": url(f"/owner/client-preview/ui?tenant_id={tenant_id_clean}"), "owner_analytics": url(f"/owner/analytics/ui?tenant_id={tenant_id_clean}"), "owner_conversation_insights": url(f"/owner/conversation-insights/ui?tenant_id={tenant_id_clean}"), "owner_setup": url(f"/owner/setup/ui?tenant_id={tenant_id_clean}"), "owner_business_profile": url(f"/owner/business-profile/ui?tenant_id={tenant_id_clean}"), "owner_services": url(f"/owner/services/ui?tenant_id={tenant_id_clean}"), "owner_service_catalog": url(f"/owner/service-catalog/ui?tenant_id={tenant_id_clean}"), "owner_business_memory": url(f"/owner/business-memory/ui?tenant_id={tenant_id_clean}"), "owner_faq": url(f"/owner/faq/ui?tenant_id={tenant_id_clean}"), "owner_workspace_settings": url(f"/owner/workspace/settings/ui?tenant_id={tenant_id_clean}"), "owner_calendar": url(f"/owner/calendar/ui?tenant_id={tenant_id_clean}"), "owner_availability": url(f"/owner/availability/ui?tenant_id={tenant_id_clean}"), "owner_telegram": url(f"/owner/telegram/ui?tenant_id={tenant_id_clean}"), "owner_dashboard": url(f"/owner/dashboard/ui?tenant_id={tenant_id_clean}"), "owner_billing": url(f"/owner/billing/ui?tenant_id={tenant_id_clean}"), "owner_session": url(f"/owner/session?tenant_id={tenant_id_clean}"), "stage80_readiness": url(f"/tenant-workspace/readiness?tenant_id={tenant_id_clean}&days={days}"), "stage79_readiness": url(f"/launch-ux/readiness?tenant_id={tenant_id_clean}&days={days}"), "final_public_saas_readiness": url(f"/public-saas/final-readiness?tenant_id={tenant_id_clean}&days={days}")},
+        "links": {"owner_workspace": url(f"/owner/workspace/ui?tenant_id={tenant_id_clean}"), "owner_launch_review": url(f"/owner/launch-review/ui?tenant_id={tenant_id_clean}"), "owner_demo": url(f"/owner/demo/ui?tenant_id={tenant_id_clean}"), "owner_client_preview": url(f"/owner/client-preview/ui?tenant_id={tenant_id_clean}"), "owner_analytics": url(f"/owner/analytics/ui?tenant_id={tenant_id_clean}"), "owner_conversation_insights": url(f"/owner/conversation-insights/ui?tenant_id={tenant_id_clean}"), "owner_notifications": url(f"/owner/notifications/ui?tenant_id={tenant_id_clean}"), "owner_followups": url(f"/owner/follow-ups/ui?tenant_id={tenant_id_clean}"), "owner_setup": url(f"/owner/setup/ui?tenant_id={tenant_id_clean}"), "owner_business_profile": url(f"/owner/business-profile/ui?tenant_id={tenant_id_clean}"), "owner_services": url(f"/owner/services/ui?tenant_id={tenant_id_clean}"), "owner_service_catalog": url(f"/owner/service-catalog/ui?tenant_id={tenant_id_clean}"), "owner_business_memory": url(f"/owner/business-memory/ui?tenant_id={tenant_id_clean}"), "owner_faq": url(f"/owner/faq/ui?tenant_id={tenant_id_clean}"), "owner_workspace_settings": url(f"/owner/workspace/settings/ui?tenant_id={tenant_id_clean}"), "owner_calendar": url(f"/owner/calendar/ui?tenant_id={tenant_id_clean}"), "owner_availability": url(f"/owner/availability/ui?tenant_id={tenant_id_clean}"), "owner_telegram": url(f"/owner/telegram/ui?tenant_id={tenant_id_clean}"), "owner_dashboard": url(f"/owner/dashboard/ui?tenant_id={tenant_id_clean}"), "owner_billing": url(f"/owner/billing/ui?tenant_id={tenant_id_clean}"), "owner_session": url(f"/owner/session?tenant_id={tenant_id_clean}"), "stage80_readiness": url(f"/tenant-workspace/readiness?tenant_id={tenant_id_clean}&days={days}"), "stage79_readiness": url(f"/launch-ux/readiness?tenant_id={tenant_id_clean}&days={days}"), "final_public_saas_readiness": url(f"/public-saas/final-readiness?tenant_id={tenant_id_clean}&days={days}")},
         "note": "Stage 80 adds owner-safe workspace setup completion UX/readiness only. It does not expose admin setup links to owners and does not change receptionist dialogue, booking, slots, Google Calendar event runtime, Telegram webhook runtime, billing semantics, CSRF, abuse/rate-limits, magic-link semantics, LLM orchestration, or QA evaluator behavior.",
     }
 
@@ -6588,6 +6599,375 @@ function priceRows(rows){if(!rows||!rows.length){return '<div class="muted">No p
 function render(d){el('raw').textContent=JSON.stringify(d,null,2);var s=d.summary||{};el('m_total').textContent=s.total_live_interactions||0;el('m_customers').textContent=s.unique_customers||0;el('m_prices').textContent=s.price_questions||0;el('badges').innerHTML=badge(d.status==='ready'||d.status==='ready_empty'?'ok':'warn','status: '+(d.status||'unknown'))+badge('ok','read-only')+badge(d.preview_visibility&&d.preview_visibility.stage88_preview_persisted?'ok':'warn','preview persisted: '+!!(d.preview_visibility&&d.preview_visibility.stage88_preview_persisted))+badge(d.enterprise_saas_ready?'warn':'ok','enterprise_saas_ready: '+!!d.enterprise_saas_ready);el('summary').innerHTML='Tenant: '+esc(d.tenant_id||tenant())+' · Window: '+esc(d.days||days())+' days<br>'+esc((d.preview_visibility&&d.preview_visibility.reason)||'')+'<br>Limitations: '+esc((d.limitations||[]).join('; '));el('questions').innerHTML=questionRows(d.questions_customers_ask||[]);el('services').innerHTML=rowsTable(d.service_interest||[],[{key:'service',label:'Service'},{key:'count',label:'Count'},{key:'source',label:'Detected from'}],'No service interest detected.');el('price_rows').innerHTML=priceRows(d.price_questions||[]);el('sources').innerHTML=rowsTable(d.answer_sources||[],[{key:'source',label:'Source'},{key:'count',label:'Count'},{key:'note',label:'Note'}],'No answer source metadata.');el('channels').innerHTML=rowsTable((d.live_channel_status||[]).map(function(c){return {channel:c.channel,total:c.total,statuses:JSON.stringify(c.statuses||{})}}),[{key:'channel',label:'Channel'},{key:'total',label:'Total'},{key:'statuses',label:'Statuses'}],'No channel activity.');el('recent').innerHTML=interactionRows(d.recent_interactions||[])}
 async function load(){el('tenant_id').value=tenant();el('days').value=days();el('raw').textContent='Loading...';var r=await fetch('/owner/analytics?tenant_id='+encTenant()+'&days='+encodeURIComponent(days())+'&limit=50',{credentials:'include',cache:'no-store'});var d=await r.json().catch(function(){return {ok:false,error:'invalid_json'}});if(!r.ok){el('raw').textContent=JSON.stringify(d,null,2);el('badges').innerHTML=badge('err','load failed');return;}render(d)}
 el('tenant_id').value=DEFAULT_TENANT_ID||'clinic_demo';el('load_btn').onclick=load;el('workspace_btn').onclick=function(){go('/owner/workspace/ui?tenant_id='+encTenant())};el('preview_btn').onclick=function(){go('/owner/client-preview/ui?tenant_id='+encTenant())};el('logout_btn').onclick=function(){go('/owner/logout')};load();
+})();</script></body></html>"""
+    return html.replace("__TENANT_ID_JSON__", tenant_id_json)
+
+
+
+# -------------------------
+# STAGE 90: OWNER NOTIFICATIONS / LEAD FOLLOW-UP VISIBILITY
+# -------------------------
+STAGE90_READINESS_PATHS = {
+    "/owner-notifications/readiness",
+    "/workspace/notifications/readiness",
+    "/lead-follow-up/readiness",
+    "/notifications/owner/readiness",
+}
+STAGE90_OWNER_NOTIFICATION_PATHS = {
+    "/owner/notifications",
+    "/owner/notifications/ui",
+    "/owner/follow-ups",
+    "/owner/follow-ups/ui",
+    "/owner/lead-followup",
+    "/owner/lead-followup/ui",
+}
+STAGE90_MATURITY_TARGET = "mature_smb_saas_owner_followup_visibility_phase"
+STAGE90_ATTENTION_STATUSES = {
+    "need_more",
+    "busy",
+    "booking_failed",
+    "no_booking",
+    "recovery",
+    "reschedule_wait",
+    "cancel_failed",
+    "unknown",
+}
+STAGE90_RESOLVED_STATUSES = {"booked", "cancelled"}
+
+
+def stage90_safe_url(path: str) -> str:
+    base = (SERVER_BASE_URL or "").rstrip("/")
+    return base + path if base else path
+
+
+def stage90_priority_for_candidate(status: str, category: str, intent: str) -> str:
+    status_low = str(status or "").strip().lower()
+    category_low = str(category or "").strip().lower()
+    intent_low = str(intent or "").strip().lower()
+    if status_low in {"booking_failed", "cancel_failed", "busy", "no_booking"}:
+        return "high"
+    if status_low in {"need_more", "recovery", "reschedule_wait"}:
+        return "medium"
+    if category_low == "price_question" or intent_low in {"booking", "reschedule", "cancel"}:
+        return "medium"
+    if intent_low in {"info", "faq"} or category_low in {"hours_question", "duration_question", "general_question"}:
+        return "low"
+    return "low"
+
+
+def stage90_candidate_reason(status: str, category: str, intent: str) -> str:
+    status_low = str(status or "").strip().lower()
+    category_low = str(category or "").strip().lower()
+    intent_low = str(intent or "").strip().lower()
+    if status_low == "busy":
+        return "client_hit_busy_or_unavailable_time"
+    if status_low == "no_booking":
+        return "booking_not_completed"
+    if status_low == "booking_failed":
+        return "booking_failed_runtime_status"
+    if status_low == "cancel_failed":
+        return "cancel_failed_runtime_status"
+    if status_low == "reschedule_wait":
+        return "reschedule_flow_needs_completion"
+    if status_low in {"need_more", "recovery"}:
+        return "conversation_needs_more_information"
+    if category_low == "price_question":
+        return "price_question_sales_follow_up_opportunity"
+    if intent_low in {"booking", "reschedule", "cancel"}:
+        return f"{intent_low}_intent_not_resolved_in_visible_log"
+    if intent_low in {"info", "faq"} or category_low in {"hours_question", "duration_question", "general_question"}:
+        return "information_question_follow_up_opportunity"
+    return "owner_review_candidate"
+
+
+def stage90_is_followup_candidate(row: Dict[str, Any]) -> bool:
+    status_low = str((row or {}).get("status") or "").strip().lower()
+    intent_low = str((row or {}).get("intent") or "").strip().lower()
+    category = stage89_message_category((row or {}).get("raw_text"), intent_low)
+    if status_low in STAGE90_RESOLVED_STATUSES:
+        return False
+    if status_low in STAGE90_ATTENTION_STATUSES:
+        return True
+    if category == "price_question" and status_low != "booked":
+        return True
+    if intent_low in {"booking", "reschedule", "cancel"} and status_low not in STAGE90_RESOLVED_STATUSES:
+        return True
+    if intent_low in {"info", "faq"} and category in {"price_question", "hours_question", "duration_question", "general_question"}:
+        return True
+    return False
+
+
+def stage90_channel_delivery_status(channel: str, count: int) -> Dict[str, Any]:
+    ch = str(channel or "unknown").strip().lower() or "unknown"
+    return {
+        "channel": ch,
+        "observed_interactions": int(count or 0),
+        "owner_followup_visibility": True,
+        "automatic_owner_notification_delivery": False,
+        "stage90_sends_external_messages": False,
+        "delivery_status": "visibility_only_not_sending",
+    }
+
+
+def stage90_empty_followup_payload(tenant_id_clean: str, days: int, reason: str, tenant_found: bool = False) -> Dict[str, Any]:
+    return {
+        "ok": True,
+        "stage": "90",
+        "previous_stage": "89",
+        "purpose": "Owner Notifications / Lead Follow-up Visibility",
+        "tenant_id": tenant_id_clean,
+        "tenant_found": bool(tenant_found),
+        "status": "ready_empty" if tenant_found else "attention",
+        "maturity_phase": STAGE90_MATURITY_TARGET,
+        "days": days,
+        "enterprise_saas_ready": False,
+        "owner_notifications_ready": bool(tenant_found),
+        "lead_followup_visibility_ready": bool(tenant_found),
+        "read_only_visibility": True,
+        "notification_delivery": {
+            "automatic_owner_notifications_added": False,
+            "external_messages_sent_by_stage90": False,
+            "telegram_messages_sent_by_stage90": False,
+            "sms_or_whatsapp_messages_sent_by_stage90": False,
+            "delivery_runtime_changed": False,
+            "status": "visibility_only",
+        },
+        "summary": {"total_live_interactions": 0, "follow_up_candidates": 0, "high_priority_candidates": 0, "medium_priority_candidates": 0, "low_priority_candidates": 0, "price_follow_up_opportunities": 0, "unresolved_booking_like_interactions": 0, "resolved_interactions": 0},
+        "follow_up_candidates": [],
+        "priority_breakdown": [],
+        "reason_breakdown": [],
+        "channel_visibility": [],
+        "active_conversation_states": [],
+        "recent_resolved_interactions": [],
+        "data_sources": {"call_logs": bool(tenant_found and reason == "no_interactions_found"), "conversations": False, "new_notification_table": False, "stage90_runtime_writes": False},
+        "limitations": ["stage90_is_read_only_visibility_only", "no_automatic_owner_notification_delivery_was_added", "follow_up_candidates_are_inferred_from_existing_call_logs_status_intent_and_text", "raw_customer_ids_are_replaced_with_stable_hash_refs", "message_snippets_are_redacted_and_truncated"],
+        "owner_safe_scope": {"read_only": True, "owner_write_routes_added": False, "admin_links_exposed_to_owner": False, "raw_user_ids_exposed": False, "raw_tokens_exposed": False, "secrets_exposed": False, "booking_runtime_changed": False, "calendar_runtime_changed": False, "telegram_runtime_changed": False, "notification_send_runtime_changed": False, "llm_orchestration_changed": False},
+        "security": {"stage90_readiness_routes_admin_protected": not any(path for path in STAGE90_READINESS_PATHS if path not in STAGE61_PROTECTED_EXACT_PATHS), "stage90_owner_routes_owner_session_bound": not any(path for path in STAGE90_OWNER_NOTIFICATION_PATHS if path not in STAGE71_OWNER_PROTECTED_EXACT_PATHS), "tenant_id_parameter_is_not_auth": True, "owner_csrf_paths_required": False, "secret_values_exposed": False},
+        "links": {"owner_notifications": stage90_safe_url(f"/owner/notifications/ui?tenant_id={tenant_id_clean}&days={days}"), "owner_followups": stage90_safe_url(f"/owner/follow-ups/ui?tenant_id={tenant_id_clean}&days={days}"), "owner_analytics": stage90_safe_url(f"/owner/analytics/ui?tenant_id={tenant_id_clean}&days={days}"), "owner_workspace": stage90_safe_url(f"/owner/workspace/ui?tenant_id={tenant_id_clean}"), "owner_dashboard": stage90_safe_url(f"/owner/dashboard/ui?tenant_id={tenant_id_clean}"), "stage90_readiness": stage90_safe_url(f"/owner-notifications/readiness?tenant_id={tenant_id_clean}&days={days}")},
+        "blocking": [],
+        "warnings": list(dict.fromkeys([reason] if reason else [])),
+        "note": "Stage 90 exposes owner-safe read-only lead follow-up visibility from existing data only. It does not send notifications, persist new events, change dialogue runtime, booking, slots, Calendar, Telegram, billing, auth, CSRF, abuse/rate-limit, magic-link, LLM orchestration, voice/calls, or QA evaluator behavior.",
+    }
+
+
+def stage90_owner_followup_core(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14, limit: int = 50) -> Dict[str, Any]:
+    tid = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    days = max(1, min(int(days or 14), 90))
+    limit = stage89_safe_limit(limit, default=50, maximum=100)
+    try:
+        tenant = get_existing_tenant(tid)
+    except Exception as e:
+        log.error("stage90_tenant_lookup_failed tenant_id=%s err=%s", tid, e)
+        tenant = {}
+    tenant_found = bool((tenant or {}).get("_id"))
+    tenant_id_clean = str((tenant or {}).get("_id") or (tenant or {}).get("id") or tid).strip() or tid
+    if not tenant_found:
+        return stage90_empty_followup_payload(tenant_id_clean, days, "tenant_not_found", tenant_found=False)
+
+    call_logs_check = _stage43a_table_check("call_logs")
+    conversations_check = _stage43a_table_check("conversations")
+    if not call_logs_check.get("ok"):
+        payload = stage90_empty_followup_payload(tenant_id_clean, days, "call_logs_table_unavailable", tenant_found=True)
+        payload["data_sources"]["call_logs"] = False
+        payload["data_sources"]["conversations"] = bool(conversations_check.get("ok"))
+        return payload
+
+    sample_limit = max(limit, min(500, limit * 5))
+    rows: List[Dict[str, Any]] = []
+    conversation_rows: List[Dict[str, Any]] = []
+    aggregate: Dict[str, Any] = {}
+    try:
+        with engine.connect() as conn:
+            aggregate = dict(conn.execute(text("SELECT COUNT(*)::int AS total_live_interactions, COALESCE(SUM(CASE WHEN lower(COALESCE(status, '')) IN ('booked','cancelled') THEN 1 ELSE 0 END), 0)::int AS resolved_interactions FROM call_logs WHERE tenant_id=:tenant_id AND created_at >= NOW() - (:days_i * INTERVAL '1 day')"), {"tenant_id": tenant_id_clean, "days_i": days}).mappings().first() or {})
+            rows = [dict(r) for r in conn.execute(text("SELECT tenant_id, user_id, channel, intent, service, datetime_iso, status, raw_text, ai_reply, created_at FROM call_logs WHERE tenant_id=:tenant_id AND created_at >= NOW() - (:days_i * INTERVAL '1 day') ORDER BY created_at DESC LIMIT :limit_i"), {"tenant_id": tenant_id_clean, "days_i": days, "limit_i": sample_limit}).mappings().all()]
+            if conversations_check.get("ok"):
+                conversation_rows = [dict(r) for r in conn.execute(text("SELECT user_key, lang_lock, state, service, datetime_iso, time_text, updated_at FROM conversations WHERE tenant_id=:tenant_id AND updated_at >= NOW() - (:days_i * INTERVAL '1 day') ORDER BY updated_at DESC LIMIT :limit_i"), {"tenant_id": tenant_id_clean, "days_i": days, "limit_i": limit}).mappings().all()]
+    except Exception as e:
+        log.error("stage90_followup_query_failed tenant_id=%s err=%s", tenant_id_clean, e)
+        payload = stage90_empty_followup_payload(tenant_id_clean, days, f"call_logs_query_failed:{e.__class__.__name__}", tenant_found=True)
+        payload["data_sources"]["call_logs"] = True
+        payload["data_sources"]["conversations"] = bool(conversations_check.get("ok"))
+        return payload
+
+    if not rows:
+        payload = stage90_empty_followup_payload(tenant_id_clean, days, "no_interactions_found", tenant_found=True)
+        payload["data_sources"]["call_logs"] = True
+        payload["data_sources"]["conversations"] = bool(conversations_check.get("ok"))
+        return payload
+
+    channel_counts: Dict[str, int] = {}
+    priority_counts: Dict[str, int] = {"high": 0, "medium": 0, "low": 0}
+    reason_counts: Dict[str, int] = {}
+    candidates: List[Dict[str, Any]] = []
+    recent_resolved: List[Dict[str, Any]] = []
+    price_followups = 0
+    unresolved_booking_like = 0
+
+    for row in rows:
+        channel = str(row.get("channel") or "unknown").strip().lower() or "unknown"
+        channel_counts[channel] = int(channel_counts.get(channel, 0)) + 1
+        status = str(row.get("status") or "unknown").strip().lower() or "unknown"
+        intent = str(row.get("intent") or "").strip().lower()
+        category = stage89_message_category(row.get("raw_text"), intent)
+        created_at = row.get("created_at")
+        created_at_text = created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at or "")
+        service = str(row.get("service") or "").strip() or None
+        customer_ref = stage89_customer_ref(tenant_id_clean, row.get("user_id"), channel)
+        if status in STAGE90_RESOLVED_STATUSES and len(recent_resolved) < 15:
+            recent_resolved.append({"created_at": created_at_text, "channel": channel, "status": status, "intent": intent or None, "service": service, "customer_ref": customer_ref, "message_snippet": stage89_redact_text(row.get("raw_text"), max_len=180), "reply_snippet": stage89_redact_text(row.get("ai_reply"), max_len=180)})
+        if not stage90_is_followup_candidate(row):
+            continue
+        priority = stage90_priority_for_candidate(status, category, intent)
+        reason = stage90_candidate_reason(status, category, intent)
+        priority_counts[priority] = int(priority_counts.get(priority, 0)) + 1
+        reason_counts[reason] = int(reason_counts.get(reason, 0)) + 1
+        if category == "price_question":
+            price_followups += 1
+        if intent in {"booking", "reschedule", "cancel"} or status in {"need_more", "busy", "booking_failed", "no_booking", "recovery", "reschedule_wait", "cancel_failed"}:
+            unresolved_booking_like += 1
+        if len(candidates) < limit:
+            candidates.append({
+                "created_at": created_at_text,
+                "priority": priority,
+                "reason": reason,
+                "channel": channel,
+                "status": status,
+                "intent": intent or None,
+                "category": category,
+                "service": service,
+                "datetime_iso": str(row.get("datetime_iso") or "").strip() or None,
+                "customer_ref": customer_ref,
+                "message_snippet": stage89_redact_text(row.get("raw_text"), max_len=220),
+                "reply_snippet": stage89_redact_text(row.get("ai_reply"), max_len=220),
+                "owner_action_hint": "review_and_follow_up_manually",
+                "automatic_notification_sent": False,
+            })
+
+    active_states: List[Dict[str, Any]] = []
+    state_counts: Dict[str, int] = {}
+    for row in conversation_rows:
+        state = str(row.get("state") or "unknown").strip() or "unknown"
+        state_counts[state] = int(state_counts.get(state, 0)) + 1
+        if state.upper() not in {"NEW", "DONE", "CANCELLED"} and len(active_states) < 20:
+            updated_at = row.get("updated_at")
+            updated_at_text = updated_at.isoformat() if hasattr(updated_at, "isoformat") else str(updated_at or "")
+            active_states.append({
+                "updated_at": updated_at_text,
+                "state": state,
+                "lang": str(row.get("lang_lock") or "").strip() or None,
+                "service": str(row.get("service") or "").strip() or None,
+                "datetime_iso": str(row.get("datetime_iso") or "").strip() or None,
+                "time_text": stage89_redact_text(row.get("time_text"), max_len=80) or None,
+                "customer_ref": stage89_customer_ref(tenant_id_clean, row.get("user_key"), "conversation_state"),
+                "raw_user_key_exposed": False,
+            })
+
+    missing_readiness_protection = sorted(path for path in STAGE90_READINESS_PATHS if path not in STAGE61_PROTECTED_EXACT_PATHS)
+    missing_owner_protection = sorted(path for path in STAGE90_OWNER_NOTIFICATION_PATHS if path not in STAGE71_OWNER_PROTECTED_EXACT_PATHS)
+    owner_admin_overlap = sorted(path for path in STAGE90_OWNER_NOTIFICATION_PATHS if path in STAGE61_PROTECTED_EXACT_PATHS)
+    blocking: List[str] = []
+    warnings: List[str] = []
+    if missing_readiness_protection:
+        blocking.append("stage90_readiness_routes_not_admin_protected")
+    if missing_owner_protection:
+        blocking.append("stage90_owner_routes_not_owner_protected")
+    if owner_admin_overlap:
+        blocking.append("stage90_owner_routes_overlap_admin_exact_paths")
+    if len(rows) < int(aggregate.get("total_live_interactions") or len(rows)):
+        warnings.append("followup_window_sample_limited")
+    if not candidates:
+        warnings.append("no_follow_up_candidates_found_in_window")
+    if not conversations_check.get("ok"):
+        warnings.append("conversations_table_unavailable_for_active_state_visibility")
+
+    total_live = int(aggregate.get("total_live_interactions") or len(rows))
+    resolved = int(aggregate.get("resolved_interactions") or len(recent_resolved))
+    priority_breakdown = [{"priority": key, "count": int(priority_counts.get(key, 0))} for key in ("high", "medium", "low")]
+    reason_breakdown = [{"reason": key, "count": count} for key, count in sorted(reason_counts.items(), key=lambda kv: (-kv[1], kv[0]))]
+    channel_visibility = [stage90_channel_delivery_status(ch, count) for ch, count in sorted(channel_counts.items(), key=lambda kv: (-kv[1], kv[0]))]
+    active_conversation_states = [{"state": key, "count": count} for key, count in sorted(state_counts.items(), key=lambda kv: (-kv[1], kv[0]))]
+
+    return {
+        "ok": True,
+        "stage": "90",
+        "previous_stage": "89",
+        "purpose": "Owner Notifications / Lead Follow-up Visibility",
+        "tenant_id": tenant_id_clean,
+        "tenant_found": True,
+        "status": "ready" if not blocking else "blocked",
+        "maturity_phase": STAGE90_MATURITY_TARGET,
+        "days": days,
+        "enterprise_saas_ready": False,
+        "owner_notifications_ready": bool(not blocking),
+        "lead_followup_visibility_ready": bool(not blocking),
+        "read_only_visibility": True,
+        "notification_delivery": {
+            "automatic_owner_notifications_added": False,
+            "external_messages_sent_by_stage90": False,
+            "telegram_messages_sent_by_stage90": False,
+            "sms_or_whatsapp_messages_sent_by_stage90": False,
+            "delivery_runtime_changed": False,
+            "status": "visibility_only",
+        },
+        "summary": {"total_live_interactions": total_live, "follow_up_candidates": len(candidates), "high_priority_candidates": int(priority_counts.get("high", 0)), "medium_priority_candidates": int(priority_counts.get("medium", 0)), "low_priority_candidates": int(priority_counts.get("low", 0)), "price_follow_up_opportunities": price_followups, "unresolved_booking_like_interactions": unresolved_booking_like, "resolved_interactions": resolved, "sampled_interactions": len(rows)},
+        "follow_up_candidates": candidates,
+        "priority_breakdown": priority_breakdown,
+        "reason_breakdown": reason_breakdown,
+        "channel_visibility": channel_visibility,
+        "active_conversation_states": active_conversation_states,
+        "active_conversation_items": active_states,
+        "recent_resolved_interactions": recent_resolved,
+        "data_sources": {"call_logs": True, "conversations": bool(conversations_check.get("ok")), "new_notification_table": False, "stage90_runtime_writes": False},
+        "limitations": ["stage90_is_read_only_visibility_only", "no_automatic_owner_notification_delivery_was_added", "follow_up_candidates_are_inferred_from_existing_call_logs_status_intent_and_text", "active_conversation_state_visibility_uses_existing_conversations_table_when_available", "raw_customer_ids_are_replaced_with_stable_hash_refs", "message_snippets_are_redacted_and_truncated"],
+        "owner_safe_scope": {"read_only": True, "owner_write_routes_added": False, "admin_links_exposed_to_owner": False, "raw_user_ids_exposed": False, "raw_tokens_exposed": False, "secrets_exposed": False, "booking_runtime_changed": False, "calendar_runtime_changed": False, "telegram_runtime_changed": False, "notification_send_runtime_changed": False, "llm_orchestration_changed": False},
+        "security": {"stage90_readiness_routes_admin_protected": not missing_readiness_protection, "stage90_owner_routes_owner_session_bound": not missing_owner_protection and not owner_admin_overlap, "tenant_id_parameter_is_not_auth": True, "owner_write_routes_added": False, "owner_csrf_paths_required": False, "secret_values_exposed": False},
+        "links": {"owner_notifications": stage90_safe_url(f"/owner/notifications/ui?tenant_id={tenant_id_clean}&days={days}"), "owner_followups": stage90_safe_url(f"/owner/follow-ups/ui?tenant_id={tenant_id_clean}&days={days}"), "owner_lead_followup": stage90_safe_url(f"/owner/lead-followup/ui?tenant_id={tenant_id_clean}&days={days}"), "owner_analytics": stage90_safe_url(f"/owner/analytics/ui?tenant_id={tenant_id_clean}&days={days}"), "owner_conversation_insights": stage90_safe_url(f"/owner/conversation-insights/ui?tenant_id={tenant_id_clean}&days={days}"), "owner_workspace": stage90_safe_url(f"/owner/workspace/ui?tenant_id={tenant_id_clean}"), "owner_dashboard": stage90_safe_url(f"/owner/dashboard/ui?tenant_id={tenant_id_clean}"), "owner_client_preview": stage90_safe_url(f"/owner/client-preview/ui?tenant_id={tenant_id_clean}"), "stage90_readiness": stage90_safe_url(f"/owner-notifications/readiness?tenant_id={tenant_id_clean}&days={days}")},
+        "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
+        "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
+        "note": "Stage 90 exposes owner-safe read-only lead follow-up visibility from existing call_logs/conversations only. It does not send notifications, persist new events, change dialogue runtime, booking, slots, Calendar, Telegram, billing, auth, CSRF, abuse/rate-limit, magic-link, LLM orchestration, voice/calls, or QA evaluator behavior.",
+    }
+
+
+def stage90_owner_notifications_payload(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14, limit: int = 50) -> Dict[str, Any]:
+    admin_access = bool(stage61_token_valid(stage61_request_token(request)) or stage62_request_has_valid_session(request))
+    if admin_access:
+        tid = stage711_resolve_tenant_context(request, tenant_id)
+        access = {"ok": True, "tenant_id": tid, "owner_email": "super_admin", "role": "super_admin"}
+    else:
+        request_path = str(getattr(request.url, "path", "") or "/owner/notifications")
+        access = stage71_owner_request_access(request, path=request_path)
+        if not access.get("ok"):
+            raise HTTPException(status_code=401, detail=access.get("error") or "owner_login_required")
+        tid = str(access.get("tenant_id") or tenant_id or "").strip() or TENANT_ID_DEFAULT
+    payload = stage90_owner_followup_core(tid, days=days, limit=limit)
+    payload["auth_model"] = "owner_session_or_super_admin_bypass"
+    payload["owner_email"] = stage71_normalize_email(access.get("owner_email") or "") if not admin_access else None
+    payload["role"] = access.get("role") or "owner"
+    payload["opened_via_super_admin_bypass"] = bool(admin_access)
+    payload["super_admin_support_links"] = {"stage90_readiness": f"/owner-notifications/readiness?tenant_id={payload.get('tenant_id')}&days={days}", "owner_analytics": f"/owner/analytics/ui?tenant_id={payload.get('tenant_id')}&days={days}", "admin_conversations": f"/conversations?tenant_id={payload.get('tenant_id')}"} if admin_access else {}
+    return payload
+
+
+def stage90_owner_notifications_html(tenant_id: str = TENANT_ID_DEFAULT) -> str:
+    tenant_id_json = json.dumps((tenant_id or "").strip() or TENANT_ID_DEFAULT, ensure_ascii=False)
+    html = r"""<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Repliq Follow-up Visibility</title>
+<style>body{font-family:Inter,system-ui,-apple-system,Segoe UI,Arial,sans-serif;background:#f6f7fb;color:#111827;margin:0;padding:24px}.wrap{max-width:1180px;margin:0 auto}.hero,.card{background:#fff;border:1px solid #e5e7eb;border-radius:20px;padding:18px;margin:14px 0;box-shadow:0 8px 25px rgba(17,24,39,.05)}.hero{background:#111827;color:white}.hero p{color:#d1d5db}.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.two{display:grid;grid-template-columns:1fr 1fr;gap:12px}.muted,.sub{color:#64748b;font-size:14px;line-height:1.45}.metric{font-size:30px;font-weight:900;margin:4px 0}.badge{display:inline-block;border-radius:999px;padding:5px 9px;background:#e5e7eb;font-size:12px;font-weight:800;margin:3px 4px 3px 0}.ok{background:#dcfce7;color:#166534}.warn{background:#fef3c7;color:#92400e}.err{background:#fee2e2;color:#991b1b}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}button{border:0;border-radius:12px;padding:10px 13px;background:#111827;color:white;font-weight:800;cursor:pointer}.secondary{background:#e5e7eb;color:#111827}input{box-sizing:border-box;border:1px solid #cbd5e1;border-radius:12px;padding:10px;font-size:14px}.row{border:1px solid #e5e7eb;border-radius:14px;padding:12px;margin:8px 0;background:#f8fafc}.row h3{margin:0 0 5px;font-size:15px}.snippet{white-space:pre-wrap;line-height:1.45}.table{width:100%;border-collapse:collapse}.table th,.table td{border-bottom:1px solid #e5e7eb;text-align:left;padding:8px;font-size:14px;vertical-align:top}pre{background:#0f172a;color:#e2e8f0;border-radius:14px;padding:14px;max-height:420px;overflow:auto;white-space:pre-wrap}@media(max-width:900px){body{padding:12px}.grid,.two{grid-template-columns:1fr}}</style></head>
+<body><div class="wrap"><div class="hero"><h1>Lead follow-up visibility</h1><p>Owner-safe read-only queue for conversations that may need manual review. Stage 90 does not send notifications or customer messages.</p><div class="actions"><input id="tenant_id" style="max-width:280px" autocomplete="off"/><input id="days" type="number" min="1" max="90" value="14" style="width:96px"/><button id="load_btn" type="button">Load</button><button id="workspace_btn" class="secondary" type="button">Workspace</button><button id="analytics_btn" class="secondary" type="button">Insights</button><button id="preview_btn" class="secondary" type="button">Client preview</button><button id="logout_btn" class="secondary" type="button">Logout</button></div></div><div class="card"><h2>Status</h2><div id="badges"></div><div id="summary" class="sub"></div></div><div class="grid"><div class="card"><div class="sub">Follow-up candidates</div><div id="m_candidates" class="metric">0</div></div><div class="card"><div class="sub">High priority</div><div id="m_high" class="metric">0</div></div><div class="card"><div class="sub">Price follow-ups</div><div id="m_price" class="metric">0</div></div><div class="card"><div class="sub">Unresolved booking-like</div><div id="m_unresolved" class="metric">0</div></div></div><div class="card"><h2>Follow-up candidates</h2><div id="candidates"></div></div><div class="two"><div class="card"><h2>Priority / reasons</h2><div id="priority"></div><div id="reasons"></div></div><div class="card"><h2>Channel visibility</h2><div id="channels"></div><h2>Conversation states</h2><div id="states"></div></div></div><div class="card"><h2>Recently resolved</h2><div id="resolved"></div></div><div class="card"><h2>Raw owner-safe payload</h2><pre id="raw">Loading...</pre></div></div>
+<script>(function(){
+var DEFAULT_TENANT_ID=__TENANT_ID_JSON__;
+function el(id){return document.getElementById(id)}
+function esc(v){return v===null||v===undefined?'':String(v).replace(/[&<>"']/g,function(ch){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch];})}
+function tenant(){return (el('tenant_id').value||'').trim()||DEFAULT_TENANT_ID||'clinic_demo'}
+function days(){var n=parseInt(el('days').value||'14',10); if(!Number.isFinite(n)){n=14;} return Math.max(1,Math.min(n,90));}
+function encTenant(){return encodeURIComponent(tenant())}
+function go(path){window.location=path}
+function badge(cls,label){return '<span class="badge '+cls+'">'+esc(label)+'</span>'}
+function rowsTable(rows,cols,empty){if(!rows||!rows.length){return '<div class="muted">'+esc(empty||'No data in selected window.')+'</div>'}return '<table class="table"><thead><tr>'+cols.map(function(c){return '<th>'+esc(c.label)+'</th>'}).join('')+'</tr></thead><tbody>'+rows.map(function(r){return '<tr>'+cols.map(function(c){return '<td>'+esc(r[c.key])+'</td>'}).join('')+'</tr>'}).join('')+'</tbody></table>'}
+function candidateRows(rows){if(!rows||!rows.length){return '<div class="muted">No follow-up candidates detected in selected window.</div>'}return rows.map(function(r){return '<div class="row"><h3>'+esc(r.priority||'low')+' · '+esc(r.reason||'review')+' · '+esc(r.channel||'unknown')+'</h3><div class="sub">'+esc(r.created_at||'')+' · '+esc(r.customer_ref||'')+' · '+esc(r.status||'unknown')+' · '+esc(r.service||'')+'</div><div class="snippet">'+esc(r.message_snippet||'')+'</div><div class="sub">Reply: '+esc(r.reply_snippet||'')+'</div><div class="sub">Action: '+esc(r.owner_action_hint||'review')+' · automatic notification sent: '+esc(String(!!r.automatic_notification_sent))+'</div></div>'}).join('')}
+function resolvedRows(rows){if(!rows||!rows.length){return '<div class="muted">No recently resolved interactions in selected window.</div>'}return rows.map(function(r){return '<div class="row"><h3>'+esc(r.status||'resolved')+' · '+esc(r.channel||'unknown')+'</h3><div class="sub">'+esc(r.created_at||'')+' · '+esc(r.customer_ref||'')+' · '+esc(r.service||'')+'</div><div class="snippet">'+esc(r.message_snippet||'')+'</div></div>'}).join('')}
+function render(d){el('raw').textContent=JSON.stringify(d,null,2);var s=d.summary||{};el('m_candidates').textContent=s.follow_up_candidates||0;el('m_high').textContent=s.high_priority_candidates||0;el('m_price').textContent=s.price_follow_up_opportunities||0;el('m_unresolved').textContent=s.unresolved_booking_like_interactions||0;var nd=d.notification_delivery||{};el('badges').innerHTML=badge(d.status==='ready'||d.status==='ready_empty'?'ok':'warn','status: '+(d.status||'unknown'))+badge('ok','read-only')+badge(nd.external_messages_sent_by_stage90?'warn':'ok','external sends: '+!!nd.external_messages_sent_by_stage90)+badge(d.enterprise_saas_ready?'warn':'ok','enterprise_saas_ready: '+!!d.enterprise_saas_ready);el('summary').innerHTML='Tenant: '+esc(d.tenant_id||tenant())+' · Window: '+esc(d.days||days())+' days<br>Notification delivery: '+esc(nd.status||'visibility_only')+'<br>Limitations: '+esc((d.limitations||[]).join('; '));el('candidates').innerHTML=candidateRows(d.follow_up_candidates||[]);el('priority').innerHTML=rowsTable(d.priority_breakdown||[],[{key:'priority',label:'Priority'},{key:'count',label:'Count'}],'No priority data.');el('reasons').innerHTML=rowsTable(d.reason_breakdown||[],[{key:'reason',label:'Reason'},{key:'count',label:'Count'}],'No reasons detected.');el('channels').innerHTML=rowsTable(d.channel_visibility||[],[{key:'channel',label:'Channel'},{key:'observed_interactions',label:'Observed'},{key:'delivery_status',label:'Delivery status'}],'No channel data.');el('states').innerHTML=rowsTable(d.active_conversation_states||[],[{key:'state',label:'State'},{key:'count',label:'Count'}],'No active conversation state data.');el('resolved').innerHTML=resolvedRows(d.recent_resolved_interactions||[])}
+async function load(){el('tenant_id').value=tenant();el('days').value=days();el('raw').textContent='Loading...';var r=await fetch('/owner/notifications?tenant_id='+encTenant()+'&days='+encodeURIComponent(days())+'&limit=50',{credentials:'include',cache:'no-store'});var d=await r.json().catch(function(){return {ok:false,error:'invalid_json'}});if(!r.ok){el('raw').textContent=JSON.stringify(d,null,2);el('badges').innerHTML=badge('err','load failed');return;}render(d)}
+el('tenant_id').value=DEFAULT_TENANT_ID||'clinic_demo';el('load_btn').onclick=load;el('workspace_btn').onclick=function(){go('/owner/workspace/ui?tenant_id='+encTenant())};el('analytics_btn').onclick=function(){go('/owner/analytics/ui?tenant_id='+encTenant())};el('preview_btn').onclick=function(){go('/owner/client-preview/ui?tenant_id='+encTenant())};el('logout_btn').onclick=function(){go('/owner/logout')};load();
 })();</script></body></html>"""
     return html.replace("__TENANT_ID_JSON__", tenant_id_json)
 
@@ -19039,6 +19419,30 @@ def stage89_owner_analytics_json(request: Request, tenant_id: str = TENANT_ID_DE
 def stage89_owner_analytics_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
     tid = stage711_resolve_tenant_context(request, tenant_id)
     return HTMLResponse(content=stage89_owner_analytics_html(tenant_id=tid), headers={"Cache-Control": "no-store"})
+
+
+@app.get("/owner-notifications/readiness")
+@app.get("/workspace/notifications/readiness")
+@app.get("/lead-follow-up/readiness")
+@app.get("/notifications/owner/readiness")
+def stage90_owner_notifications_readiness(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14, limit: int = 50):
+    tid = stage711_resolve_tenant_context(request, tenant_id)
+    return stage90_owner_followup_core(tid, days=days, limit=limit)
+
+
+@app.get("/owner/notifications")
+@app.get("/owner/follow-ups")
+@app.get("/owner/lead-followup")
+def stage90_owner_notifications_json(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14, limit: int = 50):
+    return stage90_owner_notifications_payload(request=request, tenant_id=tenant_id, days=days, limit=limit)
+
+
+@app.get("/owner/notifications/ui", response_class=HTMLResponse)
+@app.get("/owner/follow-ups/ui", response_class=HTMLResponse)
+@app.get("/owner/lead-followup/ui", response_class=HTMLResponse)
+def stage90_owner_notifications_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
+    tid = stage711_resolve_tenant_context(request, tenant_id)
+    return HTMLResponse(content=stage90_owner_notifications_html(tenant_id=tid), headers={"Cache-Control": "no-store"})
 
 
 @app.post("/owner/magic-link/bootstrap")

@@ -1,6 +1,6 @@
 # Repliq Project State
 
-Current stage: Stage 89 — Owner Analytics / Conversation Visibility Polish.
+Current stage: Stage 90 — Owner Notifications / Lead Follow-up Visibility.
 
 Production regression baseline before Stage 40:
 - Stage 39 was deployed and confirmed by user: `/dialogue/qa` = 15/15 passed.
@@ -1479,3 +1479,56 @@ Expected verification:
 - Stage 78 remains the source of truth for public SaaS readiness; `enterprise_saas_ready=false` remains explicit.
 
 Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook/runtime, SMS/WhatsApp send paths, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, dialogue QA evaluator, LLM orchestration, and voice/calls were not changed.
+
+
+## Stage 89 — Owner Analytics / Conversation Visibility Polish Verification Update
+
+Status: closed after deploy verification. User reported `/dialogue/qa` = 50/50 passed and all Stage 89 checks OK.
+
+Verified:
+- Owner analytics readiness works.
+- Workspace analytics readiness works.
+- Conversation visibility readiness works.
+- Analytics owner readiness works.
+- Owner analytics / conversation insights UI works.
+- Owner workspace, dashboard, launch review and preview remain OK.
+- Stage 88 preview remains dry-run/no-persistence and analytics does not overclaim preview history.
+- `enterprise_saas_ready=false` remains explicit.
+
+## Stage 90 — Owner Notifications / Lead Follow-up Visibility
+
+Status: implemented in archive, awaiting deploy verification.
+
+Scope:
+- Added owner-safe read-only follow-up visibility endpoints:
+  - `GET /owner/notifications`
+  - `GET /owner/notifications/ui`
+  - `GET /owner/follow-ups`
+  - `GET /owner/follow-ups/ui`
+  - `GET /owner/lead-followup`
+  - `GET /owner/lead-followup/ui`
+- Added admin-protected readiness endpoints:
+  - `GET /owner-notifications/readiness`
+  - `GET /workspace/notifications/readiness`
+  - `GET /lead-follow-up/readiness`
+  - `GET /notifications/owner/readiness`
+- Stage 90 uses existing `call_logs` and, when available, `conversations` only.
+- Follow-up candidates are inferred from existing status/intent/message metadata such as `need_more`, `busy`, `booking_failed`, `no_booking`, `recovery`, `reschedule_wait`, `cancel_failed`, unresolved booking-like intents and price/info questions.
+- Owner UI shows priority, reason, channel visibility, active conversation state counts, redacted/truncated snippets and hashed customer refs.
+- No automatic owner notification delivery was added.
+- No Telegram/SMS/WhatsApp/customer message sends were added.
+- No new notification table or runtime write was added.
+- Dashboard/workspace owner link payloads include owner notifications/follow-up links.
+
+Expected verification:
+- Render deploy starts successfully.
+- `/dialogue/qa` = 50/50 passed.
+- `/owner-notifications/readiness?tenant_id=clinic_demo` returns `stage=90` and `enterprise_saas_ready=false`.
+- `/workspace/notifications/readiness?tenant_id=clinic_demo`, `/lead-follow-up/readiness?tenant_id=clinic_demo`, and `/notifications/owner/readiness?tenant_id=clinic_demo` work and remain admin-protected.
+- `/owner/notifications/ui?tenant_id=clinic_demo`, `/owner/follow-ups/ui?tenant_id=clinic_demo`, and `/owner/lead-followup/ui?tenant_id=clinic_demo` open with valid owner session or super-admin bypass.
+- Owner dashboard/workspace links include owner-safe notifications/follow-up links.
+- Stage 89 analytics UI remains OK.
+- Stage 88 preview still returns `conversation_persisted=false`.
+- Stage 78 remains the source of truth for `public_saas_ready`; `enterprise_saas_ready=false` remains explicit.
+
+Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook/runtime, SMS/WhatsApp send paths, billing semantics, auth/session semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, dialogue QA evaluator, LLM orchestration, and voice/calls were not changed.

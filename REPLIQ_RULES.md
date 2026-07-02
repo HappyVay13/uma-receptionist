@@ -835,3 +835,31 @@ Stage 87 owner launch-review pages must not perform deep cross-stage readiness f
 - Current protected baseline remains `/dialogue/qa = 50/50 passed`.
 - Stage 78 remains the source of truth for `public_saas_ready`.
 - `enterprise_saas_ready` remains false; enterprise maturity is a later phase.
+
+
+## Stage 90 — Owner Notifications / Lead Follow-up Visibility Rules
+
+- Stage 90 continues the Mature SMB SaaS phase after Stage 89.
+- Stage 90 may add owner-safe, read-only notification/follow-up visibility endpoints, UI, readiness metadata, dashboard/workspace links, and documentation only.
+- Stage 90 must use existing data only. It must not add new runtime conversation writes, notification writes, delivery queues, background jobs, or external send calls.
+- Follow-up candidates must be clearly labeled as inferred from existing `call_logs`/`conversations` metadata unless a future stage adds explicit lead/follow-up tracking.
+- Stage 90 must not send owner notifications, Telegram messages, SMS, WhatsApp messages, emails, or customer follow-up messages.
+- Stage 90 owner notification/follow-up endpoints must be protected by Stage 71 owner session and tenant binding:
+  - `/owner/notifications`
+  - `/owner/notifications/ui`
+  - `/owner/follow-ups`
+  - `/owner/follow-ups/ui`
+  - `/owner/lead-followup`
+  - `/owner/lead-followup/ui`
+- Stage 90 readiness endpoints must be protected by Stage 61/62 admin auth:
+  - `/owner-notifications/readiness`
+  - `/workspace/notifications/readiness`
+  - `/lead-follow-up/readiness`
+  - `/notifications/owner/readiness`
+- No new Stage 74 owner CSRF/browser-write path is required because Stage 90 is read-only.
+- Owner notification/follow-up UI must not expose raw admin tokens, owner login codes, magic tokens, magic-token hashes, CSRF secrets, raw IPs, raw customer identifiers, Telegram tokens, Google credentials, service account JSON, webhook secrets, billing provider secrets, or other tenant secrets.
+- Owner follow-up visibility may show redacted/truncated message snippets and stable customer refs, but must not expose raw `user_id` or raw `user_key` values.
+- Stage 90 must not change receptionist dialogue runtime, booking routing, slot generation, date/time parsing, side-question handling, confirmation, cancellation, rescheduling, Google Calendar runtime, Telegram webhook/runtime, SMS/WhatsApp send paths, billing semantics, auth/session semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, LLM orchestration, voice/calls, or regression evaluator rules.
+- Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+- Stage 78 remains the source of truth for `public_saas_ready`.
+- `enterprise_saas_ready` remains false; enterprise maturity is a later phase.
