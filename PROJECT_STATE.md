@@ -1409,3 +1409,38 @@ Receptionist core was not changed. Booking routing, slots, date/time parsing, pr
 - Built after Stage 87.1.
 - Replaces deep Stage 87 final-review aggregation with fast owner-safe checklist path to prevent launch-review UI/readiness hanging.
 - Does not change receptionist runtime, booking, Calendar runtime, Telegram runtime, billing semantics, CSRF, abuse limits, magic-link, QA evaluator, LLM or voice.
+
+## Stage 88 — Owner Demo / Client Preview Mode Polish
+
+Status: implemented in archive, awaiting deploy verification.
+
+Scope:
+- Added owner-safe dry-run demo/client preview endpoints:
+  - `GET /owner/demo`
+  - `GET /owner/demo/ui`
+  - `POST /owner/demo/preview`
+  - `GET /owner/client-preview`
+  - `GET /owner/client-preview/ui`
+  - `POST /owner/client-preview/message`
+- Added admin-protected readiness endpoints:
+  - `GET /owner-demo/readiness`
+  - `GET /client-preview/readiness`
+  - `GET /workspace/demo/readiness`
+  - `GET /demo/owner/readiness`
+- Owner preview uses tenant service catalog, Business Memory / FAQ, working hours and safe deterministic reply logic.
+- Service Catalog remains the source of truth for prices in preview answers.
+- Preview mode explicitly reports `dry_run=true` and does not create calendar events, persist conversation state, send Telegram/SMS/WhatsApp messages, or trigger booking confirmation.
+- Added owner demo/client preview links into owner dashboard/workspace/final-review link payloads.
+- `POST /owner/demo/preview` and `POST /owner/client-preview/message` are owner-protected and covered by Stage 74 owner browser-write/CSRF hardening.
+
+Expected verification:
+- Render deploy starts successfully.
+- `/dialogue/qa` = 50/50 passed.
+- `/owner-demo/readiness?tenant_id=clinic_demo` returns `stage=88`, `owner_demo_preview_ready=true`, `client_preview_mode_ready=true`, `dry_run_only=true`.
+- `/client-preview/readiness?tenant_id=clinic_demo`, `/workspace/demo/readiness?tenant_id=clinic_demo`, and `/demo/owner/readiness?tenant_id=clinic_demo` work and remain admin-protected.
+- `/owner/demo/ui?tenant_id=clinic_demo` opens with valid owner session or super-admin bypass.
+- Sending a preview message returns a reply with `dry_run=true`, `calendar_event_created=false`, `conversation_persisted=false`, and `external_customer_message_sent=false`.
+- Owner workspace/dashboard/launch-review links remain working and include owner demo/client preview links.
+- Stage 78 remains the source of truth for `public_saas_ready`; `enterprise_saas_ready=false` remains explicit.
+
+Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook/runtime, SMS/WhatsApp send paths, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, dialogue QA evaluator, LLM orchestration, and voice/calls were not changed.

@@ -175,6 +175,12 @@ STAGE71_OWNER_SESSION_COOKIE_NAME = "repliq_owner_session"
 STAGE71_OWNER_SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7
 STAGE71_OWNER_SESSION_VERSION = 1
 STAGE71_OWNER_PROTECTED_EXACT_PATHS = {
+    "/owner/demo",
+    "/owner/demo/ui",
+    "/owner/demo/preview",
+    "/owner/client-preview",
+    "/owner/client-preview/ui",
+    "/owner/client-preview/message",
     "/owner/business-memory",
     "/owner/business-memory/ui",
     "/owner/business-memory/update",
@@ -379,6 +385,10 @@ STAGE61_PROTECTED_EXACT_PATHS = {
     "/workspace/final-review/readiness",
     "/owner-launch-checklist/readiness",
     "/launch-checklist/owner/readiness",
+    "/owner-demo/readiness",
+    "/client-preview/readiness",
+    "/workspace/demo/readiness",
+    "/demo/owner/readiness",
     "/client/dashboard",
     "/client/dashboard/ui",
     "/client/control-center",
@@ -768,6 +778,8 @@ STAGE74_ADMIN_BROWSER_WRITE_PATHS = {
     "/dev/dialogue-simulate",
 }
 STAGE74_OWNER_BROWSER_WRITE_PATHS = {
+    "/owner/demo/preview",
+    "/owner/client-preview/message",
     "/owner/business-memory/update",
     "/owner/faq/update",
     "/owner/services/update",
@@ -3928,6 +3940,7 @@ def stage71_owner_dashboard_payload(request: Request, tenant_id: str = TENANT_ID
             "quickstart_steps": [
                 {"key": "workspace", "label": "Review workspace", "status": "ready", "href": f"/owner/workspace/ui?tenant_id={tid}"},
                 {"key": "launch_review", "label": "Final launch checklist", "status": "ready", "href": f"/owner/launch-review/ui?tenant_id={tid}"},
+                {"key": "client_preview", "label": "Client preview / demo mode", "status": "ready", "href": f"/owner/demo/ui?tenant_id={tid}"},
                 {"key": "business_profile", "label": "Edit business profile", "status": "ready", "href": f"/owner/business-profile/ui?tenant_id={tid}"},
                 {"key": "services", "label": "Review services", "status": "ready", "href": f"/owner/services/ui?tenant_id={tid}"},
                 {"key": "memory", "label": "Edit business memory / FAQ", "status": "ready", "href": f"/owner/business-memory/ui?tenant_id={tid}"},
@@ -3939,7 +3952,7 @@ def stage71_owner_dashboard_payload(request: Request, tenant_id: str = TENANT_ID
                 {"key": "support_setup", "label": "Calendar/channel setup remains controlled by Repliq support in this SMB phase", "status": "support_controlled", "href": None},
             ],
         },
-        "links": {"owner_dashboard": f"/owner/dashboard/ui?tenant_id={tid}", "owner_workspace": f"/owner/workspace/ui?tenant_id={tid}", "owner_launch_review": f"/owner/launch-review/ui?tenant_id={tid}", "owner_setup": f"/owner/setup/ui?tenant_id={tid}", "owner_business_profile": f"/owner/business-profile/ui?tenant_id={tid}", "owner_services": f"/owner/services/ui?tenant_id={tid}", "owner_service_catalog": f"/owner/service-catalog/ui?tenant_id={tid}", "owner_business_memory": f"/owner/business-memory/ui?tenant_id={tid}", "owner_faq": f"/owner/faq/ui?tenant_id={tid}", "owner_workspace_settings": f"/owner/workspace/settings/ui?tenant_id={tid}", "owner_calendar": f"/owner/calendar/ui?tenant_id={tid}", "owner_availability": f"/owner/availability/ui?tenant_id={tid}", "owner_telegram": f"/owner/telegram/ui?tenant_id={tid}", "owner_control_center": f"/owner/control-center/ui?tenant_id={tid}", "owner_session": f"/owner/session?tenant_id={tid}", "owner_billing": f"/owner/billing/ui?tenant_id={tid}", "owner_logout": "/owner/logout"},
+        "links": {"owner_dashboard": f"/owner/dashboard/ui?tenant_id={tid}", "owner_workspace": f"/owner/workspace/ui?tenant_id={tid}", "owner_launch_review": f"/owner/launch-review/ui?tenant_id={tid}", "owner_demo": f"/owner/demo/ui?tenant_id={tid}", "owner_client_preview": f"/owner/client-preview/ui?tenant_id={tid}", "owner_setup": f"/owner/setup/ui?tenant_id={tid}", "owner_business_profile": f"/owner/business-profile/ui?tenant_id={tid}", "owner_services": f"/owner/services/ui?tenant_id={tid}", "owner_service_catalog": f"/owner/service-catalog/ui?tenant_id={tid}", "owner_business_memory": f"/owner/business-memory/ui?tenant_id={tid}", "owner_faq": f"/owner/faq/ui?tenant_id={tid}", "owner_workspace_settings": f"/owner/workspace/settings/ui?tenant_id={tid}", "owner_calendar": f"/owner/calendar/ui?tenant_id={tid}", "owner_availability": f"/owner/availability/ui?tenant_id={tid}", "owner_telegram": f"/owner/telegram/ui?tenant_id={tid}", "owner_control_center": f"/owner/control-center/ui?tenant_id={tid}", "owner_session": f"/owner/session?tenant_id={tid}", "owner_billing": f"/owner/billing/ui?tenant_id={tid}", "owner_logout": "/owner/logout"},
         "super_admin_support_links": {"admin_control_center": f"/control-center/ui?tenant_id={tid}", "public_saas_audit": f"/public-saas/gap-audit/ui?tenant_id={tid}", "billing_readiness": f"/billing/readiness?tenant_id={tid}"} if admin_access else {},
     }
 
@@ -4109,7 +4122,7 @@ def stage80_workspace_setup_core(tenant_id: str = TENANT_ID_DEFAULT, days: int =
         "security": {"owner_workspace_routes_owner_session_bound": bool(not missing_owner_protection and not owner_admin_overlap), "stage80_readiness_routes_admin_protected": bool(not missing_readiness_protection), "tenant_id_parameter_is_not_auth": True, "owner_admin_links_exposed_to_owner": False, "admin_config_links_hidden_from_owner": True, "raw_admin_token_exposed": False, "raw_owner_login_code_exposed": False, "raw_magic_token_exposed": False, "raw_magic_token_hash_exposed": False, "telegram_token_exposed": False, "google_credentials_exposed": False},
         "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
         "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
-        "links": {"owner_workspace": url(f"/owner/workspace/ui?tenant_id={tenant_id_clean}"), "owner_launch_review": url(f"/owner/launch-review/ui?tenant_id={tenant_id_clean}"), "owner_setup": url(f"/owner/setup/ui?tenant_id={tenant_id_clean}"), "owner_business_profile": url(f"/owner/business-profile/ui?tenant_id={tenant_id_clean}"), "owner_services": url(f"/owner/services/ui?tenant_id={tenant_id_clean}"), "owner_service_catalog": url(f"/owner/service-catalog/ui?tenant_id={tenant_id_clean}"), "owner_business_memory": url(f"/owner/business-memory/ui?tenant_id={tenant_id_clean}"), "owner_faq": url(f"/owner/faq/ui?tenant_id={tenant_id_clean}"), "owner_workspace_settings": url(f"/owner/workspace/settings/ui?tenant_id={tenant_id_clean}"), "owner_calendar": url(f"/owner/calendar/ui?tenant_id={tenant_id_clean}"), "owner_availability": url(f"/owner/availability/ui?tenant_id={tenant_id_clean}"), "owner_telegram": url(f"/owner/telegram/ui?tenant_id={tenant_id_clean}"), "owner_dashboard": url(f"/owner/dashboard/ui?tenant_id={tenant_id_clean}"), "owner_billing": url(f"/owner/billing/ui?tenant_id={tenant_id_clean}"), "owner_session": url(f"/owner/session?tenant_id={tenant_id_clean}"), "stage80_readiness": url(f"/tenant-workspace/readiness?tenant_id={tenant_id_clean}&days={days}"), "stage79_readiness": url(f"/launch-ux/readiness?tenant_id={tenant_id_clean}&days={days}"), "final_public_saas_readiness": url(f"/public-saas/final-readiness?tenant_id={tenant_id_clean}&days={days}")},
+        "links": {"owner_workspace": url(f"/owner/workspace/ui?tenant_id={tenant_id_clean}"), "owner_launch_review": url(f"/owner/launch-review/ui?tenant_id={tenant_id_clean}"), "owner_demo": url(f"/owner/demo/ui?tenant_id={tenant_id_clean}"), "owner_client_preview": url(f"/owner/client-preview/ui?tenant_id={tenant_id_clean}"), "owner_setup": url(f"/owner/setup/ui?tenant_id={tenant_id_clean}"), "owner_business_profile": url(f"/owner/business-profile/ui?tenant_id={tenant_id_clean}"), "owner_services": url(f"/owner/services/ui?tenant_id={tenant_id_clean}"), "owner_service_catalog": url(f"/owner/service-catalog/ui?tenant_id={tenant_id_clean}"), "owner_business_memory": url(f"/owner/business-memory/ui?tenant_id={tenant_id_clean}"), "owner_faq": url(f"/owner/faq/ui?tenant_id={tenant_id_clean}"), "owner_workspace_settings": url(f"/owner/workspace/settings/ui?tenant_id={tenant_id_clean}"), "owner_calendar": url(f"/owner/calendar/ui?tenant_id={tenant_id_clean}"), "owner_availability": url(f"/owner/availability/ui?tenant_id={tenant_id_clean}"), "owner_telegram": url(f"/owner/telegram/ui?tenant_id={tenant_id_clean}"), "owner_dashboard": url(f"/owner/dashboard/ui?tenant_id={tenant_id_clean}"), "owner_billing": url(f"/owner/billing/ui?tenant_id={tenant_id_clean}"), "owner_session": url(f"/owner/session?tenant_id={tenant_id_clean}"), "stage80_readiness": url(f"/tenant-workspace/readiness?tenant_id={tenant_id_clean}&days={days}"), "stage79_readiness": url(f"/launch-ux/readiness?tenant_id={tenant_id_clean}&days={days}"), "final_public_saas_readiness": url(f"/public-saas/final-readiness?tenant_id={tenant_id_clean}&days={days}")},
         "note": "Stage 80 adds owner-safe workspace setup completion UX/readiness only. It does not expose admin setup links to owners and does not change receptionist dialogue, booking, slots, Google Calendar event runtime, Telegram webhook runtime, billing semantics, CSRF, abuse/rate-limits, magic-link semantics, LLM orchestration, or QA evaluator behavior.",
     }
 
@@ -5827,7 +5840,7 @@ def stage87_owner_workspace_final_review_core(tenant_id: str = TENANT_ID_DEFAULT
         "owner_safe_scope": {"final_setup_review": True, "launch_checklist": True, "read_only": True, "admin_write_surfaces_exposed_to_owner": False, "admin_links_exposed_to_owner": False, "stage87_owner_workspace_review": True, "receptionist_core_changed": False, "booking_runtime_changed": False, "calendar_runtime_changed": False, "telegram_runtime_changed": False},
         "security": {"stage87_readiness_routes_admin_protected": bool(not missing_readiness_protection), "stage87_owner_review_routes_owner_session_bound": bool(not missing_owner_protection and not owner_admin_overlap), "new_owner_write_routes_added": False, "owner_csrf_paths_required": False, "tenant_id_parameter_is_not_auth": True, "admin_setup_links_exposed_to_owner": False, "secret_values_exposed": False},
         "dependencies": {"stage81_business_profile_fast": profile, "stage82_owner_services_fast": services, "stage83_owner_memory_fast": memory, "stage84_price_consistency_fast": consistency, "stage85_calendar_fast": calendar, "stage86_telegram_fast": telegram, "stage73_billing_fast": billing, "stage78_final_lock_fast": final_lock},
-        "links": {"owner_launch_review": url(f"/owner/launch-review/ui?tenant_id={tenant_id_clean}"), "owner_setup_review": url(f"/owner/setup-review/ui?tenant_id={tenant_id_clean}"), "owner_workspace": url(f"/owner/workspace/ui?tenant_id={tenant_id_clean}"), "owner_dashboard": url(f"/owner/dashboard/ui?tenant_id={tenant_id_clean}"), "owner_business_profile": url(f"/owner/business-profile/ui?tenant_id={tenant_id_clean}"), "owner_services": url(f"/owner/services/ui?tenant_id={tenant_id_clean}"), "owner_business_memory": url(f"/owner/business-memory/ui?tenant_id={tenant_id_clean}"), "owner_price_consistency": url(f"/owner/price-consistency/ui?tenant_id={tenant_id_clean}"), "owner_calendar": url(f"/owner/calendar/ui?tenant_id={tenant_id_clean}"), "owner_availability": url(f"/owner/availability/ui?tenant_id={tenant_id_clean}"), "owner_telegram": url(f"/owner/telegram/ui?tenant_id={tenant_id_clean}"), "owner_billing": url(f"/owner/billing/ui?tenant_id={tenant_id_clean}"), "stage87_readiness": url(f"/owner-workspace/final-review/readiness?tenant_id={tenant_id_clean}&days={days}"), "tenant_workspace_readiness": url(f"/tenant-workspace/readiness?tenant_id={tenant_id_clean}&days={days}"), "final_public_saas_readiness": url(f"/public-saas/final-readiness?tenant_id={tenant_id_clean}&days={days}")},
+        "links": {"owner_launch_review": url(f"/owner/launch-review/ui?tenant_id={tenant_id_clean}"), "owner_demo": url(f"/owner/demo/ui?tenant_id={tenant_id_clean}"), "owner_client_preview": url(f"/owner/client-preview/ui?tenant_id={tenant_id_clean}"), "owner_setup_review": url(f"/owner/setup-review/ui?tenant_id={tenant_id_clean}"), "owner_workspace": url(f"/owner/workspace/ui?tenant_id={tenant_id_clean}"), "owner_dashboard": url(f"/owner/dashboard/ui?tenant_id={tenant_id_clean}"), "owner_business_profile": url(f"/owner/business-profile/ui?tenant_id={tenant_id_clean}"), "owner_services": url(f"/owner/services/ui?tenant_id={tenant_id_clean}"), "owner_business_memory": url(f"/owner/business-memory/ui?tenant_id={tenant_id_clean}"), "owner_price_consistency": url(f"/owner/price-consistency/ui?tenant_id={tenant_id_clean}"), "owner_calendar": url(f"/owner/calendar/ui?tenant_id={tenant_id_clean}"), "owner_availability": url(f"/owner/availability/ui?tenant_id={tenant_id_clean}"), "owner_telegram": url(f"/owner/telegram/ui?tenant_id={tenant_id_clean}"), "owner_billing": url(f"/owner/billing/ui?tenant_id={tenant_id_clean}"), "stage87_readiness": url(f"/owner-workspace/final-review/readiness?tenant_id={tenant_id_clean}&days={days}"), "tenant_workspace_readiness": url(f"/tenant-workspace/readiness?tenant_id={tenant_id_clean}&days={days}"), "final_public_saas_readiness": url(f"/public-saas/final-readiness?tenant_id={tenant_id_clean}&days={days}")},
         "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
         "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
         "note": "Stage 87.2 fixes launch-review UI/readiness hanging by replacing deep nested readiness aggregation with a fast owner-safe direct checklist model. It does not change receptionist dialogue, booking, slots, Calendar runtime, Telegram runtime, billing semantics, CSRF, abuse/rate-limits, magic-link, LLM orchestration, or QA evaluator behavior.",
@@ -5876,6 +5889,364 @@ window.loadReview=loadReview;window.go=go;window.encTenant=encTenant;
 function boot(){var initial=urlTenant()||DEFAULT_TENANT_ID||'clinic_demo';el('tenant_id').value=initial;el('load_btn').onclick=loadReview;el('workspace_btn').onclick=function(){go('/owner/workspace/ui?tenant_id='+encTenant());};el('dashboard_btn').onclick=function(){go('/owner/dashboard/ui?tenant_id='+encTenant());};el('logout_btn').onclick=function(){go('/owner/logout');};loadReview();}
 if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',boot);}else{boot();}
 })();</script></body></html>"""
+    return html.replace("__TENANT_ID_JSON__", tenant_id_json)
+
+
+# -------------------------
+# STAGE 88: OWNER DEMO / CLIENT PREVIEW MODE POLISH
+# -------------------------
+STAGE88_READINESS_PATHS = {
+    "/owner-demo/readiness",
+    "/client-preview/readiness",
+    "/workspace/demo/readiness",
+    "/demo/owner/readiness",
+}
+STAGE88_OWNER_PREVIEW_PATHS = {
+    "/owner/demo",
+    "/owner/demo/ui",
+    "/owner/demo/preview",
+    "/owner/client-preview",
+    "/owner/client-preview/ui",
+    "/owner/client-preview/message",
+}
+STAGE88_OWNER_PREVIEW_WRITE_PATHS = {
+    "/owner/demo/preview",
+    "/owner/client-preview/message",
+}
+STAGE88_MATURITY_TARGET = "mature_smb_saas_owner_demo_client_preview_phase"
+
+
+def stage88_safe_service_price(item: Dict[str, Any]) -> str:
+    price = str((item or {}).get("price") or "").strip()
+    currency = str((item or {}).get("currency") or "EUR").strip().upper() or "EUR"
+    if not price:
+        return ""
+    if re.search(r"(€|eur|eiro|евро)", price, flags=re.IGNORECASE):
+        return price
+    return f"{price} {currency}".strip()
+
+
+def stage88_active_service_items(tenant: Dict[str, Any]) -> List[Dict[str, Any]]:
+    items = tenant_service_catalog(tenant or {})
+    return [item for item in items if bool(item.get("active", True))]
+
+
+def stage88_match_service_item(message: str, catalog: List[Dict[str, Any]], tenant: Dict[str, Any], lang: str) -> Optional[Dict[str, Any]]:
+    low = str(message or "").strip().lower()
+    if not low:
+        return None
+    service_aliases = ensure_default_barbershop_aliases(
+        catalog,
+        merged_service_alias_map(catalog, tenant or {}, lang),
+        lang,
+    )
+    key = canonical_service_key_from_text(low, service_aliases)
+    if key:
+        item = get_service_item_by_key(catalog, key)
+        if item:
+            return item
+    return extract_service_from_text(low, catalog, lang)
+
+
+def stage88_service_summary_rows(tenant: Dict[str, Any], lang: str) -> List[Dict[str, Any]]:
+    rows = []
+    for item in stage88_active_service_items(tenant)[:12]:
+        rows.append({
+            "key": str(item.get("key") or "").strip(),
+            "name": service_display_name(item, lang),
+            "duration_min": service_duration_min(item),
+            "price": stage88_safe_service_price(item),
+            "has_price": bool(stage88_safe_service_price(item)),
+        })
+    return rows
+
+
+def stage88_default_samples(lang: str) -> List[str]:
+    lang = get_lang(lang)
+    if lang == "ru":
+        return ["Здравствуйте, хочу записаться", "Какие услуги доступны?", "Сколько стоит консультация?", "Сколько это длится?", "Когда вы работаете?"]
+    if lang == "en":
+        return ["Hi, I want to book", "What services do you offer?", "How much does consultation cost?", "How long does it take?", "What are your working hours?"]
+    return ["Labdien, gribu pierakstīties", "Kādi pakalpojumi ir pieejami?", "Cik maksā konsultācija?", "Cik ilgi tas aizņem?", "Kāds ir darba laiks?"]
+
+
+def stage88_price_markers() -> List[str]:
+    return ["цена", "сколько стоит", "стоимость", "price", "how much", "cost", "cena", "cik maksā", "cik maksa", "cik tas maksā", "cik tas maksa"]
+
+
+def stage88_services_markers() -> List[str]:
+    return ["какие услуги", "услуги", "services", "what services", "pakalpojumi", "kādi pakalpojumi", "kadi pakalpojumi"]
+
+
+def stage88_duration_markers() -> List[str]:
+    return ["сколько длится", "сколько по времени", "duration", "how long", "cik ilgi", "ilgums"]
+
+
+def stage88_hours_markers() -> List[str]:
+    return ["часы", "режим", "работаете", "hours", "working hours", "open", "darba laiks", "strādā", "strada"]
+
+
+def stage88_booking_markers() -> List[str]:
+    return ["запис", "бронь", "book", "booking", "appointment", "pierakst", "pierakstīties", "pierakstities", "rezerv"]
+
+
+def stage88_cancel_reschedule_markers() -> List[str]:
+    return ["отмен", "перен", "cancel", "reschedule", "atcelt", "pārcelt", "parcelt"]
+
+
+def stage88_catalog_price_reply(item: Dict[str, Any], lang: str) -> str:
+    name = service_display_name(item, lang)
+    price = text_mvp_localized_price(stage88_safe_service_price(item), lang)
+    duration = service_duration_min(item)
+    if price:
+        if lang == "ru":
+            return f"{name} стоит {price}. В preview-режиме запись не создаётся."
+        if lang == "en":
+            return f"{name} costs {price}. No booking is created in preview mode."
+        return f"{name} maksā {price}. Preview režīmā pieraksts netiek izveidots."
+    if lang == "ru":
+        return f"Для услуги {name} цена не указана в каталоге. Обычно длительность около {duration} минут."
+    if lang == "en":
+        return f"The catalog does not have a price for {name}. It usually takes about {duration} minutes."
+    return f"Pakalpojumam {name} katalogā cena nav norādīta. Parasti tas aizņem apmēram {duration} minūtes."
+
+
+def stage88_services_reply(rows: List[Dict[str, Any]], lang: str) -> str:
+    names = []
+    for row in rows[:5]:
+        suffix = ""
+        if row.get("price"):
+            suffix += f" — {row.get('price')}"
+        if row.get("duration_min"):
+            suffix += f" / {row.get('duration_min')} min"
+        names.append(f"{row.get('name')}{suffix}")
+    joined = "; ".join([x for x in names if x.strip()])
+    if lang == "ru":
+        return f"Сейчас в каталоге доступны: {joined}. Могу помочь с записью, но в preview-режиме реальная запись не создаётся." if joined else "Список услуг пока не настроен."
+    if lang == "en":
+        return f"Current catalog services: {joined}. I can help with booking, but preview mode does not create a real appointment." if joined else "The service list is not configured yet."
+    return f"Pašlaik katalogā ir pieejams: {joined}. Varu palīdzēt ar pierakstu, bet preview režīmā īsts pieraksts netiek izveidots." if joined else "Pakalpojumu saraksts vēl nav konfigurēts."
+
+
+def stage88_booking_reply(item: Optional[Dict[str, Any]], catalog: List[Dict[str, Any]], lang: str) -> str:
+    if item:
+        name = service_display_name(item, lang)
+        duration = service_duration_min(item)
+        if lang == "ru":
+            return f"Preview: я понял услугу — {name}, примерно {duration} минут. В live-чате дальше я бы проверил календарь и предложил свободное время. Реальная запись сейчас не создаётся."
+        if lang == "en":
+            return f"Preview: I understood the service — {name}, about {duration} minutes. In live chat I would check the calendar and offer available times. No real booking is created now."
+        return f"Preview: sapratu pakalpojumu — {name}, apmēram {duration} minūtes. Live sarunā tālāk pārbaudītu kalendāru un piedāvātu brīvus laikus. Īsts pieraksts tagad netiek izveidots."
+    return barber_service_prompt(lang, catalog)
+
+
+def stage88_owner_preview_generate(tenant_id: str, message: str, lang: str = "lv") -> Dict[str, Any]:
+    tid = str(tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
+    lang = get_lang(lang)
+    msg = str(message or "").strip()[:1200]
+    tenant = load_runtime_tenant(tid)
+    if not tenant or not tenant.get("_id"):
+        return {"ok": False, "stage": "88", "error": "tenant_not_found", "tenant_id": tid, "dry_run": True, "calendar_event_created": False, "conversation_persisted": False}
+    settings = tenant_settings(tenant, lang)
+    catalog = stage88_active_service_items(tenant)
+    service_aliases = ensure_default_barbershop_aliases(catalog, merged_service_alias_map(catalog, tenant, lang), lang)
+    business_memory = tenant_business_memory(tenant, lang)
+    low = msg.lower()
+    service_item = stage88_match_service_item(msg, catalog, tenant, lang)
+    rows = stage88_service_summary_rows(tenant, lang)
+    route = "fallback"
+    reply = ""
+
+    try:
+        faq = try_barbershop_faq(msg, lang, tenant, settings, catalog, service_aliases, business_memory)
+    except Exception as e:
+        log.error("stage88_preview_faq_probe_failed tenant_id=%s err=%s", tid, e)
+        faq = None
+
+    if any(x in low for x in stage88_price_markers()):
+        route = "catalog_price"
+        if service_item:
+            reply = stage88_catalog_price_reply(service_item, lang)
+        else:
+            reply = stage88_services_reply(rows, lang)
+    elif any(x in low for x in stage88_services_markers()):
+        route = "services"
+        reply = stage88_services_reply(rows, lang)
+    elif any(x in low for x in stage88_duration_markers()) and service_item:
+        route = "duration"
+        duration = service_duration_min(service_item)
+        display = service_display_name(service_item, lang)
+        if lang == "ru":
+            reply = f"{display} обычно занимает около {duration} минут. Preview-режим не создаёт запись."
+        elif lang == "en":
+            reply = f"{display} usually takes about {duration} minutes. Preview mode does not create a booking."
+        else:
+            reply = f"{display} parasti aizņem apmēram {duration} minūtes. Preview režīmā pieraksts netiek izveidots."
+    elif any(x in low for x in stage88_hours_markers()):
+        route = "hours"
+        start = str(settings.get("work_start") or tenant.get("work_start") or WORK_START_HHMM_DEFAULT or "09:00").strip()
+        end = str(settings.get("work_end") or tenant.get("work_end") or WORK_END_HHMM_DEFAULT or "18:00").strip()
+        if lang == "ru":
+            reply = f"Обычно мы работаем с {start} до {end}."
+        elif lang == "en":
+            reply = f"We are usually open from {start} to {end}."
+        else:
+            reply = f"Parasti strādājam no {start} līdz {end}."
+    elif any(x in low for x in stage88_cancel_reschedule_markers()):
+        route = "cancel_reschedule_preview"
+        if lang == "ru":
+            reply = "Preview: в live-чате я бы попросил данные записи и помог отменить или перенести её. В preview-режиме реальные записи не меняются."
+        elif lang == "en":
+            reply = "Preview: in live chat I would ask for appointment details and help cancel or reschedule. Preview mode does not change real bookings."
+        else:
+            reply = "Preview: live sarunā lūgtu pieraksta detaļas un palīdzētu atcelt vai pārcelt. Preview režīmā īsti pieraksti netiek mainīti."
+    elif any(x in low for x in stage88_booking_markers()):
+        route = "booking_preview"
+        reply = stage88_booking_reply(service_item, catalog, lang)
+    elif faq and str(faq.get("msg_out") or faq.get("reply_voice") or "").strip():
+        route = "business_memory_faq"
+        reply = str(faq.get("msg_out") or faq.get("reply_voice") or "").strip()
+    else:
+        route = "safe_default"
+        if lang == "ru":
+            reply = "Здравствуйте. Я могу помочь с услугами, ценами, временем работы или записью. Это preview-режим: реальные записи и сообщения клиентам не создаются."
+        elif lang == "en":
+            reply = "Hello. I can help with services, prices, working hours, or booking. This is preview mode: no real bookings or customer messages are created."
+        else:
+            reply = "Labdien. Varu palīdzēt ar pakalpojumiem, cenām, darba laiku vai pierakstu. Šis ir preview režīms: īsti pieraksti un ziņas klientiem netiek izveidotas."
+
+    return {
+        "ok": True,
+        "stage": "88",
+        "tenant_id": tid,
+        "lang": lang,
+        "message": msg,
+        "reply": reply,
+        "route": route,
+        "matched_service": {"key": service_item.get("key"), "name": service_display_name(service_item, lang), "duration_min": service_duration_min(service_item), "price": stage88_safe_service_price(service_item)} if service_item else None,
+        "dry_run": True,
+        "preview_mode": True,
+        "calendar_event_created": False,
+        "calendar_checked_live": False,
+        "conversation_persisted": False,
+        "external_customer_message_sent": False,
+        "telegram_message_sent": False,
+        "sms_or_whatsapp_message_sent": False,
+        "safe_runtime_scope": {"uses_catalog_and_business_memory": True, "service_catalog_price_source_of_truth": True, "does_not_call_calendar_mutation": True, "does_not_call_telegram_runtime": True, "does_not_write_conversation_state": True},
+    }
+
+
+def stage88_owner_demo_preview_core(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14) -> Dict[str, Any]:
+    tenant_id_clean = str(tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
+    tenant = load_runtime_tenant(tenant_id_clean)
+    tenant_found = bool(tenant and tenant.get("_id"))
+    lang = get_lang((tenant or {}).get("language") or "lv")
+    items = stage88_service_summary_rows(tenant or {}, lang) if tenant_found else []
+    missing_readiness_protection = sorted(path for path in STAGE88_READINESS_PATHS if path not in STAGE61_PROTECTED_EXACT_PATHS)
+    missing_owner_protection = sorted(path for path in STAGE88_OWNER_PREVIEW_PATHS if path not in STAGE71_OWNER_PROTECTED_EXACT_PATHS)
+    owner_admin_overlap = sorted(path for path in STAGE88_OWNER_PREVIEW_PATHS if path in STAGE61_PROTECTED_EXACT_PATHS)
+    missing_owner_csrf = sorted(path for path in STAGE88_OWNER_PREVIEW_WRITE_PATHS if path not in STAGE74_OWNER_BROWSER_WRITE_PATHS)
+    blocking = []
+    warnings = []
+    if not tenant_found:
+        blocking.append("tenant_not_found")
+    if missing_readiness_protection:
+        blocking.append("stage88_readiness_paths_not_admin_protected")
+    if missing_owner_protection or owner_admin_overlap:
+        blocking.append("stage88_owner_preview_paths_not_owner_safe")
+    if missing_owner_csrf:
+        blocking.append("stage88_owner_preview_write_paths_missing_csrf")
+    try:
+        launch = stage87_owner_workspace_final_review_core(tenant_id_clean, days=days) if tenant_found else {}
+    except Exception as e:
+        warnings.append("stage87_launch_review_unavailable")
+        log.error("stage88_launch_review_probe_failed tenant_id=%s err=%s", tenant_id_clean, e)
+        launch = {}
+    readiness = bool(not blocking)
+    return {
+        "ok": True,
+        "stage": "88",
+        "previous_stage": "87.2",
+        "purpose": "Owner Demo / Client Preview Mode Polish",
+        "tenant_id": tenant_id_clean,
+        "status": "ready" if readiness else "blocked",
+        "maturity_phase": STAGE88_MATURITY_TARGET,
+        "owner_demo_preview_ready": bool(readiness),
+        "client_preview_mode_ready": bool(readiness),
+        "preview_runtime_safe": True,
+        "dry_run_only": True,
+        "tenant": {"business_name": (tenant or {}).get("business_name"), "language": (tenant or {}).get("language"), "timezone": (tenant or {}).get("timezone")},
+        "service_catalog_preview": {"active_services": len(items), "items": items[:8], "price_source_of_truth": "service_catalog"},
+        "sample_messages": stage88_default_samples(lang),
+        "launch_review": {"stage": launch.get("stage"), "status": launch.get("status"), "owner_launch_checklist_complete": bool(launch.get("owner_launch_checklist_complete")), "fast_path": bool(launch.get("fast_path"))},
+        "safety": {"calendar_event_created": False, "calendar_mutation_disabled": True, "conversation_persistence_disabled": True, "external_customer_messages_disabled": True, "telegram_runtime_disabled": True, "sms_whatsapp_runtime_disabled": True, "booking_confirmation_disabled": True, "admin_links_exposed_to_owner": False, "secret_values_exposed": False, "tenant_id_parameter_is_not_auth": True},
+        "security": {"stage88_readiness_routes_admin_protected": bool(not missing_readiness_protection), "stage88_owner_preview_routes_owner_session_bound": bool(not missing_owner_protection and not owner_admin_overlap), "stage88_owner_preview_writes_csrf_protected": bool(not missing_owner_csrf), "new_calendar_mutation_routes_added": False, "new_external_message_routes_added": False},
+        "links": {"owner_demo": f"/owner/demo?tenant_id={tenant_id_clean}", "owner_demo_ui": f"/owner/demo/ui?tenant_id={tenant_id_clean}", "owner_client_preview": f"/owner/client-preview?tenant_id={tenant_id_clean}", "owner_client_preview_ui": f"/owner/client-preview/ui?tenant_id={tenant_id_clean}", "owner_launch_review": f"/owner/launch-review/ui?tenant_id={tenant_id_clean}", "owner_workspace": f"/owner/workspace/ui?tenant_id={tenant_id_clean}", "owner_dashboard": f"/owner/dashboard/ui?tenant_id={tenant_id_clean}", "owner_services": f"/owner/services/ui?tenant_id={tenant_id_clean}", "owner_business_memory": f"/owner/business-memory/ui?tenant_id={tenant_id_clean}"},
+        "blocking": blocking,
+        "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
+        "note": "Stage 88 adds owner-safe dry-run demo/client preview only. It does not call booking confirmation, Calendar mutation, Telegram/SMS/WhatsApp send paths, conversation persistence, LLM orchestration changes, QA evaluator changes, or voice/calls.",
+    }
+
+
+def stage88_owner_demo_payload(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14) -> Dict[str, Any]:
+    admin_access = bool(stage61_token_valid(stage61_request_token(request)) or stage62_request_has_valid_session(request))
+    if admin_access:
+        tid = stage711_resolve_tenant_context(request, tenant_id)
+        access = {"ok": True, "tenant_id": tid, "owner_email": "super_admin", "role": "super_admin"}
+    else:
+        request_path = str(getattr(request.url, "path", "") or "/owner/demo")
+        access = stage71_owner_request_access(request, path=request_path if request_path in STAGE88_OWNER_PREVIEW_PATHS else "/owner/demo")
+        if not access.get("ok"):
+            raise HTTPException(status_code=401, detail=access.get("error") or "owner_login_required")
+        tid = str(access.get("tenant_id") or tenant_id or "").strip() or TENANT_ID_DEFAULT
+    payload = stage88_owner_demo_preview_core(tid, days=days)
+    payload["auth_model"] = "owner_session_or_super_admin_bypass"
+    payload["owner_email"] = stage71_normalize_email(access.get("owner_email") or "") if not admin_access else None
+    payload["role"] = access.get("role") or "owner"
+    payload["opened_via_super_admin_bypass"] = bool(admin_access)
+    return payload
+
+
+def stage88_owner_demo_preview_message_payload(request: Request, data: Dict[str, Any]) -> Dict[str, Any]:
+    data = data or {}
+    admin_access = bool(stage61_token_valid(stage61_request_token(request)) or stage62_request_has_valid_session(request))
+    requested_tenant = str(data.get("tenant_id") or "").strip() or str(request.query_params.get("tenant_id") or "").strip() or TENANT_ID_DEFAULT
+    if admin_access:
+        tid = stage711_resolve_tenant_context(request, requested_tenant)
+        access = {"ok": True, "tenant_id": tid, "owner_email": "super_admin", "role": "super_admin"}
+    else:
+        request_path = str(getattr(request.url, "path", "") or "/owner/demo/preview")
+        access = stage71_owner_request_access(request, path=request_path if request_path in STAGE88_OWNER_PREVIEW_PATHS else "/owner/demo/preview")
+        if not access.get("ok"):
+            raise HTTPException(status_code=401, detail=access.get("error") or "owner_login_required")
+        tid = str(access.get("tenant_id") or requested_tenant or "").strip() or TENANT_ID_DEFAULT
+    message = str(data.get("message") or data.get("text") or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail={"stage": "88", "error": "message_required", "dry_run": True})
+    lang = get_lang(data.get("lang") or "lv")
+    result = stage88_owner_preview_generate(tid, message, lang)
+    result["auth_model"] = "owner_session_or_super_admin_bypass"
+    result["role"] = access.get("role") or "owner"
+    result["opened_via_super_admin_bypass"] = bool(admin_access)
+    return result
+
+
+def stage88_owner_demo_html(tenant_id: str = TENANT_ID_DEFAULT) -> str:
+    tenant_id_json = json.dumps((tenant_id or "").strip() or TENANT_ID_DEFAULT, ensure_ascii=False)
+    html = r'''<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Repliq Client Preview</title>
+<style>body{font-family:Inter,system-ui,-apple-system,Segoe UI,Arial,sans-serif;background:#f6f7fb;color:#111827;margin:0;padding:24px}.wrap{max-width:1120px;margin:0 auto}.hero,.card{background:#fff;border:1px solid #e5e7eb;border-radius:20px;padding:18px;margin:14px 0;box-shadow:0 8px 25px rgba(17,24,39,.05)}.hero{background:#111827;color:white}.hero p{color:#d1d5db}.grid{display:grid;grid-template-columns:1.1fr .9fr;gap:12px}.sub,.muted{color:#64748b;font-size:14px;line-height:1.45}button{border:0;border-radius:12px;padding:10px 13px;background:#111827;color:white;font-weight:800;cursor:pointer}.secondary{background:#e5e7eb;color:#111827}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}input,select,textarea{box-sizing:border-box;border:1px solid #cbd5e1;border-radius:12px;padding:10px;font-size:14px}textarea{width:100%;min-height:76px}.badge{display:inline-block;border-radius:999px;padding:5px 9px;background:#e5e7eb;font-size:12px;font-weight:800;margin:3px 4px 3px 0}.ok{background:#dcfce7;color:#166534}.warn{background:#fef3c7;color:#92400e}.err{background:#fee2e2;color:#991b1b}.chat{background:#f8fafc;border:1px solid #e5e7eb;border-radius:16px;padding:12px;min-height:320px;max-height:520px;overflow:auto}.msg{margin:10px 0;display:flex}.msg.user{justify-content:flex-end}.bubble{max-width:78%;padding:10px 12px;border-radius:14px;line-height:1.45;white-space:pre-wrap}.user .bubble{background:#2563eb;color:white;border-bottom-right-radius:4px}.bot .bubble{background:#e5e7eb;color:#111827;border-bottom-left-radius:4px}.meta{font-size:12px;color:#64748b;margin-top:3px}.item{border:1px solid #e5e7eb;border-radius:14px;padding:12px;margin:8px 0;background:#f8fafc}pre{background:#0f172a;color:#e2e8f0;border-radius:14px;padding:14px;max-height:460px;overflow:auto;white-space:pre-wrap}@media(max-width:860px){body{padding:12px}.grid{grid-template-columns:1fr}}</style></head>
+<body><div class="wrap"><div class="hero"><h1>Client preview</h1><p>Owner-safe dry-run preview. It uses services and Business Memory, but does not create calendar events, persist conversations, or send Telegram/SMS/WhatsApp messages.</p><div class="actions"><input id="tenant_id" style="max-width:280px" autocomplete="off"/><select id="lang"><option value="lv">lv</option><option value="ru">ru</option><option value="en">en</option></select><button id="load_btn" type="button">Load</button><button id="workspace_btn" class="secondary" type="button">Workspace</button><button id="launch_btn" class="secondary" type="button">Launch checklist</button><button id="logout_btn" class="secondary" type="button">Logout</button></div></div><div class="card"><h2>Status</h2><div id="badges"></div><div id="summary" class="sub"></div></div><div class="grid"><div class="card"><h2>Preview chat</h2><div id="chat" class="chat"></div><div class="actions" id="samples"></div><textarea id="message" placeholder="Type a customer message..."></textarea><div class="actions"><button id="send_btn" type="button">Preview reply</button><button id="clear_btn" class="secondary" type="button">Clear</button></div><div class="sub">Dry-run only: no booking, no Calendar write, no customer message.</div></div><div class="card"><h2>Catalog preview</h2><div id="services"></div><h2>Raw preview payload</h2><pre id="raw">Loading...</pre></div></div></div>
+<script>(function(){
+var DEFAULT_TENANT_ID=__TENANT_ID_JSON__;
+function el(id){return document.getElementById(id);}function urlTenant(){try{return new URLSearchParams(window.location.search).get('tenant_id')||'';}catch(e){return '';}}function tenant(){var v=el('tenant_id').value||'';return String(v||urlTenant()||DEFAULT_TENANT_ID||'clinic_demo').trim()||'clinic_demo';}function encTenant(){return encodeURIComponent(tenant());}function go(p){window.location.href=p;}function esc(v){var s=(v===null||v===undefined)?'':String(v);return s.replace(/[&<>"']/g,function(ch){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch];});}function badge(ok,label){return '<span class="badge '+(ok?'ok':'warn')+'">'+esc(label)+'</span>';}
+async function csrf(){var r=await fetch('/csrf/token?scope=owner&tenant_id='+encTenant(),{credentials:'include',cache:'no-store'});var d=await r.json().catch(function(){return {};});return d.csrf_token||'';}
+function addBubble(role,text,meta){var row=document.createElement('div');row.className='msg '+role;var wrap=document.createElement('div');var b=document.createElement('div');b.className='bubble';b.textContent=text||'';wrap.appendChild(b);if(meta){var m=document.createElement('div');m.className='meta';m.textContent=meta;wrap.appendChild(m);}row.appendChild(wrap);el('chat').appendChild(row);el('chat').scrollTop=el('chat').scrollHeight;}
+function render(d){d=d||{};el('raw').textContent=JSON.stringify(d,null,2);el('badges').innerHTML=badge(!!d.owner_demo_preview_ready,'preview ready: '+!!d.owner_demo_preview_ready)+badge(!!d.dry_run_only,'dry-run only')+badge(!!(d.safety&&d.safety.calendar_mutation_disabled),'calendar write disabled')+badge(!!(d.safety&&d.safety.external_customer_messages_disabled),'external messages disabled');var t=d.tenant||{};el('summary').textContent=(t.business_name||d.tenant_id||tenant())+' · language '+(t.language||el('lang').value||'lv')+' · active services '+(((d.service_catalog_preview||{}).active_services)||0);var rows=((d.service_catalog_preview||{}).items)||[];el('services').innerHTML=rows.map(function(x){return '<div class="item"><strong>'+esc(x.name||x.key)+'</strong><div class="sub">'+esc(x.duration_min||'')+' min · '+esc(x.price||'price missing')+'</div></div>';}).join('')||'<div class="muted">No services returned.</div>';var samples=d.sample_messages||[];el('samples').innerHTML=samples.map(function(x){return '<button class="secondary sample" type="button" data-msg="'+esc(x)+'">'+esc(x)+'</button>';}).join('');Array.prototype.forEach.call(document.querySelectorAll('.sample'),function(btn){btn.onclick=function(){el('message').value=btn.getAttribute('data-msg')||'';sendPreview();};});}
+async function loadDemo(){el('tenant_id').value=tenant();el('raw').textContent='Loading preview for tenant: '+tenant()+' ...';try{var r=await fetch('/owner/demo?tenant_id='+encTenant(),{credentials:'include',cache:'no-store'});var d=await r.json().catch(function(){return {};});if(!r.ok){el('raw').textContent=JSON.stringify(d,null,2);el('badges').innerHTML=badge(false,'load failed: '+r.status);return;}render(d);}catch(e){el('raw').textContent=JSON.stringify({error:'preview_load_failed',message:String(e&&e.message?e.message:e)},null,2);}}
+async function sendPreview(){var msg=(el('message').value||'').trim();if(!msg){return;}addBubble('user',msg);el('message').value='';try{var token=await csrf();var r=await fetch('/owner/demo/preview?tenant_id='+encTenant(),{method:'POST',headers:{'Content-Type':'application/json','X-Repliq-CSRF-Token':token},credentials:'include',cache:'no-store',body:JSON.stringify({tenant_id:tenant(),lang:el('lang').value||'lv',message:msg})});var d=await r.json().catch(function(){return {};});el('raw').textContent=JSON.stringify(d,null,2);if(!r.ok||!d.ok){addBubble('bot',((d.detail&&d.detail.error)||d.error||'Preview failed'),'stage=88');return;}addBubble('bot',d.reply||'(no reply)','route='+(d.route||'')+' · dry_run='+String(!!d.dry_run));}catch(e){addBubble('bot','Preview failed: '+String(e&&e.message?e.message:e),'stage=88');}}
+function boot(){el('tenant_id').value=urlTenant()||DEFAULT_TENANT_ID||'clinic_demo';el('load_btn').onclick=loadDemo;el('workspace_btn').onclick=function(){go('/owner/workspace/ui?tenant_id='+encTenant());};el('launch_btn').onclick=function(){go('/owner/launch-review/ui?tenant_id='+encTenant());};el('logout_btn').onclick=function(){go('/owner/logout');};el('send_btn').onclick=sendPreview;el('clear_btn').onclick=function(){el('chat').innerHTML='';};el('message').addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendPreview();}});loadDemo();}
+if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',boot);}else{boot();}
+})();</script></body></html>'''
     return html.replace("__TENANT_ID_JSON__", tenant_id_json)
 
 
@@ -18275,6 +18646,34 @@ def stage87_owner_launch_review_json(request: Request, tenant_id: str = TENANT_I
 def stage87_owner_launch_review_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
     tid = stage711_resolve_tenant_context(request, tenant_id)
     return HTMLResponse(content=stage87_owner_launch_review_html(tenant_id=tid), headers={"Cache-Control": "no-store"})
+
+
+@app.get("/owner-demo/readiness")
+@app.get("/client-preview/readiness")
+@app.get("/workspace/demo/readiness")
+@app.get("/demo/owner/readiness")
+def stage88_owner_demo_readiness(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    tid = stage711_resolve_tenant_context(request, tenant_id)
+    return stage88_owner_demo_preview_core(tid, days=days)
+
+
+@app.get("/owner/demo")
+@app.get("/owner/client-preview")
+def stage88_owner_demo_json(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    return stage88_owner_demo_payload(request=request, tenant_id=tenant_id, days=days)
+
+
+@app.post("/owner/demo/preview")
+@app.post("/owner/client-preview/message")
+def stage88_owner_demo_preview_message(request: Request, payload: dict = Body(...)):
+    return stage88_owner_demo_preview_message_payload(request=request, data=payload or {})
+
+
+@app.get("/owner/demo/ui", response_class=HTMLResponse)
+@app.get("/owner/client-preview/ui", response_class=HTMLResponse)
+def stage88_owner_demo_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
+    tid = stage711_resolve_tenant_context(request, tenant_id)
+    return HTMLResponse(content=stage88_owner_demo_html(tenant_id=tid), headers={"Cache-Control": "no-store"})
 
 
 @app.post("/owner/magic-link/bootstrap")

@@ -783,3 +783,29 @@ Stage 77.1 is a narrow readiness endpoint hotfix only. It fixes a runtime type m
 
 ## Stage 87.2 Guardrail
 Stage 87 owner launch-review pages must not perform deep cross-stage readiness fan-out in the browser request. Use fast owner-safe checklist data and link to deeper admin/support diagnostics separately.
+
+## Stage 88 — Owner Demo / Client Preview Mode Polish Rules
+
+- Stage 88 continues the Mature SMB SaaS phase after Stage 87.2.
+- Stage 88 may add owner-safe dry-run demo/client preview UX, readiness metadata, owner dashboard/workspace links, and preview-only reply generation.
+- Stage 88 must not call live booking confirmation, Google Calendar mutation, Telegram send-message runtime, SMS/WhatsApp send runtime, or conversation persistence.
+- Stage 88 must keep Service Catalog as the source of truth for prices. Business Memory may provide context/FAQ text only.
+- Stage 88 preview responses must explicitly remain dry-run and must expose safety flags such as `calendar_event_created=false`, `conversation_persisted=false`, and `external_customer_message_sent=false`.
+- Stage 88 readiness endpoints must be protected by Stage 61/62 admin auth:
+  - `/owner-demo/readiness`
+  - `/client-preview/readiness`
+  - `/workspace/demo/readiness`
+  - `/demo/owner/readiness`
+- Stage 88 owner preview endpoints must be protected by Stage 71 owner session and tenant binding:
+  - `/owner/demo`
+  - `/owner/demo/ui`
+  - `/owner/demo/preview`
+  - `/owner/client-preview`
+  - `/owner/client-preview/ui`
+  - `/owner/client-preview/message`
+- Stage 88 owner preview write endpoints must be protected by Stage 74 owner browser write/CSRF hardening:
+  - `/owner/demo/preview`
+  - `/owner/client-preview/message`
+- Stage 88 owner UI must not expose raw admin tokens, owner login codes, magic tokens, magic-token hashes, CSRF secrets, Telegram tokens, Google credentials, service account JSON, webhook secrets, billing provider secrets, or other tenant secrets.
+- Stage 88 must not change receptionist dialogue runtime, booking routing, slot generation, date/time parsing, side-question handling, confirmation, cancellation, rescheduling, Google Calendar runtime, Telegram webhook handling, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, LLM orchestration, or regression evaluator rules.
+- Current protected baseline remains `/dialogue/qa = 50/50 passed`.
