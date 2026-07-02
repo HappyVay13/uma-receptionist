@@ -1,6 +1,6 @@
 # Repliq Project State
 
-Current stage: Stage 76 — Email Verification / Magic Link Auth Foundation.
+Current stage: Stage 89 — Owner Analytics / Conversation Visibility Polish.
 
 Production regression baseline before Stage 40:
 - Stage 39 was deployed and confirmed by user: `/dialogue/qa` = 15/15 passed.
@@ -1442,5 +1442,40 @@ Expected verification:
 - Sending a preview message returns a reply with `dry_run=true`, `calendar_event_created=false`, `conversation_persisted=false`, and `external_customer_message_sent=false`.
 - Owner workspace/dashboard/launch-review links remain working and include owner demo/client preview links.
 - Stage 78 remains the source of truth for `public_saas_ready`; `enterprise_saas_ready=false` remains explicit.
+
+Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook/runtime, SMS/WhatsApp send paths, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, dialogue QA evaluator, LLM orchestration, and voice/calls were not changed.
+
+## Stage 89 — Owner Analytics / Conversation Visibility Polish
+
+Status: implemented in archive, awaiting deploy verification.
+
+Scope:
+- Added owner-safe read-only analytics/conversation visibility endpoints:
+  - `GET /owner/analytics`
+  - `GET /owner/analytics/ui`
+  - `GET /owner/conversation-insights`
+  - `GET /owner/conversation-insights/ui`
+- Added admin-protected readiness endpoints:
+  - `GET /owner-analytics/readiness`
+  - `GET /workspace/analytics/readiness`
+  - `GET /conversation-visibility/readiness`
+  - `GET /analytics/owner/readiness`
+- Uses existing `call_logs` for live interaction visibility and optional `usage_events` summary metadata when available.
+- Exposes live totals, unique hashed customer refs, channel/status breakdown, question categories, service interest, price questions, inferred answer source visibility, and recent redacted/truncated snippets.
+- Clearly marks Stage 88 preview history as not persisted by design.
+- Added owner analytics links into owner dashboard/workspace payloads.
+- No new owner write endpoint was added.
+- No new tables or runtime persistence writes were added.
+- `enterprise_saas_ready=false` remains explicit.
+
+Expected verification:
+- Render deploy starts successfully.
+- `/dialogue/qa` = 50/50 passed.
+- `/owner-analytics/readiness?tenant_id=clinic_demo` returns `stage=89` and remains admin-protected.
+- `/workspace/analytics/readiness?tenant_id=clinic_demo`, `/conversation-visibility/readiness?tenant_id=clinic_demo`, and `/analytics/owner/readiness?tenant_id=clinic_demo` work and remain admin-protected.
+- `/owner/analytics/ui?tenant_id=clinic_demo` and `/owner/conversation-insights/ui?tenant_id=clinic_demo` open with valid owner session or super-admin bypass.
+- Owner workspace/dashboard links include conversation insights.
+- Stage 88 preview remains dry-run only and still reports `conversation_persisted=false`.
+- Stage 78 remains the source of truth for public SaaS readiness; `enterprise_saas_ready=false` remains explicit.
 
 Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook/runtime, SMS/WhatsApp send paths, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, dialogue QA evaluator, LLM orchestration, and voice/calls were not changed.

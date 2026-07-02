@@ -809,3 +809,29 @@ Stage 87 owner launch-review pages must not perform deep cross-stage readiness f
 - Stage 88 owner UI must not expose raw admin tokens, owner login codes, magic tokens, magic-token hashes, CSRF secrets, Telegram tokens, Google credentials, service account JSON, webhook secrets, billing provider secrets, or other tenant secrets.
 - Stage 88 must not change receptionist dialogue runtime, booking routing, slot generation, date/time parsing, side-question handling, confirmation, cancellation, rescheduling, Google Calendar runtime, Telegram webhook handling, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, LLM orchestration, or regression evaluator rules.
 - Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+
+## Stage 89 — Owner Analytics / Conversation Visibility Polish Rules
+
+- Stage 89 continues the Mature SMB SaaS phase after Stage 88.
+- Stage 89 may add owner-safe, read-only analytics/conversation visibility endpoints, UI, readiness metadata, dashboard/workspace links, and documentation only.
+- Stage 89 must use existing data only. It must not add new runtime conversation writes just to support analytics.
+- Stage 89 must not persist Stage 88 preview messages. Stage 88 preview remains dry-run only.
+- Stage 89 must clearly mark preview history as unavailable/not persisted instead of overclaiming preview analytics.
+- Stage 89 owner analytics endpoints must be protected by Stage 71 owner session and tenant binding:
+  - `/owner/analytics`
+  - `/owner/analytics/ui`
+  - `/owner/conversation-insights`
+  - `/owner/conversation-insights/ui`
+- Stage 89 readiness endpoints must be protected by Stage 61/62 admin auth:
+  - `/owner-analytics/readiness`
+  - `/workspace/analytics/readiness`
+  - `/conversation-visibility/readiness`
+  - `/analytics/owner/readiness`
+- No new Stage 74 owner CSRF/browser-write path is required because Stage 89 is read-only.
+- Owner analytics UI must not expose raw admin tokens, owner login codes, magic tokens, magic-token hashes, CSRF secrets, raw IPs, raw customer identifiers, Telegram tokens, Google credentials, service account JSON, webhook secrets, billing provider secrets, or other tenant secrets.
+- Owner analytics may show redacted/truncated message snippets and stable customer refs, but must not expose raw `user_id` values.
+- Answer-source visibility must be labeled as inferred from existing metadata unless a future stage adds explicit runtime trace metadata.
+- Stage 89 must not change receptionist dialogue runtime, booking routing, slot generation, date/time parsing, side-question handling, confirmation, cancellation, rescheduling, Google Calendar runtime, Telegram webhook/runtime, SMS/WhatsApp send paths, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, LLM orchestration, voice/calls, or regression evaluator rules.
+- Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+- Stage 78 remains the source of truth for `public_saas_ready`.
+- `enterprise_saas_ready` remains false; enterprise maturity is a later phase.
