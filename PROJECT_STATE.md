@@ -1,6 +1,6 @@
 # Repliq Project State
 
-Current stage: Stage 91 — Owner Account / Profile / Billing UX Polish.
+Current stage: Stage 92 — Tenant Data Quality / Setup Health Guard.
 
 Production regression baseline before Stage 40:
 - Stage 39 was deployed and confirmed by user: `/dialogue/qa` = 15/15 passed.
@@ -82,6 +82,18 @@ Protected baseline:
 - Stage 73 billing / subscription gate foundation
 - Stage 73.1 billing update route import hotfix
 - Stage 74 CSRF / browser write hardening foundation
+
+
+Stage 91.1 confirmed production baseline:
+- Stage 91.1 — Owner Account Logout / Auth Guard Hotfix was deployed and confirmed by user.
+- Production `/dialogue/qa` result: 50/50 passed.
+- User confirmed all other Stage 91.1 checks were OK.
+- Stage 91 account/profile/account-billing pages require owner login and do not open without owner session/admin-only login.
+
+Stage 92 archive status:
+- Stage 92 — Tenant Data Quality / Setup Health Guard implemented in archive, awaiting deploy verification.
+- Scope is read-only owner-safe setup/data-quality visibility only.
+- No tenant data writes, no booking/runtime changes, no Google Calendar/Telegram runtime changes, no billing/payment runtime changes.
 
 ## Stage 36 — Advanced Conversation Recovery
 

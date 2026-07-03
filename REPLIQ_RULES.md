@@ -922,3 +922,15 @@ Stage 87 owner launch-review pages must not perform deep cross-stage readiness f
 - Stage 91.1 must not expose raw admin tokens, owner login codes, login-code hashes, magic tokens, magic-token hashes, CSRF secrets, raw owner account IDs, raw tenant binding IDs, Telegram tokens, Google credentials, service account JSON, webhook secrets, billing provider secrets, or other tenant secrets.
 - Current protected baseline remains `/dialogue/qa = 50/50 passed`.
 - `enterprise_saas_ready` remains false; enterprise maturity is a later phase.
+
+
+## Stage 92 — Tenant Data Quality / Setup Health Guard Rules
+- Stage 92 is read-only owner-safe visibility only.
+- Do not change receptionist dialogue, booking routing, slot generation, date/time parsing, price side-question behavior, cancellation, reschedule, Google Calendar runtime, Telegram runtime, billing/payment runtime, auth semantics, CSRF semantics, abuse/rate-limit, magic-link semantics, LLM orchestration, voice/calls, or QA evaluator behavior.
+- Owner setup-health/data-quality/tenant-health routes must require a strict signed Stage 71 owner session; admin sessions may use readiness endpoints but must not open these owner UI/JSON surfaces.
+- Readiness routes must remain Stage 61/62 admin-protected.
+- No owner POST routes are added in Stage 92; therefore no new Stage 74 CSRF owner write path is required.
+- Tenant health status is derived only from existing setup models/tables: business profile, service catalog, business memory/FAQ, price consistency, availability, Google Calendar status, Telegram channel status, workspace setup, and billing/account visibility.
+- Do not expose secrets, raw Google credentials, raw Telegram bot tokens/webhook secrets, admin tokens, owner login codes, magic-link tokens/hashes, raw payment provider data, or admin/debug links in owner UI.
+- `tenant_id` remains context, not authentication.
+- `enterprise_saas_ready` must remain false.

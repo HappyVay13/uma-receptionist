@@ -1,6 +1,6 @@
 # Stage 91.1 — Owner Account Logout / Auth Guard Hotfix
 
-Status: implemented in archive, awaiting deploy verification.
+Status: deployed and verified by user. Production `/dialogue/qa` = 50/50 passed; all other Stage 91.1 checks OK.
 
 Reason:
 - After Stage 91 deploy, the owner account UI appeared to remain accessible after logout in the browser.
