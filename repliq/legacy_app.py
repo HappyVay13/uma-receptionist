@@ -191,6 +191,12 @@ STAGE71_OWNER_PROTECTED_EXACT_PATHS = {
     "/owner/follow-ups/ui",
     "/owner/lead-followup",
     "/owner/lead-followup/ui",
+    "/owner/account",
+    "/owner/account/ui",
+    "/owner/profile",
+    "/owner/profile/ui",
+    "/owner/account-billing",
+    "/owner/account-billing/ui",
     "/owner/business-memory",
     "/owner/business-memory/ui",
     "/owner/business-memory/update",
@@ -226,6 +232,12 @@ STAGE71_OWNER_PROTECTED_EXACT_PATHS = {
     "/owner/dashboard/ui",
     "/owner/control-center",
     "/owner/control-center/ui",
+    "/owner/account",
+    "/owner/account/ui",
+    "/owner/profile",
+    "/owner/profile/ui",
+    "/owner/account-billing",
+    "/owner/account-billing/ui",
     "/owner/business-profile",
     "/owner/business-profile/ui",
     "/owner/business-profile/update",
@@ -280,6 +292,10 @@ STAGE61_PROTECTED_EXACT_PATHS = {
     "/workspace/notifications/readiness",
     "/lead-follow-up/readiness",
     "/notifications/owner/readiness",
+    "/owner-account/readiness",
+    "/owner-profile/readiness",
+    "/workspace/account/readiness",
+    "/account-billing/readiness",
     "/access/readiness",
     "/admin/access/readiness",
     "/admin/access/enforcement",
@@ -1771,6 +1787,12 @@ STAGE77_READINESS_PATHS = {
     "/tenant/isolation/readiness",
 }
 STAGE77_OWNER_SAFE_SURFACE_PATHS = {
+    "/owner/account",
+    "/owner/account/ui",
+    "/owner/profile",
+    "/owner/profile/ui",
+    "/owner/account-billing",
+    "/owner/account-billing/ui",
     "/owner/business-memory",
     "/owner/business-memory/ui",
     "/owner/business-memory/update",
@@ -1813,6 +1835,9 @@ STAGE77_OWNER_SAFE_LINK_KEYS = {
     "owner_dashboard",
     "owner_control_center",
     "owner_session",
+    "owner_account",
+    "owner_profile",
+    "owner_account_billing",
     "owner_billing",
     "owner_setup",
     "owner_workspace",
@@ -3968,11 +3993,12 @@ def stage71_owner_dashboard_payload(request: Request, tenant_id: str = TENANT_ID
                 {"key": "telegram", "label": "Review Telegram channel", "status": "ready", "href": f"/owner/telegram/ui?tenant_id={tid}"},
                 {"key": "setup", "label": "Open setup checklist", "status": "ready", "href": f"/owner/setup/ui?tenant_id={tid}"},
                 {"key": "billing", "label": "Review billing status", "status": "ready", "href": f"/owner/billing/ui?tenant_id={tid}"},
+                {"key": "account", "label": "Account / profile / billing center", "status": "ready", "href": f"/owner/account/ui?tenant_id={tid}"},
                 {"key": "session", "label": "Check owner session", "status": "ready", "href": f"/owner/session?tenant_id={tid}"},
                 {"key": "support_setup", "label": "Calendar/channel setup remains controlled by Repliq support in this SMB phase", "status": "support_controlled", "href": None},
             ],
         },
-        "links": {"owner_dashboard": f"/owner/dashboard/ui?tenant_id={tid}", "owner_workspace": f"/owner/workspace/ui?tenant_id={tid}", "owner_launch_review": f"/owner/launch-review/ui?tenant_id={tid}", "owner_demo": f"/owner/demo/ui?tenant_id={tid}", "owner_client_preview": f"/owner/client-preview/ui?tenant_id={tid}", "owner_analytics": f"/owner/analytics/ui?tenant_id={tid}", "owner_conversation_insights": f"/owner/conversation-insights/ui?tenant_id={tid}", "owner_notifications": f"/owner/notifications/ui?tenant_id={tid}", "owner_followups": f"/owner/follow-ups/ui?tenant_id={tid}", "owner_setup": f"/owner/setup/ui?tenant_id={tid}", "owner_business_profile": f"/owner/business-profile/ui?tenant_id={tid}", "owner_services": f"/owner/services/ui?tenant_id={tid}", "owner_service_catalog": f"/owner/service-catalog/ui?tenant_id={tid}", "owner_business_memory": f"/owner/business-memory/ui?tenant_id={tid}", "owner_faq": f"/owner/faq/ui?tenant_id={tid}", "owner_workspace_settings": f"/owner/workspace/settings/ui?tenant_id={tid}", "owner_calendar": f"/owner/calendar/ui?tenant_id={tid}", "owner_availability": f"/owner/availability/ui?tenant_id={tid}", "owner_telegram": f"/owner/telegram/ui?tenant_id={tid}", "owner_control_center": f"/owner/control-center/ui?tenant_id={tid}", "owner_session": f"/owner/session?tenant_id={tid}", "owner_billing": f"/owner/billing/ui?tenant_id={tid}", "owner_logout": "/owner/logout"},
+        "links": {"owner_dashboard": f"/owner/dashboard/ui?tenant_id={tid}", "owner_workspace": f"/owner/workspace/ui?tenant_id={tid}", "owner_launch_review": f"/owner/launch-review/ui?tenant_id={tid}", "owner_demo": f"/owner/demo/ui?tenant_id={tid}", "owner_client_preview": f"/owner/client-preview/ui?tenant_id={tid}", "owner_analytics": f"/owner/analytics/ui?tenant_id={tid}", "owner_conversation_insights": f"/owner/conversation-insights/ui?tenant_id={tid}", "owner_notifications": f"/owner/notifications/ui?tenant_id={tid}", "owner_followups": f"/owner/follow-ups/ui?tenant_id={tid}", "owner_setup": f"/owner/setup/ui?tenant_id={tid}", "owner_business_profile": f"/owner/business-profile/ui?tenant_id={tid}", "owner_services": f"/owner/services/ui?tenant_id={tid}", "owner_service_catalog": f"/owner/service-catalog/ui?tenant_id={tid}", "owner_business_memory": f"/owner/business-memory/ui?tenant_id={tid}", "owner_faq": f"/owner/faq/ui?tenant_id={tid}", "owner_workspace_settings": f"/owner/workspace/settings/ui?tenant_id={tid}", "owner_calendar": f"/owner/calendar/ui?tenant_id={tid}", "owner_availability": f"/owner/availability/ui?tenant_id={tid}", "owner_telegram": f"/owner/telegram/ui?tenant_id={tid}", "owner_control_center": f"/owner/control-center/ui?tenant_id={tid}", "owner_session": f"/owner/session?tenant_id={tid}", "owner_account": f"/owner/account/ui?tenant_id={tid}", "owner_profile": f"/owner/profile/ui?tenant_id={tid}", "owner_account_billing": f"/owner/account-billing/ui?tenant_id={tid}", "owner_billing": f"/owner/billing/ui?tenant_id={tid}", "owner_logout": "/owner/logout"},
         "super_admin_support_links": {"admin_control_center": f"/control-center/ui?tenant_id={tid}", "public_saas_audit": f"/public-saas/gap-audit/ui?tenant_id={tid}", "billing_readiness": f"/billing/readiness?tenant_id={tid}"} if admin_access else {},
     }
 
@@ -4142,7 +4168,7 @@ def stage80_workspace_setup_core(tenant_id: str = TENANT_ID_DEFAULT, days: int =
         "security": {"owner_workspace_routes_owner_session_bound": bool(not missing_owner_protection and not owner_admin_overlap), "stage80_readiness_routes_admin_protected": bool(not missing_readiness_protection), "tenant_id_parameter_is_not_auth": True, "owner_admin_links_exposed_to_owner": False, "admin_config_links_hidden_from_owner": True, "raw_admin_token_exposed": False, "raw_owner_login_code_exposed": False, "raw_magic_token_exposed": False, "raw_magic_token_hash_exposed": False, "telegram_token_exposed": False, "google_credentials_exposed": False},
         "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
         "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
-        "links": {"owner_workspace": url(f"/owner/workspace/ui?tenant_id={tenant_id_clean}"), "owner_launch_review": url(f"/owner/launch-review/ui?tenant_id={tenant_id_clean}"), "owner_demo": url(f"/owner/demo/ui?tenant_id={tenant_id_clean}"), "owner_client_preview": url(f"/owner/client-preview/ui?tenant_id={tenant_id_clean}"), "owner_analytics": url(f"/owner/analytics/ui?tenant_id={tenant_id_clean}"), "owner_conversation_insights": url(f"/owner/conversation-insights/ui?tenant_id={tenant_id_clean}"), "owner_notifications": url(f"/owner/notifications/ui?tenant_id={tenant_id_clean}"), "owner_followups": url(f"/owner/follow-ups/ui?tenant_id={tenant_id_clean}"), "owner_setup": url(f"/owner/setup/ui?tenant_id={tenant_id_clean}"), "owner_business_profile": url(f"/owner/business-profile/ui?tenant_id={tenant_id_clean}"), "owner_services": url(f"/owner/services/ui?tenant_id={tenant_id_clean}"), "owner_service_catalog": url(f"/owner/service-catalog/ui?tenant_id={tenant_id_clean}"), "owner_business_memory": url(f"/owner/business-memory/ui?tenant_id={tenant_id_clean}"), "owner_faq": url(f"/owner/faq/ui?tenant_id={tenant_id_clean}"), "owner_workspace_settings": url(f"/owner/workspace/settings/ui?tenant_id={tenant_id_clean}"), "owner_calendar": url(f"/owner/calendar/ui?tenant_id={tenant_id_clean}"), "owner_availability": url(f"/owner/availability/ui?tenant_id={tenant_id_clean}"), "owner_telegram": url(f"/owner/telegram/ui?tenant_id={tenant_id_clean}"), "owner_dashboard": url(f"/owner/dashboard/ui?tenant_id={tenant_id_clean}"), "owner_billing": url(f"/owner/billing/ui?tenant_id={tenant_id_clean}"), "owner_session": url(f"/owner/session?tenant_id={tenant_id_clean}"), "stage80_readiness": url(f"/tenant-workspace/readiness?tenant_id={tenant_id_clean}&days={days}"), "stage79_readiness": url(f"/launch-ux/readiness?tenant_id={tenant_id_clean}&days={days}"), "final_public_saas_readiness": url(f"/public-saas/final-readiness?tenant_id={tenant_id_clean}&days={days}")},
+        "links": {"owner_workspace": url(f"/owner/workspace/ui?tenant_id={tenant_id_clean}"), "owner_launch_review": url(f"/owner/launch-review/ui?tenant_id={tenant_id_clean}"), "owner_demo": url(f"/owner/demo/ui?tenant_id={tenant_id_clean}"), "owner_client_preview": url(f"/owner/client-preview/ui?tenant_id={tenant_id_clean}"), "owner_analytics": url(f"/owner/analytics/ui?tenant_id={tenant_id_clean}"), "owner_conversation_insights": url(f"/owner/conversation-insights/ui?tenant_id={tenant_id_clean}"), "owner_notifications": url(f"/owner/notifications/ui?tenant_id={tenant_id_clean}"), "owner_followups": url(f"/owner/follow-ups/ui?tenant_id={tenant_id_clean}"), "owner_setup": url(f"/owner/setup/ui?tenant_id={tenant_id_clean}"), "owner_business_profile": url(f"/owner/business-profile/ui?tenant_id={tenant_id_clean}"), "owner_services": url(f"/owner/services/ui?tenant_id={tenant_id_clean}"), "owner_service_catalog": url(f"/owner/service-catalog/ui?tenant_id={tenant_id_clean}"), "owner_business_memory": url(f"/owner/business-memory/ui?tenant_id={tenant_id_clean}"), "owner_faq": url(f"/owner/faq/ui?tenant_id={tenant_id_clean}"), "owner_workspace_settings": url(f"/owner/workspace/settings/ui?tenant_id={tenant_id_clean}"), "owner_calendar": url(f"/owner/calendar/ui?tenant_id={tenant_id_clean}"), "owner_availability": url(f"/owner/availability/ui?tenant_id={tenant_id_clean}"), "owner_telegram": url(f"/owner/telegram/ui?tenant_id={tenant_id_clean}"), "owner_dashboard": url(f"/owner/dashboard/ui?tenant_id={tenant_id_clean}"), "owner_account": url(f"/owner/account/ui?tenant_id={tenant_id_clean}"), "owner_profile": url(f"/owner/profile/ui?tenant_id={tenant_id_clean}"), "owner_account_billing": url(f"/owner/account-billing/ui?tenant_id={tenant_id_clean}"), "owner_billing": url(f"/owner/billing/ui?tenant_id={tenant_id_clean}"), "owner_session": url(f"/owner/session?tenant_id={tenant_id_clean}"), "stage80_readiness": url(f"/tenant-workspace/readiness?tenant_id={tenant_id_clean}&days={days}"), "stage79_readiness": url(f"/launch-ux/readiness?tenant_id={tenant_id_clean}&days={days}"), "final_public_saas_readiness": url(f"/public-saas/final-readiness?tenant_id={tenant_id_clean}&days={days}")},
         "note": "Stage 80 adds owner-safe workspace setup completion UX/readiness only. It does not expose admin setup links to owners and does not change receptionist dialogue, booking, slots, Google Calendar event runtime, Telegram webhook runtime, billing semantics, CSRF, abuse/rate-limits, magic-link semantics, LLM orchestration, or QA evaluator behavior.",
     }
 
@@ -7011,6 +7037,290 @@ function render(d){el('raw').textContent=JSON.stringify(d,null,2);var s=d.summar
 async function load(){el('tenant_id').value=tenant();el('days').value=days();el('raw').textContent='Loading...';var r=await fetch('/owner/notifications?tenant_id='+encTenant()+'&days='+encodeURIComponent(days())+'&limit=50',{credentials:'include',cache:'no-store'});var d=await r.json().catch(function(){return {ok:false,error:'invalid_json'}});if(!r.ok){el('raw').textContent=JSON.stringify(d,null,2);el('badges').innerHTML=badge('err','load failed');return;}render(d)}
 el('tenant_id').value=DEFAULT_TENANT_ID||'clinic_demo';el('load_btn').onclick=load;el('workspace_btn').onclick=function(){go('/owner/workspace/ui?tenant_id='+encTenant())};el('analytics_btn').onclick=function(){go('/owner/analytics/ui?tenant_id='+encTenant())};el('preview_btn').onclick=function(){go('/owner/client-preview/ui?tenant_id='+encTenant())};el('logout_btn').onclick=function(){go('/owner/logout')};load();
 })();</script></body></html>"""
+    return html.replace("__TENANT_ID_JSON__", tenant_id_json)
+
+# -------------------------
+# STAGE 91: OWNER ACCOUNT / PROFILE / BILLING UX POLISH
+# -------------------------
+STAGE91_READINESS_PATHS = {
+    "/owner-account/readiness",
+    "/owner-profile/readiness",
+    "/workspace/account/readiness",
+    "/account-billing/readiness",
+}
+STAGE91_OWNER_ACCOUNT_PATHS = {
+    "/owner/account",
+    "/owner/account/ui",
+    "/owner/profile",
+    "/owner/profile/ui",
+    "/owner/account-billing",
+    "/owner/account-billing/ui",
+}
+STAGE91_MATURITY_TARGET = "mature_smb_saas_owner_account_profile_billing_phase"
+
+
+def stage91_owner_account_snapshot(owner_email: str = "", expose_email: bool = True) -> Dict[str, Any]:
+    email = stage71_normalize_email(owner_email)
+    if not email:
+        return {
+            "exists": False,
+            "email": None,
+            "display_name": None,
+            "status": None,
+            "created_at": None,
+            "last_login_at": None,
+            "has_login_code": False,
+            "email_verified": False,
+            "email_verified_at": None,
+            "login_code_value_exposed": False,
+            "login_code_hash_exposed": False,
+            "magic_link_token_exposed": False,
+            "magic_link_token_hash_exposed": False,
+        }
+    try:
+        account = stage71_get_owner_account(email) or {}
+    except Exception as e:
+        log.error("stage91_owner_account_lookup_failed email=%s err=%s", email, e)
+        return {
+            "exists": False,
+            "email": email if expose_email else None,
+            "lookup_error": e.__class__.__name__,
+            "login_code_value_exposed": False,
+            "login_code_hash_exposed": False,
+            "magic_link_token_exposed": False,
+            "magic_link_token_hash_exposed": False,
+        }
+    verification = stage76_owner_email_verification_status(email)
+    return {
+        "exists": bool(account),
+        "email": email if expose_email else None,
+        "display_name": account.get("display_name") if account else None,
+        "status": account.get("status") if account else None,
+        "created_at": account.get("created_at") if account else None,
+        "last_login_at": account.get("last_login_at") if account else None,
+        "has_login_code": bool((account or {}).get("has_login_code")),
+        "email_verified": bool(verification.get("email_verified")),
+        "email_verified_at": verification.get("email_verified_at") if expose_email else None,
+        "login_code_value_exposed": False,
+        "login_code_hash_exposed": False,
+        "magic_link_token_exposed": False,
+        "magic_link_token_hash_exposed": False,
+        "raw_owner_account_id_exposed": False,
+    }
+
+
+def stage91_owner_binding_snapshot(owner_email: str = "", tenant_id: str = "", expose_email: bool = True) -> Dict[str, Any]:
+    email = stage71_normalize_email(owner_email)
+    tid = str(tenant_id or "").strip()
+    if not email or not tid:
+        return {"bound": False, "tenant_id": tid or None, "owner_email": email if (email and expose_email) else None, "role": None, "status": None}
+    try:
+        rows = stage71_owner_tenant_access_rows(email=email, tenant_id=tid)
+    except Exception as e:
+        log.error("stage91_owner_binding_lookup_failed tenant_id=%s email=%s err=%s", tid, email, e)
+        return {"bound": False, "tenant_id": tid, "owner_email": email if expose_email else None, "lookup_error": e.__class__.__name__}
+    active = next((r for r in rows if str(r.get("status") or "").lower() == "active"), rows[0] if rows else {})
+    return {
+        "bound": bool(active),
+        "tenant_id": tid,
+        "owner_email": email if expose_email else None,
+        "role": active.get("role") if active else None,
+        "status": active.get("status") if active else None,
+        "created_at": active.get("created_at") if active else None,
+        "raw_binding_id_exposed": False,
+    }
+
+
+def stage91_owner_account_billing_core(tenant_id: str = TENANT_ID_DEFAULT, owner_email: str = "", days: int = 14, expose_owner_email: bool = True, admin_access: bool = False) -> Dict[str, Any]:
+    tid = (tenant_id or "").strip() or TENANT_ID_DEFAULT
+    days = stage901_safe_days(days)
+    base = (SERVER_BASE_URL or "").rstrip("/")
+
+    def url(path: str) -> str:
+        return base + path if base else path
+
+    blocking: List[str] = []
+    warnings: List[str] = []
+    try:
+        tenant = get_existing_tenant(tid)
+    except Exception as e:
+        log.error("stage91_tenant_lookup_failed tenant_id=%s err=%s", tid, e)
+        tenant = {}
+        blocking.append(f"tenant_lookup_failed:{e.__class__.__name__}")
+    tenant_found = bool((tenant or {}).get("_id"))
+    tenant_norm = normalize_tenant_saas_fields(tenant or {}) if tenant_found else {}
+    tenant_id_clean = str((tenant_norm or {}).get("_id") or (tenant_norm or {}).get("id") or tid).strip() or tid
+
+    session_owner_email = stage71_normalize_email(owner_email)
+    configured_owner_email = stage71_normalize_email((tenant_norm or {}).get("owner_email") or "") if tenant_found else ""
+    expose_email = bool(expose_owner_email and session_owner_email and not admin_access)
+
+    owner_account = stage91_owner_account_snapshot(session_owner_email, expose_email=expose_email) if session_owner_email else stage91_owner_account_snapshot("", expose_email=False)
+    tenant_binding = stage91_owner_binding_snapshot(session_owner_email, tenant_id_clean, expose_email=expose_email) if session_owner_email else {"bound": False, "tenant_id": tenant_id_clean, "owner_email": None, "role": None, "status": None}
+
+    owner_auth = stage80_safe_dependency("stage71_owner_auth", lambda: stage71_owner_auth_readiness_payload(tenant_id_clean))
+    business_profile = stage80_safe_dependency("stage81_business_profile", lambda: stage81_business_profile_model(tenant_id_clean, days=days))
+    business_profile_readiness = stage80_safe_dependency("stage81_business_profile_readiness", lambda: stage81_business_profile_readiness_payload(tenant_id_clean, days=days))
+    billing_readiness = stage80_safe_dependency("stage73_billing", lambda: stage73_billing_subscription_gate_readiness_payload(tenant_id_clean, days=days))
+    workspace = stage80_safe_dependency("stage80_workspace", lambda: stage80_workspace_setup_core(tenant_id_clean, days=days))
+
+    billing = tenant_billing_status(tenant_norm) if tenant_found else {}
+    runtime_gate = (billing.get("runtime_gate") or {}) if isinstance(billing.get("runtime_gate"), dict) else {}
+
+    missing_readiness_protection = sorted(path for path in STAGE91_READINESS_PATHS if path not in STAGE61_PROTECTED_EXACT_PATHS)
+    missing_owner_protection = sorted(path for path in STAGE91_OWNER_ACCOUNT_PATHS if path not in STAGE71_OWNER_PROTECTED_EXACT_PATHS)
+    owner_admin_overlap = sorted(path for path in STAGE91_OWNER_ACCOUNT_PATHS if path in STAGE61_PROTECTED_EXACT_PATHS)
+    if missing_readiness_protection:
+        blocking.append("stage91_readiness_routes_not_admin_protected")
+    if missing_owner_protection:
+        blocking.append("stage91_owner_routes_not_owner_protected")
+    if owner_admin_overlap:
+        blocking.append("stage91_owner_routes_overlap_admin_exact_paths")
+    if not tenant_found:
+        blocking.append("tenant_not_found")
+    if session_owner_email and not owner_account.get("exists"):
+        warnings.append("owner_account_not_found_for_session_email")
+    if session_owner_email and not tenant_binding.get("bound"):
+        warnings.append("owner_tenant_binding_not_visible_for_session_email")
+    if billing and runtime_gate.get("allowed") is not True:
+        warnings.append(f"billing_runtime_gate_attention:{runtime_gate.get('reason') or 'blocked'}")
+    if business_profile and not business_profile.get("business_profile_complete"):
+        warnings.append("business_profile_incomplete:" + ",".join(business_profile.get("missing") or []))
+
+    ready = bool(not blocking and not missing_readiness_protection and not missing_owner_protection and not owner_admin_overlap)
+    account_ready = bool(ready and (admin_access or owner_account.get("exists")) and (admin_access or tenant_binding.get("bound")))
+    billing_ready = bool(ready and billing_readiness.get("billing_subscription_gate_foundation_ready"))
+    profile_ready = bool(ready and business_profile_readiness.get("tenant_business_profile_settings_ready"))
+
+    return {
+        "ok": True,
+        "stage": "91",
+        "previous_stage": "90.1",
+        "purpose": "Owner Account / Profile / Billing UX Polish",
+        "tenant_id": tenant_id_clean,
+        "tenant_found": bool(tenant_found),
+        "status": "ready" if ready and account_ready else "attention" if ready else "blocked",
+        "maturity_phase": STAGE91_MATURITY_TARGET,
+        "days": days,
+        "owner_account_profile_billing_ready": bool(ready),
+        "owner_account_center_ready": bool(account_ready),
+        "owner_profile_summary_ready": bool(profile_ready),
+        "owner_billing_summary_ready": bool(billing_ready),
+        "enterprise_saas_ready": False,
+        "account": owner_account,
+        "tenant_binding": tenant_binding,
+        "tenant": {
+            "business_name": (tenant_norm or {}).get("business_name") if tenant_found else None,
+            "language": (tenant_norm or {}).get("language") if tenant_found else None,
+            "timezone": (tenant_norm or {}).get("timezone") if tenant_found else None,
+            "configured_owner_email_present": bool(configured_owner_email),
+            "configured_owner_email_matches_session": bool(session_owner_email and configured_owner_email and session_owner_email == configured_owner_email),
+            "configured_owner_email_hidden": True,
+        },
+        "profile": {
+            "business_profile_complete": bool(business_profile.get("business_profile_complete")),
+            "fields": business_profile.get("profile") or {},
+            "missing": business_profile.get("missing") or [],
+            "owner_edit_url": url(f"/owner/business-profile/ui?tenant_id={tenant_id_clean}"),
+        },
+        "billing": {
+            "plan": billing.get("plan"),
+            "plan_display_name": billing.get("plan_display_name"),
+            "subscription_status": billing.get("subscription_status"),
+            "effective_status": billing.get("effective_status"),
+            "trial_end": billing.get("trial_end"),
+            "current_period_end": billing.get("current_period_end"),
+            "billing_provider": billing.get("billing_provider"),
+            "provider_mode": billing.get("provider_mode"),
+            "provider_integration_live": bool(billing.get("provider_integration_live")),
+            "runtime_gate": runtime_gate,
+            "limits": billing.get("limits") or {},
+            "usage": billing.get("usage") or {},
+            "owner_billing_url": url(f"/owner/billing/ui?tenant_id={tenant_id_clean}"),
+        },
+        "workspace_summary": {
+            "workspace_setup_complete": bool(workspace.get("workspace_setup_complete")),
+            "completion": workspace.get("completion") or {},
+            "next_actions": workspace.get("next_actions") or [],
+        },
+        "readiness_dependencies": {
+            "owner_auth": {"stage": owner_auth.get("stage"), "owner_auth_foundation_ready": owner_auth.get("owner_auth_foundation_ready"), "tenant_ownership_binding_ready": owner_auth.get("tenant_ownership_binding_ready")},
+            "business_profile": {"stage": business_profile_readiness.get("stage"), "tenant_business_profile_settings_ready": business_profile_readiness.get("tenant_business_profile_settings_ready")},
+            "billing": {"stage": billing_readiness.get("stage"), "billing_subscription_gate_foundation_ready": billing_readiness.get("billing_subscription_gate_foundation_ready")},
+            "workspace": {"stage": workspace.get("stage"), "tenant_workspace_ux_ready": workspace.get("tenant_workspace_ux_ready")},
+        },
+        "limitations": [
+            "stage91_is_read_only_owner_visibility_only",
+            "billing_provider_checkout_or_customer_portal_not_added",
+            "owner_profile_write_path_not_added",
+            "owner_email_is_shown_only_to_the_authenticated_owner_session_not_super_admin_owner_safe_view",
+        ],
+        "owner_safe_scope": {
+            "read_only": True,
+            "owner_profile_write_added": False,
+            "billing_write_added": False,
+            "payment_provider_calls_added": False,
+            "admin_write_surfaces_exposed_to_owner": False,
+            "admin_links_exposed_to_owner": False,
+            "secrets_exposed": False,
+            "booking_runtime_changed": False,
+            "calendar_runtime_changed": False,
+            "telegram_runtime_changed": False,
+            "llm_orchestration_changed": False,
+        },
+        "security": {
+            "stage91_readiness_routes_admin_protected": not missing_readiness_protection,
+            "stage91_owner_routes_owner_session_bound": not missing_owner_protection and not owner_admin_overlap,
+            "tenant_id_parameter_is_not_auth": True,
+            "owner_write_routes_added": False,
+            "owner_csrf_paths_required": False,
+            "login_code_value_exposed": False,
+            "login_code_hash_exposed": False,
+            "magic_link_token_exposed": False,
+            "magic_link_token_hash_exposed": False,
+            "billing_provider_secret_exposed": False,
+            "secret_values_exposed": False,
+        },
+        "links": {
+            "owner_account": url(f"/owner/account/ui?tenant_id={tenant_id_clean}"),
+            "owner_profile": url(f"/owner/profile/ui?tenant_id={tenant_id_clean}"),
+            "owner_account_billing": url(f"/owner/account-billing/ui?tenant_id={tenant_id_clean}"),
+            "owner_billing": url(f"/owner/billing/ui?tenant_id={tenant_id_clean}"),
+            "owner_business_profile": url(f"/owner/business-profile/ui?tenant_id={tenant_id_clean}"),
+            "owner_workspace": url(f"/owner/workspace/ui?tenant_id={tenant_id_clean}"),
+            "owner_dashboard": url(f"/owner/dashboard/ui?tenant_id={tenant_id_clean}"),
+            "owner_launch_review": url(f"/owner/launch-review/ui?tenant_id={tenant_id_clean}"),
+            "stage91_readiness": url(f"/owner-account/readiness?tenant_id={tenant_id_clean}&days={days}"),
+        },
+        "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
+        "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
+        "note": "Stage 91 adds owner-safe read-only account/profile/billing UX polish. It does not add billing provider actions, account writes, profile writes, receptionist runtime changes, or external sends.",
+    }
+
+
+def stage91_owner_account_payload(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14) -> Dict[str, Any]:
+    admin_access = bool(stage61_token_valid(stage61_request_token(request)) or stage62_request_has_valid_session(request))
+    if admin_access:
+        access = {"ok": True, "tenant_id": stage711_resolve_tenant_context(request, tenant_id), "owner_email": "", "role": "super_admin"}
+    else:
+        access = stage71_owner_request_access(request, path="/owner/account")
+    if not access.get("ok"):
+        raise HTTPException(status_code=401, detail=access.get("error") or "owner_login_required")
+    requested_tid = str(request.query_params.get("tenant_id") or "").strip()
+    tid = requested_tid or str(access.get("tenant_id") or tenant_id or "").strip() or TENANT_ID_DEFAULT
+    owner_email = stage71_normalize_email(access.get("owner_email") or "") if not admin_access else ""
+    payload = stage91_owner_account_billing_core(tid, owner_email=owner_email, days=days, expose_owner_email=not admin_access, admin_access=admin_access)
+    payload["auth_model"] = "owner_session_or_super_admin_bypass"
+    payload["owner_email"] = owner_email if owner_email and not admin_access else None
+    payload["role"] = access.get("role") or "owner"
+    payload["opened_via_super_admin_bypass"] = bool(admin_access)
+    payload["super_admin_support_links"] = {"stage91_readiness": f"/owner-account/readiness?tenant_id={payload.get('tenant_id')}&days={days}", "admin_billing": f"/tenant/billing/ui?tenant_id={payload.get('tenant_id')}", "owner_auth_readiness": f"/owner/auth/readiness?tenant_id={payload.get('tenant_id')}"} if admin_access else {}
+    return payload
+
+
+def stage91_owner_account_html(tenant_id: str = TENANT_ID_DEFAULT) -> str:
+    tenant_id_json = json.dumps((tenant_id or "").strip() or TENANT_ID_DEFAULT, ensure_ascii=False)
+    html = r'''<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Repliq Account Center</title><style>body{font-family:Inter,system-ui,-apple-system,Segoe UI,Arial,sans-serif;background:#f6f7fb;color:#111827;margin:0;padding:24px}.wrap{max-width:1100px;margin:0 auto}.hero,.card{background:#fff;border:1px solid #e5e7eb;border-radius:20px;padding:18px;margin:14px 0;box-shadow:0 8px 25px rgba(17,24,39,.05)}.hero{background:#111827;color:#fff}.hero p{color:#d1d5db}.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.muted,.sub{color:#64748b;font-size:14px;line-height:1.45}.badge{display:inline-block;border-radius:999px;padding:5px 9px;background:#e5e7eb;font-size:12px;font-weight:800;margin:3px 4px 3px 0}.ok{background:#dcfce7;color:#166534}.warn{background:#fef3c7;color:#92400e}.err{background:#fee2e2;color:#991b1b}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}button{border:0;border-radius:12px;padding:10px 13px;background:#111827;color:white;font-weight:750;cursor:pointer}.secondary{background:#e5e7eb;color:#111827}input{box-sizing:border-box;border:1px solid #cbd5e1;border-radius:12px;padding:10px;font-size:14px}.metric{font-size:28px;font-weight:850;letter-spacing:-.03em}.item{border:1px solid #e5e7eb;border-radius:16px;padding:14px;background:#fafafa}.item h3{margin:0 0 6px}.kv{display:grid;grid-template-columns:180px 1fr;gap:6px 12px;font-size:14px}.kv div:nth-child(odd){color:#64748b}pre{background:#0f172a;color:#e2e8f0;border-radius:14px;padding:14px;max-height:520px;overflow:auto;white-space:pre-wrap}@media(max-width:900px){body{padding:12px}.grid,.two{grid-template-columns:1fr}.kv{grid-template-columns:1fr}}</style></head><body><div class="wrap"><div class="hero"><h1>Account center</h1><p>Owner-safe account, workspace profile and billing summary. Read-only: no payment-provider calls and no account writes.</p><div class="actions"><input id="tenant_id" style="min-width:260px" autocomplete="off"/><button id="load_btn" type="button">Load</button><button id="workspace_btn" class="secondary" type="button">Workspace</button><button id="billing_btn" class="secondary" type="button">Billing</button><button id="profile_btn" class="secondary" type="button">Business profile</button><button id="logout_btn" class="secondary" type="button">Logout</button></div></div><div class="card"><h2>Status</h2><div id="badges"></div><div id="summary" class="sub"></div></div><div class="grid"><div class="card"><div class="muted">Account</div><div id="m_account" class="metric">-</div><div id="account_sub" class="sub"></div></div><div class="card"><div class="muted">Plan</div><div id="m_plan" class="metric">-</div><div id="plan_sub" class="sub"></div></div><div class="card"><div class="muted">Runtime gate</div><div id="m_gate" class="metric">-</div><div id="gate_sub" class="sub"></div></div></div><div class="two"><div class="card"><h2>Owner access</h2><div id="account"></div></div><div class="card"><h2>Billing summary</h2><div id="billing"></div></div></div><div class="card"><h2>Workspace profile</h2><div id="profile"></div></div><div class="card"><h2>Limitations</h2><div id="limitations"></div></div><div class="card"><h2>Raw account payload</h2><pre id="raw">Loading...</pre></div></div><script>(function(){const DEFAULT_TENANT_ID=__TENANT_ID_JSON__;function el(id){return document.getElementById(id)}function tenant(){return (el('tenant_id').value||'').trim()||DEFAULT_TENANT_ID||'clinic_demo'}function encTenant(){return encodeURIComponent(tenant())}function go(p){window.location=p}function esc(v){return v===null||v===undefined?'':String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;')}function badge(cls,t){return `<span class="badge ${cls}">${esc(t)}</span>`}function yn(v){return v?'yes':'no'}function kv(rows){return '<div class="kv">'+rows.map(function(r){return '<div>'+esc(r[0])+'</div><div>'+esc(r[1])+'</div>'}).join('')+'</div>'}function render(d){d=d||{};el('raw').textContent=JSON.stringify(d,null,2);const a=d.account||{}, b=d.billing||{}, p=d.profile||{}, t=d.tenant||{}, rg=b.runtime_gate||{};el('badges').innerHTML=badge(d.status==='ready'?'ok':(d.status==='blocked'?'err':'warn'),'status: '+(d.status||'unknown'))+badge(d.owner_account_profile_billing_ready?'ok':'warn','account/profile/billing UX: '+!!d.owner_account_profile_billing_ready)+badge(d.owner_safe_scope&&d.owner_safe_scope.read_only?'ok':'warn','read-only')+badge(d.enterprise_saas_ready?'warn':'ok','enterprise_saas_ready: '+!!d.enterprise_saas_ready);el('summary').innerHTML='Tenant: '+esc(d.tenant_id||tenant())+' · Business: '+esc(t.business_name||'-')+' · Owner email is shown only to the authenticated owner session.';el('m_account').textContent=a.exists?'Ready':'Attention';el('account_sub').textContent=(a.email||'owner email hidden')+' · verified: '+yn(a.email_verified);el('m_plan').textContent=b.plan_display_name||b.plan||'-';el('plan_sub').textContent='status: '+(b.effective_status||b.subscription_status||'-')+' · provider: '+(b.billing_provider||'-');el('m_gate').textContent=rg.allowed?'Allowed':'Blocked';el('gate_sub').textContent=rg.reason||'-';el('account').innerHTML=kv([['Owner email',a.email||'hidden'],['Display name',a.display_name||'-'],['Account status',a.status||'-'],['Email verified',yn(a.email_verified)],['Last login',a.last_login_at||'-'],['Tenant role',(d.tenant_binding||{}).role||'-'],['Tenant binding',yn((d.tenant_binding||{}).bound)],['Login code exposed',yn(a.login_code_value_exposed)]]);el('billing').innerHTML=kv([['Plan',b.plan_display_name||b.plan||'-'],['Subscription',b.effective_status||b.subscription_status||'-'],['Trial end',b.trial_end||'-'],['Current period end',b.current_period_end||'-'],['Provider mode',b.provider_mode||'-'],['Provider live',yn(b.provider_integration_live)],['Dialogs limit',((b.limits||{}).dialogs_per_month)||'-'],['Dialogs used',((b.usage||{}).dialogs_used)||0]]);const f=p.fields||{};el('profile').innerHTML=kv([['Business name',f.business_name||'-'],['Language',f.language||'-'],['Timezone',f.timezone||'-'],['Working hours',((f.work_start||'-')+' - '+(f.work_end||'-'))],['Profile complete',yn(p.business_profile_complete)],['Missing',(p.missing||[]).join(', ')||'-']]);el('limitations').innerHTML=(d.limitations||[]).map(function(x){return '<span class="badge warn">'+esc(x)+'</span>'}).join('')||badge('ok','No limitations returned.')}async function load(){el('tenant_id').value=tenant();el('raw').textContent='Loading...';const r=await fetch('/owner/account?tenant_id='+encTenant(),{credentials:'include',cache:'no-store'});const d=await r.json().catch(function(){return {ok:false,error:'invalid_json'}});if(!r.ok){el('raw').textContent=JSON.stringify(d,null,2);el('badges').innerHTML=badge('err','load failed');return;}render(d)}el('tenant_id').value=DEFAULT_TENANT_ID||'clinic_demo';el('load_btn').onclick=load;el('workspace_btn').onclick=function(){go('/owner/workspace/ui?tenant_id='+encTenant())};el('billing_btn').onclick=function(){go('/owner/billing/ui?tenant_id='+encTenant())};el('profile_btn').onclick=function(){go('/owner/business-profile/ui?tenant_id='+encTenant())};el('logout_btn').onclick=function(){go('/owner/logout')};load();})();</script></body></html>'''
     return html.replace("__TENANT_ID_JSON__", tenant_id_json)
 
 
@@ -19501,6 +19811,30 @@ def stage90_owner_notifications_ui(request: Request, tenant_id: str = TENANT_ID_
         return HTMLResponse(content=stage90_owner_notifications_html(tenant_id=safe_tid), headers={"Cache-Control": "no-store", "X-Repliq-Stage90-Hotfix": "90.1"})
 
 
+@app.get("/owner-account/readiness")
+@app.get("/owner-profile/readiness")
+@app.get("/workspace/account/readiness")
+@app.get("/account-billing/readiness")
+def stage91_owner_account_readiness(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    tid = stage711_resolve_tenant_context(request, tenant_id)
+    return stage91_owner_account_billing_core(tid, owner_email="", days=days, expose_owner_email=False, admin_access=True)
+
+
+@app.get("/owner/account")
+@app.get("/owner/profile")
+@app.get("/owner/account-billing")
+def stage91_owner_account_json(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    return stage91_owner_account_payload(request=request, tenant_id=tenant_id, days=days)
+
+
+@app.get("/owner/account/ui", response_class=HTMLResponse)
+@app.get("/owner/profile/ui", response_class=HTMLResponse)
+@app.get("/owner/account-billing/ui", response_class=HTMLResponse)
+def stage91_owner_account_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
+    tid = stage711_resolve_tenant_context(request, tenant_id)
+    return HTMLResponse(content=stage91_owner_account_html(tenant_id=tid), headers={"Cache-Control": "no-store"})
+
+
 @app.post("/owner/magic-link/bootstrap")
 def stage76_owner_magic_link_bootstrap(request: Request, payload: dict = Body(...)):
     data = payload or {}
@@ -22476,7 +22810,7 @@ def stage73_billing_ui_html(tenant_id: str = TENANT_ID_DEFAULT, owner_mode: bool
     owner_mode_json = "true" if owner_mode else "false"
     title = "Owner Billing" if owner_mode else "Billing Admin"
     subtitle = "Owner-visible read-only subscription status." if owner_mode else "Stage 73 manual billing/subscription foundation."
-    owner_action_links = """<button class="secondary" onclick="go('/owner/dashboard/ui?tenant_id='+encTenant())">Owner dashboard</button><button class="secondary" onclick="go('/owner/control-center/ui?tenant_id='+encTenant())">Owner control center</button><button class="secondary" onclick="go('/owner/session?tenant_id='+encTenant())">Owner session</button><button class="secondary" onclick="go('/owner/logout')">Logout</button>"""
+    owner_action_links = """<button class="secondary" onclick="go('/owner/dashboard/ui?tenant_id='+encTenant())">Owner dashboard</button><button class="secondary" onclick="go('/owner/account/ui?tenant_id='+encTenant())">Account center</button><button class="secondary" onclick="go('/owner/control-center/ui?tenant_id='+encTenant())">Owner control center</button><button class="secondary" onclick="go('/owner/session?tenant_id='+encTenant())">Owner session</button><button class="secondary" onclick="go('/owner/logout')">Logout</button>"""
     admin_action_links = """<button class="secondary" onclick="go('/owner/dashboard/ui?tenant_id='+encTenant())">Owner dashboard</button><button class="secondary" onclick="go('/control-center/ui?tenant_id='+encTenant())">Control center</button><button class="secondary" onclick="go('/public-saas/gap-audit/ui?tenant_id='+encTenant())">Public SaaS audit</button>"""
     action_links = owner_action_links if owner_mode else admin_action_links
     return f"""

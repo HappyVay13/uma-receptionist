@@ -1,6 +1,6 @@
 # Repliq Project State
 
-Current stage: Stage 90 — Owner Notifications / Lead Follow-up Visibility.
+Current stage: Stage 91 — Owner Account / Profile / Billing UX Polish.
 
 Production regression baseline before Stage 40:
 - Stage 39 was deployed and confirmed by user: `/dialogue/qa` = 15/15 passed.
@@ -1563,3 +1563,53 @@ Expected verification:
 - Stage 90 owner UI endpoints open with valid owner session or super-admin bypass.
 - Stage 89 analytics, Stage 88 preview, owner workspace, owner dashboard and launch review remain OK.
 - `enterprise_saas_ready=false` remains explicit.
+
+## Stage 90.1 — Notification Links 500 Guard Hotfix Verification Update
+
+Status: closed after deploy verification. User reported notification/follow-up links now work, `/dialogue/qa` = 50/50 passed, and all other checks OK.
+
+Verified:
+- Notification/follow-up links no longer return Internal Server Error.
+- Stage 90 readiness endpoints and owner UI paths work.
+- `/dialogue/qa` remains 50/50 passed.
+- Stage 90 remains read-only visibility only; no notification sends or runtime writes were added.
+
+## Stage 91 — Owner Account / Profile / Billing UX Polish
+
+Status: implemented in archive, awaiting deploy verification.
+
+Scope:
+- Added owner-safe read-only account/profile/billing center endpoints:
+  - `GET /owner/account`
+  - `GET /owner/account/ui`
+  - `GET /owner/profile`
+  - `GET /owner/profile/ui`
+  - `GET /owner/account-billing`
+  - `GET /owner/account-billing/ui`
+- Added admin-protected readiness endpoints:
+  - `GET /owner-account/readiness`
+  - `GET /owner-profile/readiness`
+  - `GET /workspace/account/readiness`
+  - `GET /account-billing/readiness`
+- Uses existing Stage 71 owner account/session/binding foundation, Stage 76 email verification metadata, Stage 81 business profile model, Stage 73 billing/subscription foundation, and Stage 80 workspace summary.
+- Adds owner account/profile/billing links to owner dashboard/workspace payloads and adds an Account Center link to the existing owner billing UI.
+- Owner account center is read-only. No owner account/profile write endpoint was added.
+- No billing update route, payment provider checkout/customer portal, queue/background job, or external send was added.
+- Owner email is shown only to the authenticated owner session. Super-admin owner-safe bypass does not expose owner email in the Stage 91 payload.
+- `enterprise_saas_ready=false` remains explicit.
+
+Expected verification:
+- Render deploy starts successfully.
+- `/dialogue/qa` = 50/50 passed.
+- `/owner-account/readiness?tenant_id=clinic_demo` returns `stage=91` and remains admin-protected.
+- `/owner-profile/readiness?tenant_id=clinic_demo`, `/workspace/account/readiness?tenant_id=clinic_demo`, and `/account-billing/readiness?tenant_id=clinic_demo` work and remain admin-protected.
+- `/owner/account/ui?tenant_id=clinic_demo`, `/owner/profile/ui?tenant_id=clinic_demo`, and `/owner/account-billing/ui?tenant_id=clinic_demo` open with valid owner session or super-admin bypass.
+- Owner dashboard/workspace links include the account/profile/billing center.
+- Existing `/owner/billing/ui?tenant_id=clinic_demo` still works and now links to Account Center.
+- Stage 90 notification/follow-up links remain OK.
+- Stage 89 analytics UI remains OK.
+- Stage 88 preview still returns `conversation_persisted=false`.
+- Stage 78 remains the source of truth for `public_saas_ready`; `enterprise_saas_ready=false` remains explicit.
+
+Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook/runtime, SMS/WhatsApp send paths, billing semantics, auth/session semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, dialogue QA evaluator, LLM orchestration, and voice/calls were not changed.
+

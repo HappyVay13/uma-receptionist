@@ -876,3 +876,30 @@ Stage 87 owner launch-review pages must not perform deep cross-stage readiness f
 - Stage 90.1 must not change receptionist dialogue runtime, booking routing, slot generation, date/time parsing, side-question handling, confirmation, cancellation, rescheduling, Google Calendar runtime, Telegram webhook/runtime, SMS/WhatsApp send paths, billing semantics, auth/session semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, LLM orchestration, voice/calls, or regression evaluator rules.
 - Current protected baseline remains `/dialogue/qa = 50/50 passed`.
 - `enterprise_saas_ready` remains false; enterprise maturity is a later phase.
+
+## Stage 91 — Owner Account / Profile / Billing UX Polish Rules
+
+- Stage 91 continues the Mature SMB SaaS phase after Stage 90.1.
+- Stage 91 may add owner-safe, read-only account/profile/billing center endpoints, UI, readiness metadata, dashboard/workspace links, and documentation only.
+- Stage 91 must use existing Stage 71 owner account/session/binding data, Stage 76 email verification metadata, Stage 81 business profile data, Stage 73 billing/subscription foundation data, and Stage 80 workspace summary only.
+- Stage 91 must not add owner account writes, owner profile writes, billing writes, payment-provider calls, checkout/customer portal actions, queue jobs, background jobs, or external sends.
+- Stage 91 owner account/profile/billing endpoints must be protected by Stage 71 owner session and tenant binding:
+  - `/owner/account`
+  - `/owner/account/ui`
+  - `/owner/profile`
+  - `/owner/profile/ui`
+  - `/owner/account-billing`
+  - `/owner/account-billing/ui`
+- Stage 91 readiness endpoints must be protected by Stage 61/62 admin auth:
+  - `/owner-account/readiness`
+  - `/owner-profile/readiness`
+  - `/workspace/account/readiness`
+  - `/account-billing/readiness`
+- No new Stage 74 owner CSRF/browser-write path is required because Stage 91 is read-only.
+- Owner UI must not expose raw admin tokens, owner login codes, login-code hashes, magic tokens, magic-token hashes, CSRF secrets, raw owner account IDs, raw tenant binding IDs, Telegram tokens, Google credentials, service account JSON, webhook secrets, billing provider secrets, or other tenant secrets.
+- Owner email may be shown only to the authenticated owner session. Super-admin owner-safe bypass must not expose owner email in Stage 91 owner-safe payloads.
+- Stage 91 must not change receptionist dialogue runtime, booking routing, slot generation, date/time parsing, side-question handling, confirmation, cancellation, rescheduling, Google Calendar runtime, Telegram webhook/runtime, SMS/WhatsApp send paths, billing semantics, auth/session semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, LLM orchestration, voice/calls, or regression evaluator rules.
+- Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+- Stage 78 remains the source of truth for `public_saas_ready`.
+- `enterprise_saas_ready` remains false; enterprise maturity is a later phase.
+
