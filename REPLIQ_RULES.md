@@ -903,3 +903,22 @@ Stage 87 owner launch-review pages must not perform deep cross-stage readiness f
 - Stage 78 remains the source of truth for `public_saas_ready`.
 - `enterprise_saas_ready` remains false; enterprise maturity is a later phase.
 
+
+## Stage 91.1 — Owner Account Logout / Auth Guard Hotfix Rules
+
+- Stage 91.1 is a hotfix for Stage 91 account/profile/billing pages appearing accessible after logout in a browser with existing sessions.
+- Stage 91.1 may only tighten auth/session handling for Stage 91 account/profile/billing routes and logout cookie clearing.
+- Stage 91.1 must not add owner account writes, owner profile writes, billing writes, payment-provider calls, checkout/customer portal actions, queue jobs, background jobs, or external sends.
+- Stage 91 account/profile/billing routes must require strict Stage 71 owner session + tenant binding and must not use Stage 62 super-admin bypass:
+  - `/owner/account`
+  - `/owner/account/ui`
+  - `/owner/profile`
+  - `/owner/profile/ui`
+  - `/owner/account-billing`
+  - `/owner/account-billing/ui`
+- Stage 91 readiness routes remain Stage 61/62 admin-protected.
+- `/admin/logout` and `/owner/logout` may clear both admin and owner browser session cookies to avoid mixed-session access after logout.
+- No new Stage 74 CSRF path is required because no new browser write endpoint is added.
+- Stage 91.1 must not expose raw admin tokens, owner login codes, login-code hashes, magic tokens, magic-token hashes, CSRF secrets, raw owner account IDs, raw tenant binding IDs, Telegram tokens, Google credentials, service account JSON, webhook secrets, billing provider secrets, or other tenant secrets.
+- Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+- `enterprise_saas_ready` remains false; enterprise maturity is a later phase.

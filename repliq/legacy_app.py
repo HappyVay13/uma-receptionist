@@ -7059,6 +7059,16 @@ STAGE91_OWNER_ACCOUNT_PATHS = {
 STAGE91_MATURITY_TARGET = "mature_smb_saas_owner_account_profile_billing_phase"
 
 
+def stage911_owner_account_strict_access(request: Request, path: str = "/owner/account") -> Dict[str, Any]:
+    # Stage 91.1: account/profile/billing pages contain owner-account context.
+    # They must require the signed owner session directly and must not be opened
+    # by the Stage 62 super-admin support bypass. Readiness stays admin-protected.
+    access = stage71_owner_request_access(request, path=path)
+    if not access.get("ok"):
+        raise HTTPException(status_code=401, detail=access.get("error") or "owner_login_required")
+    return access
+
+
 def stage91_owner_account_snapshot(owner_email: str = "", expose_email: bool = True) -> Dict[str, Any]:
     email = stage71_normalize_email(owner_email)
     if not email:
@@ -7299,22 +7309,17 @@ def stage91_owner_account_billing_core(tenant_id: str = TENANT_ID_DEFAULT, owner
 
 
 def stage91_owner_account_payload(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14) -> Dict[str, Any]:
-    admin_access = bool(stage61_token_valid(stage61_request_token(request)) or stage62_request_has_valid_session(request))
-    if admin_access:
-        access = {"ok": True, "tenant_id": stage711_resolve_tenant_context(request, tenant_id), "owner_email": "", "role": "super_admin"}
-    else:
-        access = stage71_owner_request_access(request, path="/owner/account")
-    if not access.get("ok"):
-        raise HTTPException(status_code=401, detail=access.get("error") or "owner_login_required")
+    access = stage911_owner_account_strict_access(request, path="/owner/account")
     requested_tid = str(request.query_params.get("tenant_id") or "").strip()
     tid = requested_tid or str(access.get("tenant_id") or tenant_id or "").strip() or TENANT_ID_DEFAULT
-    owner_email = stage71_normalize_email(access.get("owner_email") or "") if not admin_access else ""
-    payload = stage91_owner_account_billing_core(tid, owner_email=owner_email, days=days, expose_owner_email=not admin_access, admin_access=admin_access)
-    payload["auth_model"] = "owner_session_or_super_admin_bypass"
-    payload["owner_email"] = owner_email if owner_email and not admin_access else None
+    owner_email = stage71_normalize_email(access.get("owner_email") or "")
+    payload = stage91_owner_account_billing_core(tid, owner_email=owner_email, days=days, expose_owner_email=True, admin_access=False)
+    payload["auth_model"] = "strict_signed_owner_session_cookie"
+    payload["owner_email"] = owner_email if owner_email else None
     payload["role"] = access.get("role") or "owner"
-    payload["opened_via_super_admin_bypass"] = bool(admin_access)
-    payload["super_admin_support_links"] = {"stage91_readiness": f"/owner-account/readiness?tenant_id={payload.get('tenant_id')}&days={days}", "admin_billing": f"/tenant/billing/ui?tenant_id={payload.get('tenant_id')}", "owner_auth_readiness": f"/owner/auth/readiness?tenant_id={payload.get('tenant_id')}"} if admin_access else {}
+    payload["opened_via_super_admin_bypass"] = False
+    payload["super_admin_support_links"] = {}
+    payload.setdefault("security", {})["stage911_super_admin_bypass_disabled_for_account_center"] = True
     return payload
 
 
@@ -19347,16 +19352,18 @@ async def admin_login_submit(request: Request):
 
 @app.get("/admin/logout", response_class=HTMLResponse)
 def admin_logout_ui():
-    html = """<!doctype html><html><head><meta charset='utf-8'/><title>Repliq Admin Logout</title></head><body style='font-family:Arial,sans-serif;padding:24px;'><h2>Logged out</h2><p>Repliq admin session cookies were cleared.</p><p><a href='/admin/login'>Open admin login</a></p></body></html>"""
+    html = """<!doctype html><html><head><meta charset='utf-8'/><title>Repliq Admin Logout</title></head><body style='font-family:Arial,sans-serif;padding:24px;'><h2>Logged out</h2><p>Repliq admin and owner session cookies were cleared for this browser.</p><p><a href='/admin/login'>Open admin login</a> · <a href='/owner/login'>Open owner login</a></p></body></html>"""
     response = HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
     stage62_clear_admin_session_cookies(response)
+    stage71_clear_owner_session_cookie(response)
     return response
 
 
 @app.post("/admin/logout")
 def admin_logout_api():
-    response = JSONResponse(content={"ok": True, "stage": "62", "logged_out": True}, headers={"Cache-Control": "no-store"})
+    response = JSONResponse(content={"ok": True, "stage": "62", "logged_out": True, "admin_session_cleared": True, "owner_session_cleared": True}, headers={"Cache-Control": "no-store"})
     stage62_clear_admin_session_cookies(response)
+    stage71_clear_owner_session_cookie(response)
     return response
 
 
@@ -19831,8 +19838,13 @@ def stage91_owner_account_json(request: Request, tenant_id: str = TENANT_ID_DEFA
 @app.get("/owner/profile/ui", response_class=HTMLResponse)
 @app.get("/owner/account-billing/ui", response_class=HTMLResponse)
 def stage91_owner_account_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
-    tid = stage711_resolve_tenant_context(request, tenant_id)
-    return HTMLResponse(content=stage91_owner_account_html(tenant_id=tid), headers={"Cache-Control": "no-store"})
+    try:
+        access = stage911_owner_account_strict_access(request, path=str(request.url.path or "/owner/account/ui"))
+    except HTTPException as e:
+        return stage71_owner_auth_error(int(e.status_code or 401), str(e.detail or "owner_login_required"), tenant_id=str(request.query_params.get("tenant_id") or tenant_id or TENANT_ID_DEFAULT))
+    requested_tid = str(request.query_params.get("tenant_id") or "").strip()
+    tid = requested_tid or str(access.get("tenant_id") or tenant_id or "").strip() or TENANT_ID_DEFAULT
+    return HTMLResponse(content=stage91_owner_account_html(tenant_id=tid), headers={"Cache-Control": "no-store", "X-Repliq-Stage91-Hotfix": "91.1"})
 
 
 @app.post("/owner/magic-link/bootstrap")
@@ -19977,16 +19989,18 @@ async def owner_login_submit(request: Request):
 
 @app.get("/owner/logout", response_class=HTMLResponse)
 def owner_logout_ui():
-    html = """<!doctype html><html><head><meta charset='utf-8'/><title>Repliq Owner Logout</title></head><body style='font-family:Arial,sans-serif;padding:24px;'><h2>Owner logged out</h2><p>Repliq owner session cookie was cleared.</p><p><a href='/owner/login'>Open owner login</a></p></body></html>"""
+    html = """<!doctype html><html><head><meta charset='utf-8'/><title>Repliq Owner Logout</title></head><body style='font-family:Arial,sans-serif;padding:24px;'><h2>Owner logged out</h2><p>Repliq owner and admin session cookies were cleared for this browser.</p><p><a href='/owner/login'>Open owner login</a> · <a href='/admin/login'>Open admin login</a></p></body></html>"""
     response = HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
     stage71_clear_owner_session_cookie(response)
+    stage62_clear_admin_session_cookies(response)
     return response
 
 
 @app.post("/owner/logout")
 def owner_logout_api():
-    response = JSONResponse(content={"ok": True, "stage": "71", "logged_out": True}, headers={"Cache-Control": "no-store"})
+    response = JSONResponse(content={"ok": True, "stage": "71", "logged_out": True, "owner_session_cleared": True, "admin_session_cleared": True}, headers={"Cache-Control": "no-store"})
     stage71_clear_owner_session_cookie(response)
+    stage62_clear_admin_session_cookies(response)
     return response
 
 

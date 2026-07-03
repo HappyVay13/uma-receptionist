@@ -1613,3 +1613,28 @@ Expected verification:
 
 Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook/runtime, SMS/WhatsApp send paths, billing semantics, auth/session semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, dialogue QA evaluator, LLM orchestration, and voice/calls were not changed.
 
+
+## Stage 91.1 — Owner Account Logout / Auth Guard Hotfix
+
+Status: implemented in archive, awaiting deploy verification.
+
+Reason:
+- After Stage 91 deploy, the owner account/profile/billing links appeared to remain accessible after logout in the same browser.
+- External no-cookie check returned 401, so the account UI was not fully public without cookies.
+- Code audit found two concrete issues for the browser-session case:
+  - Stage 91 account/profile/billing routes still allowed Stage 62 super-admin support bypass.
+  - `/admin/logout` cleared only admin cookies and `/owner/logout` cleared only owner cookies, so a browser with both sessions could still open owner pages after logging out of only one session.
+
+Scope:
+- Stage 91 account/profile/billing JSON and UI now require strict Stage 71 owner session + tenant binding.
+- Stage 62 super-admin bypass is disabled for Stage 91 account/profile/billing center routes.
+- `/admin/logout` clears both admin and owner session cookies.
+- `/owner/logout` clears both owner and admin session cookies.
+- Stage 91 readiness routes remain admin-protected.
+
+Expected verification:
+- After deploy, visit `/admin/logout` or `/owner/logout` once to clear existing browser cookies.
+- Then `/owner/account/ui?tenant_id=clinic_demo`, `/owner/profile/ui?tenant_id=clinic_demo`, and `/owner/account-billing/ui?tenant_id=clinic_demo` should require owner login.
+- With a valid owner session, the same pages should open normally.
+- `/dialogue/qa` remains 50/50 passed.
+- Existing Stage 90/90.1, Stage 89, Stage 88 and owner workspace/dashboard/launch-review checks remain OK.
