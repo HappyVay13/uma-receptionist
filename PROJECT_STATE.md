@@ -1532,3 +1532,34 @@ Expected verification:
 - Stage 78 remains the source of truth for `public_saas_ready`; `enterprise_saas_ready=false` remains explicit.
 
 Receptionist core was not changed. Booking routing, slots, date/time parsing, price side-question logic, confirmation, cancel/reschedule, Google Calendar event runtime, Telegram webhook/runtime, SMS/WhatsApp send paths, billing semantics, auth/session semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, dialogue QA evaluator, LLM orchestration, and voice/calls were not changed.
+
+## Stage 90.1 — Notification Links 500 Guard Hotfix
+
+Status: implemented in archive, awaiting deploy verification.
+
+Reason:
+- After Stage 90 deploy, notification/follow-up related links returned Internal Server Error.
+- The exact Render traceback was not available in chat at hotfix time.
+- Local stubbed route smoke from the Stage 90 archive did not reproduce the 500, so this hotfix is a narrow server-side guard around Stage 90 endpoints rather than a broad rewrite.
+
+Scope:
+- Added Stage 90.1 safe guards for notification/follow-up readiness, JSON payload, and UI bootstrap paths.
+- If optional Stage 90 data access fails, endpoints now return owner-safe empty/diagnostic payloads instead of unhandled 500 responses.
+- Exception details exposed to owner/admin responses are limited to reason codes and exception class names only.
+- Stage 90 remains read-only visibility only.
+
+No runtime behavior changes:
+- No notification sends.
+- No external customer messages.
+- No Telegram/SMS/WhatsApp/email sends.
+- No notification queue/background job.
+- No runtime writes.
+- No booking/dialogue/Calendar/Telegram runtime changes.
+
+Expected verification:
+- `/dialogue/qa` = 50/50 passed.
+- Notification/follow-up links no longer return Internal Server Error.
+- Stage 90 readiness endpoints return JSON without 500.
+- Stage 90 owner UI endpoints open with valid owner session or super-admin bypass.
+- Stage 89 analytics, Stage 88 preview, owner workspace, owner dashboard and launch review remain OK.
+- `enterprise_saas_ready=false` remains explicit.

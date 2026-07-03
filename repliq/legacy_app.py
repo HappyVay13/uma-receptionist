@@ -6410,8 +6410,8 @@ def stage89_empty_visibility_payload(tenant_id_clean: str, days: int, reason: st
 
 def stage89_owner_visibility_core(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14, limit: int = 50) -> Dict[str, Any]:
     tid = (tenant_id or "").strip() or TENANT_ID_DEFAULT
-    days = max(1, min(int(days or 14), 90))
-    limit = stage89_safe_limit(limit, default=50, maximum=100)
+    days = stage901_safe_days(days)
+    limit = stage901_safe_limit(limit, default=50)
     base = (SERVER_BASE_URL or "").rstrip("/")
 
     def url(path: str) -> str:
@@ -6750,6 +6750,38 @@ def stage90_empty_followup_payload(tenant_id_clean: str, days: int, reason: str,
     }
 
 
+def stage901_safe_days(value: Any, default: int = 14) -> int:
+    try:
+        return max(1, min(int(value or default), 90))
+    except Exception:
+        return max(1, min(int(default or 14), 90))
+
+
+def stage901_safe_limit(value: Any, default: int = 50) -> int:
+    try:
+        return stage89_safe_limit(value, default=default, maximum=100)
+    except Exception:
+        return max(1, min(int(default or 50), 100))
+
+
+def stage901_exception_payload(tenant_id: str, days: Any, reason: str, admin_access: bool = False) -> Dict[str, Any]:
+    tid = str(tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
+    safe_days = stage901_safe_days(days)
+    payload = stage90_empty_followup_payload(tid, safe_days, reason, tenant_found=True)
+    payload["stage"] = "90.1"
+    payload["previous_stage"] = "90"
+    payload["status"] = "attention"
+    payload["owner_notifications_ready"] = False
+    payload["lead_followup_visibility_ready"] = False
+    payload["hotfix"] = "Stage 90.1 — Notification Links 500 Guard"
+    payload["blocking"] = list(dict.fromkeys((payload.get("blocking") or []) + ["stage90_exception_guarded"]))
+    payload["warnings"] = list(dict.fromkeys((payload.get("warnings") or []) + [str(reason or "stage90_exception_guarded")]))
+    payload["auth_model"] = "owner_session_or_super_admin_bypass"
+    payload["opened_via_super_admin_bypass"] = bool(admin_access)
+    payload["note"] = "Stage 90.1 keeps notification/follow-up visibility read-only and returns an owner-safe empty/diagnostic payload instead of Internal Server Error when optional analytics data access fails. It does not send notifications or change runtime dialogue/booking behavior."
+    return payload
+
+
 def stage90_owner_followup_core(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14, limit: int = 50) -> Dict[str, Any]:
     tid = (tenant_id or "").strip() or TENANT_ID_DEFAULT
     days = max(1, min(int(days or 14), 90))
@@ -6930,22 +6962,32 @@ def stage90_owner_followup_core(tenant_id: str = TENANT_ID_DEFAULT, days: int = 
 
 def stage90_owner_notifications_payload(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14, limit: int = 50) -> Dict[str, Any]:
     admin_access = bool(stage61_token_valid(stage61_request_token(request)) or stage62_request_has_valid_session(request))
-    if admin_access:
-        tid = stage711_resolve_tenant_context(request, tenant_id)
-        access = {"ok": True, "tenant_id": tid, "owner_email": "super_admin", "role": "super_admin"}
-    else:
-        request_path = str(getattr(request.url, "path", "") or "/owner/notifications")
-        access = stage71_owner_request_access(request, path=request_path)
-        if not access.get("ok"):
-            raise HTTPException(status_code=401, detail=access.get("error") or "owner_login_required")
-        tid = str(access.get("tenant_id") or tenant_id or "").strip() or TENANT_ID_DEFAULT
-    payload = stage90_owner_followup_core(tid, days=days, limit=limit)
-    payload["auth_model"] = "owner_session_or_super_admin_bypass"
-    payload["owner_email"] = stage71_normalize_email(access.get("owner_email") or "") if not admin_access else None
-    payload["role"] = access.get("role") or "owner"
-    payload["opened_via_super_admin_bypass"] = bool(admin_access)
-    payload["super_admin_support_links"] = {"stage90_readiness": f"/owner-notifications/readiness?tenant_id={payload.get('tenant_id')}&days={days}", "owner_analytics": f"/owner/analytics/ui?tenant_id={payload.get('tenant_id')}&days={days}", "admin_conversations": f"/conversations?tenant_id={payload.get('tenant_id')}"} if admin_access else {}
-    return payload
+    safe_days = stage901_safe_days(days)
+    safe_limit = stage901_safe_limit(limit, default=50)
+    try:
+        if admin_access:
+            tid = stage711_resolve_tenant_context(request, tenant_id)
+            access = {"ok": True, "tenant_id": tid, "owner_email": "super_admin", "role": "super_admin"}
+        else:
+            request_path = str(getattr(request.url, "path", "") or "/owner/notifications")
+            access = stage71_owner_request_access(request, path=request_path)
+            if not access.get("ok"):
+                raise HTTPException(status_code=401, detail=access.get("error") or "owner_login_required")
+            tid = str(access.get("tenant_id") or tenant_id or "").strip() or TENANT_ID_DEFAULT
+        payload = stage90_owner_followup_core(tid, days=safe_days, limit=safe_limit)
+        payload["auth_model"] = "owner_session_or_super_admin_bypass"
+        payload["owner_email"] = stage71_normalize_email(access.get("owner_email") or "") if not admin_access else None
+        payload["role"] = access.get("role") or "owner"
+        payload["opened_via_super_admin_bypass"] = bool(admin_access)
+        payload["super_admin_support_links"] = {"stage90_readiness": f"/owner-notifications/readiness?tenant_id={payload.get('tenant_id')}&days={safe_days}", "owner_analytics": f"/owner/analytics/ui?tenant_id={payload.get('tenant_id')}&days={safe_days}", "admin_conversations": f"/conversations?tenant_id={payload.get('tenant_id')}"} if admin_access else {}
+        return payload
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error("stage901_owner_notifications_payload_guarded tenant_id=%s err=%s", tenant_id, e, exc_info=True)
+        payload = stage901_exception_payload(tenant_id, safe_days, f"stage90_payload_exception:{e.__class__.__name__}", admin_access=admin_access)
+        payload["super_admin_support_links"] = {"stage90_readiness": f"/owner-notifications/readiness?tenant_id={payload.get('tenant_id')}&days={safe_days}", "owner_analytics": f"/owner/analytics/ui?tenant_id={payload.get('tenant_id')}&days={safe_days}"} if admin_access else {}
+        return payload
 
 
 def stage90_owner_notifications_html(tenant_id: str = TENANT_ID_DEFAULT) -> str:
@@ -19426,8 +19468,17 @@ def stage89_owner_analytics_ui(request: Request, tenant_id: str = TENANT_ID_DEFA
 @app.get("/lead-follow-up/readiness")
 @app.get("/notifications/owner/readiness")
 def stage90_owner_notifications_readiness(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14, limit: int = 50):
-    tid = stage711_resolve_tenant_context(request, tenant_id)
-    return stage90_owner_followup_core(tid, days=days, limit=limit)
+    safe_days = stage901_safe_days(days)
+    safe_limit = stage901_safe_limit(limit, default=50)
+    try:
+        tid = stage711_resolve_tenant_context(request, tenant_id)
+        payload = stage90_owner_followup_core(tid, days=safe_days, limit=safe_limit)
+        if str(payload.get("stage") or "") == "90":
+            payload["stage90_1_guard_available"] = True
+        return payload
+    except Exception as e:
+        log.error("stage901_owner_notifications_readiness_guarded tenant_id=%s err=%s", tenant_id, e, exc_info=True)
+        return stage901_exception_payload(tenant_id, safe_days, f"stage90_readiness_exception:{e.__class__.__name__}", admin_access=True)
 
 
 @app.get("/owner/notifications")
@@ -19441,8 +19492,13 @@ def stage90_owner_notifications_json(request: Request, tenant_id: str = TENANT_I
 @app.get("/owner/follow-ups/ui", response_class=HTMLResponse)
 @app.get("/owner/lead-followup/ui", response_class=HTMLResponse)
 def stage90_owner_notifications_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
-    tid = stage711_resolve_tenant_context(request, tenant_id)
-    return HTMLResponse(content=stage90_owner_notifications_html(tenant_id=tid), headers={"Cache-Control": "no-store"})
+    try:
+        tid = stage711_resolve_tenant_context(request, tenant_id)
+        return HTMLResponse(content=stage90_owner_notifications_html(tenant_id=tid), headers={"Cache-Control": "no-store"})
+    except Exception as e:
+        log.error("stage901_owner_notifications_ui_guarded tenant_id=%s err=%s", tenant_id, e, exc_info=True)
+        safe_tid = str(tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
+        return HTMLResponse(content=stage90_owner_notifications_html(tenant_id=safe_tid), headers={"Cache-Control": "no-store", "X-Repliq-Stage90-Hotfix": "90.1"})
 
 
 @app.post("/owner/magic-link/bootstrap")

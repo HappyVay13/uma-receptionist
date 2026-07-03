@@ -863,3 +863,16 @@ Stage 87 owner launch-review pages must not perform deep cross-stage readiness f
 - Current protected baseline remains `/dialogue/qa = 50/50 passed`.
 - Stage 78 remains the source of truth for `public_saas_ready`.
 - `enterprise_saas_ready` remains false; enterprise maturity is a later phase.
+
+## Stage 90.1 — Notification Links 500 Guard Hotfix Rules
+
+- Stage 90.1 is a hotfix for Stage 90 notification/follow-up links returning Internal Server Error after deploy.
+- Stage 90.1 may only add narrow guards/fallback payloads around Stage 90 notification/follow-up readiness, JSON, and UI paths.
+- Stage 90.1 must not add notification sends, external messages, queue jobs, background jobs, new write paths, or new runtime persistence.
+- Stage 90.1 must not expose stack traces, raw SQL, raw user IDs, raw user keys, tokens, secrets, webhook credentials, Google credentials, Telegram secrets, billing secrets, magic tokens, CSRF secrets, or admin tokens.
+- Stage 90.1 owner notification/follow-up endpoints remain Stage 71 owner-session protected.
+- Stage 90.1 readiness endpoints remain Stage 61/62 admin protected.
+- No Stage 74 CSRF path is required because the hotfix remains read-only.
+- Stage 90.1 must not change receptionist dialogue runtime, booking routing, slot generation, date/time parsing, side-question handling, confirmation, cancellation, rescheduling, Google Calendar runtime, Telegram webhook/runtime, SMS/WhatsApp send paths, billing semantics, auth/session semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, LLM orchestration, voice/calls, or regression evaluator rules.
+- Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+- `enterprise_saas_ready` remains false; enterprise maturity is a later phase.
