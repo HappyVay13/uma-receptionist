@@ -203,6 +203,10 @@ STAGE71_OWNER_PROTECTED_EXACT_PATHS = {
     "/owner/data-quality/ui",
     "/owner/tenant-health",
     "/owner/tenant-health/ui",
+    "/owner/get-started",
+    "/owner/get-started/ui",
+    "/owner/welcome",
+    "/owner/welcome/ui",
     "/owner/business-memory",
     "/owner/business-memory/ui",
     "/owner/business-memory/update",
@@ -281,6 +285,10 @@ STAGE71_STRICT_OWNER_ONLY_EXACT_PATHS = {
     "/owner/data-quality/ui",
     "/owner/tenant-health",
     "/owner/tenant-health/ui",
+    "/owner/get-started",
+    "/owner/get-started/ui",
+    "/owner/welcome",
+    "/owner/welcome/ui",
 }
 
 
@@ -325,6 +333,10 @@ STAGE61_PROTECTED_EXACT_PATHS = {
     "/workspace/setup-health/readiness",
     "/data-quality/owner/readiness",
     "/tenant/setup-health/readiness",
+    "/public-signup-workspace/readiness",
+    "/signup-owner-workspace/readiness",
+    "/owner-workspace/e2e/readiness",
+    "/smb/onboarding/e2e/readiness",
     "/access/readiness",
     "/admin/access/readiness",
     "/admin/access/enforcement",
@@ -4038,6 +4050,7 @@ def stage71_owner_dashboard_payload(request: Request, tenant_id: str = TENANT_ID
             "admin_links_exposed_to_owner": False,
             "primary_next_action": "review_workspace_and_billing",
             "quickstart_steps": [
+                {"key": "get_started", "label": "Continue setup", "status": "ready", "href": f"/owner/get-started/ui?tenant_id={tid}"},
                 {"key": "workspace", "label": "Review workspace", "status": "ready", "href": f"/owner/workspace/ui?tenant_id={tid}"},
                 {"key": "launch_review", "label": "Final launch checklist", "status": "ready", "href": f"/owner/launch-review/ui?tenant_id={tid}"},
                 {"key": "client_preview", "label": "Client preview / demo mode", "status": "ready", "href": f"/owner/demo/ui?tenant_id={tid}"},
@@ -4056,7 +4069,7 @@ def stage71_owner_dashboard_payload(request: Request, tenant_id: str = TENANT_ID
                 {"key": "support_setup", "label": "Calendar/channel setup remains controlled by Repliq support in this SMB phase", "status": "support_controlled", "href": None},
             ],
         },
-        "links": {"owner_dashboard": f"/owner/dashboard/ui?tenant_id={tid}", "owner_workspace": f"/owner/workspace/ui?tenant_id={tid}", "owner_launch_review": f"/owner/launch-review/ui?tenant_id={tid}", "owner_demo": f"/owner/demo/ui?tenant_id={tid}", "owner_client_preview": f"/owner/client-preview/ui?tenant_id={tid}", "owner_analytics": f"/owner/analytics/ui?tenant_id={tid}", "owner_conversation_insights": f"/owner/conversation-insights/ui?tenant_id={tid}", "owner_notifications": f"/owner/notifications/ui?tenant_id={tid}", "owner_followups": f"/owner/follow-ups/ui?tenant_id={tid}", "owner_setup": f"/owner/setup/ui?tenant_id={tid}", "owner_business_profile": f"/owner/business-profile/ui?tenant_id={tid}", "owner_services": f"/owner/services/ui?tenant_id={tid}", "owner_service_catalog": f"/owner/service-catalog/ui?tenant_id={tid}", "owner_business_memory": f"/owner/business-memory/ui?tenant_id={tid}", "owner_faq": f"/owner/faq/ui?tenant_id={tid}", "owner_workspace_settings": f"/owner/workspace/settings/ui?tenant_id={tid}", "owner_calendar": f"/owner/calendar/ui?tenant_id={tid}", "owner_availability": f"/owner/availability/ui?tenant_id={tid}", "owner_telegram": f"/owner/telegram/ui?tenant_id={tid}", "owner_control_center": f"/owner/control-center/ui?tenant_id={tid}", "owner_session": f"/owner/session?tenant_id={tid}", "owner_account": f"/owner/account/ui?tenant_id={tid}", "owner_profile": f"/owner/profile/ui?tenant_id={tid}", "owner_account_billing": f"/owner/account-billing/ui?tenant_id={tid}", "owner_setup_health": f"/owner/setup-health/ui?tenant_id={tid}", "owner_data_quality": f"/owner/data-quality/ui?tenant_id={tid}", "owner_tenant_health": f"/owner/tenant-health/ui?tenant_id={tid}", "owner_billing": f"/owner/billing/ui?tenant_id={tid}", "owner_logout": "/owner/logout"},
+        "links": {"owner_get_started": f"/owner/get-started/ui?tenant_id={tid}", "owner_dashboard": f"/owner/dashboard/ui?tenant_id={tid}", "owner_workspace": f"/owner/workspace/ui?tenant_id={tid}", "owner_launch_review": f"/owner/launch-review/ui?tenant_id={tid}", "owner_demo": f"/owner/demo/ui?tenant_id={tid}", "owner_client_preview": f"/owner/client-preview/ui?tenant_id={tid}", "owner_analytics": f"/owner/analytics/ui?tenant_id={tid}", "owner_conversation_insights": f"/owner/conversation-insights/ui?tenant_id={tid}", "owner_notifications": f"/owner/notifications/ui?tenant_id={tid}", "owner_followups": f"/owner/follow-ups/ui?tenant_id={tid}", "owner_setup": f"/owner/setup/ui?tenant_id={tid}", "owner_business_profile": f"/owner/business-profile/ui?tenant_id={tid}", "owner_services": f"/owner/services/ui?tenant_id={tid}", "owner_service_catalog": f"/owner/service-catalog/ui?tenant_id={tid}", "owner_business_memory": f"/owner/business-memory/ui?tenant_id={tid}", "owner_faq": f"/owner/faq/ui?tenant_id={tid}", "owner_workspace_settings": f"/owner/workspace/settings/ui?tenant_id={tid}", "owner_calendar": f"/owner/calendar/ui?tenant_id={tid}", "owner_availability": f"/owner/availability/ui?tenant_id={tid}", "owner_telegram": f"/owner/telegram/ui?tenant_id={tid}", "owner_control_center": f"/owner/control-center/ui?tenant_id={tid}", "owner_session": f"/owner/session?tenant_id={tid}", "owner_account": f"/owner/account/ui?tenant_id={tid}", "owner_profile": f"/owner/profile/ui?tenant_id={tid}", "owner_account_billing": f"/owner/account-billing/ui?tenant_id={tid}", "owner_setup_health": f"/owner/setup-health/ui?tenant_id={tid}", "owner_data_quality": f"/owner/data-quality/ui?tenant_id={tid}", "owner_tenant_health": f"/owner/tenant-health/ui?tenant_id={tid}", "owner_billing": f"/owner/billing/ui?tenant_id={tid}", "owner_logout": "/owner/logout"},
         "super_admin_support_links": {"admin_control_center": f"/control-center/ui?tenant_id={tid}", "public_saas_audit": f"/public-saas/gap-audit/ui?tenant_id={tid}", "billing_readiness": f"/billing/readiness?tenant_id={tid}"} if admin_access else {},
     }
 
@@ -4226,7 +4239,7 @@ def stage80_workspace_setup_core(tenant_id: str = TENANT_ID_DEFAULT, days: int =
         "security": {"owner_workspace_routes_owner_session_bound": bool(not missing_owner_protection and not owner_admin_overlap), "stage80_readiness_routes_admin_protected": bool(not missing_readiness_protection), "tenant_id_parameter_is_not_auth": True, "owner_admin_links_exposed_to_owner": False, "admin_config_links_hidden_from_owner": True, "raw_admin_token_exposed": False, "raw_owner_login_code_exposed": False, "raw_magic_token_exposed": False, "raw_magic_token_hash_exposed": False, "telegram_token_exposed": False, "google_credentials_exposed": False},
         "blocking": list(dict.fromkeys([str(x) for x in blocking if str(x)])),
         "warnings": list(dict.fromkeys([str(x) for x in warnings if str(x)])),
-        "links": {"owner_workspace": url(f"/owner/workspace/ui?tenant_id={tenant_id_clean}"), "owner_launch_review": url(f"/owner/launch-review/ui?tenant_id={tenant_id_clean}"), "owner_demo": url(f"/owner/demo/ui?tenant_id={tenant_id_clean}"), "owner_client_preview": url(f"/owner/client-preview/ui?tenant_id={tenant_id_clean}"), "owner_analytics": url(f"/owner/analytics/ui?tenant_id={tenant_id_clean}"), "owner_conversation_insights": url(f"/owner/conversation-insights/ui?tenant_id={tenant_id_clean}"), "owner_notifications": url(f"/owner/notifications/ui?tenant_id={tenant_id_clean}"), "owner_followups": url(f"/owner/follow-ups/ui?tenant_id={tenant_id_clean}"), "owner_setup": url(f"/owner/setup/ui?tenant_id={tenant_id_clean}"), "owner_business_profile": url(f"/owner/business-profile/ui?tenant_id={tenant_id_clean}"), "owner_services": url(f"/owner/services/ui?tenant_id={tenant_id_clean}"), "owner_service_catalog": url(f"/owner/service-catalog/ui?tenant_id={tenant_id_clean}"), "owner_business_memory": url(f"/owner/business-memory/ui?tenant_id={tenant_id_clean}"), "owner_faq": url(f"/owner/faq/ui?tenant_id={tenant_id_clean}"), "owner_workspace_settings": url(f"/owner/workspace/settings/ui?tenant_id={tenant_id_clean}"), "owner_calendar": url(f"/owner/calendar/ui?tenant_id={tenant_id_clean}"), "owner_availability": url(f"/owner/availability/ui?tenant_id={tenant_id_clean}"), "owner_telegram": url(f"/owner/telegram/ui?tenant_id={tenant_id_clean}"), "owner_dashboard": url(f"/owner/dashboard/ui?tenant_id={tenant_id_clean}"), "owner_account": url(f"/owner/account/ui?tenant_id={tenant_id_clean}"), "owner_profile": url(f"/owner/profile/ui?tenant_id={tenant_id_clean}"), "owner_account_billing": url(f"/owner/account-billing/ui?tenant_id={tenant_id_clean}"), "owner_setup_health": url(f"/owner/setup-health/ui?tenant_id={tenant_id_clean}"), "owner_data_quality": url(f"/owner/data-quality/ui?tenant_id={tenant_id_clean}"), "owner_tenant_health": url(f"/owner/tenant-health/ui?tenant_id={tenant_id_clean}"), "owner_billing": url(f"/owner/billing/ui?tenant_id={tenant_id_clean}"), "owner_session": url(f"/owner/session?tenant_id={tenant_id_clean}"), "stage80_readiness": url(f"/tenant-workspace/readiness?tenant_id={tenant_id_clean}&days={days}"), "stage79_readiness": url(f"/launch-ux/readiness?tenant_id={tenant_id_clean}&days={days}"), "final_public_saas_readiness": url(f"/public-saas/final-readiness?tenant_id={tenant_id_clean}&days={days}")},
+        "links": {"owner_get_started": url(f"/owner/get-started/ui?tenant_id={tenant_id_clean}"), "owner_workspace": url(f"/owner/workspace/ui?tenant_id={tenant_id_clean}"), "owner_launch_review": url(f"/owner/launch-review/ui?tenant_id={tenant_id_clean}"), "owner_demo": url(f"/owner/demo/ui?tenant_id={tenant_id_clean}"), "owner_client_preview": url(f"/owner/client-preview/ui?tenant_id={tenant_id_clean}"), "owner_analytics": url(f"/owner/analytics/ui?tenant_id={tenant_id_clean}"), "owner_conversation_insights": url(f"/owner/conversation-insights/ui?tenant_id={tenant_id_clean}"), "owner_notifications": url(f"/owner/notifications/ui?tenant_id={tenant_id_clean}"), "owner_followups": url(f"/owner/follow-ups/ui?tenant_id={tenant_id_clean}"), "owner_setup": url(f"/owner/setup/ui?tenant_id={tenant_id_clean}"), "owner_business_profile": url(f"/owner/business-profile/ui?tenant_id={tenant_id_clean}"), "owner_services": url(f"/owner/services/ui?tenant_id={tenant_id_clean}"), "owner_service_catalog": url(f"/owner/service-catalog/ui?tenant_id={tenant_id_clean}"), "owner_business_memory": url(f"/owner/business-memory/ui?tenant_id={tenant_id_clean}"), "owner_faq": url(f"/owner/faq/ui?tenant_id={tenant_id_clean}"), "owner_workspace_settings": url(f"/owner/workspace/settings/ui?tenant_id={tenant_id_clean}"), "owner_calendar": url(f"/owner/calendar/ui?tenant_id={tenant_id_clean}"), "owner_availability": url(f"/owner/availability/ui?tenant_id={tenant_id_clean}"), "owner_telegram": url(f"/owner/telegram/ui?tenant_id={tenant_id_clean}"), "owner_dashboard": url(f"/owner/dashboard/ui?tenant_id={tenant_id_clean}"), "owner_account": url(f"/owner/account/ui?tenant_id={tenant_id_clean}"), "owner_profile": url(f"/owner/profile/ui?tenant_id={tenant_id_clean}"), "owner_account_billing": url(f"/owner/account-billing/ui?tenant_id={tenant_id_clean}"), "owner_setup_health": url(f"/owner/setup-health/ui?tenant_id={tenant_id_clean}"), "owner_data_quality": url(f"/owner/data-quality/ui?tenant_id={tenant_id_clean}"), "owner_tenant_health": url(f"/owner/tenant-health/ui?tenant_id={tenant_id_clean}"), "owner_billing": url(f"/owner/billing/ui?tenant_id={tenant_id_clean}"), "owner_session": url(f"/owner/session?tenant_id={tenant_id_clean}"), "stage80_readiness": url(f"/tenant-workspace/readiness?tenant_id={tenant_id_clean}&days={days}"), "stage79_readiness": url(f"/launch-ux/readiness?tenant_id={tenant_id_clean}&days={days}"), "final_public_saas_readiness": url(f"/public-saas/final-readiness?tenant_id={tenant_id_clean}&days={days}")},
         "note": "Stage 80 adds owner-safe workspace setup completion UX/readiness only. It does not expose admin setup links to owners and does not change receptionist dialogue, booking, slots, Google Calendar event runtime, Telegram webhook runtime, billing semantics, CSRF, abuse/rate-limits, magic-link semantics, LLM orchestration, or QA evaluator behavior.",
     }
 
@@ -5149,6 +5162,218 @@ def stage83_owner_business_memory_html(tenant_id: str = TENANT_ID_DEFAULT) -> st
 <style>body{font-family:Inter,system-ui,-apple-system,Segoe UI,Arial,sans-serif;background:#f6f7fb;color:#111827;margin:0;padding:24px}.wrap{max-width:1180px;margin:0 auto}.hero,.card{background:#fff;border:1px solid #e5e7eb;border-radius:20px;padding:18px;margin:14px 0;box-shadow:0 8px 25px rgba(17,24,39,.05)}.hero{background:#111827;color:white}.hero p{color:#d1d5db}.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.sub{color:#64748b;font-size:14px;line-height:1.45}label{display:block;font-size:12px;font-weight:800;margin:8px 0 5px;color:#334155}input,textarea{width:100%;box-sizing:border-box;border:1px solid #cbd5e1;border-radius:12px;padding:10px;font-size:14px}textarea{min-height:190px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.generic textarea{min-height:140px}button{border:0;border-radius:12px;padding:10px 13px;background:#111827;color:white;font-weight:800;cursor:pointer}.secondary{background:#e5e7eb;color:#111827}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.badge{display:inline-block;border-radius:999px;padding:5px 9px;background:#e5e7eb;font-size:12px;font-weight:800;margin:3px 4px 3px 0}.ok{background:#dcfce7;color:#166534}.warn{background:#fef3c7;color:#92400e}.err{background:#fee2e2;color:#991b1b}pre{background:#0f172a;color:#e2e8f0;border-radius:14px;padding:14px;max-height:420px;overflow:auto;white-space:pre-wrap}@media(max-width:900px){body{padding:12px}.grid{grid-template-columns:1fr}}</style></head>
 <body><div class="wrap"><div class="hero"><h1>Business Memory / FAQ</h1><p>Owner-safe receptionist facts: FAQ, policies, prices, address, and booking rules used in customer conversations.</p><div class="actions"><input id="tenant_id" style="max-width:280px"/><button onclick="loadMemory()">Load</button><button class="secondary" onclick="go('/owner/workspace/ui?tenant_id='+encTenant())">Workspace</button><button class="secondary" onclick="go('/owner/services/ui?tenant_id='+encTenant())">Services</button><button class="secondary" onclick="go('/owner/setup/ui?tenant_id='+encTenant())">Setup</button><button class="secondary" onclick="go('/owner/logout')">Logout</button></div></div><div class="card"><h2>Memory setup</h2><div id="badges"></div><div class="sub" id="summary"></div><div class="actions"><button onclick="addExamples()">Add examples</button><button onclick="saveMemory()">Save memory / FAQ</button><button class="secondary" onclick="loadMemory()">Reset</button></div><div id="msg" class="sub"></div></div><div class="grid"><div class="card"><h3>Latvian</h3><label>Business memory LV</label><textarea id="business_memory_lv"></textarea><label>FAQ LV</label><textarea id="faq_lv"></textarea><label>Booking rules LV</label><textarea id="booking_rules_lv"></textarea></div><div class="card"><h3>Russian</h3><label>Business memory RU</label><textarea id="business_memory_ru"></textarea><label>FAQ RU</label><textarea id="faq_ru"></textarea><label>Booking rules RU</label><textarea id="booking_rules_ru"></textarea></div><div class="card"><h3>English</h3><label>Business memory EN</label><textarea id="business_memory_en"></textarea><label>FAQ EN</label><textarea id="faq_en"></textarea><label>Booking rules EN</label><textarea id="booking_rules_en"></textarea></div></div><div class="card generic"><h3>Generic optional fields</h3><div class="grid"><div><label>Business memory</label><textarea id="business_memory"></textarea></div><div><label>FAQ</label><textarea id="faq"></textarea></div><div><label>Policies</label><textarea id="policies"></textarea></div></div><label>Booking rules</label><textarea id="booking_rules"></textarea><div class="sub">Use public business facts only. Do not paste API keys, tokens, passwords, private customer data, or internal credentials.</div></div><div class="card"><h2>Raw readiness</h2><pre id="raw">Loading...</pre></div></div>
 <script>const DEFAULT_TENANT_ID=__TENANT_ID_JSON__;const fields=['business_memory_lv','business_memory_ru','business_memory_en','faq_lv','faq_ru','faq_en','booking_rules_lv','booking_rules_ru','booking_rules_en','business_memory','faq','booking_rules','policies'];function el(id){return document.getElementById(id)}function tenant(){return (el('tenant_id').value||'').trim()||DEFAULT_TENANT_ID||'clinic_demo'}function encTenant(){return encodeURIComponent(tenant())}function go(p){window.location=p}function esc(v){return v===null||v===undefined?'':String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;')}function badge(ok,label){return '<span class="badge '+(ok?'ok':'warn')+'">'+esc(label)+'</span>'}function setMsg(kind,text){el('msg').innerHTML='<span class="badge '+kind+'">'+esc(text)+'</span>'}async function csrf(){const r=await fetch('/csrf/token?scope=owner&tenant_id='+encTenant(),{credentials:'include'});const d=await r.json().catch(()=>({}));return d.csrf_token||''}function render(d){el('raw').textContent=JSON.stringify(d,null,2);const f=d.fields||{};fields.forEach(k=>{if(el(k))el(k).value=f[k]||''});const c=d.completion||{};const pc=d.price_consistency||{};const pcc=pc.completion||{};const priceIssues=(pcc.conflict_count||0)+(pcc.stale_managed_block_count||0);el('badges').innerHTML=badge(!!d.business_memory_owner_ux_ready,'owner UX: '+!!d.business_memory_owner_ux_ready)+badge(!!d.business_memory_content_ready,'content: '+!!d.business_memory_content_ready)+badge(!!d.business_memory_setup_complete,'setup complete: '+!!d.business_memory_setup_complete)+badge(!priceIssues,'price consistency: '+(!priceIssues));el('summary').textContent=(c.total_line_count||0)+' total lines · languages '+(c.configured_languages||0)+'/'+(c.total_languages||3)+' · FAQ lines '+(c.faq_line_count||0)+' · price issues '+priceIssues}async function loadMemory(){el('tenant_id').value=tenant();const r=await fetch('/owner/business-memory?tenant_id='+encTenant(),{credentials:'include'});const d=await r.json().catch(()=>({}));if(!r.ok){el('raw').textContent=JSON.stringify(d,null,2);setMsg('err',d.detail||d.error||'Load failed');return;}render(d);setMsg('ok','Loaded')}function addExamples(){const examples={business_memory_lv:'Adrese: Rēzekne\nDarba laiks: 09:00-18:00',faq_lv:'Cik maksā konsultācija? Konsultācija maksā 10 eiro.',booking_rules_lv:'Atcelšana: vismaz 2 stundas iepriekš.',business_memory_ru:'Адрес: Резекне\nВремя работы: 09:00-18:00',faq_ru:'Сколько стоит консультация? Консультация стоит 10 евро.',booking_rules_ru:'Отмена: минимум за 2 часа.',business_memory_en:'Address: Rezekne\nWorking hours: 09:00-18:00',faq_en:'How much is consultation? Consultation is 10 euro.',booking_rules_en:'Cancellation: at least 2 hours before.'};Object.entries(examples).forEach(([k,v])=>{if(el(k)&&!el(k).value.trim())el(k).value=v})}async function saveMemory(){setMsg('warn','Saving...');const token=await csrf();const payload={tenant_id:tenant()};fields.forEach(k=>{if(el(k))payload[k]=el(k).value});const r=await fetch('/owner/business-memory/update?tenant_id='+encTenant(),{method:'POST',headers:{'Content-Type':'application/json','X-Repliq-CSRF-Token':token},credentials:'include',body:JSON.stringify(payload)});const d=await r.json().catch(()=>({}));el('raw').textContent=JSON.stringify(d,null,2);if(!r.ok||!d.ok){setMsg('err',(d.detail&&d.detail.error)||d.error||'Save failed');return;}setMsg('ok','Saved');await loadMemory()}el('tenant_id').value=DEFAULT_TENANT_ID||'clinic_demo';loadMemory();</script></body></html>'''
+    return html.replace("__TENANT_ID_JSON__", tenant_id_json)
+
+
+# -------------------------
+# STAGE 93: PUBLIC SIGNUP -> OWNER WORKSPACE END-TO-END POLISH
+# -------------------------
+STAGE93_READINESS_PATHS = {
+    "/public-signup-workspace/readiness",
+    "/signup-owner-workspace/readiness",
+    "/owner-workspace/e2e/readiness",
+    "/smb/onboarding/e2e/readiness",
+}
+STAGE93_OWNER_HANDOFF_PATHS = {
+    "/owner/get-started",
+    "/owner/get-started/ui",
+    "/owner/welcome",
+    "/owner/welcome/ui",
+}
+STAGE93_MATURITY_TARGET = "mature_smb_saas_public_signup_owner_workspace_e2e_phase"
+
+
+def stage93_safe_dependency(name: str, fn) -> Dict[str, Any]:
+    try:
+        value = fn()
+        if isinstance(value, dict):
+            return value
+        return {"ok": False, "dependency": name, "error": "invalid_dependency_payload"}
+    except Exception as e:
+        log.error("stage93_dependency_failed dependency=%s err=%s", name, e)
+        return {"ok": False, "dependency": name, "error": e.__class__.__name__}
+
+
+def stage93_gate(key: str, label: str, ready: bool, evidence: Optional[Dict[str, Any]] = None, blocker: str = "") -> Dict[str, Any]:
+    return {
+        "key": key,
+        "label": label,
+        "ready": bool(ready),
+        "status": "ready" if ready else "blocked",
+        "blocker": None if ready else (blocker or f"{key}_not_ready"),
+        "evidence": evidence or {},
+    }
+
+
+def stage93_public_signup_owner_workspace_core(tenant_id: str = TENANT_ID_DEFAULT, days: int = 14) -> Dict[str, Any]:
+    tid = str(tenant_id or "").strip() or TENANT_ID_DEFAULT
+    days = max(1, min(int(days or 14), 60))
+    base = (SERVER_BASE_URL or "").rstrip("/")
+
+    def url(path: str) -> str:
+        return base + path if base else path
+
+    try:
+        tenant = get_existing_tenant(tid)
+    except Exception as e:
+        log.error("stage93_tenant_lookup_failed tenant_id=%s err=%s", tid, e)
+        tenant = {}
+    tenant_found = bool((tenant or {}).get("_id"))
+    tenant_id_clean = str((tenant or {}).get("_id") or (tenant or {}).get("id") or tid).strip() or tid
+
+    signup = stage93_safe_dependency("public_signup", lambda: stage72_public_signup_readiness_payload(tenant_id_clean))
+    launch_ux = stage93_safe_dependency("launch_ux", lambda: stage79_launch_ux_readiness_payload(tenant_id_clean, days=days))
+    workspace = stage93_safe_dependency("owner_workspace", lambda: stage80_workspace_setup_core(tenant_id_clean, days=days))
+    setup_health = stage93_safe_dependency("setup_health", lambda: stage92_tenant_data_quality_core(tenant_id_clean, days=days))
+    owner_auth = stage93_safe_dependency("owner_auth", lambda: stage71_owner_auth_readiness_payload(tenant_id_clean))
+    final_lock = stage93_safe_dependency("final_public_saas_lock", lambda: stage78_final_public_saas_readiness_payload(tenant_id_clean, days=days, include_gap_audit=False))
+
+    public_signup_paths = {"/public/signup", "/public/signup/ui"}
+    protected_public_signup_paths = sorted(path for path in public_signup_paths if path in STAGE61_PROTECTED_EXACT_PATHS or path in STAGE71_OWNER_PROTECTED_EXACT_PATHS)
+    missing_owner_protection = sorted(path for path in STAGE93_OWNER_HANDOFF_PATHS if path not in STAGE71_OWNER_PROTECTED_EXACT_PATHS)
+    missing_strict_owner = sorted(path for path in STAGE93_OWNER_HANDOFF_PATHS if path not in STAGE71_STRICT_OWNER_ONLY_EXACT_PATHS)
+    owner_admin_overlap = sorted(path for path in STAGE93_OWNER_HANDOFF_PATHS if path in STAGE61_PROTECTED_EXACT_PATHS)
+    missing_readiness_protection = sorted(path for path in STAGE93_READINESS_PATHS if path not in STAGE61_PROTECTED_EXACT_PATHS)
+
+    signup_ready = bool(signup.get("public_signup_boundary_ready") and signup.get("owner_account_creation_during_signup_ready") and signup.get("tenant_ownership_binding_during_signup_ready"))
+    owner_auth_ready = bool(owner_auth.get("owner_auth_foundation_ready") and owner_auth.get("tenant_ownership_binding_ready"))
+    launch_ready = bool(launch_ux.get("launch_ux_polish_ready"))
+    workspace_model_ready = bool(tenant_found and workspace.get("tenant_id") and isinstance(workspace.get("tasks"), list) and not workspace.get("dependency"))
+    setup_health_model_ready = bool(tenant_found and setup_health.get("tenant_id") and isinstance(setup_health.get("components"), list) and not setup_health.get("dependency"))
+    public_routes_ready = not protected_public_signup_paths
+    owner_routes_ready = not missing_owner_protection and not missing_strict_owner and not owner_admin_overlap
+    readiness_routes_ready = not missing_readiness_protection
+    final_lock_ready = bool(final_lock.get("public_saas_ready") is True)
+
+    gates = [
+        stage93_gate("public_signup_boundary", "Public signup remains public and creates the owner foundation", signup_ready, {"stage": signup.get("stage"), "public_signup_boundary_ready": signup.get("public_signup_boundary_ready"), "owner_account_creation_during_signup_ready": signup.get("owner_account_creation_during_signup_ready"), "tenant_ownership_binding_during_signup_ready": signup.get("tenant_ownership_binding_during_signup_ready")}, "public_signup_owner_foundation_not_ready"),
+        stage93_gate("public_signup_routes", "Public signup entrypoints remain public", public_routes_ready, {"public_paths": sorted(public_signup_paths), "wrongly_protected_paths": protected_public_signup_paths}, "public_signup_entrypoint_protected"),
+        stage93_gate("owner_handoff_routes", "Post-signup owner handoff is strict owner-session only", owner_routes_ready, {"owner_paths": sorted(STAGE93_OWNER_HANDOFF_PATHS), "missing_owner_protection": missing_owner_protection, "missing_strict_owner_only": missing_strict_owner, "wrongly_admin_protected": owner_admin_overlap}, "owner_handoff_auth_boundary_not_ready"),
+        stage93_gate("readiness_boundary", "Stage 93 readiness endpoints remain admin-protected", readiness_routes_ready, {"readiness_paths": sorted(STAGE93_READINESS_PATHS), "missing_admin_protection": missing_readiness_protection}, "stage93_readiness_paths_not_admin_protected"),
+        stage93_gate("owner_auth_binding", "Owner session and tenant binding foundation remains ready", owner_auth_ready, {"owner_auth_foundation_ready": owner_auth.get("owner_auth_foundation_ready"), "tenant_ownership_binding_ready": owner_auth.get("tenant_ownership_binding_ready")}, "owner_auth_binding_not_ready"),
+        stage93_gate("workspace_handoff_model", "Owner workspace handoff model renders", workspace_model_ready, {"tenant_found": tenant_found, "workspace_task_count": len(workspace.get("tasks") or []), "workspace_setup_complete": workspace.get("workspace_setup_complete")}, "workspace_handoff_model_not_ready"),
+        stage93_gate("setup_health_handoff", "Setup health is available from the owner handoff", setup_health_model_ready, {"component_count": len(setup_health.get("components") or []), "required_setup_complete": setup_health.get("required_setup_complete")}, "setup_health_handoff_not_ready"),
+        stage93_gate("launch_ux_and_lock", "Launch UX and Stage 78 public SaaS lock remain ready", launch_ready and final_lock_ready, {"launch_ux_polish_ready": launch_ux.get("launch_ux_polish_ready"), "public_saas_ready": final_lock.get("public_saas_ready"), "enterprise_saas_ready": False}, "launch_ux_or_final_lock_not_ready"),
+    ]
+    blocking = [str(g.get("blocker")) for g in gates if not g.get("ready") and g.get("blocker")]
+    warnings: List[str] = []
+    if not tenant_found:
+        warnings.append("tenant_not_found_for_readiness_sample")
+    if not workspace.get("workspace_setup_complete"):
+        warnings.append("tenant_workspace_setup_incomplete")
+    if not setup_health.get("required_setup_complete"):
+        warnings.append("tenant_setup_health_attention")
+    if not stage76_email_delivery_provider_configured():
+        warnings.append("email_delivery_provider_not_configured_magic_link_foundation_only")
+
+    ready = not blocking
+    workspace_completion = workspace.get("completion") if isinstance(workspace.get("completion"), dict) else {}
+    health_completion = setup_health.get("completion") if isinstance(setup_health.get("completion"), dict) else {}
+    return {
+        "ok": True,
+        "stage": "93",
+        "purpose": "Public Signup -> Owner Workspace End-to-End Polish",
+        "maturity_phase": STAGE93_MATURITY_TARGET,
+        "tenant_id": tenant_id_clean,
+        "status": "ready" if ready and not warnings else "attention" if ready else "blocked",
+        "public_signup_owner_workspace_e2e_ready": bool(ready),
+        "tenant_workspace_setup_complete": bool(workspace.get("workspace_setup_complete")),
+        "tenant_setup_health_complete": bool(setup_health.get("required_setup_complete")),
+        "platform_public_saas_ready": bool(final_lock.get("public_saas_ready") is True),
+        "enterprise_saas_ready": False,
+        "gates": gates,
+        "blocking": blocking,
+        "warnings": warnings,
+        "handoff": {
+            "public_entrypoint": "/public/signup",
+            "success_owner_entrypoint": f"/owner/get-started/ui?tenant_id={tenant_id_clean}",
+            "owner_session_cookie": STAGE71_OWNER_SESSION_COOKIE_NAME,
+            "owner_session_created_by_signup": True,
+            "tenant_binding_required": True,
+            "super_admin_bypass": False,
+            "read_only_handoff_page": True,
+        },
+        "workspace_summary": {
+            "complete_steps": workspace_completion.get("complete_steps"),
+            "total_steps": workspace_completion.get("total_steps"),
+            "completion_percent": workspace_completion.get("completion_percent"),
+            "next_actions": [str(item.get("key") or item.get("label") or "") for item in (workspace.get("next_actions") or [])[:4]],
+        },
+        "setup_health_summary": {
+            "complete_steps": health_completion.get("complete_steps"),
+            "total_steps": health_completion.get("total_steps"),
+            "completion_percent": health_completion.get("completion_percent"),
+            "blocker_count": len(setup_health.get("blocking") or []),
+            "warning_count": len(setup_health.get("warnings") or []),
+        },
+        "links": {
+            "public_signup": url("/public/signup"),
+            "owner_get_started": url(f"/owner/get-started/ui?tenant_id={tenant_id_clean}"),
+            "owner_workspace": url(f"/owner/workspace/ui?tenant_id={tenant_id_clean}"),
+            "owner_setup_health": url(f"/owner/setup-health/ui?tenant_id={tenant_id_clean}"),
+            "owner_launch_review": url(f"/owner/launch-review/ui?tenant_id={tenant_id_clean}"),
+            "owner_dashboard": url(f"/owner/dashboard/ui?tenant_id={tenant_id_clean}"),
+            "owner_login": url(f"/owner/login?tenant_id={tenant_id_clean}"),
+            "stage93_readiness": url(f"/public-signup-workspace/readiness?tenant_id={tenant_id_clean}&days={days}"),
+        },
+        "security": {
+            "public_signup_rate_limited": True,
+            "public_signup_csrf_cross_site_guard": True,
+            "owner_handoff_strict_owner_session_only": True,
+            "tenant_id_is_authentication": False,
+            "admin_links_exposed_to_owner": False,
+            "raw_owner_login_code_exposed_by_handoff_ui": False,
+            "raw_magic_token_exposed_by_handoff_ui": False,
+            "secret_fields_exposed": False,
+            "runtime_writes_added": False,
+        },
+        "limitations": {
+            "readiness_creates_test_tenant": False,
+            "outbound_email_delivery_added": False,
+            "payment_provider_checkout_added": False,
+            "enterprise_features_added": False,
+        },
+        "dependencies": {"stage72_public_signup": signup, "stage79_launch_ux": launch_ux, "stage80_workspace": workspace, "stage92_setup_health": setup_health, "stage71_owner_auth": owner_auth, "stage78_final_lock": final_lock},
+        "note": "Stage 93 polishes the existing signup-to-owner-workspace handoff. It does not create test tenants in readiness and does not change receptionist, booking, Calendar, Telegram, billing, auth-token, or LLM runtime semantics.",
+    }
+
+
+def stage93_owner_handoff_payload(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14) -> Dict[str, Any]:
+    access = stage71_owner_request_access(request, path=str(request.url.path or "/owner/get-started"))
+    if not access.get("ok"):
+        raise HTTPException(status_code=401, detail=access.get("error") or "owner_login_required")
+    tid = str(access.get("tenant_id") or tenant_id or "").strip() or TENANT_ID_DEFAULT
+    core = stage93_public_signup_owner_workspace_core(tid, days=days)
+    workspace = core.get("dependencies", {}).get("stage80_workspace") if isinstance(core.get("dependencies"), dict) else {}
+    workspace = workspace if isinstance(workspace, dict) else {}
+    tasks = workspace.get("tasks") if isinstance(workspace.get("tasks"), list) else []
+    core["owner_handoff"] = {
+        "authenticated": True,
+        "tenant_id": tid,
+        "role": access.get("role") or "owner",
+        "owner_email_exposed": False,
+        "recommended_steps": [
+            {"key": str(item.get("key") or ""), "label": str(item.get("label") or item.get("key") or ""), "complete": bool(item.get("complete")), "status": str(item.get("status") or "attention"), "action_label": str(item.get("owner_action_label") or "Open"), "action_url": item.get("owner_action_url"), "support_controlled": bool(item.get("support_controlled"))}
+            for item in tasks[:8]
+        ],
+        "primary_action": f"/owner/workspace/ui?tenant_id={tid}",
+        "secondary_action": f"/owner/setup-health/ui?tenant_id={tid}",
+    }
+    core.pop("dependencies", None)
+    if isinstance(core.get("links"), dict):
+        core["links"].pop("stage93_readiness", None)
+    core["auth_model"] = "strict_signed_owner_session_cookie"
+    core["opened_via_super_admin_bypass"] = False
+    core["owner_email"] = None
+    return core
+
+
+def stage93_owner_handoff_html(tenant_id: str = TENANT_ID_DEFAULT) -> str:
+    tenant_id_json = json.dumps(str(tenant_id or "").strip() or TENANT_ID_DEFAULT, ensure_ascii=False)
+    html = r'''<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Repliq - Get started</title>
+<style>body{font-family:Inter,system-ui,-apple-system,Segoe UI,Arial,sans-serif;background:#f6f7fb;color:#111827;margin:0;padding:24px}.wrap{max-width:1080px;margin:0 auto}.hero,.card{background:#fff;border:1px solid #e5e7eb;border-radius:22px;padding:20px;margin:14px 0;box-shadow:0 9px 28px rgba(15,23,42,.05)}.hero{background:#111827;color:#fff;padding:28px}.hero p{color:#d1d5db;max-width:760px;line-height:1.55}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.step{border:1px solid #e5e7eb;border-radius:16px;padding:15px;background:#fafafa}.step h3{margin:0 0 7px}.muted{color:#64748b;font-size:14px;line-height:1.45}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}button{border:0;border-radius:12px;padding:10px 14px;background:#111827;color:#fff;font-weight:800;cursor:pointer}.secondary{background:#e5e7eb;color:#111827}.badge{display:inline-block;border-radius:999px;padding:5px 9px;font-size:12px;font-weight:800;margin:2px 4px 2px 0;background:#e5e7eb}.ok{background:#dcfce7;color:#166534}.warn{background:#fef3c7;color:#92400e}.err{background:#fee2e2;color:#991b1b}pre{background:#0f172a;color:#e2e8f0;border-radius:14px;padding:14px;max-height:360px;overflow:auto;white-space:pre-wrap}@media(max-width:820px){body{padding:12px}.grid{grid-template-columns:1fr}}</style></head>
+<body><div class="wrap"><div class="hero"><span class="badge ok">Owner workspace active</span><h1>Your Repliq workspace is ready to configure</h1><p>This is the safe handoff after signup. Review the setup steps, complete the business data, then run the final launch review. No admin configuration links or secret values are shown here.</p><div class="actions"><button onclick="go('/owner/workspace/ui?tenant_id='+encTenant())">Open workspace</button><button class="secondary" onclick="go('/owner/setup-health/ui?tenant_id='+encTenant())">Setup health</button><button class="secondary" onclick="go('/owner/dashboard/ui?tenant_id='+encTenant())">Dashboard</button><button class="secondary" onclick="go('/owner/logout')">Logout</button></div></div><div class="card"><h2>Signup handoff</h2><div id="summary" class="muted">Loading...</div></div><div class="card"><h2>Recommended next steps</h2><div id="steps" class="grid"></div></div><div class="card"><h2>Finish and review</h2><div class="actions"><button onclick="go('/owner/launch-review/ui?tenant_id='+encTenant())">Final launch review</button><button class="secondary" onclick="go('/owner/client-preview/ui?tenant_id='+encTenant())">Client preview</button><button class="secondary" onclick="go('/owner/account/ui?tenant_id='+encTenant())">Account center</button></div></div><div class="card"><h2>Owner-safe status</h2><pre id="raw">Loading...</pre></div></div>
+<script>const DEFAULT_TENANT_ID=__TENANT_ID_JSON__;function el(id){return document.getElementById(id)}function tenant(){return DEFAULT_TENANT_ID||'clinic_demo'}function encTenant(){return encodeURIComponent(tenant())}function go(path){window.location=path}function esc(v){return v===null||v===undefined?'':String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;')}function badge(ok,label){return '<span class="badge '+(ok?'ok':'warn')+'">'+esc(label)+'</span>'}function render(d){el('raw').textContent=JSON.stringify(d,null,2);const w=d.workspace_summary||{};const h=d.setup_health_summary||{};el('summary').innerHTML=badge(!!d.public_signup_owner_workspace_e2e_ready,'handoff ready: '+!!d.public_signup_owner_workspace_e2e_ready)+badge(!!d.tenant_workspace_setup_complete,'workspace complete: '+!!d.tenant_workspace_setup_complete)+badge(!!d.tenant_setup_health_complete,'setup health complete: '+!!d.tenant_setup_health_complete)+'<div class="muted">Workspace '+esc(w.complete_steps||0)+'/'+esc(w.total_steps||0)+' - '+esc(w.completion_percent||0)+'% - Setup health '+esc(h.completion_percent||0)+'%</div>';const steps=((d.owner_handoff||{}).recommended_steps||[]);el('steps').innerHTML=steps.map(s=>'<div class="step"><h3>'+esc(s.label||s.key)+'</h3><div>'+badge(!!s.complete,s.complete?'complete':'attention')+(s.support_controlled?'<span class="badge warn">support controlled</span>':'')+'</div><div class="actions">'+(s.action_url?'<button class="secondary" data-url="'+esc(s.action_url)+'">'+esc(s.action_label||'Open')+'</button>':'')+'</div></div>').join('')||'<div class="muted">No setup steps returned.</div>';el('steps').querySelectorAll('button[data-url]').forEach(btn=>btn.addEventListener('click',()=>go(btn.dataset.url)))}async function load(){const r=await fetch('/owner/get-started?tenant_id='+encTenant(),{credentials:'include'});const d=await r.json().catch(()=>({}));if(!r.ok){el('raw').textContent=JSON.stringify(d,null,2);el('summary').innerHTML='<span class="badge err">'+esc(d.error||d.detail||'Owner login required')+'</span>';return}render(d)}load();</script></body></html>'''
     return html.replace("__TENANT_ID_JSON__", tenant_id_json)
 
 
@@ -20137,6 +20362,37 @@ def stage92_owner_setup_health_ui(request: Request, tenant_id: str = TENANT_ID_D
     return HTMLResponse(content=stage92_owner_health_html(tenant_id=tid), headers={"Cache-Control": "no-store"})
 
 
+@app.get("/public-signup-workspace/readiness")
+@app.get("/signup-owner-workspace/readiness")
+@app.get("/owner-workspace/e2e/readiness")
+@app.get("/smb/onboarding/e2e/readiness")
+def stage93_signup_owner_workspace_readiness(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    tid = stage711_resolve_tenant_context(request, tenant_id)
+    return stage93_public_signup_owner_workspace_core(tid, days=days)
+
+
+@app.get("/owner/get-started")
+@app.get("/owner/welcome")
+def stage93_owner_handoff_json(request: Request, tenant_id: str = TENANT_ID_DEFAULT, days: int = 14):
+    try:
+        return stage93_owner_handoff_payload(request=request, tenant_id=tenant_id, days=days)
+    except HTTPException as e:
+        return stage71_strict_owner_auth_error(int(e.status_code or 401), str(e.detail or "owner_login_required"), tenant_id=str(request.query_params.get("tenant_id") or tenant_id or TENANT_ID_DEFAULT))
+
+
+@app.get("/owner/get-started/ui", response_class=HTMLResponse)
+@app.get("/owner/welcome/ui", response_class=HTMLResponse)
+def stage93_owner_handoff_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
+    try:
+        access = stage71_owner_request_access(request, path=str(request.url.path or "/owner/get-started/ui"))
+        if not access.get("ok"):
+            raise HTTPException(status_code=401, detail=access.get("error") or "owner_login_required")
+    except HTTPException as e:
+        return stage71_strict_owner_auth_error(int(e.status_code or 401), str(e.detail or "owner_login_required"), tenant_id=str(request.query_params.get("tenant_id") or tenant_id or TENANT_ID_DEFAULT))
+    tid = str(access.get("tenant_id") or tenant_id or "").strip() or TENANT_ID_DEFAULT
+    return HTMLResponse(content=stage93_owner_handoff_html(tenant_id=tid), headers={"Cache-Control": "no-store"})
+
+
 @app.post("/owner/magic-link/bootstrap")
 def stage76_owner_magic_link_bootstrap(request: Request, payload: dict = Body(...)):
     data = payload or {}
@@ -21839,6 +22095,7 @@ def stage72_public_signup_readiness_payload(tenant_id: str = TENANT_ID_DEFAULT) 
         "public_saas_ready": False,
         "public_saas_ready_reason": "stage72_boundary_only_stage78_final_lock_reports_platform_public_saas_readiness",
         "launch_ux_stage": "79",
+        "signup_owner_workspace_e2e_stage": "93",
         "auth_model": {
             "public_signup": "public_http_entrypoint_with_honeypot_rate_limits_and_owner_session_cookie",
             "owner_session_cookie": STAGE71_OWNER_SESSION_COOKIE_NAME,
@@ -23479,9 +23736,9 @@ def stage72_public_signup_ui():
 <style>body{font-family:Inter,Arial,sans-serif;background:#f6f7fb;color:#111827;margin:0;padding:24px}.wrap{max-width:880px;margin:0 auto}.hero,.card{background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:20px;margin-bottom:14px}.hero{background:#111827;color:white}.hero p{color:#d1d5db}label{display:block;font-size:13px;font-weight:750;margin:12px 0 6px}input,select{width:100%;box-sizing:border-box;border:1px solid #d1d5db;border-radius:12px;padding:11px}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}button{border:0;background:#111827;color:#fff;border-radius:12px;padding:12px 16px;font-weight:800;cursor:pointer}.secondary{background:white;color:#111827;border:1px solid #d1d5db}.small{color:#6b7280;font-size:12px}.ok{color:#065f46}.err{color:#991b1b}.hidden{display:none}.code{white-space:pre-wrap;background:#0f172a;color:#e2e8f0;border-radius:14px;padding:12px;max-height:320px;overflow:auto;font-family:monospace;font-size:12px}.hp{position:absolute;left:-5000px;top:auto;width:1px;height:1px;overflow:hidden}@media(max-width:760px){.grid{grid-template-columns:1fr}body{padding:12px}}</style>
 </head><body><div class="wrap"><div class="hero"><h1>Create your Repliq workspace</h1><p>Set up a business workspace for the Repliq AI receptionist. You will get an owner session immediately; technical setup stays protected behind Repliq admin/support flows.</p></div>
 <div class="card"><div id="readiness" class="small"></div><div class="grid"><div><label>Business name *</label><input id="business_name" oninput="suggestSlug()"/></div><div><label>Tenant slug</label><input id="tenant_slug"/></div><div><label>Owner email *</label><input id="owner_email" type="email"/></div><div><label>Phone</label><input id="phone_number"/></div><div><label>Business type</label><select id="business_type"><option value="clinic">clinic</option><option value="barbershop">barbershop</option><option value="salon">salon</option><option value="dentistry">dentistry</option><option value="auto_service">auto_service</option><option value="restaurant">restaurant</option><option value="other">other</option></select></div><div><label>Language</label><select id="language"><option value="lv">Latvian</option><option value="ru">Russian</option><option value="en">English</option></select></div><div><label>Timezone</label><input id="timezone" value="Europe/Riga"/></div><div><label>Work hours</label><div class="grid"><input id="work_start" value="09:00"/><input id="work_end" value="18:00"/></div></div></div><div class="hp"><label>Website</label><input id="website" autocomplete="off" tabindex="-1"/></div><p><label style="display:flex;gap:8px;align-items:flex-start;font-weight:500"><input id="accepted_terms" type="checkbox" style="width:auto"/> I confirm this is a real business signup request.</label></p><button onclick="signup()">Create workspace</button> <span id="status" class="small"></span></div>
-<div class="card hidden" id="result"><h2>Workspace created</h2><div id="summary"></div><p><button onclick="openOwner()">Open workspace</button> <button class="secondary" onclick="copyCode()">Copy backup login code</button></p><p class="small">Save the backup login code locally. It is shown once. Do not paste login codes or magic links into chat logs.</p><div class="code" id="raw"></div></div></div>
+<div class="card hidden" id="result"><h2>Workspace created</h2><div id="summary"></div><p><button onclick="openOwner()">Continue setup</button> <button class="secondary" onclick="copyCode()">Copy backup login code</button></p><p class="small">Save the backup login code locally. It is shown once. Do not paste login codes or magic links into chat logs.</p><div class="code" id="raw"></div></div></div>
 <script>
-const READINESS=__READINESS_JSON__;let latest=null;function el(id){return document.getElementById(id)}function slugifyTenant(v){return String(v||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9_-]+/g,'_').replace(/[_-]{2,}/g,'_').replace(/^[_-]+|[_-]+$/g,'').slice(0,48)}function suggestSlug(){if(el('tenant_slug').dataset.touched==='1')return;el('tenant_slug').value=slugifyTenant(el('business_name').value)}el('tenant_slug').addEventListener('input',()=>{el('tenant_slug').dataset.touched='1'});function setStatus(t,c='small'){el('status').className=c;el('status').textContent=t}function payload(){return{business_name:el('business_name').value.trim(),tenant_slug:el('tenant_slug').value.trim()||null,owner_email:el('owner_email').value.trim(),phone_number:el('phone_number').value.trim()||null,business_type:el('business_type').value,language:el('language').value,timezone:el('timezone').value.trim()||'Europe/Riga',work_start:el('work_start').value.trim()||'09:00',work_end:el('work_end').value.trim()||'18:00',accepted_terms:el('accepted_terms').checked,website:el('website').value||''}}async function signup(){const p=payload();if(!p.business_name||!p.owner_email){setStatus('Business name and owner email are required.','small err');return}if(!p.accepted_terms){setStatus('Please confirm the checkbox.','small err');return}setStatus('Creating...');const r=await fetch('/public/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});const data=await r.json().catch(()=>({}));latest=data;if(!r.ok||!data.ok){setStatus(data.error||data.detail||'Signup failed','small err');el('raw').textContent=JSON.stringify(data,null,2);return}setStatus('Workspace created. Owner session is active.','small ok');el('result').classList.remove('hidden');el('summary').innerHTML='Tenant: <b>'+data.tenant_id+'</b><br/>Owner: '+data.owner_email+'<br/>Owner session created: '+data.owner_session_created+'<br/>Next: open the owner workspace and finish setup with Repliq support.';const safe=JSON.parse(JSON.stringify(data));['owner_login_code','owner_magic_link_token','owner_magic_link_url'].forEach(k=>{if(safe[k])safe[k]='[returned_once_hidden_in_launch_ui]'});el('raw').textContent=JSON.stringify(safe,null,2)}function openOwner(){if(latest&&latest.links&&latest.links.owner_dashboard){window.location=latest.links.owner_dashboard}}async function copyCode(){if(!latest||!latest.owner_login_code)return;try{await navigator.clipboard.writeText(latest.owner_login_code)}catch(e){}}el('readiness').textContent='readiness: '+(READINESS.status||'-')+' · public_signup_boundary_ready='+READINESS.public_signup_boundary_ready+' · launch UX: Stage 79';
+const READINESS=__READINESS_JSON__;let latest=null;function el(id){return document.getElementById(id)}function slugifyTenant(v){return String(v||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9_-]+/g,'_').replace(/[_-]{2,}/g,'_').replace(/^[_-]+|[_-]+$/g,'').slice(0,48)}function suggestSlug(){if(el('tenant_slug').dataset.touched==='1')return;el('tenant_slug').value=slugifyTenant(el('business_name').value)}el('tenant_slug').addEventListener('input',()=>{el('tenant_slug').dataset.touched='1'});function setStatus(t,c='small'){el('status').className=c;el('status').textContent=t}function payload(){return{business_name:el('business_name').value.trim(),tenant_slug:el('tenant_slug').value.trim()||null,owner_email:el('owner_email').value.trim(),phone_number:el('phone_number').value.trim()||null,business_type:el('business_type').value,language:el('language').value,timezone:el('timezone').value.trim()||'Europe/Riga',work_start:el('work_start').value.trim()||'09:00',work_end:el('work_end').value.trim()||'18:00',accepted_terms:el('accepted_terms').checked,website:el('website').value||''}}async function signup(){const p=payload();if(!p.business_name||!p.owner_email){setStatus('Business name and owner email are required.','small err');return}if(!p.accepted_terms){setStatus('Please confirm the checkbox.','small err');return}setStatus('Creating...');const r=await fetch('/public/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});const data=await r.json().catch(()=>({}));latest=data;if(!r.ok||!data.ok){setStatus(data.error||data.detail||'Signup failed','small err');el('raw').textContent=JSON.stringify(data,null,2);return}setStatus('Workspace created. Owner session is active.','small ok');el('result').classList.remove('hidden');el('summary').innerHTML='Tenant: <b>'+data.tenant_id+'</b><br/>Owner: '+data.owner_email+'<br/>Owner session created: '+data.owner_session_created+'<br/>Next: continue to the owner-only setup handoff and complete the workspace checklist.';const safe=JSON.parse(JSON.stringify(data));['owner_login_code','owner_magic_link_token','owner_magic_link_url'].forEach(k=>{if(safe[k])safe[k]='[returned_once_hidden_in_launch_ui]'});el('raw').textContent=JSON.stringify(safe,null,2)}function openOwner(){if(!latest||!latest.links)return;window.location=latest.links.owner_get_started||latest.links.owner_workspace||latest.links.owner_dashboard||'/owner/login'}async function copyCode(){if(!latest||!latest.owner_login_code)return;try{await navigator.clipboard.writeText(latest.owner_login_code)}catch(e){}}el('readiness').textContent='readiness: '+(READINESS.status||'-')+' · public_signup_boundary_ready='+READINESS.public_signup_boundary_ready+' · launch UX: Stage 79 · owner handoff: Stage 93';
 </script></body></html>
     """.replace("__READINESS_JSON__", readiness_json)
     return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
@@ -23538,11 +23795,12 @@ async def stage72_public_signup_submit(request: Request):
 
     stage72_record_public_signup_event(request, owner_email=owner_email, tenant_id=tenant_id, status="created", reason="ok")
     stage75_record_abuse_event(request, bucket="public_signup", subject=f"{tenant_id}:{owner_email}", tenant_id=tenant_id, status="created", reason="ok")
-    next_path = f"/owner/dashboard/ui?tenant_id={urllib.parse.quote(tenant_id)}"
+    next_path = f"/owner/get-started/ui?tenant_id={urllib.parse.quote(tenant_id)}"
     content = {
         "ok": True,
         "stage": "72",
         "launch_ux_stage": "79",
+        "signup_owner_workspace_e2e_stage": "93",
         "status": "ok",
         "tenant_id": tenant_id,
         "business_name": created.get("business_name"),
@@ -23566,18 +23824,24 @@ async def stage72_public_signup_submit(request: Request):
         "onboarding": created.get("onboarding"),
         "readiness": created.get("readiness"),
         "links": {
-            "owner_dashboard": next_path,
+            "owner_get_started": next_path,
+            "owner_workspace": f"/owner/workspace/ui?tenant_id={urllib.parse.quote(tenant_id)}",
+            "owner_dashboard": f"/owner/dashboard/ui?tenant_id={urllib.parse.quote(tenant_id)}",
+            "owner_setup_health": f"/owner/setup-health/ui?tenant_id={urllib.parse.quote(tenant_id)}",
+            "owner_launch_review": f"/owner/launch-review/ui?tenant_id={urllib.parse.quote(tenant_id)}",
+            "owner_account": f"/owner/account/ui?tenant_id={urllib.parse.quote(tenant_id)}",
             "owner_login": f"/owner/login?tenant_id={urllib.parse.quote(tenant_id)}",
             "owner_magic_login": f"/owner/magic-login?tenant_id={urllib.parse.quote(tenant_id)}",
             "owner_billing": f"/owner/billing/ui?tenant_id={urllib.parse.quote(tenant_id)}",
             "owner_session": f"/owner/session?tenant_id={urllib.parse.quote(tenant_id)}",
             "owner_logout": "/owner/logout",
         },
+        "post_signup_handoff": {"stage": "93", "owner_session_active": True, "entrypoint": next_path, "strict_owner_session_only": True, "admin_links_exposed": False, "secret_values_rendered_in_handoff_ui": False},
         "super_admin_setup_links_exposed_to_public_signup": False,
         "rate_limit": {"ip_hash_exposed": False, "hourly_limit": stage72_public_signup_hourly_limit(), "email_daily_limit": stage72_public_signup_email_daily_limit()},
         "abuse_protection": {"stage": "75", "enabled": bool(stage75_abuse_protection_enabled()), "ip_hash_exposed": False, "subject_hash_exposed": False},
         "email_verification": {"stage": "76", "magic_link_foundation_ready": bool(owner_bootstrap.get("magic_link_token")), "email_delivery_provider_configured": bool(stage76_email_delivery_provider_configured()), "email_delivery_attempted": False, "token_hash_exposed": False, "raw_token_stored": False},
-        "note": "Stage 79 returns owner-safe workspace links in the public signup response. One-time backup login code and magic link/token may still be returned for setup, but the launch UI hides raw secret values from its technical details block.",
+        "note": "Stage 93 sends the newly authenticated owner to a strict owner-only get-started handoff. One-time backup login code and magic link/token may still be returned for setup, but public and owner handoff UIs hide raw secret values from technical details.",
     }
     response = JSONResponse(content=content, headers={"Cache-Control": "no-store"})
     stage71_set_owner_session_cookie(response, owner_email=owner_email, tenant_id=tenant_id, role="owner")

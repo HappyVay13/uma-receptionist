@@ -1,6 +1,6 @@
 # Stage 92 — Tenant Data Quality / Setup Health Guard
 
-Status: implemented in archive, awaiting deploy verification.
+Status: closed after deploy verification. User confirmed `/dialogue/qa` = 50/50 passed and all other Stage 92 checks OK.
 
 ## Goal
 

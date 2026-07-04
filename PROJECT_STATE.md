@@ -1,6 +1,6 @@
 # Repliq Project State
 
-Current stage: Stage 92 — Tenant Data Quality / Setup Health Guard.
+Current stage: Stage 93 — Public Signup → Owner Workspace End-to-End Polish.
 
 Production regression baseline before Stage 40:
 - Stage 39 was deployed and confirmed by user: `/dialogue/qa` = 15/15 passed.
@@ -90,10 +90,18 @@ Stage 91.1 confirmed production baseline:
 - User confirmed all other Stage 91.1 checks were OK.
 - Stage 91 account/profile/account-billing pages require owner login and do not open without owner session/admin-only login.
 
-Stage 92 archive status:
-- Stage 92 — Tenant Data Quality / Setup Health Guard implemented in archive, awaiting deploy verification.
-- Scope is read-only owner-safe setup/data-quality visibility only.
-- No tenant data writes, no booking/runtime changes, no Google Calendar/Telegram runtime changes, no billing/payment runtime changes.
+Stage 92 confirmed production baseline:
+- Stage 92 — Tenant Data Quality / Setup Health Guard was deployed and confirmed by user.
+- Production `/dialogue/qa` result: 50/50 passed.
+- User confirmed all other Stage 92 checks were OK.
+- Owner setup-health/data-quality surfaces and strict owner auth boundaries were confirmed working.
+
+Stage 93 archive status:
+- Stage 93 — Public Signup → Owner Workspace End-to-End Polish implemented in archive, awaiting deploy verification.
+- Adds a strict owner-only get-started/welcome handoff after public signup.
+- Adds admin-protected signup-to-workspace E2E readiness only; readiness does not create test tenants.
+- Reuses existing Stage 72 signup, Stage 71 owner session/binding, Stage 80 workspace, Stage 92 setup health and Stage 78 launch lock.
+- No receptionist runtime, booking, Calendar, Telegram, billing/payment, auth-token, CSRF, rate-limit, magic-link, QA evaluator or LLM orchestration behavior is changed.
 
 ## Stage 36 — Advanced Conversation Recovery
 
@@ -1650,3 +1658,44 @@ Expected verification:
 - With a valid owner session, the same pages should open normally.
 - `/dialogue/qa` remains 50/50 passed.
 - Existing Stage 90/90.1, Stage 89, Stage 88 and owner workspace/dashboard/launch-review checks remain OK.
+
+## Stage 93 — Public Signup → Owner Workspace End-to-End Polish
+
+Status: implemented in archive, awaiting deploy verification.
+
+Scope:
+- Added strict owner-only post-signup handoff endpoints:
+  - `GET /owner/get-started`
+  - `GET /owner/get-started/ui`
+  - `GET /owner/welcome`
+  - `GET /owner/welcome/ui`
+- Added admin-protected E2E readiness endpoints:
+  - `GET /public-signup-workspace/readiness`
+  - `GET /signup-owner-workspace/readiness`
+  - `GET /owner-workspace/e2e/readiness`
+  - `GET /smb/onboarding/e2e/readiness`
+- Public signup success now returns `owner_get_started` as the primary handoff link while retaining owner workspace/dashboard/setup-health/launch-review/account/billing links.
+- Public signup still creates the tenant, owner account, tenant binding and owner session through the existing Stage 72/71 flow.
+- The signup UI now sends the authenticated owner to the owner-only get-started page instead of the generic dashboard.
+- Owner dashboard/workspace link payloads include the get-started handoff.
+
+Security / boundaries:
+- Get-started/welcome routes require strict Stage 71 owner session + tenant binding.
+- Stage 62 admin session / Stage 61 token bypass is not accepted for the Stage 93 owner handoff.
+- Stage 93 readiness routes remain Stage 61/62 admin-protected.
+- No owner POST route or new Stage 74 CSRF path was added.
+- Owner handoff payload removes admin readiness dependencies/links and does not expose owner email, raw login codes, magic tokens, hashes, admin tokens, Google credentials, Telegram secrets or billing secrets.
+- `tenant_id` remains context, not authentication.
+- `enterprise_saas_ready=false` remains explicit.
+
+Expected verification:
+- Render deploy starts successfully.
+- `/dialogue/qa` remains 50/50 passed.
+- Stage 93 readiness endpoints return `stage=93` and remain admin-protected.
+- `/public/signup` remains public.
+- After a successful test signup, the response sets the owner session and `Continue setup` opens `/owner/get-started/ui?tenant_id=<new_tenant>`.
+- Get-started/welcome routes do not open without owner login or with admin login only.
+- With the valid owner session, get-started/welcome, workspace, setup-health and launch-review pages open without 500.
+- Existing Stage 92/91.1/90.1/89/88 owner surfaces remain OK.
+- Stage 78 remains the source of truth for platform `public_saas_ready`; `enterprise_saas_ready=false` remains explicit.
+

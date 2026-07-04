@@ -934,3 +934,29 @@ Stage 87 owner launch-review pages must not perform deep cross-stage readiness f
 - Do not expose secrets, raw Google credentials, raw Telegram bot tokens/webhook secrets, admin tokens, owner login codes, magic-link tokens/hashes, raw payment provider data, or admin/debug links in owner UI.
 - `tenant_id` remains context, not authentication.
 - `enterprise_saas_ready` must remain false.
+
+## Stage 93 — Public Signup → Owner Workspace End-to-End Polish Rules
+
+- Stage 93 may polish only the existing public signup → owner session → owner workspace handoff and add read-only readiness/UI metadata.
+- Stage 93 must reuse the existing Stage 72 tenant creation/public signup, Stage 71 owner account/session/tenant binding, Stage 75 abuse protection, Stage 74 public browser-write protection, Stage 80 workspace model, Stage 92 setup-health model and Stage 78 final launch lock.
+- Stage 93 must not create test tenants from readiness endpoints.
+- Stage 93 owner handoff routes must require strict signed Stage 71 owner session + tenant binding and must not accept Stage 61/62 super-admin bypass:
+  - `/owner/get-started`
+  - `/owner/get-started/ui`
+  - `/owner/welcome`
+  - `/owner/welcome/ui`
+- Stage 93 readiness endpoints must remain Stage 61/62 admin-protected:
+  - `/public-signup-workspace/readiness`
+  - `/signup-owner-workspace/readiness`
+  - `/owner-workspace/e2e/readiness`
+  - `/smb/onboarding/e2e/readiness`
+- Public signup entrypoints `/public/signup` and `/public/signup/ui` must remain public and rate-limited.
+- No owner POST route is added in Stage 93; therefore no new Stage 74 owner CSRF path is required.
+- The owner handoff UI/payload must not expose admin links/readiness dependencies, owner email, raw owner login codes, login-code hashes, magic-link tokens/hashes, CSRF secrets, admin tokens, raw Google credentials, Telegram bot tokens/webhook secrets, payment-provider secrets or other tenant secrets.
+- Public signup may preserve its existing one-time credential response for compatibility, but the public signup UI and Stage 93 owner handoff UI must not render those raw secret values in technical details.
+- `tenant_id` is context, not authentication.
+- Stage 93 must not change receptionist dialogue runtime, booking routing, slot generation, date/time parsing, price side-question behavior, confirmation, cancellation, rescheduling, Google Calendar runtime, Telegram runtime, SMS/WhatsApp sends, billing/payment semantics, owner/admin token semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, QA evaluator, LLM orchestration or voice/calls.
+- Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+- Stage 78 remains the source of truth for platform `public_saas_ready`.
+- `enterprise_saas_ready` remains false.
+
