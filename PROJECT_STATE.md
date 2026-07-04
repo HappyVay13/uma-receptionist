@@ -1699,3 +1699,33 @@ Expected verification:
 - Existing Stage 92/91.1/90.1/89/88 owner surfaces remain OK.
 - Stage 78 remains the source of truth for platform `public_saas_ready`; `enterprise_saas_ready=false` remains explicit.
 
+
+
+## Stage 93 — Public Signup → Owner Workspace End-to-End Polish Verification Update
+
+Status: closed after deploy verification. User reported `/dialogue/qa` = 50/50 passed and all other Stage 93 checks OK.
+
+Verified:
+- Public signup → owner workspace/get-started handoff works.
+- Stage 93 owner/admin auth boundaries work.
+- Existing owner surfaces remain OK.
+- `enterprise_saas_ready=false` remains explicit.
+
+## Stage 94 — SMB Launch Smoke / Demo Tenant Hardening
+
+Status: implemented in archive, awaiting deploy verification.
+
+Scope:
+- Added strict owner-only launch-smoke/demo-tenant JSON and UI routes.
+- Added admin-protected Stage 94 readiness aliases.
+- Aggregates Stage 93 signup E2E, Stage 92 required setup health, Stage 87.2 launch checklist, Stage 88 dry-run preview safety, and Stage 78 public SaaS lock.
+- Adds a read-only manual smoke checklist and owner dashboard/get-started discoverability.
+- Does not run dialogue QA/live dialogue, mutate Calendar/conversations, send external messages, create tenants, or change receptionist runtime.
+- `enterprise_saas_ready=false` remains explicit.
+
+Expected verification:
+- Render deploy starts successfully.
+- `/dialogue/qa` remains 50/50 passed.
+- Stage 94 readiness returns `stage=94`.
+- Stage 94 owner UI requires a valid owner session and does not accept admin-only login.
+- Existing Stage 93/92/91.1/90.1/89/88/87 owner surfaces remain OK.

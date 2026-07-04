@@ -960,3 +960,28 @@ Stage 87 owner launch-review pages must not perform deep cross-stage readiness f
 - Stage 78 remains the source of truth for platform `public_saas_ready`.
 - `enterprise_saas_ready` remains false.
 
+
+
+## Stage 94 — SMB Launch Smoke / Demo Tenant Hardening Rules
+
+- Stage 94 is a read-only launch/demo checkpoint only.
+- Stage 94 must reuse existing Stage 93, Stage 92, Stage 87.2, Stage 88 and Stage 78 evidence; it must not add a second dialogue/booking runtime.
+- Stage 94 readiness must not execute `/dialogue/qa`, live dialogue, booking confirmation, Calendar create/update/delete, conversation persistence or external customer sends.
+- The controlled live booking/reschedule/cancel smoke remains a manual operator action and must be clearly labelled as potentially mutating the selected test calendar.
+- Stage 94 owner routes must require strict signed Stage 71 owner session + tenant binding and must not accept Stage 61/62 admin bypass:
+  - `/owner/launch-smoke`
+  - `/owner/launch-smoke/ui`
+  - `/owner/demo-tenant`
+  - `/owner/demo-tenant/ui`
+- Stage 94 readiness routes must remain Stage 61/62 admin-protected:
+  - `/smb-launch-smoke/readiness`
+  - `/demo-tenant/readiness`
+  - `/launch/demo-tenant/readiness`
+  - `/smb/demo/readiness`
+- No owner POST route is added; no new Stage 74 owner CSRF path is required.
+- Owner UI must not expose admin readiness links, secrets, tokens, raw credentials, owner email or debug traces.
+- `tenant_id` remains context, not authentication.
+- Stage 94 must not change receptionist dialogue, booking, slots, date/time parsing, price side-question behavior, confirmation, cancel/reschedule, Google Calendar runtime, Telegram runtime, SMS/WhatsApp sends, billing/payment semantics, auth-token semantics, CSRF, abuse/rate-limit, magic-link, QA evaluator, LLM orchestration or voice/calls.
+- Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+- Stage 78 remains the source of truth for platform `public_saas_ready`.
+- `enterprise_saas_ready` remains false.

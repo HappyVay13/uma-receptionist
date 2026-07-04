@@ -1,6 +1,6 @@
 # Stage 93 — Public Signup → Owner Workspace End-to-End Polish
 
-Status: implemented in archive, awaiting deploy verification.
+Status: closed after deploy verification. User confirmed `/dialogue/qa` = 50/50 passed and all other Stage 93 checks OK.
 
 ## Goal
 
