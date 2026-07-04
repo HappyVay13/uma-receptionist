@@ -985,3 +985,29 @@ Stage 87 owner launch-review pages must not perform deep cross-stage readiness f
 - Current protected baseline remains `/dialogue/qa = 50/50 passed`.
 - Stage 78 remains the source of truth for platform `public_saas_ready`.
 - `enterprise_saas_ready` remains false.
+
+
+## Stage 95 — Mature SMB SaaS Readiness Lock Rules
+
+- Stage 95 is the final technical-core readiness lock for the current Mature SMB phase.
+- Stage 95 readiness endpoints must remain protected by Stage 61/62 admin auth:
+  - `/mature-smb/final-readiness`
+  - `/mature-smb/readiness-lock`
+  - `/smb-saas/final-readiness`
+  - `/launch/mature-smb/final-readiness`
+- Stage 95 owner surfaces must require a strict Stage 71 owner session and tenant binding, without Stage 61/62 super-admin bypass:
+  - `/owner/readiness-lock`
+  - `/owner/readiness-lock/ui`
+  - `/owner/mature-smb`
+  - `/owner/mature-smb/ui`
+- Stage 95 must be read-only and must not add owner POST routes, CSRF write paths, tenant writes, booking writes, Calendar mutations, conversation persistence, billing/payment mutations, background jobs or external sends.
+- Stage 95 must not execute `/dialogue/qa` automatically; the protected baseline remains operator-verified as 50/50.
+- Stage 95 must not expose owner email, admin tokens, login codes, magic-link values/hashes, Google credentials, Telegram secrets, billing-provider secrets or raw customer identifiers.
+- Stage 95 may declare the technical Mature SMB core locked only when existing Stage 78/88/89/90/91/92/93/94 gates are healthy.
+- Stage 95 must not claim that the customer-facing product is visually finished. It must keep:
+  - `polished_client_launch_ready=false`
+  - `client_experience_polish_complete=false`
+  - `post_lock_client_experience_phase_required=true`
+  - `enterprise_saas_ready=false`
+- The next separate phase must cover consistent LV/RU/ENG navigation across client-facing pages, translation inventory, a shared responsive visual system, professional public website, accessibility/cross-browser polish and final client-experience regression.
+- Stage 95 must not change receptionist dialogue runtime, booking routing, slot generation, date/time parsing, side-question handling, confirmation, cancellation, rescheduling, Google Calendar runtime, Telegram runtime, SMS/WhatsApp sends, auth credential semantics, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, QA evaluator, LLM orchestration, or voice/calls.

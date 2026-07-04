@@ -1,6 +1,6 @@
 # Stage 94 — SMB Launch Smoke / Demo Tenant Hardening
 
-Status: implemented in archive, awaiting deploy verification.
+Status: closed after deploy verification.
 
 ## Goal
 
@@ -60,3 +60,13 @@ The controlled live booking/reschedule/cancel smoke remains a deliberate manual 
 - Stage 88 preview remains dry-run only.
 - Existing owner workspace/dashboard/get-started/launch-review links still work.
 - `enterprise_saas_ready=false`.
+
+
+## Deploy verification
+
+Confirmed by the user after deploy:
+
+- `/dialogue/qa` = 50/50 passed;
+- all other Stage 94 checks passed;
+- launch-smoke/demo-tenant owner surfaces and auth boundaries are OK;
+- existing baseline remains intact.

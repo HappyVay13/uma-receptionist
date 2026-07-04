@@ -1729,3 +1729,40 @@ Expected verification:
 - Stage 94 readiness returns `stage=94`.
 - Stage 94 owner UI requires a valid owner session and does not accept admin-only login.
 - Existing Stage 93/92/91.1/90.1/89/88/87 owner surfaces remain OK.
+
+
+## Stage 94 — SMB Launch Smoke / Demo Tenant Hardening Verification Update
+
+Status: closed after deploy verification. User reported `/dialogue/qa` = 50/50 passed and all other Stage 94 checks OK.
+
+Verified:
+- Stage 94 launch-smoke/demo-tenant readiness works.
+- Stage 94 strict owner/admin boundaries work.
+- Stage 88 preview safety remains intact.
+- Existing Stage 93/92/91.1/90.1/89/88/87 owner surfaces remain OK.
+- `enterprise_saas_ready=false` remains explicit.
+
+## Stage 95 — Mature SMB SaaS Readiness Lock
+
+Status: implemented in archive, awaiting deploy verification.
+
+Scope:
+- Adds a final read-only technical-core lock for the current Mature SMB SaaS phase.
+- Aggregates Stage 94 launch smoke, Stage 93 signup handoff, Stage 92 setup health, Stage 91 account/profile/billing visibility, Stage 90 notifications/follow-up visibility, Stage 89 analytics visibility, Stage 88 preview safety, and Stage 78 controlled public SaaS lock.
+- Adds strict owner-only readiness-lock UI/JSON and admin-protected final readiness aliases.
+- Adds discoverability links from owner dashboard, workspace, get-started and launch-smoke payloads.
+- Does not execute `/dialogue/qa`, live dialogue, Calendar mutations, conversation persistence, billing mutations or external sends.
+
+Truthful readiness boundary:
+- Stage 95 may declare `mature_smb_core_ready=true` and `technical_product_baseline_locked=true` when all technical gates pass.
+- It explicitly keeps `polished_client_launch_ready=false`, `client_experience_polish_complete=false`, and `enterprise_saas_ready=false`.
+- Client-facing LV/RU/ENG navigation, shared visual design system and professional public website are a separate required post-lock phase.
+
+Expected verification:
+- Render deploy starts successfully.
+- `/dialogue/qa` remains 50/50 passed.
+- Stage 95 readiness endpoints return `stage=95` through admin login.
+- Stage 95 owner pages require a valid owner session and do not accept admin-only login.
+- `mature_smb_core_ready=true` when the existing verified tenant gates remain healthy.
+- `polished_client_launch_ready=false` and `post_lock_client_experience_phase_required=true` remain explicit.
+- Existing Stage 94/93/92/91.1/90.1/89/88 owner surfaces remain OK.
