@@ -7177,11 +7177,11 @@ def stage89_message_category(message: Any, intent: Any = "") -> str:
     intent_low = str(intent or "").strip().lower()
     if intent_low in {"booking", "cancel", "reschedule", "faq"}:
         return intent_low
-    if any(marker in low for marker in STAGE88_PRICE_MARKERS):
+    if any(marker in low for marker in stage88_price_markers()):
         return "price_question"
-    if any(marker in low for marker in STAGE88_DURATION_MARKERS):
+    if any(marker in low for marker in stage88_duration_markers()):
         return "duration_question"
-    if any(marker in low for marker in STAGE88_HOURS_MARKERS):
+    if any(marker in low for marker in stage88_hours_markers()):
         return "hours_question"
     if any(marker in low for marker in ("pierakst", "pieteikt", "запис", "брон", "book", "appointment")):
         return "booking"
@@ -7299,7 +7299,7 @@ def stage89_owner_visibility_core(tenant_id: str = TENANT_ID_DEFAULT, days: int 
             aggregate_summary = dict(conn.execute(text("SELECT COUNT(*)::int AS total_live_interactions, COUNT(DISTINCT COALESCE(NULLIF(user_id, ''), 'anonymous'))::int AS unique_customers, COALESCE(SUM(CASE WHEN lower(COALESCE(intent, ''))='booking' THEN 1 ELSE 0 END), 0)::int AS bookings, COALESCE(SUM(CASE WHEN lower(COALESCE(intent, ''))='cancel' OR lower(COALESCE(status, ''))='cancelled' THEN 1 ELSE 0 END), 0)::int AS cancelled, COALESCE(SUM(CASE WHEN lower(COALESCE(intent, ''))='reschedule' THEN 1 ELSE 0 END), 0)::int AS reschedules FROM call_logs WHERE tenant_id=:tenant_id AND created_at >= NOW() - (:days_i * INTERVAL '1 day')"), {"tenant_id": tenant_id_clean, "days_i": days}).mappings().first() or {})
             rows = [dict(r) for r in conn.execute(text("SELECT tenant_id, user_id, channel, intent, service, datetime_iso, status, raw_text, ai_reply, created_at FROM call_logs WHERE tenant_id=:tenant_id AND created_at >= NOW() - (:days_i * INTERVAL '1 day') ORDER BY created_at DESC LIMIT :limit_i"), {"tenant_id": tenant_id_clean, "days_i": days, "limit_i": sample_limit}).mappings().all()]
             if usage_events_check.get("ok"):
-                usage_summary = dict(conn.execute(text("SELECT COUNT(*)::int AS total_events, COUNT(DISTINCT event_name)::int AS event_types FROM usage_events WHERE tenant_id=:tenant_id AND created_at >= NOW() - (:days_i * INTERVAL '1 day')"), {"tenant_id": tenant_id_clean, "days_i": days}).mappings().first() or {})
+                usage_summary = dict(conn.execute(text("SELECT COUNT(*)::int AS total_events, COUNT(DISTINCT usage_type)::int AS event_types FROM usage_events WHERE tenant_id=:tenant_id AND created_at >= NOW() - (:days_i * INTERVAL '1 day')"), {"tenant_id": tenant_id_clean, "days_i": days}).mappings().first() or {})
     except Exception as e:
         log.error("stage89_visibility_query_failed tenant_id=%s err=%s", tenant_id_clean, e)
         payload = stage89_empty_visibility_payload(tenant_id_clean, days, f"call_logs_query_failed:{e.__class__.__name__}", tenant_found=True)

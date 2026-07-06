@@ -1766,3 +1766,24 @@ Expected verification:
 - `mature_smb_core_ready=true` when the existing verified tenant gates remain healthy.
 - `polished_client_launch_ready=false` and `post_lock_client_experience_phase_required=true` remain explicit.
 - Existing Stage 94/93/92/91.1/90.1/89/88 owner surfaces remain OK.
+
+
+## Stage 95.1 — Analytics / Follow-up Data Source Compatibility Hotfix
+
+Status: implemented in archive, awaiting deploy verification.
+
+Production evidence after Stage 95 deploy showed two code-level blockers:
+- Stage 90/90.1 guarded `NameError` because Stage 89 message categorization referenced undefined `STAGE88_PRICE_MARKERS`, `STAGE88_DURATION_MARKERS`, and `STAGE88_HOURS_MARKERS` constants instead of the existing Stage 88 marker helper functions.
+- Stage 89 queried `usage_events.event_name`, while the existing usage-events schema and write path use `usage_type`, causing PostgreSQL `UndefinedColumn` / SQLAlchemy `ProgrammingError`.
+
+Hotfix scope:
+- Replace the three undefined Stage 88 marker constant references with calls to the existing marker helper functions.
+- Replace the Stage 89 distinct usage-event query column `event_name` with the existing `usage_type` column.
+- Do not change production database schema or require DBeaver ALTER statements.
+- Do not change booking, dialogue, Calendar, Telegram, billing, auth, CSRF, abuse protection, magic links, QA evaluator, LLM orchestration, or external-send runtime.
+
+Expected verification:
+- `/owner-analytics/readiness?tenant_id=clinic_demo&days=14` no longer contains `stage89:call_logs_query_failed:ProgrammingError`.
+- `/owner-notifications/readiness?tenant_id=clinic_demo&days=14` no longer returns Stage 90.1 `stage90_exception_guarded` / `stage90_readiness_exception:NameError`.
+- `/mature-smb/final-readiness?tenant_id=clinic_demo` no longer blocks on Stage 89/90 and may set `mature_smb_core_ready=true` when all other gates remain healthy.
+- `/dialogue/qa` remains 50/50 passed.

@@ -1011,3 +1011,15 @@ Stage 87 owner launch-review pages must not perform deep cross-stage readiness f
   - `enterprise_saas_ready=false`
 - The next separate phase must cover consistent LV/RU/ENG navigation across client-facing pages, translation inventory, a shared responsive visual system, professional public website, accessibility/cross-browser polish and final client-experience regression.
 - Stage 95 must not change receptionist dialogue runtime, booking routing, slot generation, date/time parsing, side-question handling, confirmation, cancellation, rescheduling, Google Calendar runtime, Telegram runtime, SMS/WhatsApp sends, auth credential semantics, billing semantics, CSRF semantics, abuse/rate-limit semantics, magic-link semantics, QA evaluator, LLM orchestration, or voice/calls.
+
+
+## Stage 95.1 — Analytics / Follow-up Data Source Compatibility Hotfix Rules
+
+- Stage 95.1 is a minimal code compatibility hotfix only.
+- Do not add `event_name` to the production `usage_events` table; the canonical existing column is `usage_type`.
+- Stage 89 message categorization must reuse the existing Stage 88 marker helper functions and must not reference undefined marker constants.
+- Stage 89/90 remain read-only visibility layers and must not add notification delivery, conversation writes, booking writes, Calendar mutations, or external sends.
+- Do not weaken the Stage 95 analytics or notifications gates merely to make readiness pass. Fix the underlying code-level data-source errors.
+- Existing owner/admin auth boundaries remain unchanged.
+- Current protected baseline remains `/dialogue/qa = 50/50 passed`.
+- `polished_client_launch_ready=false`, `client_experience_polish_complete=false`, and `enterprise_saas_ready=false` remain explicit.

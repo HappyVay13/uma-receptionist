@@ -95,3 +95,8 @@ Stage 95 does not:
 - `post_lock_scope.target_languages` is `lv`, `ru`, `en`.
 - Existing Stage 94/93/92/91.1/90.1/89/88 owner surfaces remain OK.
 - `enterprise_saas_ready=false`.
+
+
+## Stage 95.1 compatibility hotfix note
+
+The first production Stage 95 readiness run was correctly blocked by Stage 89/90 data-source failures. Render logs identified two code-level defects: undefined Stage 88 marker constant references in Stage 89 categorization, and a Stage 89 query against non-existent `usage_events.event_name` instead of the canonical `usage_type` column. Stage 95.1 fixes these defects without weakening the final readiness gates or changing database schema.
