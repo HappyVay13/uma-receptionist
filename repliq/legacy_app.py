@@ -25,6 +25,19 @@ from twilio.jwt.access_token import AccessToken
 from twilio.jwt.access_token.grants import VoiceGrant
 from sqlalchemy import text
 
+from repliq.ui_foundation import (
+    CX1_UI_CSS,
+    CX1_UI_JS,
+    UI_FOUNDATION_VERSION,
+    UI_LANG_COOKIE,
+    UI_SUPPORTED_LANGUAGES,
+    render_repliq_shell,
+    resolve_ui_language,
+    ui_known_labels,
+    ui_strings,
+    ui_text,
+)
+
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
@@ -152,6 +165,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/assets/repliq-ui.css", include_in_schema=False)
+def cx1_shared_ui_css():
+    return Response(content=CX1_UI_CSS, media_type="text/css", headers={"Cache-Control": "public, max-age=3600", "X-Repliq-UI": UI_FOUNDATION_VERSION})
+
+
+@app.get("/assets/repliq-ui.js", include_in_schema=False)
+def cx1_shared_ui_js():
+    return Response(content=CX1_UI_JS, media_type="application/javascript", headers={"Cache-Control": "public, max-age=3600", "X-Repliq-UI": UI_FOUNDATION_VERSION})
 
 
 # -------------------------
@@ -361,6 +384,9 @@ STAGE61_PROTECTED_EXACT_PATHS = {
     "/mature-smb/readiness-lock",
     "/smb-saas/final-readiness",
     "/launch/mature-smb/final-readiness",
+    "/client-experience/foundation/readiness",
+    "/ui/localization/readiness",
+    "/owner-ui/shell/readiness",
     "/access/readiness",
     "/admin/access/readiness",
     "/admin/access/enforcement",
@@ -4289,10 +4315,42 @@ def stage80_owner_workspace_payload(request: Request, tenant_id: str = TENANT_ID
     return payload
 
 
-def stage80_owner_workspace_html(tenant_id: str = TENANT_ID_DEFAULT) -> str:
-    tenant_id_json = json.dumps((tenant_id or "").strip() or TENANT_ID_DEFAULT, ensure_ascii=False)
-    html = """<!doctype html><html><head><meta charset='utf-8'/><meta name='viewport' content='width=device-width,initial-scale=1'/><title>Repliq Workspace Setup</title><style>body{font-family:Inter,system-ui,-apple-system,Segoe UI,Arial,sans-serif;background:#f6f7fb;color:#111827;margin:0;padding:24px}.wrap{max-width:1080px;margin:0 auto}.hero,.card{background:#fff;border:1px solid #e5e7eb;border-radius:20px;padding:18px;margin:14px 0;box-shadow:0 8px 25px rgba(17,24,39,.05)}.hero{background:#111827;color:#fff}.hero p{color:#d1d5db}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.task{border:1px solid #e5e7eb;border-radius:16px;padding:14px;background:#fafafa}.task h3{margin:0 0 6px}.muted,.sub{color:#64748b;font-size:14px;line-height:1.45}.badge{display:inline-block;border-radius:999px;padding:5px 9px;background:#e5e7eb;font-size:12px;font-weight:800;margin:3px 4px 3px 0}.ok{background:#dcfce7;color:#166534}.warn{background:#fef3c7;color:#92400e}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}button{border:0;border-radius:12px;padding:10px 13px;background:#111827;color:white;font-weight:750;cursor:pointer}.secondary{background:#e5e7eb;color:#111827}input{box-sizing:border-box;border:1px solid #cbd5e1;border-radius:12px;padding:10px;font-size:14px}pre{background:#0f172a;color:#e2e8f0;border-radius:14px;padding:14px;max-height:520px;overflow:auto;white-space:pre-wrap}@media(max-width:900px){body{padding:12px}.grid{grid-template-columns:1fr}}</style></head><body><div class='wrap'><div class='hero'><h1>Workspace setup</h1><p>Stage 80 owner-safe setup completion view. Admin configuration links stay hidden from client owners.</p><div class='actions'><input id='tenant_id' style='min-width:260px'/><button onclick='loadSetup()'>Load</button><button class='secondary' onclick=\"go('/owner/dashboard/ui?tenant_id='+encTenant())\">Dashboard</button><button class='secondary' onclick=\"go('/owner/billing/ui?tenant_id='+encTenant())\">Billing</button><button class='secondary' onclick=\"go('/owner/logout')\">Logout</button></div></div><div class='card'><h2 id='title'>Workspace</h2><div id='summary'></div></div><div class='card'><h2>Setup checklist</h2><div id='tasks' class='grid'></div></div><div class='card'><h2>Next actions</h2><div id='next' class='actions'></div><div class='sub'>Items that require configuration are shown as support-controlled instead of exposing admin write/config screens.</div></div><div class='card'><h2>Raw workspace setup</h2><pre id='raw'>Loading...</pre></div></div><script>const DEFAULT_TENANT_ID=__TENANT_ID_JSON__;function el(id){return document.getElementById(id)} function tenant(){return (el('tenant_id').value||'').trim()||DEFAULT_TENANT_ID||'clinic_demo'} function encTenant(){return encodeURIComponent(tenant())} function go(p){window.location=p} function esc(v){return v===null||v===undefined?'':String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('\\\"','&quot;').replaceAll("'",'&#39;')} function badge(ok,label){return `<span class='badge ${ok?'ok':'warn'}'>${esc(label)}</span>`}function taskCard(t){const action=t.owner_action_url?`<button class='secondary' onclick=\"go('${esc(t.owner_action_url)}')\">${esc(t.owner_action_label||'Open')}</button>`:`<span class='badge warn'>${esc(t.owner_action_label||'Support controlled')}</span>`;return `<div class='task'><h3>${esc(t.label||t.key)}</h3><div>${badge(!!t.complete,t.status||'attention')}${t.support_controlled?badge(false,'support controlled'):''}</div><p class='muted'>${esc(t.description||'')}</p><div class='actions'>${action}</div></div>`}function render(d){el('raw').textContent=JSON.stringify(d,null,2);el('title').textContent=((d.tenant&&d.tenant.business_name)||d.tenant_id||tenant());const c=d.completion||{};el('summary').innerHTML=badge(!!d.tenant_workspace_ux_ready,'workspace UX: '+!!d.tenant_workspace_ux_ready)+badge(!!d.workspace_setup_complete,'setup complete: '+!!d.workspace_setup_complete)+badge(!!d.public_saas_ready,'public SaaS: '+!!d.public_saas_ready)+`<div class='sub'>${esc(c.complete_steps||0)} / ${esc(c.total_steps||0)} complete - ${esc(c.completion_percent||0)}%</div>`;el('tasks').innerHTML=(d.tasks||[]).map(taskCard).join('')||'<div class=\\'muted\\'>No tasks returned.</div>';el('next').innerHTML=(d.next_actions||[]).map(t=>t.owner_action_url?`<button class='secondary' onclick=\"go('${esc(t.owner_action_url)}')\">${esc(t.label)}</button>`:`<span class='badge warn'>${esc(t.label)} - ${esc(t.owner_action_label||'Support controlled')}</span>`).join('')||'<span class=\\'badge ok\\'>No next actions</span>';}async function loadSetup(){el('tenant_id').value=tenant();const r=await fetch('/owner/setup?tenant_id='+encTenant());const d=await r.json().catch(()=>({}));if(!r.ok){el('raw').textContent=JSON.stringify(d,null,2);return;}render(d);}el('tenant_id').value=DEFAULT_TENANT_ID||'clinic_demo';loadSetup();</script></body></html>"""
-    return html.replace("__TENANT_ID_JSON__", tenant_id_json)
+def stage80_owner_workspace_html(tenant_id: str = TENANT_ID_DEFAULT, ui_lang: str = "en") -> str:
+    tid = str(tenant_id or "").strip() or TENANT_ID_DEFAULT
+    lang = str(ui_lang or "en")
+    copy = ui_strings(lang, [
+        "common.loading", "common.load", "common.open", "common.ready", "common.attention",
+        "common.complete", "common.support_controlled", "common.technical_details",
+        "workspace.title", "workspace.subtitle", "workspace.status", "workspace.checklist",
+        "workspace.next", "workspace.next_note", "workspace.billing", "workspace.no_tasks",
+        "workspace.no_next", "workspace.progress", "workspace.workspace_ready",
+        "workspace.setup_complete", "workspace.public_ready",
+    ])
+    content = f'''
+<section class="rq-page-head"><div><span class="rq-eyebrow">{ui_text(lang, "common.secure_area")}</span><h1 class="rq-page-title">{ui_text(lang, "workspace.title")}</h1><p class="rq-page-subtitle">{ui_text(lang, "workspace.subtitle")}</p></div></section>
+<section class="rq-card"><div class="rq-inline-field"><input id="tenant_id" class="rq-input" aria-label="Workspace ID"/><button class="rq-button" type="button" onclick="loadSetup()">{ui_text(lang, "common.load")}</button><a class="rq-button rq-button-secondary" href="/owner/billing/ui?tenant_id={urllib.parse.quote(tid)}">{ui_text(lang, "workspace.billing")}</a></div></section>
+<section class="rq-card"><h2 class="rq-card-title" id="title">{ui_text(lang, "workspace.status")}</h2><div id="summary" class="rq-muted">{ui_text(lang, "common.loading")}</div><div class="rq-progress"><span id="progressbar" style="width:0%"></span></div></section>
+<section class="rq-section"><h2 class="rq-card-title">{ui_text(lang, "workspace.checklist")}</h2><div id="tasks" class="rq-grid rq-grid-2"></div></section>
+<section class="rq-card rq-section"><h2 class="rq-card-title">{ui_text(lang, "workspace.next")}</h2><div id="next" class="rq-actions"></div><p class="rq-card-subtitle">{ui_text(lang, "workspace.next_note")}</p></section>
+<details class="rq-details"><summary>{ui_text(lang, "common.technical_details")}</summary><pre id="raw">{ui_text(lang, "common.loading")}</pre></details>
+'''
+    script = r'''
+const DEFAULT_TENANT_ID=__TENANT_ID_JSON__;
+const COPY=__COPY_JSON__;
+const KNOWN=__KNOWN_JSON__;
+function el(id){return document.getElementById(id)}
+function tenant(){return (el('tenant_id').value||'').trim()||DEFAULT_TENANT_ID||'clinic_demo'}
+function encTenant(){return encodeURIComponent(tenant())}
+function esc(v){return RepliqUI.esc(v)}
+function tr(v){const s=String(v||'');return KNOWN[s]||s}
+function badge(ok,label){return `<span class="rq-badge ${ok?'rq-badge-success':'rq-badge-warning'}">${esc(label)}</span>`}
+function taskCard(t){const action=t.owner_action_url?`<button class="rq-button rq-button-secondary" data-url="${esc(t.owner_action_url)}">${esc(tr(t.owner_action_label||COPY['common.open']))}</button>`:`<span class="rq-badge rq-badge-warning">${esc(COPY['common.support_controlled'])}</span>`;return `<article class="rq-task"><h3>${esc(tr(t.label||t.key))}</h3><div>${badge(!!t.complete,t.complete?COPY['common.complete']:COPY['common.attention'])}${t.support_controlled?badge(false,COPY['common.support_controlled']):''}</div><p class="rq-muted">${esc(tr(t.description||''))}</p><div class="rq-actions">${action}</div></article>`}
+function bindActions(){document.querySelectorAll('[data-url]').forEach(btn=>btn.addEventListener('click',()=>RepliqUI.go(btn.dataset.url)))}
+function render(d){el('raw').textContent=JSON.stringify(d,null,2);el('title').textContent=((d.tenant&&d.tenant.business_name)||d.tenant_id||tenant());const c=d.completion||{};const pct=RepliqUI.clampPercent(c.completion_percent);el('progressbar').style.width=pct+'%';el('summary').innerHTML=badge(!!d.tenant_workspace_ux_ready,COPY['workspace.workspace_ready'])+badge(!!d.workspace_setup_complete,COPY['workspace.setup_complete'])+badge(!!d.public_saas_ready,COPY['workspace.public_ready'])+`<div class="rq-muted">${esc(COPY['workspace.progress'].replace('{done}',c.complete_steps||0).replace('{total}',c.total_steps||0).replace('{percent}',pct))}</div>`;el('tasks').innerHTML=(d.tasks||[]).map(taskCard).join('')||`<div class="rq-card rq-muted">${esc(COPY['workspace.no_tasks'])}</div>`;el('next').innerHTML=(d.next_actions||[]).map(t=>t.owner_action_url?`<button class="rq-button rq-button-secondary" data-url="${esc(t.owner_action_url)}">${esc(tr(t.label||t.owner_action_label))}</button>`:`<span class="rq-badge rq-badge-warning">${esc(tr(t.label))}</span>`).join('')||`<span class="rq-badge rq-badge-success">${esc(COPY['workspace.no_next'])}</span>`;bindActions()}
+async function loadSetup(){el('tenant_id').value=tenant();const r=await fetch('/owner/setup?tenant_id='+encTenant(),{credentials:'include',cache:'no-store'});const d=await r.json().catch(()=>({}));if(!r.ok){el('raw').textContent=JSON.stringify(d,null,2);return}render(d)}
+el('tenant_id').value=DEFAULT_TENANT_ID||'clinic_demo';loadSetup();
+'''.replace('__TENANT_ID_JSON__', json.dumps(tid, ensure_ascii=False)).replace('__COPY_JSON__', json.dumps(copy, ensure_ascii=False)).replace('__KNOWN_JSON__', json.dumps(ui_known_labels(lang), ensure_ascii=False))
+    return render_repliq_shell(title=ui_text(lang, "workspace.title"), lang=lang, tenant_id=tid, content_html=content, active_nav="workspace", inline_script=script)
 
 
 # -------------------------
@@ -5395,13 +5453,33 @@ def stage93_owner_handoff_payload(request: Request, tenant_id: str = TENANT_ID_D
     return core
 
 
-def stage93_owner_handoff_html(tenant_id: str = TENANT_ID_DEFAULT) -> str:
-    tenant_id_json = json.dumps(str(tenant_id or "").strip() or TENANT_ID_DEFAULT, ensure_ascii=False)
-    html = r'''<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Repliq - Get started</title>
-<style>body{font-family:Inter,system-ui,-apple-system,Segoe UI,Arial,sans-serif;background:#f6f7fb;color:#111827;margin:0;padding:24px}.wrap{max-width:1080px;margin:0 auto}.hero,.card{background:#fff;border:1px solid #e5e7eb;border-radius:22px;padding:20px;margin:14px 0;box-shadow:0 9px 28px rgba(15,23,42,.05)}.hero{background:#111827;color:#fff;padding:28px}.hero p{color:#d1d5db;max-width:760px;line-height:1.55}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.step{border:1px solid #e5e7eb;border-radius:16px;padding:15px;background:#fafafa}.step h3{margin:0 0 7px}.muted{color:#64748b;font-size:14px;line-height:1.45}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}button{border:0;border-radius:12px;padding:10px 14px;background:#111827;color:#fff;font-weight:800;cursor:pointer}.secondary{background:#e5e7eb;color:#111827}.badge{display:inline-block;border-radius:999px;padding:5px 9px;font-size:12px;font-weight:800;margin:2px 4px 2px 0;background:#e5e7eb}.ok{background:#dcfce7;color:#166534}.warn{background:#fef3c7;color:#92400e}.err{background:#fee2e2;color:#991b1b}pre{background:#0f172a;color:#e2e8f0;border-radius:14px;padding:14px;max-height:360px;overflow:auto;white-space:pre-wrap}@media(max-width:820px){body{padding:12px}.grid{grid-template-columns:1fr}}</style></head>
-<body><div class="wrap"><div class="hero"><span class="badge ok">Owner workspace active</span><h1>Your Repliq workspace is ready to configure</h1><p>This is the safe handoff after signup. Review the setup steps, complete the business data, then run the final launch review. No admin configuration links or secret values are shown here.</p><div class="actions"><button onclick="go('/owner/workspace/ui?tenant_id='+encTenant())">Open workspace</button><button class="secondary" onclick="go('/owner/setup-health/ui?tenant_id='+encTenant())">Setup health</button><button class="secondary" onclick="go('/owner/dashboard/ui?tenant_id='+encTenant())">Dashboard</button><button class="secondary" onclick="go('/owner/logout')">Logout</button></div></div><div class="card"><h2>Signup handoff</h2><div id="summary" class="muted">Loading...</div></div><div class="card"><h2>Recommended next steps</h2><div id="steps" class="grid"></div></div><div class="card"><h2>Finish and review</h2><div class="actions"><button onclick="go('/owner/launch-review/ui?tenant_id='+encTenant())">Final launch review</button><button class="secondary" onclick="go('/owner/launch-smoke/ui?tenant_id='+encTenant())">Launch smoke</button><button class="secondary" onclick="go('/owner/client-preview/ui?tenant_id='+encTenant())">Client preview</button><button class="secondary" onclick="go('/owner/account/ui?tenant_id='+encTenant())">Account center</button></div></div><div class="card"><h2>Owner-safe status</h2><pre id="raw">Loading...</pre></div></div>
-<script>const DEFAULT_TENANT_ID=__TENANT_ID_JSON__;function el(id){return document.getElementById(id)}function tenant(){return DEFAULT_TENANT_ID||'clinic_demo'}function encTenant(){return encodeURIComponent(tenant())}function go(path){window.location=path}function esc(v){return v===null||v===undefined?'':String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;')}function badge(ok,label){return '<span class="badge '+(ok?'ok':'warn')+'">'+esc(label)+'</span>'}function render(d){el('raw').textContent=JSON.stringify(d,null,2);const w=d.workspace_summary||{};const h=d.setup_health_summary||{};el('summary').innerHTML=badge(!!d.public_signup_owner_workspace_e2e_ready,'handoff ready: '+!!d.public_signup_owner_workspace_e2e_ready)+badge(!!d.tenant_workspace_setup_complete,'workspace complete: '+!!d.tenant_workspace_setup_complete)+badge(!!d.tenant_setup_health_complete,'setup health complete: '+!!d.tenant_setup_health_complete)+'<div class="muted">Workspace '+esc(w.complete_steps||0)+'/'+esc(w.total_steps||0)+' - '+esc(w.completion_percent||0)+'% - Setup health '+esc(h.completion_percent||0)+'%</div>';const steps=((d.owner_handoff||{}).recommended_steps||[]);el('steps').innerHTML=steps.map(s=>'<div class="step"><h3>'+esc(s.label||s.key)+'</h3><div>'+badge(!!s.complete,s.complete?'complete':'attention')+(s.support_controlled?'<span class="badge warn">support controlled</span>':'')+'</div><div class="actions">'+(s.action_url?'<button class="secondary" data-url="'+esc(s.action_url)+'">'+esc(s.action_label||'Open')+'</button>':'')+'</div></div>').join('')||'<div class="muted">No setup steps returned.</div>';el('steps').querySelectorAll('button[data-url]').forEach(btn=>btn.addEventListener('click',()=>go(btn.dataset.url)))}async function load(){const r=await fetch('/owner/get-started?tenant_id='+encTenant(),{credentials:'include'});const d=await r.json().catch(()=>({}));if(!r.ok){el('raw').textContent=JSON.stringify(d,null,2);el('summary').innerHTML='<span class="badge err">'+esc(d.error||d.detail||'Owner login required')+'</span>';return}render(d)}load();</script></body></html>'''
-    return html.replace("__TENANT_ID_JSON__", tenant_id_json)
+def stage93_owner_handoff_html(tenant_id: str = TENANT_ID_DEFAULT, ui_lang: str = "en") -> str:
+    tid = str(tenant_id or "").strip() or TENANT_ID_DEFAULT
+    lang = str(ui_lang or "en")
+    copy = ui_strings(lang, [
+        "common.loading", "common.open", "common.complete", "common.attention",
+        "common.support_controlled", "common.technical_details", "get_started.handoff_ready",
+        "get_started.workspace_complete", "get_started.health_complete", "get_started.progress",
+        "get_started.no_steps", "get_started.login_required",
+    ])
+    tq = urllib.parse.quote(tid)
+    content = f'''
+<section class="rq-page-head"><div><span class="rq-eyebrow">{ui_text(lang, "get_started.badge")}</span><h1 class="rq-page-title">{ui_text(lang, "get_started.title")}</h1><p class="rq-page-subtitle">{ui_text(lang, "get_started.subtitle")}</p><div class="rq-actions" style="margin-top:18px"><a class="rq-button" href="/owner/workspace/ui?tenant_id={tq}">{ui_text(lang, "get_started.open_workspace")}</a><a class="rq-button rq-button-secondary" href="/owner/setup-health/ui?tenant_id={tq}">{ui_text(lang, "get_started.setup_health")}</a><a class="rq-button rq-button-ghost" href="/owner/dashboard/ui?tenant_id={tq}">{ui_text(lang, "get_started.dashboard")}</a></div></div></section>
+<section class="rq-card"><h2 class="rq-card-title">{ui_text(lang, "get_started.handoff")}</h2><div id="summary" class="rq-muted">{ui_text(lang, "common.loading")}</div><div class="rq-progress"><span id="progressbar" style="width:0%"></span></div></section>
+<section class="rq-section"><h2 class="rq-card-title">{ui_text(lang, "get_started.next_steps")}</h2><div id="steps" class="rq-grid rq-grid-2"></div></section>
+<section class="rq-card rq-section"><h2 class="rq-card-title">{ui_text(lang, "get_started.finish")}</h2><div class="rq-actions"><a class="rq-button" href="/owner/launch-review/ui?tenant_id={tq}">{ui_text(lang, "get_started.launch_review")}</a><a class="rq-button rq-button-secondary" href="/owner/launch-smoke/ui?tenant_id={tq}">{ui_text(lang, "get_started.launch_smoke")}</a><a class="rq-button rq-button-secondary" href="/owner/client-preview/ui?tenant_id={tq}">{ui_text(lang, "get_started.preview")}</a><a class="rq-button rq-button-ghost" href="/owner/account/ui?tenant_id={tq}">{ui_text(lang, "get_started.account")}</a></div></section>
+<details class="rq-details"><summary>{ui_text(lang, "common.technical_details")}</summary><pre id="raw">{ui_text(lang, "common.loading")}</pre></details>
+'''
+    script = r'''
+const DEFAULT_TENANT_ID=__TENANT_ID_JSON__;
+const COPY=__COPY_JSON__;
+const KNOWN=__KNOWN_JSON__;
+function el(id){return document.getElementById(id)}function tenant(){return DEFAULT_TENANT_ID||'clinic_demo'}function encTenant(){return encodeURIComponent(tenant())}function esc(v){return RepliqUI.esc(v)}function tr(v){const s=String(v||'');return KNOWN[s]||s}function badge(ok,label){return `<span class="rq-badge ${ok?'rq-badge-success':'rq-badge-warning'}">${esc(label)}</span>`}
+function render(d){el('raw').textContent=JSON.stringify(d,null,2);const w=d.workspace_summary||{};const h=d.setup_health_summary||{};const pct=RepliqUI.clampPercent(w.completion_percent);el('progressbar').style.width=pct+'%';el('summary').innerHTML=badge(!!d.public_signup_owner_workspace_e2e_ready,COPY['get_started.handoff_ready'])+badge(!!d.tenant_workspace_setup_complete,COPY['get_started.workspace_complete'])+badge(!!d.tenant_setup_health_complete,COPY['get_started.health_complete'])+`<div class="rq-muted">${esc(COPY['get_started.progress'].replace('{done}',w.complete_steps||0).replace('{total}',w.total_steps||0).replace('{percent}',pct).replace('{health}',h.completion_percent||0))}</div>`;const steps=((d.owner_handoff||{}).recommended_steps||[]);el('steps').innerHTML=steps.map(s=>`<article class="rq-task"><h3>${esc(tr(s.label||s.key))}</h3><div>${badge(!!s.complete,s.complete?COPY['common.complete']:COPY['common.attention'])}${s.support_controlled?badge(false,COPY['common.support_controlled']):''}</div><div class="rq-actions">${s.action_url?`<button class="rq-button rq-button-secondary" data-url="${esc(s.action_url)}">${esc(tr(s.action_label||COPY['common.open']))}</button>`:''}</div></article>`).join('')||`<div class="rq-card rq-muted">${esc(COPY['get_started.no_steps'])}</div>`;document.querySelectorAll('[data-url]').forEach(btn=>btn.addEventListener('click',()=>RepliqUI.go(btn.dataset.url)))}
+async function load(){const r=await fetch('/owner/get-started?tenant_id='+encTenant(),{credentials:'include',cache:'no-store'});const d=await r.json().catch(()=>({}));if(!r.ok){el('raw').textContent=JSON.stringify(d,null,2);el('summary').innerHTML=`<span class="rq-badge rq-badge-danger">${esc(d.error||d.detail||COPY['get_started.login_required'])}</span>`;return}render(d)}load();
+'''.replace('__TENANT_ID_JSON__', json.dumps(tid, ensure_ascii=False)).replace('__COPY_JSON__', json.dumps(copy, ensure_ascii=False)).replace('__KNOWN_JSON__', json.dumps(ui_known_labels(lang), ensure_ascii=False))
+    return render_repliq_shell(title=ui_text(lang, "get_started.title"), lang=lang, tenant_id=tid, content_html=content, active_nav="get_started", inline_script=script)
+
 
 # -------------------------
 # STAGE 94: SMB LAUNCH SMOKE / DEMO TENANT HARDENING
@@ -5918,6 +5996,76 @@ def stage95_owner_readiness_lock_html(tenant_id: str = TENANT_ID_DEFAULT) -> str
     tenant_id_json = json.dumps(str(tenant_id or "").strip() or TENANT_ID_DEFAULT, ensure_ascii=False)
     html = r'''<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Repliq Mature SMB Readiness Lock</title><style>body{font-family:Inter,system-ui,-apple-system,Segoe UI,Arial,sans-serif;background:#f6f7fb;color:#111827;margin:0;padding:24px}.wrap{max-width:1160px;margin:0 auto}.hero,.card{background:#fff;border:1px solid #e5e7eb;border-radius:22px;padding:20px;margin:14px 0;box-shadow:0 9px 28px rgba(15,23,42,.05)}.hero{background:#111827;color:#fff}.hero p{color:#d1d5db;max-width:900px;line-height:1.5}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.item{border:1px solid #e5e7eb;border-radius:16px;padding:14px;background:#fafafa}.item h3{margin:0 0 7px}.muted{color:#64748b;font-size:14px;line-height:1.5}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}button{border:0;border-radius:12px;padding:10px 13px;background:#111827;color:#fff;font-weight:800;cursor:pointer}.secondary{background:#e5e7eb;color:#111827}.badge{display:inline-block;border-radius:999px;padding:5px 9px;font-size:12px;font-weight:800;margin:2px 4px 2px 0;background:#e5e7eb}.ok{background:#dcfce7;color:#166534}.warn{background:#fef3c7;color:#92400e}.err{background:#fee2e2;color:#991b1b}pre{background:#0f172a;color:#e2e8f0;border-radius:14px;padding:14px;max-height:440px;overflow:auto;white-space:pre-wrap}@media(max-width:840px){body{padding:12px}.grid{grid-template-columns:1fr}}</style></head><body><div class="wrap"><div class="hero"><span class="badge ok">Technical core lock</span><h1>Mature SMB readiness</h1><p>This page locks the current technical SMB product baseline. It deliberately does not claim that multilingual client navigation or the public visual website is finished; those are the next separate polish phase.</p><div class="actions"><button onclick="go('/owner/workspace/ui?tenant_id='+encTenant())">Workspace</button><button class="secondary" onclick="go('/owner/launch-smoke/ui?tenant_id='+encTenant())">Launch smoke</button><button class="secondary" onclick="go('/owner/setup-health/ui?tenant_id='+encTenant())">Setup health</button><button class="secondary" onclick="go('/owner/account/ui?tenant_id='+encTenant())">Account</button><button class="secondary" onclick="go('/owner/logout')">Logout</button></div></div><div class="card"><h2>Technical lock status</h2><div id="summary" class="muted">Loading...</div></div><div class="card"><h2>Readiness gates</h2><div id="gates" class="grid"></div></div><div class="card"><h2>Next phase: client experience polish</h2><div id="polish" class="grid"></div></div><div class="card"><h2>Owner-safe payload</h2><pre id="raw">Loading...</pre></div></div><script>const DEFAULT_TENANT_ID=__TENANT_ID_JSON__;function el(id){return document.getElementById(id)}function tenant(){return DEFAULT_TENANT_ID||'clinic_demo'}function encTenant(){return encodeURIComponent(tenant())}function go(p){window.location=p}function esc(v){return v===null||v===undefined?'':String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;')}function badge(cls,t){return `<span class="badge ${cls}">${esc(t)}</span>`}function gate(x){x=x||{};return `<div class="item"><h3>${esc(x.label||x.key||'-')}</h3>${badge(x.ready?'ok':'err',x.status||'-')}<div class="muted">${esc(JSON.stringify(x.evidence||{})).slice(0,520)}</div></div>`}function polishItem(x){return `<div class="item"><h3>${esc(String(x).replaceAll('_',' '))}</h3>${badge('warn','post-lock')}</div>`}function render(d){el('raw').textContent=JSON.stringify(d,null,2);el('summary').innerHTML=badge(d.mature_smb_core_ready?'ok':'err','technical core ready: '+!!d.mature_smb_core_ready)+badge(d.controlled_public_saas_ready?'ok':'warn','controlled public SaaS: '+!!d.controlled_public_saas_ready)+badge(d.polished_client_launch_ready?'ok':'warn','polished client launch: '+!!d.polished_client_launch_ready)+badge(d.enterprise_saas_ready?'warn':'ok','enterprise_saas_ready: '+!!d.enterprise_saas_ready)+'<div class="muted">Expected protected regression: '+esc(d.protected_regression_baseline_expected||'-')+' · Stage '+esc(d.stage||'95')+'</div>';el('gates').innerHTML=(d.gates||[]).map(gate).join('')||'<div class="muted">No gates returned.</div>';const p=d.post_lock_scope||{};el('polish').innerHTML=(p.planned_workstreams||[]).map(polishItem).join('')+'<div class="item"><h3>Target languages</h3>'+badge('warn',(p.target_languages||[]).map(x=>String(x).toUpperCase()).join(' / ')||'LV / RU / EN')+'<div class="muted">This is intentionally not marked complete by Stage 95.</div></div>'}async function load(){const r=await fetch('/owner/readiness-lock?tenant_id='+encTenant(),{credentials:'include',cache:'no-store'});const d=await r.json().catch(()=>({}));if(!r.ok){el('raw').textContent=JSON.stringify(d,null,2);el('summary').innerHTML=badge('err',d.error||d.detail||'Owner login required');return}render(d)}load();</script></body></html>'''
     return html.replace("__TENANT_ID_JSON__", tenant_id_json)
+
+# -------------------------
+# CX-1: SHARED UI SHELL / LOCALIZATION FOUNDATION
+# -------------------------
+CX1_READINESS_PATHS = {
+    "/client-experience/foundation/readiness",
+    "/ui/localization/readiness",
+    "/owner-ui/shell/readiness",
+}
+CX1_PILOT_UI_PATHS = {
+    "/owner/login",
+    "/owner/dashboard/ui",
+    "/owner/control-center/ui",
+    "/owner/get-started/ui",
+    "/owner/welcome/ui",
+    "/owner/setup/ui",
+    "/owner/workspace/ui",
+    "/owner/workspace/setup/ui",
+}
+
+
+def cx1_client_experience_foundation_readiness_payload() -> Dict[str, Any]:
+    registered_paths = {str(getattr(route, "path", "") or "") for route in app.routes}
+    missing_readiness_protection = sorted(path for path in CX1_READINESS_PATHS if path not in STAGE61_PROTECTED_EXACT_PATHS)
+    missing_routes = sorted(path for path in (CX1_READINESS_PATHS | CX1_PILOT_UI_PATHS | {"/assets/repliq-ui.css", "/assets/repliq-ui.js"}) if path not in registered_paths)
+    missing_owner_protection = sorted(path for path in (CX1_PILOT_UI_PATHS - {"/owner/login"}) if path not in STAGE71_OWNER_PROTECTED_EXACT_PATHS)
+    blocking = []
+    if missing_readiness_protection:
+        blocking.append("cx1_readiness_not_admin_protected")
+    if missing_routes:
+        blocking.append("cx1_required_routes_missing")
+    if missing_owner_protection:
+        blocking.append("cx1_owner_pilot_routes_not_owner_protected")
+    ready = not blocking
+    return {
+        "ok": True,
+        "stage": "CX-1",
+        "purpose": "Shared UI Shell / Localization Foundation",
+        "status": "ready" if ready else "blocked",
+        "cx1_ready": bool(ready),
+        "shared_ui_shell_ready": True,
+        "shared_css_asset_ready": "/assets/repliq-ui.css" in registered_paths,
+        "shared_js_asset_ready": "/assets/repliq-ui.js" in registered_paths,
+        "ui_language_switcher_ready": True,
+        "ui_language_cookie": UI_LANG_COOKIE,
+        "supported_ui_languages": list(UI_SUPPORTED_LANGUAGES),
+        "ui_language_separate_from_business_language": True,
+        "pilot_pages_migrated": sorted(CX1_PILOT_UI_PATHS),
+        "responsive_navigation_foundation_ready": True,
+        "technical_details_collapsed_by_default": True,
+        "client_experience_polish_complete": False,
+        "next_phase": "CX-2_owner_workspace_full_migration",
+        "enterprise_saas_ready": False,
+        "security": {
+            "readiness_admin_protected": not missing_readiness_protection,
+            "existing_owner_auth_boundaries_preserved": not missing_owner_protection,
+            "owner_write_routes_added": False,
+            "csrf_write_paths_added": False,
+            "tenant_id_is_authentication": False,
+            "secrets_exposed": False,
+        },
+        "blocking": blocking,
+        "warnings": ["only_the_cx1_pilot_pages_use_the_shared_shell_until_cx2"],
+        "missing": {
+            "readiness_protection": missing_readiness_protection,
+            "registered_routes": missing_routes,
+            "owner_protection": missing_owner_protection,
+        },
+        "note": "CX-1 adds a shared responsive owner shell and a separate persistent LV/RU/EN UI language preference for the login, dashboard, get-started and workspace pilot pages. It does not change business language or receptionist runtime.",
+    }
 
 
 # -------------------------
@@ -20573,7 +20721,8 @@ def stage80_owner_workspace_json(request: Request, tenant_id: str = TENANT_ID_DE
 @app.get("/owner/workspace/setup/ui", response_class=HTMLResponse)
 def stage80_owner_workspace_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
     tid = stage711_resolve_tenant_context(request, tenant_id)
-    return HTMLResponse(content=stage80_owner_workspace_html(tenant_id=tid), headers={"Cache-Control": "no-store"})
+    lang = resolve_ui_language(request)
+    return HTMLResponse(content=stage80_owner_workspace_html(tenant_id=tid, ui_lang=lang), headers={"Cache-Control": "no-store", "Content-Language": lang, "X-Repliq-UI": UI_FOUNDATION_VERSION})
 
 @app.get("/business-profile/readiness")
 @app.get("/owner-business-profile/readiness")
@@ -20933,7 +21082,8 @@ def stage93_owner_handoff_ui(request: Request, tenant_id: str = TENANT_ID_DEFAUL
     except HTTPException as e:
         return stage71_strict_owner_auth_error(int(e.status_code or 401), str(e.detail or "owner_login_required"), tenant_id=str(request.query_params.get("tenant_id") or tenant_id or TENANT_ID_DEFAULT))
     tid = str(access.get("tenant_id") or tenant_id or "").strip() or TENANT_ID_DEFAULT
-    return HTMLResponse(content=stage93_owner_handoff_html(tenant_id=tid), headers={"Cache-Control": "no-store"})
+    lang = resolve_ui_language(request)
+    return HTMLResponse(content=stage93_owner_handoff_html(tenant_id=tid, ui_lang=lang), headers={"Cache-Control": "no-store", "Content-Language": lang, "X-Repliq-UI": UI_FOUNDATION_VERSION})
 
 @app.get("/smb-launch-smoke/readiness")
 @app.get("/demo-tenant/readiness")
@@ -20990,6 +21140,13 @@ def stage95_owner_readiness_lock_ui(request: Request, tenant_id: str = TENANT_ID
         return stage71_strict_owner_auth_error(int(e.status_code or 401), str(e.detail or "owner_login_required"), tenant_id=str(request.query_params.get("tenant_id") or tenant_id or TENANT_ID_DEFAULT))
     tid = str(access.get("tenant_id") or tenant_id or "").strip() or TENANT_ID_DEFAULT
     return HTMLResponse(content=stage95_owner_readiness_lock_html(tenant_id=tid), headers={"Cache-Control": "no-store"})
+
+
+@app.get("/client-experience/foundation/readiness")
+@app.get("/ui/localization/readiness")
+@app.get("/owner-ui/shell/readiness")
+def cx1_client_experience_foundation_readiness(request: Request):
+    return cx1_client_experience_foundation_readiness_payload()
 
 
 @app.post("/owner/magic-link/bootstrap")
@@ -21089,22 +21246,29 @@ async def stage76_owner_magic_login_submit(request: Request):
 def owner_login_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT, next: str = ""):
     tenant_id_clean = stage711_resolve_tenant_context(request, tenant_id)
     next_path = stage62_safe_local_path(next or f"/owner/dashboard/ui?tenant_id={tenant_id_clean}", tenant_id_clean)
-    tenant_json = json.dumps(tenant_id_clean, ensure_ascii=False)
-    next_json = json.dumps(next_path, ensure_ascii=False)
-    html = r'''
-<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Repliq Owner Login</title>
-<style>body{font-family:Inter,Arial,sans-serif;background:#f6f7fb;color:#111827;margin:0;padding:24px}.wrap{max-width:560px;margin:8vh auto}.card{background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:24px;box-shadow:0 12px 32px rgba(15,23,42,.08)}h1{margin:0;font-size:30px;letter-spacing:-.03em}.sub{color:#6b7280;font-size:14px;line-height:1.45;margin:8px 0 18px}label{display:block;font-size:13px;font-weight:700;margin:14px 0 6px}input{width:100%;box-sizing:border-box;border:1px solid #d1d5db;border-radius:12px;padding:12px;font-size:14px}button{width:100%;border:0;background:#111827;color:white;padding:12px 16px;border-radius:12px;font-weight:800;margin-top:16px;cursor:pointer}.notice{border-radius:12px;padding:10px 12px;margin-top:14px;font-size:13px;display:none}.notice.ok{display:block;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0}.notice.err{display:block;background:#fef2f2;color:#991b1b;border:1px solid #fecaca}.small{color:#6b7280;font-size:12px;margin-top:12px;line-height:1.45}code{background:#f3f4f6;padding:2px 5px;border-radius:6px}</style></head>
-<body><div class="wrap"><div class="card"><h1>Repliq Owner Login</h1><div class="sub">Stage 76 owner auth foundation. Use a magic link token or the legacy setup code issued from the protected admin/bootstrap flow. Do not paste owner codes or magic tokens into chat logs.</div><label>Tenant</label><input id="tenant_id"/><label>Owner email</label><input id="owner_email" type="email" autocomplete="email"/><label>Owner setup/login code</label><input id="login_code" type="password" autocomplete="one-time-code"/><button onclick="login()">Login</button><div id="msg" class="notice"></div><div class="small">This creates a separate HttpOnly owner session cookie: <code>repliq_owner_session</code>. It does not expose the code hash, magic token hash, or admin token. Magic link entry: <a id="magic_link" href="#">/owner/magic-login</a>.</div></div></div>
-<script>
-const DEFAULT_TENANT_ID=__TENANT_ID_JSON__; const NEXT_PATH=__NEXT_PATH_JSON__;
-document.getElementById('tenant_id').value=DEFAULT_TENANT_ID||'clinic_demo';
-document.getElementById('magic_link').href='/owner/magic-login?tenant_id='+encodeURIComponent(DEFAULT_TENANT_ID||'clinic_demo');
-function setMsg(k,t){const el=document.getElementById('msg');el.className='notice '+k;el.textContent=t;}
-async function login(){const tenant_id=(document.getElementById('tenant_id').value||'').trim()||DEFAULT_TENANT_ID||'clinic_demo';const owner_email=(document.getElementById('owner_email').value||'').trim();const login_code=document.getElementById('login_code').value||''; if(!owner_email||!login_code.trim()){setMsg('err','Owner email and login code are required.');return;} setMsg('ok','Checking…'); const r=await fetch('/owner/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tenant_id,owner_email,login_code,next:NEXT_PATH})}); const data=await r.json().catch(()=>({})); if(!r.ok||!data.ok){setMsg('err',data.error||data.detail||'Login failed');return;} setMsg('ok','Login OK. Opening owner dashboard…'); window.location=data.redirect_url||('/owner/dashboard/ui?tenant_id='+encodeURIComponent(tenant_id));}
-document.addEventListener('keydown',e=>{if(e.key==='Enter')login();});
-</script></body></html>
-    '''.replace("__TENANT_ID_JSON__", tenant_json).replace("__NEXT_PATH_JSON__", next_json)
-    return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
+    lang = resolve_ui_language(request)
+    content = f'''
+<section class="rq-card rq-auth-card">
+  <div class="rq-auth-brand"><span class="rq-logo">R</span><h1 class="rq-page-title" style="font-size:34px">{ui_text(lang, "login.title")}</h1><p class="rq-page-subtitle" style="margin-left:auto;margin-right:auto">{ui_text(lang, "login.subtitle")}</p></div>
+  <div class="rq-field"><label class="rq-label" for="tenant_id">{ui_text(lang, "login.tenant")}</label><input class="rq-input" id="tenant_id" autocomplete="organization"/></div>
+  <div class="rq-field"><label class="rq-label" for="owner_email">{ui_text(lang, "login.email")}</label><input class="rq-input" id="owner_email" type="email" autocomplete="email"/></div>
+  <div class="rq-field"><label class="rq-label" for="login_code">{ui_text(lang, "login.code")}</label><input class="rq-input" id="login_code" type="password" autocomplete="one-time-code"/></div>
+  <button class="rq-button" style="width:100%;margin-top:18px" type="button" onclick="login()">{ui_text(lang, "login.button")}</button>
+  <div id="msg" class="rq-notice" hidden></div>
+  <div class="rq-actions" style="justify-content:center;margin-top:15px"><a id="magic_link" class="rq-button rq-button-ghost" href="#">{ui_text(lang, "login.magic")}</a></div>
+  <div class="rq-security-note"><span>&#10003;</span><span>{ui_text(lang, "login.note")}</span></div>
+</section>
+'''
+    copy = ui_strings(lang, ["login.required", "login.checking", "login.success", "login.failed"])
+    script = r'''
+const DEFAULT_TENANT_ID=__TENANT_ID_JSON__;const NEXT_PATH=__NEXT_PATH_JSON__;const COPY=__COPY_JSON__;
+document.getElementById('tenant_id').value=DEFAULT_TENANT_ID||'clinic_demo';document.getElementById('magic_link').href='/owner/magic-login?tenant_id='+encodeURIComponent(DEFAULT_TENANT_ID||'clinic_demo')+'&ui_lang='+encodeURIComponent(document.body.dataset.rqUiLang||'en');
+function setMsg(kind,text){const node=document.getElementById('msg');node.hidden=false;node.className='rq-notice '+(kind==='error'?'rq-notice-error':'rq-notice-success');node.textContent=text}
+async function login(){const tenant_id=(document.getElementById('tenant_id').value||'').trim()||DEFAULT_TENANT_ID||'clinic_demo';const owner_email=(document.getElementById('owner_email').value||'').trim();const login_code=document.getElementById('login_code').value||'';if(!owner_email||!login_code.trim()){setMsg('error',COPY['login.required']);return}setMsg('success',COPY['login.checking']);const r=await fetch('/owner/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tenant_id,owner_email,login_code,next:NEXT_PATH})});const data=await r.json().catch(()=>({}));if(!r.ok||!data.ok){setMsg('error',data.error||data.detail||COPY['login.failed']);return}setMsg('success',COPY['login.success']);window.location=data.redirect_url||('/owner/dashboard/ui?tenant_id='+encodeURIComponent(tenant_id))}
+document.addEventListener('keydown',e=>{if(e.key==='Enter')login()});
+'''.replace('__TENANT_ID_JSON__', json.dumps(tenant_id_clean, ensure_ascii=False)).replace('__NEXT_PATH_JSON__', json.dumps(next_path, ensure_ascii=False)).replace('__COPY_JSON__', json.dumps(copy, ensure_ascii=False))
+    html = render_repliq_shell(title=ui_text(lang, "login.title"), lang=lang, tenant_id=tenant_id_clean, content_html=content, owner_navigation=False, auth_layout=True, inline_script=script)
+    return HTMLResponse(content=html, headers={"Cache-Control": "no-store", "Content-Language": lang, "X-Repliq-UI": UI_FOUNDATION_VERSION})
 
 
 @app.post("/owner/login")
@@ -21167,19 +21331,28 @@ def owner_dashboard_json(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
 @app.get("/owner/dashboard/ui", response_class=HTMLResponse)
 @app.get("/owner/control-center/ui", response_class=HTMLResponse)
 def owner_dashboard_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
-    tenant_json = json.dumps(stage711_resolve_tenant_context(request, tenant_id), ensure_ascii=False)
-    html = r'''
-<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Repliq Workspace</title>
-<style>body{font-family:Inter,system-ui,-apple-system,Segoe UI,Arial,sans-serif;background:#f6f7fb;color:#111827;margin:0;padding:24px}.wrap{max-width:1000px;margin:0 auto}.hero,.card{background:white;border:1px solid #e5e7eb;border-radius:18px;padding:18px;margin:14px 0;box-shadow:0 8px 25px rgba(17,24,39,.05)}.hero{display:flex;justify-content:space-between;gap:18px;align-items:flex-start}.sub,.muted{color:#64748b;font-size:14px;line-height:1.45}h1{margin:0 0 6px;font-size:32px;letter-spacing:-.03em}h2{margin:0 0 12px}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.badge{display:inline-block;border-radius:999px;padding:5px 9px;background:#e5e7eb;font-size:12px;font-weight:700;margin:3px 4px 3px 0}.badge.ok{background:#dcfce7;color:#166534}.badge.warn{background:#fef3c7;color:#92400e}button{border:0;border-radius:12px;padding:10px 13px;background:#111827;color:white;font-weight:750;cursor:pointer}.secondary{background:#e5e7eb;color:#111827}input{box-sizing:border-box;border:1px solid #cbd5e1;border-radius:12px;padding:10px;font-size:14px}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}pre{background:#0f172a;color:#e2e8f0;border-radius:14px;padding:14px;max-height:520px;overflow:auto;white-space:pre-wrap}@media(max-width:900px){body{padding:12px}.hero{display:block}.grid{grid-template-columns:1fr}}</style></head>
-<body><div class="wrap"><div class="hero"><div><h1>Repliq Workspace</h1><div class="sub">Stage 80 owner-safe workspace with setup completion for the mature SMB SaaS phase. Admin write/config surfaces stay out of the owner UI.</div><div class="actions"><input id="tenant_id" style="min-width:260px"/><button onclick="loadDash()">Load</button><button class="secondary" onclick="go('/owner/session?tenant_id='+encTenant())">Session JSON</button><button class="secondary" onclick="go('/owner/logout')">Logout</button></div></div><div id="badges"></div></div><div class="grid"><div class="card"><div class="muted">Business</div><h2 id="business">-</h2><div class="sub" id="tenantline">-</div></div><div class="card"><div class="muted">Owner</div><h2 id="owner">-</h2><div class="sub" id="role">-</div></div><div class="card"><div class="muted">Scope</div><h2>SMB workspace</h2><div class="sub">owner-safe, no receptionist-core changes</div></div></div><div class="card"><h2>Setup completion</h2><div id="quickstart" class="actions"></div><div class="sub" style="margin-top:10px">Calendar/channel/admin setup details remain controlled by Repliq support in this SMB maturity phase.</div></div><div class="card"><h2>Owner auth readiness</h2><div id="ready"></div></div><div class="card"><h2>Owner-safe links</h2><div id="links" class="actions"></div></div><div class="card"><h2>Raw owner dashboard</h2><pre id="raw">Loading...</pre></div></div>
-<script>
-const DEFAULT_TENANT_ID=__TENANT_ID_JSON__;
-function el(id){return document.getElementById(id)} function tenant(){return (el('tenant_id').value||'').trim()||DEFAULT_TENANT_ID||'clinic_demo'} function encTenant(){return encodeURIComponent(tenant())} function go(p){window.location=p} function esc(v){return v===null||v===undefined?'':String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;')} function badge(ok,label){return `<span class="badge ${ok?'ok':'warn'}">${esc(label)}</span>`}
-function render(d){el('raw').textContent=JSON.stringify(d,null,2); el('business').textContent=(d.tenant&&d.tenant.business_name)||'-'; el('tenantline').textContent='tenant_id: '+(d.tenant_id||tenant()); el('owner').textContent=d.owner_email||((d.opened_via_super_admin_bypass)?'super-admin bypass':'-'); el('role').textContent=d.role||'-'; const r=d.readiness||{}; const ux=d.launch_ux||{}; el('badges').innerHTML=badge(!!d.ok,'stage '+(d.stage||'71'))+badge(!!r.owner_auth_foundation_ready,'owner foundation: '+!!r.owner_auth_foundation_ready)+badge(!!r.tenant_ownership_binding_ready,'tenant binding: '+!!r.tenant_ownership_binding_ready)+badge(!!ux.workspace_home_ready,'workspace home: '+!!ux.workspace_home_ready); el('ready').innerHTML=(r.blocking||[]).concat(r.warnings||[]).map(x=>`<span class="badge warn">${esc(x)}</span>`).join('')||'<span class="badge ok">ready</span>'; const steps=ux.quickstart_steps||[]; el('quickstart').innerHTML=steps.map(st=>st.href?`<button class="secondary" onclick="go('${esc(st.href)}')">${esc(st.label||st.key)}</button>`:`<span class="badge warn">${esc(st.label||st.key)}</span>`).join(''); const links=d.links||{}; el('links').innerHTML=Object.keys(links).map(k=>`<button class="secondary" onclick="go('${esc(links[k])}')">${esc(k)}</button>`).join('');}
-async function loadDash(){el('tenant_id').value=tenant(); const r=await fetch('/owner/dashboard?tenant_id='+encTenant()); const d=await r.json().catch(()=>({})); if(!r.ok){el('raw').textContent=JSON.stringify(d,null,2);return;} render(d);} el('tenant_id').value=DEFAULT_TENANT_ID||'clinic_demo'; loadDash();
-</script></body></html>
-    '''.replace("__TENANT_ID_JSON__", tenant_json)
-    return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
+    tid = stage711_resolve_tenant_context(request, tenant_id)
+    lang = resolve_ui_language(request)
+    copy = ui_strings(lang, [
+        "common.loading", "common.ready", "common.attention", "common.technical_details",
+        "dashboard.tenant", "dashboard.session", "dashboard.super_admin",
+    ])
+    content = f'''
+<section class="rq-page-head"><div><span class="rq-eyebrow">{ui_text(lang, "common.secure_area")}</span><h1 class="rq-page-title">{ui_text(lang, "dashboard.title")}</h1><p class="rq-page-subtitle">{ui_text(lang, "dashboard.subtitle")}</p></div></section>
+<section class="rq-grid rq-grid-3"><article class="rq-card rq-stat"><div class="rq-stat-label">{ui_text(lang, "dashboard.business")}</div><div class="rq-stat-value" id="business">—</div><div class="rq-stat-note" id="tenantline">—</div></article><article class="rq-card rq-stat"><div class="rq-stat-label">{ui_text(lang, "dashboard.owner")}</div><div class="rq-stat-value" id="owner">—</div><div class="rq-stat-note" id="role">—</div></article><article class="rq-card rq-stat"><div class="rq-stat-label">{ui_text(lang, "dashboard.scope")}</div><div class="rq-stat-value">{ui_text(lang, "dashboard.scope_value")}</div><div class="rq-stat-note">{ui_text(lang, "dashboard.scope_note")}</div></article></section>
+<section class="rq-card rq-section"><div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start"><div><h2 class="rq-card-title">{ui_text(lang, "dashboard.setup")}</h2><p class="rq-card-subtitle">{ui_text(lang, "dashboard.setup_note")}</p></div><div id="badges"></div></div><div id="quickstart" class="rq-actions" style="margin-top:15px"></div></section>
+<section class="rq-grid rq-grid-2 rq-section"><article class="rq-card"><h2 class="rq-card-title">{ui_text(lang, "dashboard.auth")}</h2><div id="ready" class="rq-muted">{ui_text(lang, "common.loading")}</div></article><article class="rq-card"><h2 class="rq-card-title">{ui_text(lang, "dashboard.links")}</h2><div id="links" class="rq-actions"></div></article></section>
+<details class="rq-details"><summary>{ui_text(lang, "common.technical_details")}</summary><pre id="raw">{ui_text(lang, "common.loading")}</pre></details>
+'''
+    script = r'''
+const DEFAULT_TENANT_ID=__TENANT_ID_JSON__;const COPY=__COPY_JSON__;const KNOWN=__KNOWN_JSON__;
+function el(id){return document.getElementById(id)}function tenant(){return DEFAULT_TENANT_ID||'clinic_demo'}function encTenant(){return encodeURIComponent(tenant())}function esc(v){return RepliqUI.esc(v)}function tr(v){const s=String(v||'');return KNOWN[s]||s}function badge(ok,label){return `<span class="rq-badge ${ok?'rq-badge-success':'rq-badge-warning'}">${esc(label)}</span>`}
+function friendlyKey(key){const map={owner_get_started:tr('Continue setup'),owner_dashboard:tr('Dashboard'),owner_workspace:tr('Review workspace'),owner_launch_review:tr('Final launch checklist'),owner_launch_smoke:tr('SMB launch smoke / demo tenant'),owner_readiness_lock:tr('Readiness lock'),owner_demo:tr('Client preview / demo mode'),owner_client_preview:tr('Client preview / demo mode'),owner_analytics:tr('Conversation insights'),owner_conversation_insights:tr('Conversation insights'),owner_notifications:tr('Lead follow-up visibility'),owner_followups:tr('Lead follow-up visibility'),owner_setup:tr('Open setup checklist'),owner_setup_health:tr('Setup health / data quality'),owner_account:tr('Account / profile / billing center'),owner_billing:tr('Review billing status')};return map[key]||String(key||'').replaceAll('_',' ')}
+function render(d){el('raw').textContent=JSON.stringify(d,null,2);el('business').textContent=(d.tenant&&d.tenant.business_name)||'—';el('tenantline').textContent=COPY['dashboard.tenant']+': '+(d.tenant_id||tenant());el('owner').textContent=d.owner_email||((d.opened_via_super_admin_bypass)?COPY['dashboard.super_admin']:'—');el('role').textContent=d.role||'—';const r=d.readiness||{};const ux=d.launch_ux||{};el('badges').innerHTML=badge(!!r.owner_auth_foundation_ready,COPY['common.ready'])+badge(!!r.tenant_ownership_binding_ready,COPY['common.ready'])+badge(!!ux.workspace_home_ready,COPY['common.ready']);const accessIssues=(r.blocking||[]).concat(r.warnings||[]);el('ready').innerHTML=accessIssues.length?`<span class="rq-badge rq-badge-warning">${esc(COPY['common.attention'])}: ${accessIssues.length}</span>`:`<span class="rq-badge rq-badge-success">${esc(COPY['common.ready'])}</span>`;const steps=ux.quickstart_steps||[];el('quickstart').innerHTML=steps.map(st=>st.href?`<button class="rq-button rq-button-secondary" data-url="${esc(st.href)}">${esc(tr(st.label||st.key))}</button>`:`<span class="rq-badge rq-badge-warning">${esc(tr(st.label||st.key))}</span>`).join('');const links=d.links||{};el('links').innerHTML=Object.keys(links).filter(k=>!String(k).includes('readiness')).slice(0,10).map(k=>`<button class="rq-button rq-button-ghost" data-url="${esc(links[k])}">${esc(friendlyKey(k))}</button>`).join('');document.querySelectorAll('[data-url]').forEach(btn=>btn.addEventListener('click',()=>RepliqUI.go(btn.dataset.url)))}
+async function loadDash(){const r=await fetch('/owner/dashboard?tenant_id='+encTenant(),{credentials:'include',cache:'no-store'});const d=await r.json().catch(()=>({}));if(!r.ok){el('raw').textContent=JSON.stringify(d,null,2);return}render(d)}loadDash();
+'''.replace('__TENANT_ID_JSON__', json.dumps(tid, ensure_ascii=False)).replace('__COPY_JSON__', json.dumps(copy, ensure_ascii=False)).replace('__KNOWN_JSON__', json.dumps(ui_known_labels(lang), ensure_ascii=False))
+    html = render_repliq_shell(title=ui_text(lang, "dashboard.title"), lang=lang, tenant_id=tid, content_html=content, active_nav="dashboard", inline_script=script)
+    return HTMLResponse(content=html, headers={"Cache-Control": "no-store", "Content-Language": lang, "X-Repliq-UI": UI_FOUNDATION_VERSION})
 
 @app.get("/tenant/creation/readiness")
 @app.get("/signup/readiness")

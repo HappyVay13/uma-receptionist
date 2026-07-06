@@ -58,3 +58,11 @@ Stage 95 closes the current technical Mature SMB product phase. This roadmap is 
 ## Readiness rule
 
 The polished client launch must remain false until this phase is deployed and verified. Stage 95 technical readiness must not be reinterpreted as completion of this roadmap.
+
+## Implementation status update
+
+- CX-1 — Shared UI Shell / Localization Foundation: implemented in archive, awaiting deploy verification.
+- CX-2 — Owner Workspace Full Migration: not started.
+- CX-3 — Public Website / Signup / Authentication: not started.
+- CX-4 — Responsive / Accessibility / Brand Polish: not started.
+- CX-5 — Client Experience Readiness Lock: not started.

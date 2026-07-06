@@ -1787,3 +1787,29 @@ Expected verification:
 - `/owner-notifications/readiness?tenant_id=clinic_demo&days=14` no longer returns Stage 90.1 `stage90_exception_guarded` / `stage90_readiness_exception:NameError`.
 - `/mature-smb/final-readiness?tenant_id=clinic_demo` no longer blocks on Stage 89/90 and may set `mature_smb_core_ready=true` when all other gates remain healthy.
 - `/dialogue/qa` remains 50/50 passed.
+
+## Stage 95 / 95.1 Verification Closure
+
+Status: closed after deploy verification.
+
+Verified by user:
+- `/dialogue/qa` = 50/50 passed.
+- Stage 89 analytics visibility works.
+- Stage 90 notifications/follow-up visibility works.
+- Stage 95 Mature SMB technical readiness lock works.
+- Mature SMB technical product baseline is locked.
+
+## CX-1 — Shared UI Shell / Localization Foundation
+
+Status: implemented in archive, awaiting deploy verification.
+
+Scope:
+- Adds `repliq/ui_foundation.py` as the reusable client-facing shell/design/localization foundation.
+- Adds separate persistent LV/RU/EN UI language selection via `repliq_ui_lang`; tenant business language is not changed.
+- Adds shared CSS/JS assets and admin-protected CX-1 readiness aliases.
+- Migrates owner login, dashboard/control-center, get-started/welcome and workspace/setup UI families.
+- Collapses technical payloads by default while preserving them for diagnostics.
+- Preserves all existing API, auth, tenant, booking, Calendar, Telegram, billing and dialogue runtime semantics.
+
+Next phase after verification:
+- CX-2 — Owner Workspace Full Migration.

@@ -1023,3 +1023,20 @@ Stage 87 owner launch-review pages must not perform deep cross-stage readiness f
 - Existing owner/admin auth boundaries remain unchanged.
 - Current protected baseline remains `/dialogue/qa = 50/50 passed`.
 - `polished_client_launch_ready=false`, `client_experience_polish_complete=false`, and `enterprise_saas_ready=false` remain explicit.
+
+## CX-1 — Shared UI Shell / Localization Foundation Rules
+
+- UI language and tenant/business language are separate settings.
+- UI language supports only `lv`, `ru`, and `en` in this phase.
+- UI language persistence may use the non-sensitive `repliq_ui_lang` browser cookie; it must not modify tenant configuration.
+- Shared client UI code belongs in `repliq/ui_foundation.py`; new migrated pages should reuse the shell instead of adding another independent CSS system.
+- CX-1 pilot pages are owner login, dashboard/control-center, get-started/welcome, and workspace/setup.
+- Existing route URLs, JSON APIs, POST actions, auth semantics and tenant boundaries must remain compatible.
+- `/owner/login` remains public; the other pilot page boundaries remain exactly as before CX-1.
+- CX-1 readiness aliases remain Stage 61/62 admin-protected.
+- Shared asset routes must remain read-only and must not expose tenant data or secrets.
+- Raw JSON/technical details may remain available for diagnostics but must be collapsed by default in client-facing UI.
+- CX-1 must not change booking, slots, parsing, confirmation, cancel/reschedule, Google Calendar runtime, Telegram runtime, billing/payment runtime, CSRF, abuse protection, magic links, QA evaluator, LLM orchestration, voice/calls or external sends.
+- Protected regression baseline remains `/dialogue/qa = 50/50 passed`.
+- `client_experience_polish_complete=false` remains explicit until CX-5.
+- `enterprise_saas_ready=false` remains explicit.
