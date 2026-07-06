@@ -1850,3 +1850,50 @@ Expected verification:
 
 Next phase after verification:
 - CX-3 — Public Website / Signup / Authentication.
+
+## CX-2 — Owner Workspace Full Migration Verification Update
+
+Status: closed after deploy verification.
+
+Verified by user:
+- `/dialogue/qa` = 50/50 passed.
+- All remaining owner workspace sections render through the shared responsive shell.
+- LV/RU/EN UI language selection and persistence work across owner pages.
+- Shared sidebar/mobile navigation works.
+- Existing owner/admin boundaries and page actions remain intact.
+
+## CX-3 — Public Website / Signup / Authentication
+
+Status: implemented in archive, awaiting deploy verification.
+
+Scope:
+- Adds a professional responsive public Repliq website at `/` and the existing launch aliases.
+- Adds one shared public header/footer, mobile navigation, favicon and LV/RU/EN localization source of truth.
+- Replaces the technical public signup page with a client-facing localized form while preserving the existing POST `/public/signup` implementation.
+- Migrates owner login, magic-token login and logout confirmation to the same public visual system while preserving existing auth/session behavior.
+- Adds localized Privacy, Terms, Contact and Support pages.
+- Adds admin-protected CX-3 readiness aliases.
+- Keeps UI language separate from tenant/business language through the existing `repliq_ui_lang` cookie.
+
+Truthful public boundary:
+- No automated checkout or live payment-provider claim is added.
+- Contact/support email is optional through `REPLIQ_PUBLIC_CONTACT_EMAIL` / `REPLIQ_PUBLIC_SUPPORT_EMAIL`; when absent, the public page honestly states that pilot contact is provided during onboarding.
+- Privacy and Terms pages are product-phase notices and explicitly require legal-entity-specific review before broad commercial launch.
+- No GDPR compliance, enterprise maturity or legal-finality claim is made.
+
+Runtime preservation:
+- Existing POST implementations for public signup, owner login, magic login and logout are unchanged.
+- Existing rate limits, honeypot, CSRF boundary, abuse protection, magic-token semantics, owner-session cookies and tenant creation behavior remain unchanged.
+- Booking, dialogue, Calendar, Telegram, billing, analytics, follow-up and database schema behavior are unchanged.
+
+Expected verification:
+- Render deploy starts successfully.
+- `/dialogue/qa` remains 50/50 passed.
+- CX-1 and CX-2 readiness remain `ready`.
+- CX-3 readiness returns `stage=CX-3`, `cx3_ready=true`, `public_website_ready=true` and empty `blocking` through admin login.
+- `/`, `/public/signup`, `/owner/login`, `/owner/magic-login`, `/privacy`, `/terms`, `/contact` and `/support` render in LV/RU/EN.
+- Public language choice persists between public pages and the owner workspace.
+- Signup and owner login continue to create/use the same existing owner session.
+
+Next phase after verification:
+- CX-4 — Responsive / Accessibility / Brand Polish.

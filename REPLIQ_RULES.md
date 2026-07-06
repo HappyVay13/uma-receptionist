@@ -1061,3 +1061,34 @@ Stage 87 owner launch-review pages must not perform deep cross-stage readiness f
 - Protected regression baseline remains `/dialogue/qa = 50/50 passed`.
 - `client_experience_polish_complete=false` remains explicit until CX-5.
 - `enterprise_saas_ready=false` remains explicit.
+
+## CX-3 — Public Website / Signup / Authentication Rules
+
+- CX-3 changes the public presentation layer only; it must not replace or duplicate tenant creation, owner authentication or magic-link business logic.
+- Existing POST handlers must remain semantically unchanged:
+  - `POST /public/signup`
+  - `POST /owner/login`
+  - `POST /owner/magic-login`
+  - `POST /owner/logout`
+- Existing public signup honeypot, Stage 72/75 rate limits, Stage 74 public CSRF boundary, owner-login abuse protection, magic-token expiry/one-time use and signed owner-session cookie behavior must remain intact.
+- Public UI language supports only `lv`, `ru`, and `en` and uses the same non-sensitive `repliq_ui_lang` cookie as CX-1/CX-2.
+- Public UI language must remain separate from the signup field that configures the tenant's primary customer/business language.
+- Public routes must remain public and must not be added to owner/admin protected route sets:
+  - `/`, `/home`, `/launch`, `/launch/ui`, `/public/launch`, `/public/launch/ui`
+  - `/public/signup`, `/public/signup/ui`
+  - `/owner/login`, `/owner/magic-login`, `/owner/logout`
+  - `/privacy`, `/privacy-policy`, `/terms`, `/terms-of-service`, `/contact`, `/support`
+- CX-3 readiness routes must remain Stage 61/62 admin-protected:
+  - `/client-experience/public-site/readiness`
+  - `/public-site/readiness`
+  - `/public-auth/readiness`
+- Public header/footer/navigation must not expose admin readiness URLs, admin tokens, owner codes, magic-link tokens/hashes, Google credentials, Telegram secrets, billing-provider secrets or tenant/customer data.
+- The public signup UI may use the existing one-time backup code response, but technical details must mask raw one-time credential values and the code must be presented only for secure local storage.
+- Contact email must come only from `REPLIQ_PUBLIC_CONTACT_EMAIL` or `REPLIQ_PUBLIC_SUPPORT_EMAIL`; do not invent an address.
+- Privacy and Terms pages must not claim final legal compliance. They must state that entity-specific legal review is required before broad commercial sales.
+- Pricing copy must not invent automatic checkout, live billing-provider capability or commercial prices absent from the actual billing model.
+- CX-3 must not add POST routes, schema migrations, background jobs, external sends or new database writes.
+- CX-3 must not change booking, slots, parsing, side-question handling, confirmation, cancel/reschedule, Google Calendar runtime, Telegram runtime, billing semantics, analytics/follow-up logic, QA evaluator, LLM orchestration, voice/calls or customer messages.
+- Protected regression baseline remains `/dialogue/qa = 50/50 passed`.
+- `client_experience_polish_complete=false` remains explicit until CX-5.
+- `enterprise_saas_ready=false` remains explicit.

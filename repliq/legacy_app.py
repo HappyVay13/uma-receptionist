@@ -42,6 +42,23 @@ from repliq.ui_migration import (
     cx2_translation_counts,
     render_migrated_owner_page,
 )
+from repliq.public_ui import (
+    CX3_PUBLIC_UI_VERSION,
+    PUBLIC_UI_CSS,
+    PUBLIC_UI_JS,
+    public_response_headers,
+    public_translation_counts,
+    render_contact_page,
+    render_home_page,
+    render_legal_page,
+    render_login_page,
+    render_logout_page,
+    render_magic_login_page,
+    render_signup_page,
+    render_support_page,
+    resolve_public_language,
+    safe_public_email,
+)
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -180,6 +197,22 @@ def cx1_shared_ui_css():
 @app.get("/assets/repliq-ui.js", include_in_schema=False)
 def cx1_shared_ui_js():
     return Response(content=CX1_UI_JS, media_type="application/javascript", headers={"Cache-Control": "public, max-age=3600", "X-Repliq-UI": UI_FOUNDATION_VERSION})
+
+
+@app.get("/assets/repliq-public.css", include_in_schema=False)
+def cx3_public_ui_css():
+    return Response(content=PUBLIC_UI_CSS, media_type="text/css", headers={"Cache-Control": "public, max-age=3600", "X-Repliq-Public-UI": CX3_PUBLIC_UI_VERSION})
+
+
+@app.get("/assets/repliq-public.js", include_in_schema=False)
+def cx3_public_ui_js():
+    return Response(content=PUBLIC_UI_JS, media_type="application/javascript", headers={"Cache-Control": "public, max-age=3600", "X-Repliq-Public-UI": CX3_PUBLIC_UI_VERSION})
+
+
+@app.get("/favicon.svg", include_in_schema=False)
+def cx3_public_favicon():
+    svg = """<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop stop-color='#5b5cf0'/><stop offset='1' stop-color='#8b5cf6'/></linearGradient></defs><rect width='64' height='64' rx='18' fill='url(#g)'/><path d='M19 16h17c8 0 13 4 13 11 0 5-3 9-8 10l9 11H39l-8-10h-2v10H19V16zm10 8v7h7c2 0 4-1 4-4s-2-3-4-3h-7z' fill='white'/></svg>"""
+    return Response(content=svg, media_type="image/svg+xml", headers={"Cache-Control": "public, max-age=86400", "X-Repliq-Public-UI": CX3_PUBLIC_UI_VERSION})
 
 
 def cx2_owner_page_response(
@@ -424,6 +457,9 @@ STAGE61_PROTECTED_EXACT_PATHS = {
     "/client-experience/owner-workspace/readiness",
     "/owner-ui/full-migration/readiness",
     "/ui/localization/full-readiness",
+    "/client-experience/public-site/readiness",
+    "/public-site/readiness",
+    "/public-auth/readiness",
     "/access/readiness",
     "/admin/access/readiness",
     "/admin/access/enforcement",
@@ -6200,6 +6236,115 @@ def cx2_owner_workspace_migration_readiness_payload() -> Dict[str, Any]:
             "owner_admin_overlap": owner_admin_overlap,
         },
         "note": "CX-2 migrates all remaining client-owner workspace UI routes to the shared responsive shell with a separate persistent LV/RU/EN interface language. Existing JSON APIs, write endpoints, auth boundaries and receptionist runtime are unchanged.",
+    }
+
+
+# -------------------------
+# CX-3: PUBLIC WEBSITE / SIGNUP / AUTHENTICATION
+# -------------------------
+CX3_READINESS_PATHS = {
+    "/client-experience/public-site/readiness",
+    "/public-site/readiness",
+    "/public-auth/readiness",
+}
+CX3_PUBLIC_UI_PATHS = {
+    "/", "/home", "/launch", "/launch/ui", "/public/launch", "/public/launch/ui",
+    "/public/signup", "/public/signup/ui",
+    "/owner/login", "/owner/magic-login", "/owner/logout",
+    "/privacy", "/privacy-policy", "/terms", "/terms-of-service",
+    "/contact", "/support",
+}
+CX3_PUBLIC_ASSET_PATHS = {
+    "/assets/repliq-public.css", "/assets/repliq-public.js", "/favicon.svg",
+}
+CX3_PUBLIC_POST_PATHS_PRESERVED = {
+    "/public/signup", "/owner/login", "/owner/magic-login", "/owner/logout",
+}
+
+
+def cx3_public_site_readiness_payload() -> Dict[str, Any]:
+    registered_paths = {str(getattr(route, "path", "") or "") for route in app.routes}
+    missing_readiness_protection = sorted(path for path in CX3_READINESS_PATHS if path not in STAGE61_PROTECTED_EXACT_PATHS)
+    missing_routes = sorted(path for path in (CX3_READINESS_PATHS | CX3_PUBLIC_UI_PATHS | CX3_PUBLIC_ASSET_PATHS) if path not in registered_paths)
+    wrongly_admin_protected = sorted(path for path in CX3_PUBLIC_UI_PATHS if path in STAGE61_PROTECTED_EXACT_PATHS)
+    wrongly_owner_protected = sorted(path for path in CX3_PUBLIC_UI_PATHS if path in STAGE71_OWNER_PROTECTED_EXACT_PATHS)
+    translation_counts = public_translation_counts()
+    contact_email = safe_public_email(os.getenv("REPLIQ_PUBLIC_CONTACT_EMAIL", ""))
+    support_email = safe_public_email(os.getenv("REPLIQ_PUBLIC_SUPPORT_EMAIL", ""))
+    blocking: List[str] = []
+    if missing_readiness_protection:
+        blocking.append("cx3_readiness_not_admin_protected")
+    if missing_routes:
+        blocking.append("cx3_public_routes_missing")
+    if wrongly_admin_protected:
+        blocking.append("cx3_public_routes_admin_protected")
+    if wrongly_owner_protected:
+        blocking.append("cx3_public_routes_owner_protected")
+    if min(translation_counts.values() or [0]) < 120:
+        blocking.append("cx3_public_translation_catalog_incomplete")
+    ready = not blocking
+    warnings: List[str] = []
+    if not contact_email and not support_email:
+        warnings.append("public_contact_email_not_configured_pilot_onboarding_contact_only")
+    warnings.append("privacy_and_terms_require_legal_entity_specific_review_before_broad_commercial_launch")
+    return {
+        "ok": True,
+        "stage": "CX-3",
+        "previous_stage": "CX-2",
+        "purpose": "Public Website / Signup / Authentication",
+        "status": "ready" if ready else "blocked",
+        "cx3_ready": bool(ready),
+        "public_website_ready": bool(ready),
+        "public_signup_ui_ready": "/public/signup" in registered_paths,
+        "owner_login_ui_ready": "/owner/login" in registered_paths,
+        "owner_magic_login_ui_ready": "/owner/magic-login" in registered_paths,
+        "public_legal_information_pages_ready": all(path in registered_paths for path in {"/privacy", "/terms"}),
+        "public_contact_and_support_pages_ready": all(path in registered_paths for path in {"/contact", "/support"}),
+        "shared_public_header_footer_ready": True,
+        "responsive_public_navigation_ready": True,
+        "public_favicon_ready": "/favicon.svg" in registered_paths,
+        "supported_ui_languages": list(UI_SUPPORTED_LANGUAGES),
+        "ui_language_cookie": UI_LANG_COOKIE,
+        "translation_catalog_counts": translation_counts,
+        "public_ui_routes": sorted(CX3_PUBLIC_UI_PATHS),
+        "public_asset_routes": sorted(CX3_PUBLIC_ASSET_PATHS),
+        "existing_post_semantics_preserved": sorted(CX3_PUBLIC_POST_PATHS_PRESERVED),
+        "contact_configuration": {
+            "public_contact_email_configured": bool(contact_email),
+            "public_support_email_configured": bool(support_email),
+            "email_values_exposed_by_readiness": False,
+        },
+        "legal_status": {
+            "privacy_notice_present": True,
+            "service_terms_present": True,
+            "legal_entity_specific_review_required": True,
+            "gdpr_compliance_claimed": False,
+        },
+        "client_experience_polish_complete": False,
+        "next_phase": "CX-4_responsive_accessibility_brand_polish",
+        "enterprise_saas_ready": False,
+        "security": {
+            "readiness_admin_protected": not missing_readiness_protection,
+            "public_get_routes_remain_public": not wrongly_admin_protected and not wrongly_owner_protected,
+            "public_signup_rate_limits_preserved": True,
+            "public_signup_csrf_boundary_preserved": True,
+            "owner_login_abuse_protection_preserved": True,
+            "owner_session_cookie_semantics_preserved": True,
+            "magic_link_token_semantics_preserved": True,
+            "new_post_routes_added": False,
+            "new_database_writes_added": False,
+            "secret_values_exposed": False,
+            "tenant_id_is_authentication": False,
+        },
+        "blocking": blocking,
+        "warnings": warnings,
+        "missing": {
+            "readiness_protection": missing_readiness_protection,
+            "registered_routes": missing_routes,
+            "wrongly_admin_protected": wrongly_admin_protected,
+            "wrongly_owner_protected": wrongly_owner_protected,
+        },
+        "note": "CX-3 replaces the technical public launch/signup/auth pages with one responsive LV/RU/EN public website shell. Existing signup, owner login, magic-link, session, CSRF, abuse protection and tenant creation behavior remain unchanged.",
     }
 
 
@@ -20818,12 +20963,15 @@ def stage78_public_saas_final_readiness(request: Request, tenant_id: str = TENAN
     return stage78_final_public_saas_readiness_payload(tid, days=days)
 
 
+@app.get("/", response_class=HTMLResponse)
+@app.get("/home", response_class=HTMLResponse)
 @app.get("/launch", response_class=HTMLResponse)
 @app.get("/launch/ui", response_class=HTMLResponse)
 @app.get("/public/launch", response_class=HTMLResponse)
 @app.get("/public/launch/ui", response_class=HTMLResponse)
-def stage79_public_launch_ui(tenant_id: str = TENANT_ID_DEFAULT):
-    return HTMLResponse(content=stage79_public_launch_html(tenant_id=tenant_id), headers={"Cache-Control": "no-store"})
+def stage79_public_launch_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
+    lang = resolve_public_language(request)
+    return HTMLResponse(content=render_home_page(lang), headers=public_response_headers(lang))
 
 
 @app.get("/launch-ux/readiness")
@@ -21291,6 +21439,40 @@ def cx2_owner_workspace_migration_readiness(request: Request):
     return cx2_owner_workspace_migration_readiness_payload()
 
 
+@app.get("/client-experience/public-site/readiness")
+@app.get("/public-site/readiness")
+@app.get("/public-auth/readiness")
+def cx3_public_site_readiness(request: Request):
+    return cx3_public_site_readiness_payload()
+
+
+@app.get("/privacy", response_class=HTMLResponse)
+@app.get("/privacy-policy", response_class=HTMLResponse)
+def cx3_privacy_page(request: Request):
+    lang = resolve_public_language(request)
+    return HTMLResponse(content=render_legal_page(lang, "privacy"), headers=public_response_headers(lang))
+
+
+@app.get("/terms", response_class=HTMLResponse)
+@app.get("/terms-of-service", response_class=HTMLResponse)
+def cx3_terms_page(request: Request):
+    lang = resolve_public_language(request)
+    return HTMLResponse(content=render_legal_page(lang, "terms"), headers=public_response_headers(lang))
+
+
+@app.get("/contact", response_class=HTMLResponse)
+def cx3_contact_page(request: Request):
+    lang = resolve_public_language(request)
+    contact_email = safe_public_email(os.getenv("REPLIQ_PUBLIC_CONTACT_EMAIL", "") or os.getenv("REPLIQ_PUBLIC_SUPPORT_EMAIL", ""))
+    return HTMLResponse(content=render_contact_page(lang, contact_email=contact_email), headers=public_response_headers(lang))
+
+
+@app.get("/support", response_class=HTMLResponse)
+def cx3_support_page(request: Request):
+    lang = resolve_public_language(request)
+    return HTMLResponse(content=render_support_page(lang), headers=public_response_headers(lang))
+
+
 @app.post("/owner/magic-link/bootstrap")
 def stage76_owner_magic_link_bootstrap(request: Request, payload: dict = Body(...)):
     data = payload or {}
@@ -21341,20 +21523,8 @@ def stage76_owner_magic_login_get(request: Request, token: str = "", tenant_id: 
         response = RedirectResponse(url=next_path, status_code=303, headers={"Cache-Control": "no-store"})
         stage71_set_owner_session_cookie(response, owner_email=owner_email, tenant_id=tenant_id_final, role="owner")
         return response
-    tid_json = json.dumps(tid_hint, ensure_ascii=False)
-    next_json = json.dumps(next_path, ensure_ascii=False)
-    html = """
-<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Repliq Magic Login</title>
-<style>body{font-family:Inter,Arial,sans-serif;background:#f6f7fb;color:#111827;margin:0;padding:24px}.wrap{max-width:560px;margin:8vh auto}.card{background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:24px;box-shadow:0 12px 32px rgba(15,23,42,.08)}h1{margin:0;font-size:30px;letter-spacing:-.03em}.sub{color:#6b7280;font-size:14px;line-height:1.45;margin:8px 0 18px}label{display:block;font-size:13px;font-weight:700;margin:14px 0 6px}input{width:100%;box-sizing:border-box;border:1px solid #d1d5db;border-radius:12px;padding:12px;font-size:14px}button{width:100%;border:0;background:#111827;color:white;padding:12px 16px;border-radius:12px;font-weight:800;margin-top:16px;cursor:pointer}.notice{border-radius:12px;padding:10px 12px;margin-top:14px;font-size:13px;display:none}.notice.ok{display:block;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0}.notice.err{display:block;background:#fef2f2;color:#991b1b;border:1px solid #fecaca}.small{color:#6b7280;font-size:12px;margin-top:12px;line-height:1.45}</style></head>
-<body><div class="wrap"><div class="card"><h1>Repliq Magic Login</h1><div class="sub">Stage 76 one-time owner magic-link foundation. Paste the token from a magic link if you are not opening the full link directly.</div><label>Tenant</label><input id="tenant_id"/><label>Magic token</label><input id="token" type="password" autocomplete="one-time-code"/><button onclick="login()">Login with magic token</button><div id="msg" class="notice"></div><div class="small">The token is one-time, expires quickly, is stored only as a hash, and sets the HttpOnly owner session cookie.</div></div></div>
-<script>
-const DEFAULT_TENANT_ID=__TENANT_ID_JSON__; const NEXT_PATH=__NEXT_PATH_JSON__; document.getElementById('tenant_id').value=DEFAULT_TENANT_ID||'clinic_demo';
-function setMsg(k,t){const el=document.getElementById('msg');el.className='notice '+k;el.textContent=t;}
-async function login(){const tenant_id=(document.getElementById('tenant_id').value||'').trim()||DEFAULT_TENANT_ID||'clinic_demo';const token=document.getElementById('token').value||'';if(!token.trim()){setMsg('err','Magic token is required.');return;}setMsg('ok','Checking…');const r=await fetch('/owner/magic-login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tenant_id,token,next:NEXT_PATH})});const data=await r.json().catch(()=>({}));if(!r.ok||!data.ok){setMsg('err',data.error||data.detail||'Magic login failed');return;}setMsg('ok','Login OK. Opening owner dashboard…');window.location=data.redirect_url||('/owner/dashboard/ui?tenant_id='+encodeURIComponent(data.tenant_id||tenant_id));}
-document.addEventListener('keydown',e=>{if(e.key==='Enter')login();});
-</script></body></html>
-    """.replace("__TENANT_ID_JSON__", tid_json).replace("__NEXT_PATH_JSON__", next_json)
-    return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
+    lang = resolve_public_language(request)
+    return HTMLResponse(content=render_magic_login_page(lang, tid_hint, next_path), headers=public_response_headers(lang))
 
 
 @app.post("/owner/magic-login")
@@ -21388,29 +21558,8 @@ async def stage76_owner_magic_login_submit(request: Request):
 def owner_login_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT, next: str = ""):
     tenant_id_clean = stage711_resolve_tenant_context(request, tenant_id)
     next_path = stage62_safe_local_path(next or f"/owner/dashboard/ui?tenant_id={tenant_id_clean}", tenant_id_clean)
-    lang = resolve_ui_language(request)
-    content = f'''
-<section class="rq-card rq-auth-card">
-  <div class="rq-auth-brand"><span class="rq-logo">R</span><h1 class="rq-page-title" style="font-size:34px">{ui_text(lang, "login.title")}</h1><p class="rq-page-subtitle" style="margin-left:auto;margin-right:auto">{ui_text(lang, "login.subtitle")}</p></div>
-  <div class="rq-field"><label class="rq-label" for="tenant_id">{ui_text(lang, "login.tenant")}</label><input class="rq-input" id="tenant_id" autocomplete="organization"/></div>
-  <div class="rq-field"><label class="rq-label" for="owner_email">{ui_text(lang, "login.email")}</label><input class="rq-input" id="owner_email" type="email" autocomplete="email"/></div>
-  <div class="rq-field"><label class="rq-label" for="login_code">{ui_text(lang, "login.code")}</label><input class="rq-input" id="login_code" type="password" autocomplete="one-time-code"/></div>
-  <button class="rq-button" style="width:100%;margin-top:18px" type="button" onclick="login()">{ui_text(lang, "login.button")}</button>
-  <div id="msg" class="rq-notice" hidden></div>
-  <div class="rq-actions" style="justify-content:center;margin-top:15px"><a id="magic_link" class="rq-button rq-button-ghost" href="#">{ui_text(lang, "login.magic")}</a></div>
-  <div class="rq-security-note"><span>&#10003;</span><span>{ui_text(lang, "login.note")}</span></div>
-</section>
-'''
-    copy = ui_strings(lang, ["login.required", "login.checking", "login.success", "login.failed"])
-    script = r'''
-const DEFAULT_TENANT_ID=__TENANT_ID_JSON__;const NEXT_PATH=__NEXT_PATH_JSON__;const COPY=__COPY_JSON__;
-document.getElementById('tenant_id').value=DEFAULT_TENANT_ID||'clinic_demo';document.getElementById('magic_link').href='/owner/magic-login?tenant_id='+encodeURIComponent(DEFAULT_TENANT_ID||'clinic_demo')+'&ui_lang='+encodeURIComponent(document.body.dataset.rqUiLang||'en');
-function setMsg(kind,text){const node=document.getElementById('msg');node.hidden=false;node.className='rq-notice '+(kind==='error'?'rq-notice-error':'rq-notice-success');node.textContent=text}
-async function login(){const tenant_id=(document.getElementById('tenant_id').value||'').trim()||DEFAULT_TENANT_ID||'clinic_demo';const owner_email=(document.getElementById('owner_email').value||'').trim();const login_code=document.getElementById('login_code').value||'';if(!owner_email||!login_code.trim()){setMsg('error',COPY['login.required']);return}setMsg('success',COPY['login.checking']);const r=await fetch('/owner/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tenant_id,owner_email,login_code,next:NEXT_PATH})});const data=await r.json().catch(()=>({}));if(!r.ok||!data.ok){setMsg('error',data.error||data.detail||COPY['login.failed']);return}setMsg('success',COPY['login.success']);window.location=data.redirect_url||('/owner/dashboard/ui?tenant_id='+encodeURIComponent(tenant_id))}
-document.addEventListener('keydown',e=>{if(e.key==='Enter')login()});
-'''.replace('__TENANT_ID_JSON__', json.dumps(tenant_id_clean, ensure_ascii=False)).replace('__NEXT_PATH_JSON__', json.dumps(next_path, ensure_ascii=False)).replace('__COPY_JSON__', json.dumps(copy, ensure_ascii=False))
-    html = render_repliq_shell(title=ui_text(lang, "login.title"), lang=lang, tenant_id=tenant_id_clean, content_html=content, owner_navigation=False, auth_layout=True, inline_script=script)
-    return HTMLResponse(content=html, headers={"Cache-Control": "no-store", "Content-Language": lang, "X-Repliq-UI": UI_FOUNDATION_VERSION})
+    lang = resolve_public_language(request)
+    return HTMLResponse(content=render_login_page(lang, tenant_id_clean, next_path), headers=public_response_headers(lang))
 
 
 @app.post("/owner/login")
@@ -21439,9 +21588,9 @@ async def owner_login_submit(request: Request):
 
 
 @app.get("/owner/logout", response_class=HTMLResponse)
-def owner_logout_ui():
-    html = """<!doctype html><html><head><meta charset='utf-8'/><title>Repliq Owner Logout</title></head><body style='font-family:Arial,sans-serif;padding:24px;'><h2>Owner logged out</h2><p>Repliq owner and admin session cookies were cleared for this browser.</p><p><a href='/owner/login'>Open owner login</a> · <a href='/admin/login'>Open admin login</a></p></body></html>"""
-    response = HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
+def owner_logout_ui(request: Request):
+    lang = resolve_public_language(request)
+    response = HTMLResponse(content=render_logout_page(lang), headers=public_response_headers(lang))
     stage71_clear_owner_session_cookie(response)
     stage62_clear_admin_session_cookies(response)
     return response
@@ -24642,20 +24791,10 @@ loadWizard();
 
 @app.get("/public/signup", response_class=HTMLResponse)
 @app.get("/public/signup/ui", response_class=HTMLResponse)
-def stage72_public_signup_ui():
-    readiness_json = json.dumps(stage72_public_signup_readiness_payload(), ensure_ascii=False)
-    html = """
-<!doctype html>
-<html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>Repliq Workspace Signup</title>
-<style>body{font-family:Inter,Arial,sans-serif;background:#f6f7fb;color:#111827;margin:0;padding:24px}.wrap{max-width:880px;margin:0 auto}.hero,.card{background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:20px;margin-bottom:14px}.hero{background:#111827;color:white}.hero p{color:#d1d5db}label{display:block;font-size:13px;font-weight:750;margin:12px 0 6px}input,select{width:100%;box-sizing:border-box;border:1px solid #d1d5db;border-radius:12px;padding:11px}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}button{border:0;background:#111827;color:#fff;border-radius:12px;padding:12px 16px;font-weight:800;cursor:pointer}.secondary{background:white;color:#111827;border:1px solid #d1d5db}.small{color:#6b7280;font-size:12px}.ok{color:#065f46}.err{color:#991b1b}.hidden{display:none}.code{white-space:pre-wrap;background:#0f172a;color:#e2e8f0;border-radius:14px;padding:12px;max-height:320px;overflow:auto;font-family:monospace;font-size:12px}.hp{position:absolute;left:-5000px;top:auto;width:1px;height:1px;overflow:hidden}@media(max-width:760px){.grid{grid-template-columns:1fr}body{padding:12px}}</style>
-</head><body><div class="wrap"><div class="hero"><h1>Create your Repliq workspace</h1><p>Set up a business workspace for the Repliq AI receptionist. You will get an owner session immediately; technical setup stays protected behind Repliq admin/support flows.</p></div>
-<div class="card"><div id="readiness" class="small"></div><div class="grid"><div><label>Business name *</label><input id="business_name" oninput="suggestSlug()"/></div><div><label>Tenant slug</label><input id="tenant_slug"/></div><div><label>Owner email *</label><input id="owner_email" type="email"/></div><div><label>Phone</label><input id="phone_number"/></div><div><label>Business type</label><select id="business_type"><option value="clinic">clinic</option><option value="barbershop">barbershop</option><option value="salon">salon</option><option value="dentistry">dentistry</option><option value="auto_service">auto_service</option><option value="restaurant">restaurant</option><option value="other">other</option></select></div><div><label>Language</label><select id="language"><option value="lv">Latvian</option><option value="ru">Russian</option><option value="en">English</option></select></div><div><label>Timezone</label><input id="timezone" value="Europe/Riga"/></div><div><label>Work hours</label><div class="grid"><input id="work_start" value="09:00"/><input id="work_end" value="18:00"/></div></div></div><div class="hp"><label>Website</label><input id="website" autocomplete="off" tabindex="-1"/></div><p><label style="display:flex;gap:8px;align-items:flex-start;font-weight:500"><input id="accepted_terms" type="checkbox" style="width:auto"/> I confirm this is a real business signup request.</label></p><button onclick="signup()">Create workspace</button> <span id="status" class="small"></span></div>
-<div class="card hidden" id="result"><h2>Workspace created</h2><div id="summary"></div><p><button onclick="openOwner()">Continue setup</button> <button class="secondary" onclick="copyCode()">Copy backup login code</button></p><p class="small">Save the backup login code locally. It is shown once. Do not paste login codes or magic links into chat logs.</p><div class="code" id="raw"></div></div></div>
-<script>
-const READINESS=__READINESS_JSON__;let latest=null;function el(id){return document.getElementById(id)}function slugifyTenant(v){return String(v||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9_-]+/g,'_').replace(/[_-]{2,}/g,'_').replace(/^[_-]+|[_-]+$/g,'').slice(0,48)}function suggestSlug(){if(el('tenant_slug').dataset.touched==='1')return;el('tenant_slug').value=slugifyTenant(el('business_name').value)}el('tenant_slug').addEventListener('input',()=>{el('tenant_slug').dataset.touched='1'});function setStatus(t,c='small'){el('status').className=c;el('status').textContent=t}function payload(){return{business_name:el('business_name').value.trim(),tenant_slug:el('tenant_slug').value.trim()||null,owner_email:el('owner_email').value.trim(),phone_number:el('phone_number').value.trim()||null,business_type:el('business_type').value,language:el('language').value,timezone:el('timezone').value.trim()||'Europe/Riga',work_start:el('work_start').value.trim()||'09:00',work_end:el('work_end').value.trim()||'18:00',accepted_terms:el('accepted_terms').checked,website:el('website').value||''}}async function signup(){const p=payload();if(!p.business_name||!p.owner_email){setStatus('Business name and owner email are required.','small err');return}if(!p.accepted_terms){setStatus('Please confirm the checkbox.','small err');return}setStatus('Creating...');const r=await fetch('/public/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});const data=await r.json().catch(()=>({}));latest=data;if(!r.ok||!data.ok){setStatus(data.error||data.detail||'Signup failed','small err');el('raw').textContent=JSON.stringify(data,null,2);return}setStatus('Workspace created. Owner session is active.','small ok');el('result').classList.remove('hidden');el('summary').innerHTML='Tenant: <b>'+data.tenant_id+'</b><br/>Owner: '+data.owner_email+'<br/>Owner session created: '+data.owner_session_created+'<br/>Next: continue to the owner-only setup handoff and complete the workspace checklist.';const safe=JSON.parse(JSON.stringify(data));['owner_login_code','owner_magic_link_token','owner_magic_link_url'].forEach(k=>{if(safe[k])safe[k]='[returned_once_hidden_in_launch_ui]'});el('raw').textContent=JSON.stringify(safe,null,2)}function openOwner(){if(!latest||!latest.links)return;window.location=latest.links.owner_get_started||latest.links.owner_workspace||latest.links.owner_dashboard||'/owner/login'}async function copyCode(){if(!latest||!latest.owner_login_code)return;try{await navigator.clipboard.writeText(latest.owner_login_code)}catch(e){}}el('readiness').textContent='readiness: '+(READINESS.status||'-')+' · public_signup_boundary_ready='+READINESS.public_signup_boundary_ready+' · launch UX: Stage 79 · owner handoff: Stage 93';
-</script></body></html>
-    """.replace("__READINESS_JSON__", readiness_json)
-    return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
+def stage72_public_signup_ui(request: Request):
+    lang = resolve_public_language(request)
+    readiness = stage72_public_signup_readiness_payload()
+    return HTMLResponse(content=render_signup_page(lang, readiness), headers=public_response_headers(lang))
 
 
 @app.post("/public/signup")
