@@ -37,6 +37,11 @@ from repliq.ui_foundation import (
     ui_strings,
     ui_text,
 )
+from repliq.ui_migration import (
+    CX2_MIGRATION_VERSION,
+    cx2_translation_counts,
+    render_migrated_owner_page,
+)
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -175,6 +180,35 @@ def cx1_shared_ui_css():
 @app.get("/assets/repliq-ui.js", include_in_schema=False)
 def cx1_shared_ui_js():
     return Response(content=CX1_UI_JS, media_type="application/javascript", headers={"Cache-Control": "public, max-age=3600", "X-Repliq-UI": UI_FOUNDATION_VERSION})
+
+
+def cx2_owner_page_response(
+    request: Request,
+    *,
+    tenant_id: str,
+    legacy_html: str,
+    title: str,
+    active_nav: str,
+    page_key: str,
+    extra_headers: Optional[Dict[str, str]] = None,
+) -> HTMLResponse:
+    lang = resolve_ui_language(request)
+    rendered = render_migrated_owner_page(
+        legacy_html=legacy_html,
+        title=title,
+        lang=lang,
+        tenant_id=tenant_id,
+        active_nav=active_nav,
+        page_key=page_key,
+    )
+    headers = {
+        "Cache-Control": "no-store",
+        "Content-Language": lang,
+        "X-Repliq-UI": UI_FOUNDATION_VERSION,
+        "X-Repliq-CX-Phase": CX2_MIGRATION_VERSION,
+    }
+    headers.update(extra_headers or {})
+    return HTMLResponse(content=rendered, headers=headers)
 
 
 # -------------------------
@@ -387,6 +421,9 @@ STAGE61_PROTECTED_EXACT_PATHS = {
     "/client-experience/foundation/readiness",
     "/ui/localization/readiness",
     "/owner-ui/shell/readiness",
+    "/client-experience/owner-workspace/readiness",
+    "/owner-ui/full-migration/readiness",
+    "/ui/localization/full-readiness",
     "/access/readiness",
     "/admin/access/readiness",
     "/admin/access/enforcement",
@@ -6065,6 +6102,104 @@ def cx1_client_experience_foundation_readiness_payload() -> Dict[str, Any]:
             "owner_protection": missing_owner_protection,
         },
         "note": "CX-1 adds a shared responsive owner shell and a separate persistent LV/RU/EN UI language preference for the login, dashboard, get-started and workspace pilot pages. It does not change business language or receptionist runtime.",
+    }
+
+
+# -------------------------
+# CX-2: OWNER WORKSPACE FULL MIGRATION
+# -------------------------
+CX2_READINESS_PATHS = {
+    "/client-experience/owner-workspace/readiness",
+    "/owner-ui/full-migration/readiness",
+    "/ui/localization/full-readiness",
+}
+CX2_MIGRATED_UI_PATHS = {
+    "/owner/business-profile/ui", "/owner/workspace/settings/ui",
+    "/owner/services/ui", "/owner/service-catalog/ui",
+    "/owner/business-memory/ui", "/owner/faq/ui",
+    "/owner/price-consistency/ui", "/owner/catalog-memory-consistency/ui",
+    "/owner/calendar/ui", "/owner/availability/ui",
+    "/owner/telegram/ui", "/owner/channels/telegram/ui",
+    "/owner/launch-review/ui", "/owner/setup-review/ui", "/owner/launch-checklist/ui",
+    "/owner/demo/ui", "/owner/client-preview/ui",
+    "/owner/analytics/ui", "/owner/conversation-insights/ui",
+    "/owner/notifications/ui", "/owner/follow-ups/ui", "/owner/lead-followup/ui",
+    "/owner/account/ui", "/owner/profile/ui", "/owner/account-billing/ui",
+    "/owner/setup-health/ui", "/owner/data-quality/ui", "/owner/tenant-health/ui",
+    "/owner/launch-smoke/ui", "/owner/demo-tenant/ui",
+    "/owner/readiness-lock/ui", "/owner/mature-smb/ui",
+    "/owner/billing/ui", "/owner/subscription/ui",
+}
+CX2_CANONICAL_PAGE_KEYS = {
+    "business_profile", "services", "business_memory", "price_consistency", "calendar",
+    "telegram", "launch_review", "client_preview", "analytics", "followups", "account",
+    "setup_health", "launch_smoke", "readiness_lock", "billing",
+}
+
+
+def cx2_owner_workspace_migration_readiness_payload() -> Dict[str, Any]:
+    registered_paths = {str(getattr(route, "path", "") or "") for route in app.routes}
+    missing_readiness_protection = sorted(path for path in CX2_READINESS_PATHS if path not in STAGE61_PROTECTED_EXACT_PATHS)
+    missing_routes = sorted(path for path in (CX2_READINESS_PATHS | CX2_MIGRATED_UI_PATHS) if path not in registered_paths)
+    missing_owner_protection = sorted(path for path in CX2_MIGRATED_UI_PATHS if path not in STAGE71_OWNER_PROTECTED_EXACT_PATHS)
+    owner_admin_overlap = sorted(path for path in CX2_MIGRATED_UI_PATHS if path in STAGE61_PROTECTED_EXACT_PATHS)
+    translation_counts = cx2_translation_counts()
+    blocking: List[str] = []
+    if missing_readiness_protection:
+        blocking.append("cx2_readiness_not_admin_protected")
+    if missing_routes:
+        blocking.append("cx2_migrated_routes_missing")
+    if missing_owner_protection:
+        blocking.append("cx2_owner_routes_not_owner_protected")
+    if owner_admin_overlap:
+        blocking.append("cx2_owner_routes_admin_protected_overlap")
+    if translation_counts.get("lv", 0) < 100 or translation_counts.get("ru", 0) < 100:
+        blocking.append("cx2_translation_catalog_incomplete")
+    ready = not blocking
+    return {
+        "ok": True,
+        "stage": "CX-2",
+        "previous_stage": "CX-1",
+        "purpose": "Owner Workspace Full Migration",
+        "status": "ready" if ready else "blocked",
+        "cx2_ready": bool(ready),
+        "owner_workspace_full_migration_ready": bool(ready),
+        "shared_sidebar_navigation_ready": True,
+        "responsive_owner_navigation_ready": True,
+        "supported_ui_languages": list(UI_SUPPORTED_LANGUAGES),
+        "ui_language_cookie": UI_LANG_COOKIE,
+        "ui_language_separate_from_business_language": True,
+        "migrated_owner_ui_routes": sorted(CX2_MIGRATED_UI_PATHS),
+        "migrated_owner_page_count": len(CX2_CANONICAL_PAGE_KEYS),
+        "migrated_route_count": len(CX2_MIGRATED_UI_PATHS),
+        "translation_catalog_counts": translation_counts,
+        "technical_details_collapsed_by_default": True,
+        "existing_page_actions_preserved": True,
+        "client_experience_polish_complete": False,
+        "next_phase": "CX-3_public_website_signup_authentication",
+        "enterprise_saas_ready": False,
+        "security": {
+            "readiness_admin_protected": not missing_readiness_protection,
+            "owner_routes_owner_session_bound": not missing_owner_protection,
+            "owner_admin_route_overlap": bool(owner_admin_overlap),
+            "owner_write_routes_added": False,
+            "csrf_write_paths_added": False,
+            "tenant_id_is_authentication": False,
+            "secrets_exposed": False,
+            "booking_runtime_changed": False,
+            "calendar_runtime_changed": False,
+            "telegram_runtime_changed": False,
+            "billing_semantics_changed": False,
+        },
+        "blocking": blocking,
+        "warnings": ["public_website_signup_and_remaining_auth_surfaces_move_to_cx3"],
+        "missing": {
+            "readiness_protection": missing_readiness_protection,
+            "registered_routes": missing_routes,
+            "owner_protection": missing_owner_protection,
+            "owner_admin_overlap": owner_admin_overlap,
+        },
+        "note": "CX-2 migrates all remaining client-owner workspace UI routes to the shared responsive shell with a separate persistent LV/RU/EN interface language. Existing JSON APIs, write endpoints, auth boundaries and receptionist runtime are unchanged.",
     }
 
 
@@ -20743,7 +20878,7 @@ def stage81_owner_business_profile_json(request: Request, tenant_id: str = TENAN
 @app.get("/owner/workspace/settings/ui", response_class=HTMLResponse)
 def stage81_owner_business_profile_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
     tid = stage711_resolve_tenant_context(request, tenant_id)
-    return HTMLResponse(content=stage81_owner_business_profile_html(tenant_id=tid), headers={"Cache-Control": "no-store"})
+    return cx2_owner_page_response(request, tenant_id=tid, legacy_html=stage81_owner_business_profile_html(tenant_id=tid), title="Business profile", active_nav="business_profile", page_key="business_profile")
 
 
 @app.post("/owner/business-profile/update")
@@ -20770,7 +20905,7 @@ def stage82_owner_service_catalog_json(request: Request, tenant_id: str = TENANT
 @app.get("/owner/service-catalog/ui", response_class=HTMLResponse)
 def stage82_owner_service_catalog_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
     tid = stage711_resolve_tenant_context(request, tenant_id)
-    return HTMLResponse(content=stage82_owner_service_catalog_html(tenant_id=tid), headers={"Cache-Control": "no-store"})
+    return cx2_owner_page_response(request, tenant_id=tid, legacy_html=stage82_owner_service_catalog_html(tenant_id=tid), title="Services", active_nav="services", page_key="services")
 
 
 @app.post("/owner/services/update")
@@ -20798,7 +20933,7 @@ def stage83_owner_business_memory_json(request: Request, tenant_id: str = TENANT
 @app.get("/owner/faq/ui", response_class=HTMLResponse)
 def stage83_owner_business_memory_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
     tid = stage711_resolve_tenant_context(request, tenant_id)
-    return HTMLResponse(content=stage83_owner_business_memory_html(tenant_id=tid), headers={"Cache-Control": "no-store"})
+    return cx2_owner_page_response(request, tenant_id=tid, legacy_html=stage83_owner_business_memory_html(tenant_id=tid), title="Business Memory / FAQ", active_nav="knowledge", page_key="business_memory")
 
 
 @app.post("/owner/business-memory/update")
@@ -20826,7 +20961,7 @@ def stage84_owner_price_consistency_json(request: Request, tenant_id: str = TENA
 @app.get("/owner/catalog-memory-consistency/ui", response_class=HTMLResponse)
 def stage84_owner_price_consistency_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
     tid = stage711_resolve_tenant_context(request, tenant_id)
-    return HTMLResponse(content=stage84_owner_price_consistency_html(tenant_id=tid), headers={"Cache-Control": "no-store"})
+    return cx2_owner_page_response(request, tenant_id=tid, legacy_html=stage84_owner_price_consistency_html(tenant_id=tid), title="Price consistency", active_nav="price_consistency", page_key="price_consistency")
 
 
 @app.get("/owner-calendar/readiness")
@@ -20848,7 +20983,7 @@ def stage85_owner_calendar_json(request: Request, tenant_id: str = TENANT_ID_DEF
 @app.get("/owner/availability/ui", response_class=HTMLResponse)
 def stage85_owner_calendar_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
     tid = stage711_resolve_tenant_context(request, tenant_id)
-    return HTMLResponse(content=stage85_owner_calendar_html(tenant_id=tid), headers={"Cache-Control": "no-store"})
+    return cx2_owner_page_response(request, tenant_id=tid, legacy_html=stage85_owner_calendar_html(tenant_id=tid), title="Calendar / availability", active_nav="calendar", page_key="calendar")
 
 
 @app.post("/owner/availability/update")
@@ -20875,7 +21010,7 @@ def stage86_owner_telegram_json(request: Request, tenant_id: str = TENANT_ID_DEF
 @app.get("/owner/channels/telegram/ui", response_class=HTMLResponse)
 def stage86_owner_telegram_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
     tid = stage711_resolve_tenant_context(request, tenant_id)
-    return HTMLResponse(content=stage86_owner_telegram_html(tenant_id=tid), headers={"Cache-Control": "no-store"})
+    return cx2_owner_page_response(request, tenant_id=tid, legacy_html=stage86_owner_telegram_html(tenant_id=tid), title="Telegram channel", active_nav="telegram", page_key="telegram")
 
 
 @app.get("/owner-workspace/final-review/readiness")
@@ -20899,7 +21034,7 @@ def stage87_owner_launch_review_json(request: Request, tenant_id: str = TENANT_I
 @app.get("/owner/launch-checklist/ui", response_class=HTMLResponse)
 def stage87_owner_launch_review_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
     tid = stage711_resolve_tenant_context(request, tenant_id)
-    return HTMLResponse(content=stage87_owner_launch_review_html(tenant_id=tid), headers={"Cache-Control": "no-store"})
+    return cx2_owner_page_response(request, tenant_id=tid, legacy_html=stage87_owner_launch_review_html(tenant_id=tid), title="Final launch checklist", active_nav="launch_review", page_key="launch_review")
 
 
 @app.get("/owner-demo/readiness")
@@ -20927,7 +21062,7 @@ def stage88_owner_demo_preview_message(request: Request, payload: dict = Body(..
 @app.get("/owner/client-preview/ui", response_class=HTMLResponse)
 def stage88_owner_demo_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
     tid = stage711_resolve_tenant_context(request, tenant_id)
-    return HTMLResponse(content=stage88_owner_demo_html(tenant_id=tid), headers={"Cache-Control": "no-store"})
+    return cx2_owner_page_response(request, tenant_id=tid, legacy_html=stage88_owner_demo_html(tenant_id=tid), title="Client preview", active_nav="preview", page_key="client_preview")
 
 
 
@@ -20950,7 +21085,7 @@ def stage89_owner_analytics_json(request: Request, tenant_id: str = TENANT_ID_DE
 @app.get("/owner/conversation-insights/ui", response_class=HTMLResponse)
 def stage89_owner_analytics_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
     tid = stage711_resolve_tenant_context(request, tenant_id)
-    return HTMLResponse(content=stage89_owner_analytics_html(tenant_id=tid), headers={"Cache-Control": "no-store"})
+    return cx2_owner_page_response(request, tenant_id=tid, legacy_html=stage89_owner_analytics_html(tenant_id=tid), title="Conversation insights", active_nav="analytics", page_key="analytics")
 
 
 @app.get("/owner-notifications/readiness")
@@ -20984,11 +21119,11 @@ def stage90_owner_notifications_json(request: Request, tenant_id: str = TENANT_I
 def stage90_owner_notifications_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
     try:
         tid = stage711_resolve_tenant_context(request, tenant_id)
-        return HTMLResponse(content=stage90_owner_notifications_html(tenant_id=tid), headers={"Cache-Control": "no-store"})
+        return cx2_owner_page_response(request, tenant_id=tid, legacy_html=stage90_owner_notifications_html(tenant_id=tid), title="Lead follow-up visibility", active_nav="followups", page_key="followups")
     except Exception as e:
         log.error("stage901_owner_notifications_ui_guarded tenant_id=%s err=%s", tenant_id, e, exc_info=True)
         safe_tid = str(tenant_id or TENANT_ID_DEFAULT).strip() or TENANT_ID_DEFAULT
-        return HTMLResponse(content=stage90_owner_notifications_html(tenant_id=safe_tid), headers={"Cache-Control": "no-store", "X-Repliq-Stage90-Hotfix": "90.1"})
+        return cx2_owner_page_response(request, tenant_id=safe_tid, legacy_html=stage90_owner_notifications_html(tenant_id=safe_tid), title="Lead follow-up visibility", active_nav="followups", page_key="followups", extra_headers={"X-Repliq-Stage90-Hotfix": "90.1"})
 
 
 @app.get("/owner-account/readiness")
@@ -21017,7 +21152,7 @@ def stage91_owner_account_ui(request: Request, tenant_id: str = TENANT_ID_DEFAUL
         return stage71_strict_owner_auth_error(int(e.status_code or 401), str(e.detail or "owner_login_required"), tenant_id=str(request.query_params.get("tenant_id") or tenant_id or TENANT_ID_DEFAULT))
     requested_tid = str(request.query_params.get("tenant_id") or "").strip()
     tid = requested_tid or str(access.get("tenant_id") or tenant_id or "").strip() or TENANT_ID_DEFAULT
-    return HTMLResponse(content=stage91_owner_account_html(tenant_id=tid), headers={"Cache-Control": "no-store", "X-Repliq-Stage91-Hotfix": "91.1"})
+    return cx2_owner_page_response(request, tenant_id=tid, legacy_html=stage91_owner_account_html(tenant_id=tid), title="Account center", active_nav="account", page_key="account", extra_headers={"X-Repliq-Stage91-Hotfix": "91.1"})
 
 
 
@@ -21051,7 +21186,7 @@ def stage92_owner_setup_health_ui(request: Request, tenant_id: str = TENANT_ID_D
         return stage71_strict_owner_auth_error(int(e.status_code or 401), str(e.detail or "owner_login_required"), tenant_id=str(request.query_params.get("tenant_id") or tenant_id or TENANT_ID_DEFAULT))
     requested_tid = str(request.query_params.get("tenant_id") or "").strip()
     tid = requested_tid or str(access.get("tenant_id") or tenant_id or "").strip() or TENANT_ID_DEFAULT
-    return HTMLResponse(content=stage92_owner_health_html(tenant_id=tid), headers={"Cache-Control": "no-store"})
+    return cx2_owner_page_response(request, tenant_id=tid, legacy_html=stage92_owner_health_html(tenant_id=tid), title="Setup health", active_nav="health", page_key="setup_health")
 
 
 @app.get("/public-signup-workspace/readiness")
@@ -21111,7 +21246,7 @@ def stage94_owner_launch_smoke_ui(request: Request, tenant_id: str = TENANT_ID_D
     except HTTPException as e:
         return stage71_strict_owner_auth_error(int(e.status_code or 401), str(e.detail or "owner_login_required"), tenant_id=str(request.query_params.get("tenant_id") or tenant_id or TENANT_ID_DEFAULT))
     tid = str(access.get("tenant_id") or tenant_id or "").strip() or TENANT_ID_DEFAULT
-    return HTMLResponse(content=stage94_owner_launch_smoke_html(tenant_id=tid), headers={"Cache-Control": "no-store"})
+    return cx2_owner_page_response(request, tenant_id=tid, legacy_html=stage94_owner_launch_smoke_html(tenant_id=tid), title="SMB launch smoke", active_nav="launch_smoke", page_key="launch_smoke")
 
 @app.get("/mature-smb/final-readiness")
 @app.get("/mature-smb/readiness-lock")
@@ -21139,7 +21274,7 @@ def stage95_owner_readiness_lock_ui(request: Request, tenant_id: str = TENANT_ID
     except HTTPException as e:
         return stage71_strict_owner_auth_error(int(e.status_code or 401), str(e.detail or "owner_login_required"), tenant_id=str(request.query_params.get("tenant_id") or tenant_id or TENANT_ID_DEFAULT))
     tid = str(access.get("tenant_id") or tenant_id or "").strip() or TENANT_ID_DEFAULT
-    return HTMLResponse(content=stage95_owner_readiness_lock_html(tenant_id=tid), headers={"Cache-Control": "no-store"})
+    return cx2_owner_page_response(request, tenant_id=tid, legacy_html=stage95_owner_readiness_lock_html(tenant_id=tid), title="Mature SMB readiness", active_nav="readiness", page_key="readiness_lock")
 
 
 @app.get("/client-experience/foundation/readiness")
@@ -21147,6 +21282,13 @@ def stage95_owner_readiness_lock_ui(request: Request, tenant_id: str = TENANT_ID
 @app.get("/owner-ui/shell/readiness")
 def cx1_client_experience_foundation_readiness(request: Request):
     return cx1_client_experience_foundation_readiness_payload()
+
+
+@app.get("/client-experience/owner-workspace/readiness")
+@app.get("/owner-ui/full-migration/readiness")
+@app.get("/ui/localization/full-readiness")
+def cx2_owner_workspace_migration_readiness(request: Request):
+    return cx2_owner_workspace_migration_readiness_payload()
 
 
 @app.post("/owner/magic-link/bootstrap")
@@ -21404,7 +21546,7 @@ def owner_billing_json(request: Request, tenant_id: str = TENANT_ID_DEFAULT, day
 @app.get("/owner/subscription/ui", response_class=HTMLResponse)
 def owner_billing_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
     tid = stage711_resolve_tenant_context(request, tenant_id)
-    return HTMLResponse(content=stage73_billing_ui_html(tenant_id=tid, owner_mode=True), headers={"Cache-Control": "no-store"})
+    return cx2_owner_page_response(request, tenant_id=tid, legacy_html=stage73_billing_ui_html(tenant_id=tid, owner_mode=True), title="Owner Billing", active_nav="billing", page_key="billing")
 
 
 @app.get("/onboarding/wizard/readiness")

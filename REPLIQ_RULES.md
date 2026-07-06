@@ -1040,3 +1040,24 @@ Stage 87 owner launch-review pages must not perform deep cross-stage readiness f
 - Protected regression baseline remains `/dialogue/qa = 50/50 passed`.
 - `client_experience_polish_complete=false` remains explicit until CX-5.
 - `enterprise_saas_ready=false` remains explicit.
+
+## CX-2 — Owner Workspace Full Migration Rules
+
+- CX-2 must migrate existing owner UI only; it must not create a second owner API or duplicate runtime business logic.
+- All migrated pages must reuse the shared shell and centralized UI translation compatibility layer.
+- UI language remains separate from tenant/business language and supports only `lv`, `ru`, and `en` in this phase.
+- Existing owner routes, aliases, JSON APIs, POST actions, CSRF requirements, tenant binding and owner/admin boundaries must remain unchanged.
+- Strict-owner-only Stage 91.1/92/93/94/95 surfaces must remain strict-owner-only and must not gain a super-admin bypass.
+- Existing support/admin bypass behavior on non-strict owner workspace surfaces must not be widened or removed by UI migration.
+- Shared navigation must not expose admin-only configuration, readiness endpoints, raw credentials, tokens, secrets, customer identifiers or debug traces.
+- Technical payloads may remain available for diagnostics but must be collapsed by default.
+- Translation must apply only to known product UI copy; business names, service names, FAQ content, customer messages and other tenant/user content must not be machine-translated by the UI adapter.
+- CX-2 readiness aliases must remain Stage 61/62 admin-protected:
+  - `/client-experience/owner-workspace/readiness`
+  - `/owner-ui/full-migration/readiness`
+  - `/ui/localization/full-readiness`
+- CX-2 must not add owner POST routes, new CSRF write paths, schema migrations or external sends.
+- CX-2 must not change booking, slot generation, date/time parsing, side-question handling, confirmation, cancellation, rescheduling, Google Calendar event runtime, Telegram webhook runtime, billing/payment semantics, magic-link semantics, abuse/rate-limit semantics, QA evaluator, LLM orchestration, voice/calls or external messages.
+- Protected regression baseline remains `/dialogue/qa = 50/50 passed`.
+- `client_experience_polish_complete=false` remains explicit until CX-5.
+- `enterprise_saas_ready=false` remains explicit.

@@ -1813,3 +1813,40 @@ Scope:
 
 Next phase after verification:
 - CX-2 — Owner Workspace Full Migration.
+
+## CX-1 — Shared UI Shell / Localization Foundation Verification Update
+
+Status: closed after deploy verification.
+
+Verified by user:
+- `/dialogue/qa` = 50/50 passed.
+- Shared owner shell and responsive navigation work.
+- Separate LV/RU/EN UI language selection and `repliq_ui_lang` persistence work.
+- Owner login, dashboard, get-started and workspace pilot pages work.
+- Existing auth boundaries and tenant business language remain unchanged.
+
+## CX-2 — Owner Workspace Full Migration
+
+Status: implemented in archive, awaiting deploy verification.
+
+Scope:
+- Migrates all remaining client-owner workspace UI families to the shared CX shell.
+- Adds a shared desktop sidebar and grouped mobile navigation across overview, setup, operations, launch and account sections.
+- Adds centralized LV/RU/EN UI-copy translation for the remaining owner pages while keeping tenant/business language separate.
+- Preserves existing JSON APIs, owner write endpoints, CSRF behavior, auth boundaries and tenant binding.
+- Preserves the existing logic of business profile, services, Business Memory/FAQ, price consistency, Calendar, Telegram, launch review, client preview, analytics, follow-ups, account, setup health, launch smoke, readiness lock and billing pages.
+- Collapses raw technical payload sections by default through the shared client UI adapter.
+- Does not change booking/dialogue runtime, Calendar event runtime, Telegram runtime, billing semantics, external sends or database schema.
+
+Expected verification:
+- Render deploy starts successfully.
+- `/dialogue/qa` remains 50/50 passed.
+- CX-1 readiness remains `ready`.
+- CX-2 readiness returns `stage=CX-2`, `cx2_ready=true` and `owner_workspace_full_migration_ready=true` through admin login.
+- Every migrated owner page opens in LV/RU/EN with the same persistent UI language.
+- Existing owner/admin and strict-owner-only boundaries remain unchanged.
+- Existing page actions continue to call the same APIs and write routes.
+- `client_experience_polish_complete=false` and `enterprise_saas_ready=false` remain explicit.
+
+Next phase after verification:
+- CX-3 — Public Website / Signup / Authentication.

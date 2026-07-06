@@ -8,7 +8,7 @@ from typing import Any, Dict, Iterable, Optional
 UI_LANG_COOKIE = "repliq_ui_lang"
 UI_SUPPORTED_LANGUAGES = ("lv", "ru", "en")
 UI_DEFAULT_LANGUAGE = "en"
-UI_FOUNDATION_VERSION = "cx1.1"
+UI_FOUNDATION_VERSION = "cx2.0"
 
 _UI_TEXT: Dict[str, Dict[str, str]] = {
     "en": {
@@ -274,6 +274,29 @@ _UI_TEXT: Dict[str, Dict[str, str]] = {
     },
 }
 
+_CX2_NAV_TEXT: Dict[str, Dict[str, str]] = {
+    "en": {
+        "nav.group_overview": "Overview", "nav.group_setup": "Setup", "nav.group_operations": "Operations", "nav.group_launch": "Launch", "nav.group_account": "Account",
+        "nav.business_profile": "Business profile", "nav.services": "Services", "nav.knowledge": "Knowledge & FAQ", "nav.price_consistency": "Price consistency",
+        "nav.calendar": "Calendar", "nav.telegram": "Telegram", "nav.preview": "Client preview", "nav.analytics": "Analytics", "nav.followups": "Follow-ups",
+        "nav.launch_review": "Launch checklist", "nav.launch_smoke": "Launch smoke", "nav.readiness": "Readiness lock", "nav.billing": "Billing",
+    },
+    "lv": {
+        "nav.group_overview": "Pārskats", "nav.group_setup": "Iestatīšana", "nav.group_operations": "Darbība", "nav.group_launch": "Palaišana", "nav.group_account": "Konts",
+        "nav.business_profile": "Uzņēmuma profils", "nav.services": "Pakalpojumi", "nav.knowledge": "Zināšanas un BUJ", "nav.price_consistency": "Cenu saskaņotība",
+        "nav.calendar": "Kalendārs", "nav.telegram": "Telegram", "nav.preview": "Klienta priekšskatījums", "nav.analytics": "Analītika", "nav.followups": "Turpmākā saziņa",
+        "nav.launch_review": "Palaišanas pārbaude", "nav.launch_smoke": "Palaišanas tests", "nav.readiness": "Gatavības statuss", "nav.billing": "Norēķini",
+    },
+    "ru": {
+        "nav.group_overview": "Обзор", "nav.group_setup": "Настройка", "nav.group_operations": "Работа", "nav.group_launch": "Запуск", "nav.group_account": "Аккаунт",
+        "nav.business_profile": "Профиль бизнеса", "nav.services": "Услуги", "nav.knowledge": "Знания и FAQ", "nav.price_consistency": "Согласованность цен",
+        "nav.calendar": "Календарь", "nav.telegram": "Telegram", "nav.preview": "Предпросмотр", "nav.analytics": "Аналитика", "nav.followups": "Повторные контакты",
+        "nav.launch_review": "Проверка запуска", "nav.launch_smoke": "Тест запуска", "nav.readiness": "Статус готовности", "nav.billing": "Оплата",
+    },
+}
+for _lang, _items in _CX2_NAV_TEXT.items():
+    _UI_TEXT[_lang].update(_items)
+
 _KNOWN_LABELS: Dict[str, Dict[str, str]] = {
     "en": {},
     "lv": {
@@ -375,6 +398,11 @@ CX1_UI_CSS = r"""
 *{box-sizing:border-box}html{background:var(--rq-bg)}body.rq-body{margin:0;background:radial-gradient(circle at 15% -10%,rgba(91,71,224,.12),transparent 28rem),var(--rq-bg);color:var(--rq-text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;min-height:100vh}a{color:inherit}.rq-shell{min-height:100vh}.rq-topbar{position:sticky;top:0;z-index:50;background:rgba(255,255,255,.88);backdrop-filter:blur(16px);border-bottom:1px solid rgba(227,232,239,.9)}.rq-topbar-inner{max-width:var(--rq-max);margin:0 auto;min-height:72px;padding:0 22px;display:flex;align-items:center;gap:22px}.rq-brand{display:flex;align-items:center;gap:11px;text-decoration:none;min-width:max-content}.rq-logo{width:38px;height:38px;border-radius:12px;background:linear-gradient(145deg,#735cff,#4935c5);display:grid;place-items:center;color:#fff;font-size:20px;font-weight:900;box-shadow:0 8px 20px rgba(91,71,224,.28)}.rq-brand-name{font-size:17px;font-weight:850;line-height:1}.rq-brand-tagline{font-size:11px;color:var(--rq-muted);margin-top:4px}.rq-nav{display:flex;align-items:center;gap:4px;flex:1}.rq-nav a{padding:9px 11px;border-radius:10px;text-decoration:none;color:#475467;font-size:13px;font-weight:700;white-space:nowrap}.rq-nav a:hover{background:#f2f4f7;color:var(--rq-text)}.rq-nav a.active{background:var(--rq-primary-soft);color:var(--rq-primary)}.rq-top-actions{display:flex;align-items:center;gap:10px;margin-left:auto}.rq-lang{display:flex;background:#f2f4f7;padding:3px;border-radius:11px}.rq-lang button{border:0;background:transparent;color:#667085;padding:7px 8px;border-radius:8px;font-size:12px;font-weight:800;cursor:pointer}.rq-lang button.active{background:#fff;color:var(--rq-primary);box-shadow:0 1px 4px rgba(16,24,40,.12)}.rq-logout{font-size:13px;font-weight:750;text-decoration:none;color:#475467}.rq-menu-button{display:none;border:1px solid var(--rq-border);background:#fff;width:40px;height:40px;border-radius:11px;font-size:18px;cursor:pointer}.rq-mobile-nav{display:none;max-width:var(--rq-max);margin:0 auto;padding:0 16px 14px}.rq-mobile-nav.open{display:grid;grid-template-columns:1fr 1fr;gap:7px}.rq-mobile-nav a{padding:11px;border:1px solid var(--rq-border);background:#fff;border-radius:10px;text-decoration:none;font-size:13px;font-weight:700}.rq-main{max-width:var(--rq-max);margin:0 auto;padding:30px 22px 54px}.rq-auth-main{max-width:560px;padding-top:7vh}.rq-page-head{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;margin-bottom:22px}.rq-eyebrow{display:inline-flex;align-items:center;gap:7px;color:var(--rq-primary);background:var(--rq-primary-soft);border-radius:999px;padding:6px 10px;font-size:12px;font-weight:850;margin-bottom:12px}.rq-page-title{font-size:clamp(30px,4vw,46px);line-height:1.04;letter-spacing:-.04em;margin:0}.rq-page-subtitle{max-width:720px;color:var(--rq-muted);font-size:15px;line-height:1.6;margin:12px 0 0}.rq-card{background:var(--rq-surface);border:1px solid var(--rq-border);border-radius:var(--rq-radius);box-shadow:var(--rq-shadow);padding:20px}.rq-card+.rq-card{margin-top:14px}.rq-card-title{font-size:18px;margin:0 0 12px;letter-spacing:-.02em}.rq-card-subtitle{color:var(--rq-muted);font-size:13px;line-height:1.5}.rq-grid{display:grid;gap:14px}.rq-grid-2{grid-template-columns:repeat(2,minmax(0,1fr))}.rq-grid-3{grid-template-columns:repeat(3,minmax(0,1fr))}.rq-stat{min-height:145px}.rq-stat-label{font-size:12px;color:var(--rq-muted);font-weight:750;text-transform:uppercase;letter-spacing:.05em}.rq-stat-value{font-size:23px;font-weight:850;margin-top:10px}.rq-stat-note{font-size:13px;color:var(--rq-muted);margin-top:7px;line-height:1.45}.rq-actions{display:flex;flex-wrap:wrap;gap:9px;align-items:center}.rq-button{appearance:none;border:0;border-radius:11px;padding:10px 14px;background:var(--rq-primary);color:#fff;font-weight:800;font-size:13px;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;gap:7px}.rq-button:hover{background:var(--rq-primary-dark)}.rq-button-secondary{background:#eef1f6;color:#344054}.rq-button-secondary:hover{background:#e4e8ef}.rq-button-ghost{background:transparent;color:#475467;border:1px solid var(--rq-border)}.rq-button-ghost:hover{background:#f8fafc}.rq-field{display:grid;gap:7px;margin-top:14px}.rq-label{font-size:13px;font-weight:750;color:#344054}.rq-input{width:100%;border:1px solid #d0d5dd;border-radius:11px;padding:12px 13px;background:#fff;color:var(--rq-text);font-size:14px;outline:none}.rq-input:focus{border-color:#8b7cf6;box-shadow:0 0 0 4px rgba(91,71,224,.12)}.rq-inline-field{display:flex;gap:8px;align-items:center}.rq-inline-field .rq-input{min-width:220px}.rq-badge{display:inline-flex;align-items:center;border-radius:999px;padding:5px 9px;background:#eef1f6;color:#475467;font-size:11px;font-weight:850;margin:2px 4px 2px 0}.rq-badge-success{background:var(--rq-success-bg);color:var(--rq-success)}.rq-badge-warning{background:var(--rq-warning-bg);color:var(--rq-warning)}.rq-badge-danger{background:var(--rq-danger-bg);color:var(--rq-danger)}.rq-progress{height:9px;border-radius:99px;background:#eef1f6;overflow:hidden;margin-top:12px}.rq-progress>span{height:100%;display:block;background:linear-gradient(90deg,#5b47e0,#8d75ff);border-radius:inherit;transition:width .25s ease}.rq-task{border:1px solid var(--rq-border);border-radius:15px;padding:16px;background:linear-gradient(180deg,#fff,#fbfcfe)}.rq-task h3{margin:0 0 7px;font-size:16px}.rq-muted{color:var(--rq-muted);font-size:13px;line-height:1.5}.rq-notice{border-radius:12px;padding:11px 13px;font-size:13px;margin-top:13px}.rq-notice[hidden]{display:none}.rq-notice-success{background:var(--rq-success-bg);color:var(--rq-success);border:1px solid #abefc6}.rq-notice-error{background:var(--rq-danger-bg);color:var(--rq-danger);border:1px solid #fecdca}.rq-details{margin-top:14px;border:1px solid var(--rq-border);border-radius:14px;background:#fff;overflow:hidden}.rq-details summary{padding:13px 15px;cursor:pointer;font-weight:750;color:#475467}.rq-details pre{margin:0;border-top:1px solid var(--rq-border);background:#101828;color:#e4e7ec;padding:15px;max-height:420px;overflow:auto;white-space:pre-wrap;font-size:12px}.rq-auth-card{padding:28px}.rq-auth-brand{text-align:center;margin-bottom:22px}.rq-auth-brand .rq-logo{margin:0 auto 12px}.rq-security-note{display:flex;gap:9px;align-items:flex-start;margin-top:18px;background:#f8fafc;border:1px solid var(--rq-border);padding:12px;border-radius:12px;color:#667085;font-size:12px;line-height:1.45}.rq-section{margin-top:16px}.rq-spacer{height:14px}.rq-footer{max-width:var(--rq-max);margin:0 auto;padding:0 22px 28px;color:#98a2b3;font-size:11px;text-align:center}
 @media(max-width:980px){.rq-nav,.rq-logout{display:none}.rq-menu-button{display:block}.rq-grid-3{grid-template-columns:1fr 1fr}.rq-topbar-inner{padding:0 16px}.rq-main{padding:24px 16px 44px}}
 @media(max-width:680px){.rq-brand-tagline{display:none}.rq-topbar-inner{gap:10px}.rq-lang button{padding:7px}.rq-grid-2,.rq-grid-3{grid-template-columns:1fr}.rq-page-head{display:block}.rq-page-title{font-size:32px}.rq-card{padding:16px}.rq-auth-card{padding:21px}.rq-inline-field{display:grid}.rq-inline-field .rq-input{min-width:0}.rq-mobile-nav.open{grid-template-columns:1fr}.rq-main{padding-top:20px}}
+.rq-app-layout{max-width:1420px;margin:0 auto;display:grid;grid-template-columns:248px minmax(0,1fr);gap:24px;padding:28px 22px 48px}.rq-sidebar{position:sticky;top:90px;align-self:start;background:var(--rq-surface);border:1px solid var(--rq-border);border-radius:var(--rq-radius);padding:14px;box-shadow:var(--rq-shadow);max-height:calc(100vh - 112px);overflow:auto}.rq-sidebar-group{display:grid;gap:4px;margin-bottom:15px}.rq-sidebar-group:last-child{margin-bottom:0}.rq-sidebar-title{padding:5px 10px;color:#98a2b3;font-size:10px;font-weight:900;letter-spacing:.1em;text-transform:uppercase}.rq-sidebar a{display:flex;align-items:center;min-height:38px;padding:9px 10px;border-radius:10px;color:#475467;text-decoration:none;font-size:13px;font-weight:750}.rq-sidebar a:hover{background:#f8f7ff;color:var(--rq-primary)}.rq-sidebar a.active{background:var(--rq-primary-soft);color:var(--rq-primary-dark)}.rq-app-layout>.rq-main{max-width:none;width:100%;margin:0;padding:0;min-width:0}.rq-topbar .rq-nav{display:none}.rq-mobile-group{display:grid;gap:3px}.rq-mobile-group-title{padding:9px 12px 3px;color:#98a2b3;font-size:10px;font-weight:900;letter-spacing:.09em;text-transform:uppercase}.rq-legacy-main{min-width:0}.rq-legacy-main>.wrap{max-width:none!important;margin:0!important}.rq-legacy-main .hero{margin-top:0}.rq-legacy-main .rq-cx2-hidden-nav{display:none!important}.rq-cx2-technical{margin-top:14px}.rq-cx2-page .raw,.rq-cx2-page pre{overflow:auto}.rq-cx2-page button,.rq-cx2-page input,.rq-cx2-page textarea,.rq-cx2-page select{font:inherit}.rq-cx2-page textarea{resize:vertical}.rq-cx2-page .toolbar{position:static!important}.rq-cx2-page .hero h1{font-size:clamp(26px,4vw,40px);line-height:1.08}.rq-cx2-page .hero p{max-width:850px;line-height:1.6}.rq-cx2-page table{width:100%}.rq-cx2-page .card,.rq-cx2-page .hero{box-shadow:var(--rq-shadow)!important;border-color:var(--rq-border)!important}.rq-cx2-page .hero{background:linear-gradient(135deg,#30256f,#5b47e0)!important}.rq-cx2-page .badge{font-weight:750}.rq-cx2-page button{transition:transform .14s ease,box-shadow .14s ease}.rq-cx2-page button:hover{transform:translateY(-1px)}
+@media(max-width:1080px){.rq-app-layout{grid-template-columns:218px minmax(0,1fr);padding-left:16px;padding-right:16px;gap:16px}.rq-sidebar{top:82px}.rq-cx2-page .grid{grid-template-columns:1fr!important}}
+@media(max-width:980px){.rq-sidebar{display:none}.rq-app-layout{display:block;padding:22px 16px 42px}.rq-mobile-nav.open{display:grid;max-height:calc(100vh - 72px);overflow:auto;padding-bottom:12px}.rq-cx2-page .toolbar{align-items:stretch}.rq-cx2-page .toolbar>div{min-width:0!important;flex:1 1 100%}.rq-cx2-page .toolbar input{width:100%!important}}
+@media(max-width:680px){.rq-app-layout{padding:16px 10px 34px}.rq-cx2-page .card,.rq-cx2-page .hero{border-radius:14px!important;padding:15px!important}.rq-cx2-page .toolbar button{width:100%}.rq-cx2-page table{display:block;overflow-x:auto;white-space:nowrap}.rq-cx2-page .hero h1{font-size:28px}}
+
 """
 
 CX1_UI_JS = r"""
@@ -448,6 +476,39 @@ def ui_known_labels(lang: str) -> Dict[str, str]:
     return dict(_KNOWN_LABELS.get(normalized, {}))
 
 
+def _owner_navigation_groups(lang: str, tenant_q: str) -> list[tuple[str, list[tuple[str, str, str]]]]:
+    return [
+        (ui_text(lang, "nav.group_overview"), [
+            ("dashboard", ui_text(lang, "nav.dashboard"), f"/owner/dashboard/ui?tenant_id={tenant_q}"),
+            ("get_started", ui_text(lang, "nav.get_started"), f"/owner/get-started/ui?tenant_id={tenant_q}"),
+            ("workspace", ui_text(lang, "nav.workspace"), f"/owner/workspace/ui?tenant_id={tenant_q}"),
+        ]),
+        (ui_text(lang, "nav.group_setup"), [
+            ("business_profile", ui_text(lang, "nav.business_profile"), f"/owner/business-profile/ui?tenant_id={tenant_q}"),
+            ("services", ui_text(lang, "nav.services"), f"/owner/services/ui?tenant_id={tenant_q}"),
+            ("knowledge", ui_text(lang, "nav.knowledge"), f"/owner/business-memory/ui?tenant_id={tenant_q}"),
+            ("price_consistency", ui_text(lang, "nav.price_consistency"), f"/owner/price-consistency/ui?tenant_id={tenant_q}"),
+            ("calendar", ui_text(lang, "nav.calendar"), f"/owner/calendar/ui?tenant_id={tenant_q}"),
+            ("telegram", ui_text(lang, "nav.telegram"), f"/owner/telegram/ui?tenant_id={tenant_q}"),
+        ]),
+        (ui_text(lang, "nav.group_operations"), [
+            ("preview", ui_text(lang, "nav.preview"), f"/owner/client-preview/ui?tenant_id={tenant_q}"),
+            ("analytics", ui_text(lang, "nav.analytics"), f"/owner/analytics/ui?tenant_id={tenant_q}"),
+            ("followups", ui_text(lang, "nav.followups"), f"/owner/follow-ups/ui?tenant_id={tenant_q}"),
+        ]),
+        (ui_text(lang, "nav.group_launch"), [
+            ("launch_review", ui_text(lang, "nav.launch_review"), f"/owner/launch-review/ui?tenant_id={tenant_q}"),
+            ("health", ui_text(lang, "nav.health"), f"/owner/setup-health/ui?tenant_id={tenant_q}"),
+            ("launch_smoke", ui_text(lang, "nav.launch_smoke"), f"/owner/launch-smoke/ui?tenant_id={tenant_q}"),
+            ("readiness", ui_text(lang, "nav.readiness"), f"/owner/readiness-lock/ui?tenant_id={tenant_q}"),
+        ]),
+        (ui_text(lang, "nav.group_account"), [
+            ("account", ui_text(lang, "nav.account"), f"/owner/account/ui?tenant_id={tenant_q}"),
+            ("billing", ui_text(lang, "nav.billing"), f"/owner/billing/ui?tenant_id={tenant_q}"),
+        ]),
+    ]
+
+
 def render_repliq_shell(
     *,
     title: str,
@@ -459,56 +520,84 @@ def render_repliq_shell(
     auth_layout: bool = False,
     inline_script: str = "",
     extra_head: str = "",
+    extra_head_before_css: str = "",
+    body_data: Optional[Dict[str, str]] = None,
 ) -> str:
     normalized = normalize_ui_language(lang)
     tenant = str(tenant_id or "").strip() or "clinic_demo"
     tenant_q = html.escape(urllib.parse.quote(tenant, safe="_-"), quote=True)
-    nav_items = [
-        ("dashboard", ui_text(normalized, "nav.dashboard"), f"/owner/dashboard/ui?tenant_id={tenant_q}"),
-        ("get_started", ui_text(normalized, "nav.get_started"), f"/owner/get-started/ui?tenant_id={tenant_q}"),
-        ("workspace", ui_text(normalized, "nav.workspace"), f"/owner/workspace/ui?tenant_id={tenant_q}"),
-        ("health", ui_text(normalized, "nav.health"), f"/owner/setup-health/ui?tenant_id={tenant_q}"),
-        ("account", ui_text(normalized, "nav.account"), f"/owner/account/ui?tenant_id={tenant_q}"),
-    ]
-    nav_html = "".join(
-        f'<a class="{"active" if key == active_nav else ""}" href="{href}">{html.escape(label)}</a>'
-        for key, label, href in nav_items
-    ) if owner_navigation else ""
-    mobile_nav_html = nav_html + (f'<a href="/owner/logout">{html.escape(ui_text(normalized,"nav.logout"))}</a>' if owner_navigation else "")
+    groups = _owner_navigation_groups(normalized, tenant_q) if owner_navigation else []
+    sidebar_html = "".join(
+        '<div class="rq-sidebar-group"><div class="rq-sidebar-title">' + html.escape(group_label) + '</div>'
+        + "".join(
+            f'<a class="{"active" if key == active_nav else ""}" href="{href}">{html.escape(label)}</a>'
+            for key, label, href in items
+        )
+        + '</div>'
+        for group_label, items in groups
+    )
+    mobile_nav_html = "".join(
+        '<div class="rq-mobile-group"><div class="rq-mobile-group-title">' + html.escape(group_label) + '</div>'
+        + "".join(
+            f'<a class="{"active" if key == active_nav else ""}" href="{href}">{html.escape(label)}</a>'
+            for key, label, href in items
+        )
+        + '</div>'
+        for group_label, items in groups
+    )
+    if owner_navigation:
+        mobile_nav_html += f'<a href="/owner/logout">{html.escape(ui_text(normalized, "nav.logout"))}</a>'
     lang_buttons = "".join(
-        f'<button type="button" class="{"active" if code == normalized else ""}" data-rq-lang="{code}" aria-label="{html.escape(ui_text(normalized,"language.label"))}: {code.upper()}">{html.escape(ui_text(normalized,f"language.{code}"))}</button>'
+        f'<button type="button" class="{"active" if code == normalized else ""}" data-rq-lang="{code}" aria-label="{html.escape(ui_text(normalized, "language.label"))}: {code.upper()}">{html.escape(ui_text(normalized, f"language.{code}"))}</button>'
         for code in UI_SUPPORTED_LANGUAGES
     )
-    topbar = f'''
+    brand_href = '/owner/dashboard/ui?tenant_id=' + tenant_q if owner_navigation else '/launch'
+    logout_link = f'<a class="rq-logout" href="/owner/logout">{html.escape(ui_text(normalized, "nav.logout"))}</a>' if owner_navigation else ''
+    menu_button = f'<button class="rq-menu-button" type="button" data-rq-mobile-menu aria-expanded="false" aria-label="{html.escape(ui_text(normalized, "nav.open_menu"))}">☰</button>' if owner_navigation else ''
+    mobile_nav = f'<nav class="rq-mobile-nav" data-rq-mobile-nav>{mobile_nav_html}</nav>' if owner_navigation else ''
+    topbar = f"""
 <header class="rq-topbar">
   <div class="rq-topbar-inner">
-    <a class="rq-brand" href="{'/owner/dashboard/ui?tenant_id='+tenant_q if owner_navigation else '/launch'}">
-      <span class="rq-logo">R</span><span><span class="rq-brand-name">{html.escape(ui_text(normalized,'app.name'))}</span><span class="rq-brand-tagline">{html.escape(ui_text(normalized,'app.tagline'))}</span></span>
+    <a class="rq-brand" href="{brand_href}">
+      <span class="rq-logo">R</span><span><span class="rq-brand-name">{html.escape(ui_text(normalized, 'app.name'))}</span><span class="rq-brand-tagline">{html.escape(ui_text(normalized, 'app.tagline'))}</span></span>
     </a>
-    <nav class="rq-nav" aria-label="{html.escape(ui_text(normalized,'nav.aria'))}">{nav_html}</nav>
     <div class="rq-top-actions">
-      <div class="rq-lang" aria-label="{html.escape(ui_text(normalized,'language.label'))}">{lang_buttons}</div>
-      {f'<a class="rq-logout" href="/owner/logout">{html.escape(ui_text(normalized,"nav.logout"))}</a>' if owner_navigation else ''}
-      {f'<button class="rq-menu-button" type="button" data-rq-mobile-menu aria-expanded="false" aria-label="{html.escape(ui_text(normalized,"nav.open_menu"))}">☰</button>' if owner_navigation else ''}
+      <div class="rq-lang" aria-label="{html.escape(ui_text(normalized, 'language.label'))}">{lang_buttons}</div>
+      {logout_link}
+      {menu_button}
     </div>
   </div>
-  {f'<nav class="rq-mobile-nav" data-rq-mobile-nav>{mobile_nav_html}</nav>' if owner_navigation else ''}
-</header>'''
-    main_class = "rq-main rq-auth-main" if auth_layout else "rq-main"
+  {mobile_nav}
+</header>"""
+    if owner_navigation and not auth_layout:
+        page_body = (
+            f'{topbar}<div class="rq-app-layout"><aside class="rq-sidebar" aria-label="{html.escape(ui_text(normalized, "nav.aria"))}">{sidebar_html}</aside>'
+            f'<main class="rq-main">{content_html}</main></div><footer class="rq-footer">Repliq · {UI_FOUNDATION_VERSION}</footer>'
+        )
+    else:
+        main_class = "rq-main rq-auth-main" if auth_layout else "rq-main"
+        page_body = f'{topbar}<main class="{main_class}">{content_html}</main><footer class="rq-footer">Repliq · {UI_FOUNDATION_VERSION}</footer>'
     script = f'<script src="/assets/repliq-ui.js?v={UI_FOUNDATION_VERSION}"></script>'
     if inline_script:
         script += f"<script>{inline_script}</script>"
-    return f'''<!doctype html>
+    data_attrs = {"rq-ui-lang": normalized, "rq-ui-version": UI_FOUNDATION_VERSION}
+    data_attrs.update({str(k): str(v) for k, v in (body_data or {}).items()})
+    body_attrs = " ".join(
+        f'data-{html.escape(k, quote=True)}="{html.escape(v, quote=True)}"'
+        for k, v in data_attrs.items()
+    )
+    return f"""<!doctype html>
 <html lang="{normalized}">
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <meta name="color-scheme" content="light"/>
   <title>{html.escape(title)} · Repliq</title>
+  {extra_head_before_css}
   <link rel="stylesheet" href="/assets/repliq-ui.css?v={UI_FOUNDATION_VERSION}"/>
   {extra_head}
 </head>
-<body class="rq-body" data-rq-ui-lang="{normalized}" data-rq-ui-version="{UI_FOUNDATION_VERSION}">
-<div class="rq-shell">{topbar}<main class="{main_class}">{content_html}</main><footer class="rq-footer">Repliq · {UI_FOUNDATION_VERSION}</footer></div>
+<body class="rq-body" {body_attrs}>
+<div class="rq-shell">{page_body}</div>
 {script}
-</body></html>'''
+</body></html>"""
