@@ -46,6 +46,7 @@ from repliq.public_ui import (
     CX3_PUBLIC_UI_VERSION,
     PUBLIC_UI_CSS,
     PUBLIC_UI_JS,
+    public_language_urls,
     public_response_headers,
     public_translation_counts,
     render_contact_page,
@@ -6289,9 +6290,9 @@ def cx3_public_site_readiness_payload() -> Dict[str, Any]:
     warnings.append("privacy_and_terms_require_legal_entity_specific_review_before_broad_commercial_launch")
     return {
         "ok": True,
-        "stage": "CX-3",
-        "previous_stage": "CX-2",
-        "purpose": "Public Website / Signup / Authentication",
+        "stage": "CX-3.1",
+        "previous_stage": "CX-3",
+        "purpose": "Public Language Switcher / Mobile Menu Hotfix",
         "status": "ready" if ready else "blocked",
         "cx3_ready": bool(ready),
         "public_website_ready": bool(ready),
@@ -6302,6 +6303,9 @@ def cx3_public_site_readiness_payload() -> Dict[str, Any]:
         "public_contact_and_support_pages_ready": all(path in registered_paths for path in {"/contact", "/support"}),
         "shared_public_header_footer_ready": True,
         "responsive_public_navigation_ready": True,
+        "public_language_switcher_no_js_required": True,
+        "mobile_menu_native_details_ready": True,
+        "public_asset_cache_busted_for_hotfix": CX3_PUBLIC_UI_VERSION == "cx3.1",
         "public_favicon_ready": "/favicon.svg" in registered_paths,
         "supported_ui_languages": list(UI_SUPPORTED_LANGUAGES),
         "ui_language_cookie": UI_LANG_COOKIE,
@@ -20971,7 +20975,7 @@ def stage78_public_saas_final_readiness(request: Request, tenant_id: str = TENAN
 @app.get("/public/launch/ui", response_class=HTMLResponse)
 def stage79_public_launch_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
     lang = resolve_public_language(request)
-    return HTMLResponse(content=render_home_page(lang), headers=public_response_headers(lang))
+    return HTMLResponse(content=render_home_page(lang, language_urls=public_language_urls(request)), headers=public_response_headers(lang))
 
 
 @app.get("/launch-ux/readiness")
@@ -21450,27 +21454,27 @@ def cx3_public_site_readiness(request: Request):
 @app.get("/privacy-policy", response_class=HTMLResponse)
 def cx3_privacy_page(request: Request):
     lang = resolve_public_language(request)
-    return HTMLResponse(content=render_legal_page(lang, "privacy"), headers=public_response_headers(lang))
+    return HTMLResponse(content=render_legal_page(lang, "privacy", language_urls=public_language_urls(request)), headers=public_response_headers(lang))
 
 
 @app.get("/terms", response_class=HTMLResponse)
 @app.get("/terms-of-service", response_class=HTMLResponse)
 def cx3_terms_page(request: Request):
     lang = resolve_public_language(request)
-    return HTMLResponse(content=render_legal_page(lang, "terms"), headers=public_response_headers(lang))
+    return HTMLResponse(content=render_legal_page(lang, "terms", language_urls=public_language_urls(request)), headers=public_response_headers(lang))
 
 
 @app.get("/contact", response_class=HTMLResponse)
 def cx3_contact_page(request: Request):
     lang = resolve_public_language(request)
     contact_email = safe_public_email(os.getenv("REPLIQ_PUBLIC_CONTACT_EMAIL", "") or os.getenv("REPLIQ_PUBLIC_SUPPORT_EMAIL", ""))
-    return HTMLResponse(content=render_contact_page(lang, contact_email=contact_email), headers=public_response_headers(lang))
+    return HTMLResponse(content=render_contact_page(lang, contact_email=contact_email, language_urls=public_language_urls(request)), headers=public_response_headers(lang))
 
 
 @app.get("/support", response_class=HTMLResponse)
 def cx3_support_page(request: Request):
     lang = resolve_public_language(request)
-    return HTMLResponse(content=render_support_page(lang), headers=public_response_headers(lang))
+    return HTMLResponse(content=render_support_page(lang, language_urls=public_language_urls(request)), headers=public_response_headers(lang))
 
 
 @app.post("/owner/magic-link/bootstrap")
@@ -21524,7 +21528,7 @@ def stage76_owner_magic_login_get(request: Request, token: str = "", tenant_id: 
         stage71_set_owner_session_cookie(response, owner_email=owner_email, tenant_id=tenant_id_final, role="owner")
         return response
     lang = resolve_public_language(request)
-    return HTMLResponse(content=render_magic_login_page(lang, tid_hint, next_path), headers=public_response_headers(lang))
+    return HTMLResponse(content=render_magic_login_page(lang, tid_hint, next_path, language_urls=public_language_urls(request)), headers=public_response_headers(lang))
 
 
 @app.post("/owner/magic-login")
@@ -21559,7 +21563,7 @@ def owner_login_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT, next: s
     tenant_id_clean = stage711_resolve_tenant_context(request, tenant_id)
     next_path = stage62_safe_local_path(next or f"/owner/dashboard/ui?tenant_id={tenant_id_clean}", tenant_id_clean)
     lang = resolve_public_language(request)
-    return HTMLResponse(content=render_login_page(lang, tenant_id_clean, next_path), headers=public_response_headers(lang))
+    return HTMLResponse(content=render_login_page(lang, tenant_id_clean, next_path, language_urls=public_language_urls(request)), headers=public_response_headers(lang))
 
 
 @app.post("/owner/login")
@@ -21590,7 +21594,7 @@ async def owner_login_submit(request: Request):
 @app.get("/owner/logout", response_class=HTMLResponse)
 def owner_logout_ui(request: Request):
     lang = resolve_public_language(request)
-    response = HTMLResponse(content=render_logout_page(lang), headers=public_response_headers(lang))
+    response = HTMLResponse(content=render_logout_page(lang, language_urls=public_language_urls(request)), headers=public_response_headers(lang))
     stage71_clear_owner_session_cookie(response)
     stage62_clear_admin_session_cookies(response)
     return response
@@ -24794,7 +24798,7 @@ loadWizard();
 def stage72_public_signup_ui(request: Request):
     lang = resolve_public_language(request)
     readiness = stage72_public_signup_readiness_payload()
-    return HTMLResponse(content=render_signup_page(lang, readiness), headers=public_response_headers(lang))
+    return HTMLResponse(content=render_signup_page(lang, readiness, language_urls=public_language_urls(request)), headers=public_response_headers(lang))
 
 
 @app.post("/public/signup")

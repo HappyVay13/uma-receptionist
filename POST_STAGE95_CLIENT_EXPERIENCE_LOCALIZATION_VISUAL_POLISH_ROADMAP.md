@@ -1,6 +1,6 @@
 # Post-Stage 95 — Client Experience / Localization / Visual Polish Roadmap
 
-Status: active. Stage 95 technical core, CX-1 and CX-2 are deployed and verified; CX-3 is implemented and awaits deploy verification.
+Status: active. Stage 95 technical core, CX-1 and CX-2 are deployed and verified; CX-3 is deployed with CX-3.1 hotfix implemented and awaiting verification.
 
 ## Boundary
 
@@ -63,6 +63,7 @@ The polished client launch must remain false until this phase is deployed and ve
 
 - CX-1 — Shared UI Shell / Localization Foundation: deployed, verified and closed.
 - CX-2 — Owner Workspace Full Migration: deployed, verified and closed.
-- CX-3 — Public Website / Signup / Authentication: implemented in archive, awaiting deploy verification.
+- CX-3 — Public Website / Signup / Authentication: deployed; public language/mobile navigation regression found.
+- CX-3.1 — Public Language Switcher / Mobile Menu Hotfix: implemented in archive, awaiting deploy verification.
 - CX-4 — Responsive / Accessibility / Brand Polish: not started.
 - CX-5 — Client Experience Readiness Lock: not started.

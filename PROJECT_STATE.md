@@ -1897,3 +1897,29 @@ Expected verification:
 
 Next phase after verification:
 - CX-4 — Responsive / Accessibility / Brand Polish.
+
+## CX-3.1 — Public Language Switcher / Mobile Menu Hotfix
+
+Status: implemented in archive; awaiting deploy verification.
+
+Production issue reported after CX-3 deploy:
+- Public LV/RU/EN controls rendered, but choosing RU/EN did not navigate to a newly rendered language.
+- At smartphone width, the public menu did not remain open after activation.
+
+Exact design weakness corrected:
+- Both controls depended on the external `/assets/repliq-public.js` asset for their essential behavior.
+- CX-3.1 makes language switching normal server-resolved links that preserve the current path and query parameters.
+- CX-3.1 replaces the JavaScript-toggled mobile menu with native HTML `details/summary` behavior.
+- Public asset version is bumped from `cx3.0` to `cx3.1` to invalidate the old cached JS/CSS URL.
+
+Runtime preservation:
+- Existing signup, owner login, magic login and logout POST handlers remain unchanged.
+- Magic-login token, tenant and next parameters are preserved when switching UI language.
+- No database, booking, Calendar, Telegram, billing, analytics or dialogue runtime behavior changes.
+
+Expected verification:
+- `/dialogue/qa` remains 50/50 passed.
+- CX-1 and CX-2 readiness remain ready.
+- CX-3 readiness reports `stage=CX-3.1` and `cx3_ready=true`.
+- Language switching works on all public pages even when public JavaScript is disabled.
+- The mobile menu stays open until the user selects a link or closes the native disclosure.

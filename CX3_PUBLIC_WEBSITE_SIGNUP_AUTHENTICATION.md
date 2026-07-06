@@ -79,3 +79,20 @@ Expected:
 7. Complete one controlled signup test only if a new test tenant is acceptable
 8. Test owner login and logout with an existing owner account
 9. Confirm business language does not change when switching public UI language
+
+## CX-3.1 hotfix update
+
+The first deployed CX-3 public shell exposed a shared frontend failure mode: language switching and mobile-menu state both required the same external JavaScript asset. CX-3.1 removes that dependency for essential navigation.
+
+Changes:
+- language controls are real GET links rather than JavaScript-only buttons;
+- current path and query parameters are retained while replacing only `ui_lang`;
+- mobile navigation uses native `details/summary`;
+- shared public assets use version `cx3.1` to invalidate cached CX-3.0 assets;
+- JavaScript remains optional enhancement only.
+
+Updated readiness expectation:
+- `stage=CX-3.1`
+- `public_language_switcher_no_js_required=true`
+- `mobile_menu_native_details_ready=true`
+- `public_asset_cache_busted_for_hotfix=true`

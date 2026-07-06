@@ -1092,3 +1092,14 @@ Stage 87 owner launch-review pages must not perform deep cross-stage readiness f
 - Protected regression baseline remains `/dialogue/qa = 50/50 passed`.
 - `client_experience_polish_complete=false` remains explicit until CX-5.
 - `enterprise_saas_ready=false` remains explicit.
+
+## CX-3.1 — Public Language Switcher / Mobile Menu Hotfix Rules
+
+- Essential public navigation must not depend exclusively on JavaScript.
+- LV/RU/EN selectors must be ordinary same-origin GET links resolved server-side.
+- Language links must preserve all existing query parameters except replacing `ui_lang`; this includes magic-login token, tenant and safe next-path values.
+- The public mobile menu must use native `details/summary` behavior and remain usable if `/assets/repliq-public.js` is unavailable.
+- Public UI asset version must be bumped when changing shared public CSS/JS so previously cached assets cannot keep the broken behavior.
+- Existing `POST /public/signup`, `POST /owner/login`, `POST /owner/magic-login` and `POST /owner/logout` implementations must remain unchanged.
+- No new POST routes, write paths, schema changes or auth bypasses are allowed.
+- Protected regression baseline remains `/dialogue/qa = 50/50 passed`.
