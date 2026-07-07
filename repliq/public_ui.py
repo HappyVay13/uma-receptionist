@@ -5,6 +5,7 @@ import json
 import urllib.parse
 from typing import Any, Dict, Iterable, Optional
 
+from repliq.brand import BRAND_VERSION, brand_mark_glyph_html, brand_wordmark_html
 from repliq.ui_foundation import (
     UI_FOUNDATION_VERSION,
     UI_LANG_COOKIE,
@@ -13,7 +14,7 @@ from repliq.ui_foundation import (
     resolve_ui_language,
 )
 
-CX3_PUBLIC_UI_VERSION = "cx3.2"
+CX3_PUBLIC_UI_VERSION = "cx4.0"
 
 _PUBLIC_TEXT: Dict[str, Dict[str, str]] = {
     "en": {
@@ -35,6 +36,8 @@ _PUBLIC_TEXT: Dict[str, Dict[str, str]] = {
         "nav.signup": "Create workspace",
         "nav.open": "Open menu",
         "nav.language": "Language",
+        "nav.primary": "Primary navigation",
+        "a11y.skip": "Skip to main content",
         "footer.product": "Product",
         "footer.company": "Information",
         "footer.account": "Account",
@@ -227,6 +230,8 @@ _PUBLIC_TEXT: Dict[str, Dict[str, str]] = {
         "nav.signup": "Создать кабинет",
         "nav.open": "Открыть меню",
         "nav.language": "Язык",
+        "nav.primary": "Основная навигация",
+        "a11y.skip": "Перейти к основному содержимому",
         "footer.product": "Продукт",
         "footer.company": "Информация",
         "footer.account": "Аккаунт",
@@ -419,6 +424,8 @@ _PUBLIC_TEXT: Dict[str, Dict[str, str]] = {
         "nav.signup": "Izveidot darba vidi",
         "nav.open": "Atvērt izvēlni",
         "nav.language": "Valoda",
+        "nav.primary": "Galvenā navigācija",
+        "a11y.skip": "Pāriet uz galveno saturu",
         "footer.product": "Produkts",
         "footer.company": "Informācija",
         "footer.account": "Konts",
@@ -655,6 +662,34 @@ PUBLIC_UI_CSS = r"""
 @media(max-width:640px){.rp-container{width:min(100% - 24px,1160px)}.rp-header-inner{height:68px}.rp-brand small{display:none}.rp-actions{gap:6px}.rp-lang button{padding:6px}.rp-hero{padding:54px 0}.rp-hero h1{font-size:42px}.rp-product-card{padding:17px;border-radius:22px}.rp-dashboard-mini{grid-template-columns:1fr}.rp-section{padding:60px 0}.rp-form-card{padding:20px;border-radius:20px}.rp-form-grid{grid-template-columns:1fr}.rp-field-full{grid-column:auto}.rp-inline{grid-template-columns:1fr}.rp-page-hero{padding:48px 0 24px}.rp-footer-grid{grid-template-columns:1fr}.rp-footer-bottom{flex-direction:column}.rp-cta{padding:28px}.rp-cta h2{font-size:30px}}
 """
 
+# CX-4 visual identity, accessibility and responsive overrides.
+PUBLIC_UI_CSS += r"""
+:root{
+  --p-ink:#17142b;--p-muted:#625f70;--p-border:#e7e4ee;--p-soft:#f8f7fb;
+  --p-accent:#6757f5;--p-accent2:#9a5cff;--p-focus:#5b4ce8;
+  --p-display:"Inter Display","Segoe UI Variable Display","SF Pro Display",Inter,ui-sans-serif,system-ui,sans-serif;
+  --p-text:Inter,"Segoe UI Variable Text","SF Pro Text",ui-sans-serif,system-ui,sans-serif;
+}
+html{scroll-padding-top:92px}body.rp-body{font-family:var(--p-text);overflow-x:hidden;text-rendering:optimizeLegibility}.rp-body h1,.rp-body h2,.rp-body h3,.rp-body h4{font-family:var(--p-display)}
+.rp-skip-link{position:fixed;left:16px;top:12px;z-index:200;transform:translateY(-160%);background:#17142b;color:#fff;padding:11px 14px;border-radius:11px;text-decoration:none;font-weight:850;box-shadow:0 12px 30px rgba(23,20,43,.25)}.rp-skip-link:focus{transform:translateY(0)}
+.rp-brand{gap:10px;min-height:44px}.rp-brand-symbol{width:40px;height:40px;border-radius:14px;display:grid;place-items:center;background:linear-gradient(145deg,var(--p-accent),var(--p-accent2));box-shadow:0 10px 26px rgba(103,87,245,.27);flex:none;transition:transform .2s ease,box-shadow .2s ease}.rp-brand-symbol svg{width:100%;height:100%;display:block}.rp-brand-wordmark{width:99px;height:auto;display:block;overflow:visible;color:var(--p-ink);fill:currentColor}.rp-brand-wordmark path{fill:currentColor}.rp-brand-wordmark .repliq-wordmark-accent{fill:var(--p-accent)}.rp-brand:hover .rp-brand-symbol{transform:translateY(-1px) rotate(-2deg);box-shadow:0 14px 30px rgba(103,87,245,.31)}
+.rp-header{border-bottom-color:rgba(231,228,238,.88)}.rp-header-inner{height:78px}.rp-nav>a{position:relative}.rp-nav>a::after{content:"";position:absolute;left:0;right:0;bottom:-10px;height:2px;background:var(--p-accent);transform:scaleX(0);transition:transform .18s ease}.rp-nav>a:hover::after,.rp-nav>a[aria-current="page"]::after{transform:scaleX(1)}
+.rp-button,.rp-lang a,.rp-mobile-menu>summary,.rp-mobile-nav a,.rp-footer a{min-height:44px}.rp-lang a{min-width:38px}.rp-mobile-menu>summary{font-size:0}.rp-mobile-menu>summary::before{content:"";width:19px;height:14px;background:linear-gradient(currentColor 0 0) top/100% 2px no-repeat,linear-gradient(currentColor 0 0) center/100% 2px no-repeat,linear-gradient(currentColor 0 0) bottom/100% 2px no-repeat}.rp-mobile-menu[open]>summary::before{background:linear-gradient(currentColor 0 0) center/100% 2px no-repeat;transform:rotate(45deg);box-shadow:0 0 0 0 currentColor}.rp-mobile-menu[open]>summary::after{content:"";position:absolute;width:19px;height:2px;background:currentColor;transform:rotate(-45deg)}
+.rp-hero{padding-top:104px}.rp-hero h1{font-weight:760}.rp-product-card{transform:rotate(.5deg);border:1px solid rgba(255,255,255,.08)}.rp-card{transition:transform .18s ease,border-color .18s ease,box-shadow .18s ease}.rp-card:hover{transform:translateY(-3px);border-color:#d8d1ff;box-shadow:0 16px 38px rgba(23,20,43,.07)}
+.rp-input,.rp-select,.rp-button{font-family:var(--p-text)}.rp-input,.rp-select{min-height:46px}.rp-checkbox input{width:18px;height:18px}.rp-form-card{box-shadow:0 24px 70px rgba(23,20,43,.09)}
+.rp-body :where(a,button,input,select,textarea,summary,[tabindex]):focus-visible{outline:3px solid rgba(103,87,245,.42);outline-offset:3px}.rp-body :where(input,select,textarea):focus-visible{outline:none;box-shadow:0 0 0 4px rgba(103,87,245,.16);border-color:var(--p-focus)}
+.rp-body main:focus{outline:none}.rp-status[aria-live],.rp-result{scroll-margin-top:100px}.rp-footer{border-top:1px solid var(--p-border)}
+.rp-table-scroll{width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}.rp-table-scroll table{min-width:620px}
+.rp-sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}
+@media(max-width:1040px){.rp-nav{gap:16px}.rp-actions>.rp-button-ghost{display:none}.rp-hero-grid{gap:38px}}
+@media(max-width:860px){.rp-nav,.rp-actions>.rp-button{display:none}.rp-mobile-menu{display:block}.rp-header-inner{height:70px}.rp-hero{padding:72px 0 56px}.rp-hero-grid{grid-template-columns:1fr}.rp-product-card{width:min(620px,100%);justify-self:center;transform:none}.rp-section{padding:64px 0}.rp-grid-3{grid-template-columns:1fr 1fr}.rp-footer-grid{grid-template-columns:1.3fr 1fr 1fr}}
+@media(max-width:640px){.rp-container{width:min(100% - 28px,1160px)}.rp-brand-symbol{width:36px;height:36px;border-radius:12px}.rp-brand-wordmark{width:88px}.rp-lang{order:1}.rp-mobile-menu{order:2}.rp-header-inner{gap:8px}.rp-actions{gap:7px}.rp-lang a{padding:6px;min-width:34px;min-height:38px}.rp-mobile-menu>summary{width:40px;height:40px}.rp-mobile-menu[open] .rp-mobile-nav{position:fixed;top:76px;left:14px;right:14px;width:auto;max-height:calc(100dvh - 92px);overflow:auto}.rp-hero h1{font-size:clamp(38px,13vw,56px);letter-spacing:-.055em}.rp-lead{font-size:17px}.rp-hero-actions{display:grid}.rp-hero-actions .rp-button{width:100%}.rp-dashboard-mini{grid-template-columns:1fr}.rp-grid-2,.rp-grid-3,.rp-form-grid,.rp-inline{grid-template-columns:1fr}.rp-section{padding:54px 0}.rp-section h2{font-size:34px}.rp-cta{display:grid;padding:28px;border-radius:24px}.rp-cta h2{font-size:31px}.rp-form-card{padding:22px;border-radius:22px}.rp-footer-grid{grid-template-columns:1fr 1fr}.rp-footer-grid>div:first-child{grid-column:1/-1}.rp-footer-bottom{align-items:flex-start;flex-direction:column;gap:5px}.rp-card:hover{transform:none}}
+@media(max-width:420px){.rp-container{width:min(100% - 22px,1160px)}.rp-header-inner{height:66px}.rp-brand-wordmark{width:82px}.rp-brand-symbol{width:34px;height:34px}.rp-lang a{font-size:10px;min-width:31px}.rp-mobile-menu>summary{width:38px;height:38px}.rp-page-hero{padding-top:52px}.rp-page-hero h1{font-size:36px}.rp-footer-grid{grid-template-columns:1fr}}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}.rp-body *, .rp-body *::before,.rp-body *::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}.rp-card:hover,.rp-brand:hover .rp-brand-symbol,.rp-button-primary:hover{transform:none}}
+@media(forced-colors:active){.rp-brand-symbol,.rp-button-primary,.rp-cta{forced-color-adjust:auto}.rp-body :focus-visible{outline:3px solid Highlight}.rp-lang a.active{outline:1px solid CanvasText}}
+"""
+
+
 PUBLIC_UI_JS = r"""
 (function(){
   const supported=['lv','ru','en'];
@@ -739,14 +774,14 @@ def render_public_shell(
         return ' aria-current="page"' if active == key else ""
     lang_buttons = _language_buttons(normalized, language_urls)
     header = f'''<header class="rp-header"><div class="rp-container rp-header-inner">
-<a class="rp-brand" href="/?ui_lang={normalized}"><span class="rp-mark">R</span><span><strong>Repliq</strong><small>{html.escape(public_text(normalized,"brand.tagline"))}</small></span></a>
-<nav class="rp-nav" aria-label="Primary"><a href="/?ui_lang={normalized}#product"{nav_class("product")}>{html.escape(public_text(normalized,"nav.product"))}</a><a href="/?ui_lang={normalized}#how"{nav_class("how")}>{html.escape(public_text(normalized,"nav.how"))}</a><a href="/?ui_lang={normalized}#security"{nav_class("security")}>{html.escape(public_text(normalized,"nav.security"))}</a><a href="/support?ui_lang={normalized}"{nav_class("support")}>{html.escape(public_text(normalized,"nav.support"))}</a></nav>
+<a class="rp-brand" href="/?ui_lang={normalized}" aria-label="Repliq"><span class="rp-brand-symbol">{brand_mark_glyph_html()}</span>{brand_wordmark_html(class_name="rp-brand-wordmark")}<span class="rp-sr-only">Repliq</span></a>
+<nav class="rp-nav" aria-label="{html.escape(public_text(normalized,"nav.primary"))}"><a href="/?ui_lang={normalized}#product"{nav_class("product")}>{html.escape(public_text(normalized,"nav.product"))}</a><a href="/?ui_lang={normalized}#how"{nav_class("how")}>{html.escape(public_text(normalized,"nav.how"))}</a><a href="/?ui_lang={normalized}#security"{nav_class("security")}>{html.escape(public_text(normalized,"nav.security"))}</a><a href="/support?ui_lang={normalized}"{nav_class("support")}>{html.escape(public_text(normalized,"nav.support"))}</a></nav>
 <div class="rp-actions"><div class="rp-lang" aria-label="{html.escape(public_text(normalized,"nav.language"))}">{lang_buttons}</div><a class="rp-button rp-button-ghost" href="/owner/login?ui_lang={normalized}">{html.escape(public_text(normalized,"nav.login"))}</a><a class="rp-button rp-button-primary" href="/public/signup?ui_lang={normalized}">{html.escape(public_text(normalized,"nav.signup"))}</a><details class="rp-mobile-menu"><summary aria-label="{html.escape(public_text(normalized,"nav.open"))}">☰</summary><nav class="rp-mobile-nav" data-rp-mobile-nav><a href="/?ui_lang={normalized}#product">{html.escape(public_text(normalized,"nav.product"))}</a><a href="/?ui_lang={normalized}#how">{html.escape(public_text(normalized,"nav.how"))}</a><a href="/?ui_lang={normalized}#security">{html.escape(public_text(normalized,"nav.security"))}</a><a href="/support?ui_lang={normalized}">{html.escape(public_text(normalized,"nav.support"))}</a><a href="/owner/login?ui_lang={normalized}">{html.escape(public_text(normalized,"nav.login"))}</a><a href="/public/signup?ui_lang={normalized}">{html.escape(public_text(normalized,"nav.signup"))}</a></nav></details></div></div></header>'''
-    footer = f'''<footer class="rp-footer"><div class="rp-container"><div class="rp-footer-grid"><div><a class="rp-brand" href="/?ui_lang={normalized}"><span class="rp-mark">R</span><span><strong>Repliq</strong><small>{html.escape(public_text(normalized,"brand.tagline"))}</small></span></a><p class="rp-footer-note">{html.escape(public_text(normalized,"footer.note"))}</p></div><div><h4>{html.escape(public_text(normalized,"footer.product"))}</h4><div class="rp-footer-links"><a href="/?ui_lang={normalized}">{html.escape(public_text(normalized,"footer.home"))}</a><a href="/public/signup?ui_lang={normalized}">{html.escape(public_text(normalized,"footer.signup"))}</a><a href="/support?ui_lang={normalized}">{html.escape(public_text(normalized,"footer.support"))}</a></div></div><div><h4>{html.escape(public_text(normalized,"footer.company"))}</h4><div class="rp-footer-links"><a href="/privacy?ui_lang={normalized}">{html.escape(public_text(normalized,"footer.privacy"))}</a><a href="/terms?ui_lang={normalized}">{html.escape(public_text(normalized,"footer.terms"))}</a><a href="/contact?ui_lang={normalized}">{html.escape(public_text(normalized,"footer.contact"))}</a></div></div><div><h4>{html.escape(public_text(normalized,"footer.account"))}</h4><div class="rp-footer-links"><a href="/owner/login?ui_lang={normalized}">{html.escape(public_text(normalized,"footer.login"))}</a><a href="/owner/magic-login?ui_lang={normalized}">{html.escape(public_text(normalized,"footer.magic"))}</a></div></div></div><div class="rp-footer-bottom"><span>© Repliq</span><span>{html.escape(public_text(normalized,"legal.updated"))} · {CX3_PUBLIC_UI_VERSION}</span></div></div></footer>'''
+    footer = f'''<footer class="rp-footer"><div class="rp-container"><div class="rp-footer-grid"><div><a class="rp-brand" href="/?ui_lang={normalized}" aria-label="Repliq"><span class="rp-brand-symbol">{brand_mark_glyph_html()}</span>{brand_wordmark_html(class_name="rp-brand-wordmark")}<span class="rp-sr-only">Repliq</span></a><p class="rp-footer-note">{html.escape(public_text(normalized,"footer.note"))}</p></div><div><h4>{html.escape(public_text(normalized,"footer.product"))}</h4><div class="rp-footer-links"><a href="/?ui_lang={normalized}">{html.escape(public_text(normalized,"footer.home"))}</a><a href="/public/signup?ui_lang={normalized}">{html.escape(public_text(normalized,"footer.signup"))}</a><a href="/support?ui_lang={normalized}">{html.escape(public_text(normalized,"footer.support"))}</a></div></div><div><h4>{html.escape(public_text(normalized,"footer.company"))}</h4><div class="rp-footer-links"><a href="/privacy?ui_lang={normalized}">{html.escape(public_text(normalized,"footer.privacy"))}</a><a href="/terms?ui_lang={normalized}">{html.escape(public_text(normalized,"footer.terms"))}</a><a href="/contact?ui_lang={normalized}">{html.escape(public_text(normalized,"footer.contact"))}</a></div></div><div><h4>{html.escape(public_text(normalized,"footer.account"))}</h4><div class="rp-footer-links"><a href="/owner/login?ui_lang={normalized}">{html.escape(public_text(normalized,"footer.login"))}</a><a href="/owner/magic-login?ui_lang={normalized}">{html.escape(public_text(normalized,"footer.magic"))}</a></div></div></div><div class="rp-footer-bottom"><span>© Repliq</span><span>{html.escape(public_text(normalized,"legal.updated"))} · {CX3_PUBLIC_UI_VERSION}</span></div></div></footer>'''
     scripts = f'<script src="/assets/repliq-public.js?v={CX3_PUBLIC_UI_VERSION}"></script>'
     if inline_script:
         scripts += f"<script>{inline_script}</script>"
-    return f'''<!doctype html><html lang="{normalized}"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><meta name="color-scheme" content="light"/><meta name="description" content="{html.escape(description, quote=True)}"/><meta name="robots" content="index,follow"/><meta property="og:type" content="website"/><meta property="og:title" content="{html.escape(title, quote=True)}"/><meta property="og:description" content="{html.escape(description, quote=True)}"/><title>{html.escape(title)}</title><link rel="icon" href="/favicon.svg" type="image/svg+xml"/><link rel="stylesheet" href="/assets/repliq-public.css?v={CX3_PUBLIC_UI_VERSION}"/>{extra_head}</head><body class="rp-body {html.escape(body_class, quote=True)}" data-rp-lang="{normalized}" data-rp-version="{CX3_PUBLIC_UI_VERSION}">{header}<main>{content_html}</main>{footer}{scripts}</body></html>'''
+    return f'''<!doctype html><html lang="{normalized}"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><meta name="color-scheme" content="light"/><meta name="theme-color" content="#6757f5"/><meta name="description" content="{html.escape(description, quote=True)}"/><meta name="robots" content="index,follow"/><meta property="og:type" content="website"/><meta property="og:title" content="{html.escape(title, quote=True)}"/><meta property="og:description" content="{html.escape(description, quote=True)}"/><title>{html.escape(title)}</title><link rel="icon" href="/favicon.svg" type="image/svg+xml"/><link rel="stylesheet" href="/assets/repliq-public.css?v={CX3_PUBLIC_UI_VERSION}"/>{extra_head}</head><body class="rp-body {html.escape(body_class, quote=True)}" data-rp-lang="{normalized}" data-rp-version="{CX3_PUBLIC_UI_VERSION}"><a class="rp-skip-link" href="#main-content">{html.escape(public_text(normalized,"a11y.skip"))}</a>{header}<main id="main-content" tabindex="-1">{content_html}</main>{footer}{scripts}</body></html>'''
 
 
 def public_response_headers(lang: str) -> Dict[str, str]:
@@ -755,6 +790,7 @@ def public_response_headers(lang: str) -> Dict[str, str]:
         "Content-Language": normalize_ui_language(lang),
         "X-Repliq-Public-UI": CX3_PUBLIC_UI_VERSION,
         "X-Repliq-UI": UI_FOUNDATION_VERSION,
+        "X-Repliq-Brand": BRAND_VERSION,
     }
 
 

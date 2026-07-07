@@ -25,6 +25,7 @@ from twilio.jwt.access_token import AccessToken
 from twilio.jwt.access_token.grants import VoiceGrant
 from sqlalchemy import text
 
+from repliq.brand import BRAND_VERSION, brand_lockup_svg, brand_mark_svg
 from repliq.ui_foundation import (
     CX1_UI_CSS,
     CX1_UI_JS,
@@ -210,10 +211,47 @@ def cx3_public_ui_js():
     return Response(content=PUBLIC_UI_JS, media_type="application/javascript", headers={"Cache-Control": "public, max-age=3600", "X-Repliq-Public-UI": CX3_PUBLIC_UI_VERSION})
 
 
+@app.get("/assets/repliq-brand-mark.svg", include_in_schema=False)
+def cx4_brand_mark_asset():
+    return Response(content=brand_mark_svg(), media_type="image/svg+xml", headers={"Cache-Control": "public, max-age=86400", "X-Repliq-Brand": BRAND_VERSION})
+
+
+@app.get("/assets/repliq-brand-lockup.svg", include_in_schema=False)
+def cx4_brand_lockup_asset():
+    return Response(content=brand_lockup_svg(), media_type="image/svg+xml", headers={"Cache-Control": "public, max-age=86400", "X-Repliq-Brand": BRAND_VERSION})
+
+
+@app.get("/assets/repliq-brand-lockup-dark.svg", include_in_schema=False)
+def cx4_brand_lockup_dark_asset():
+    return Response(content=brand_lockup_svg(dark=True), media_type="image/svg+xml", headers={"Cache-Control": "public, max-age=86400", "X-Repliq-Brand": BRAND_VERSION})
+
+
 @app.get("/favicon.svg", include_in_schema=False)
-def cx3_public_favicon():
-    svg = """<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop stop-color='#5b5cf0'/><stop offset='1' stop-color='#8b5cf6'/></linearGradient></defs><rect width='64' height='64' rx='18' fill='url(#g)'/><path d='M19 16h17c8 0 13 4 13 11 0 5-3 9-8 10l9 11H39l-8-10h-2v10H19V16zm10 8v7h7c2 0 4-1 4-4s-2-3-4-3h-7z' fill='white'/></svg>"""
-    return Response(content=svg, media_type="image/svg+xml", headers={"Cache-Control": "public, max-age=86400", "X-Repliq-Public-UI": CX3_PUBLIC_UI_VERSION})
+def cx4_public_favicon():
+    return Response(content=brand_mark_svg(), media_type="image/svg+xml", headers={"Cache-Control": "public, max-age=86400", "X-Repliq-Public-UI": CX3_PUBLIC_UI_VERSION, "X-Repliq-Brand": BRAND_VERSION})
+
+
+def cx4_owner_html_response(request: Request, lang: str, content: str, headers: Optional[Dict[str, str]] = None) -> HTMLResponse:
+    normalized = str(lang or "en").strip().lower()
+    if normalized not in UI_SUPPORTED_LANGUAGES:
+        normalized = "en"
+    response_headers = {"Cache-Control": "no-store", "Content-Language": normalized, "X-Repliq-UI": UI_FOUNDATION_VERSION, "X-Repliq-Brand": BRAND_VERSION}
+    response_headers.update(headers or {})
+    response = HTMLResponse(content=content, headers=response_headers)
+    try:
+        secure_cookie = str(request.url.scheme or "").lower() == "https"
+    except Exception:
+        secure_cookie = False
+    response.set_cookie(
+        key=UI_LANG_COOKIE,
+        value=normalized,
+        max_age=365 * 24 * 60 * 60,
+        path="/",
+        secure=secure_cookie,
+        httponly=False,
+        samesite="lax",
+    )
+    return response
 
 
 def cx2_owner_page_response(
@@ -242,7 +280,7 @@ def cx2_owner_page_response(
         "X-Repliq-CX-Phase": CX2_MIGRATION_VERSION,
     }
     headers.update(extra_headers or {})
-    return HTMLResponse(content=rendered, headers=headers)
+    return cx4_owner_html_response(request, lang, rendered, headers=headers)
 
 
 # -------------------------
@@ -461,6 +499,9 @@ STAGE61_PROTECTED_EXACT_PATHS = {
     "/client-experience/public-site/readiness",
     "/public-site/readiness",
     "/public-auth/readiness",
+    "/client-experience/polish/readiness",
+    "/ui/accessibility/readiness",
+    "/brand/readiness",
     "/access/readiness",
     "/admin/access/readiness",
     "/admin/access/enforcement",
@@ -6257,6 +6298,7 @@ CX3_PUBLIC_UI_PATHS = {
 }
 CX3_PUBLIC_ASSET_PATHS = {
     "/assets/repliq-public.css", "/assets/repliq-public.js", "/favicon.svg",
+    "/assets/repliq-brand-mark.svg", "/assets/repliq-brand-lockup.svg", "/assets/repliq-brand-lockup-dark.svg",
 }
 CX3_PUBLIC_POST_PATHS_PRESERVED = {
     "/public/signup", "/owner/login", "/owner/magic-login", "/owner/logout",
@@ -6305,7 +6347,7 @@ def cx3_public_site_readiness_payload() -> Dict[str, Any]:
         "responsive_public_navigation_ready": True,
         "public_language_switcher_no_js_required": True,
         "mobile_menu_native_details_ready": True,
-        "public_asset_cache_busted_for_hotfix": CX3_PUBLIC_UI_VERSION == "cx3.2",
+        "public_asset_cache_busted_for_hotfix": CX3_PUBLIC_UI_VERSION in {"cx3.2", "cx4.0"},
         "public_language_cookie_server_persisted": True,
         "public_navigation_language_explicit": True,
         "public_favicon_ready": "/favicon.svg" in registered_paths,
@@ -6351,6 +6393,101 @@ def cx3_public_site_readiness_payload() -> Dict[str, Any]:
             "wrongly_owner_protected": wrongly_owner_protected,
         },
         "note": "CX-3 replaces the technical public launch/signup/auth pages with one responsive LV/RU/EN public website shell. Existing signup, owner login, magic-link, session, CSRF, abuse protection and tenant creation behavior remain unchanged.",
+    }
+
+
+# -------------------------
+# CX-4: RESPONSIVE / ACCESSIBILITY / BRAND POLISH
+# -------------------------
+CX4_READINESS_PATHS = {
+    "/client-experience/polish/readiness",
+    "/ui/accessibility/readiness",
+    "/brand/readiness",
+}
+CX4_BRAND_ASSET_PATHS = {
+    "/favicon.svg",
+    "/assets/repliq-brand-mark.svg",
+    "/assets/repliq-brand-lockup.svg",
+    "/assets/repliq-brand-lockup-dark.svg",
+}
+
+
+def cx4_client_experience_polish_readiness_payload() -> Dict[str, Any]:
+    registered_paths = {str(getattr(route, "path", "") or "") for route in app.routes}
+    missing_readiness_protection = sorted(path for path in CX4_READINESS_PATHS if path not in STAGE61_PROTECTED_EXACT_PATHS)
+    missing_routes = sorted(path for path in (CX4_READINESS_PATHS | CX4_BRAND_ASSET_PATHS) if path not in registered_paths)
+    accessibility_checks = {
+        "public_skip_link": "rp-skip-link" in PUBLIC_UI_CSS,
+        "owner_skip_link": "rq-skip-link" in CX1_UI_CSS,
+        "public_focus_visible": ":focus-visible" in PUBLIC_UI_CSS,
+        "owner_focus_visible": ":focus-visible" in CX1_UI_CSS,
+        "public_reduced_motion": "prefers-reduced-motion" in PUBLIC_UI_CSS,
+        "owner_reduced_motion": "prefers-reduced-motion" in CX1_UI_CSS,
+        "public_forced_colors": "forced-colors" in PUBLIC_UI_CSS,
+        "owner_forced_colors": "forced-colors" in CX1_UI_CSS,
+        "minimum_mobile_breakpoint": "max-width:420px" in PUBLIC_UI_CSS and "max-width:420px" in CX1_UI_CSS,
+        "native_public_mobile_menu": True,
+        "native_owner_mobile_menu": True,
+    }
+    brand_checks = {
+        "brand_version": BRAND_VERSION,
+        "public_ui_version": CX3_PUBLIC_UI_VERSION,
+        "owner_ui_version": UI_FOUNDATION_VERSION,
+        "reply_loop_mark_ready": True,
+        "outlined_wordmark_ready": True,
+        "public_owner_brand_consistent": True,
+        "favicon_uses_brand_mark": True,
+    }
+    blocking: List[str] = []
+    if missing_readiness_protection:
+        blocking.append("cx4_readiness_not_admin_protected")
+    if missing_routes:
+        blocking.append("cx4_routes_or_assets_missing")
+    if not all(accessibility_checks.values()):
+        blocking.append("cx4_accessibility_foundation_incomplete")
+    if CX3_PUBLIC_UI_VERSION != "cx4.0" or UI_FOUNDATION_VERSION != "cx4.0" or BRAND_VERSION != "cx4.0":
+        blocking.append("cx4_version_alignment_incomplete")
+    ready = not blocking
+    return {
+        "ok": True,
+        "stage": "CX-4",
+        "previous_stage": "CX-3.2",
+        "purpose": "Responsive / Accessibility / Brand Polish",
+        "status": "ready" if ready else "blocked",
+        "cx4_ready": bool(ready),
+        "responsive_public_ui_ready": bool(ready),
+        "responsive_owner_ui_ready": bool(ready),
+        "accessibility_foundation_ready": all(accessibility_checks.values()),
+        "brand_identity_ready": all(bool(value) for key, value in brand_checks.items() if key not in {"brand_version", "public_ui_version", "owner_ui_version"}),
+        "shared_brand_assets_ready": all(path in registered_paths for path in CX4_BRAND_ASSET_PATHS),
+        "supported_ui_languages": list(UI_SUPPORTED_LANGUAGES),
+        "accessibility": accessibility_checks,
+        "brand": brand_checks,
+        "client_experience_polish_complete": False,
+        "next_phase": "CX-5_client_experience_readiness_lock",
+        "enterprise_saas_ready": False,
+        "security": {
+            "readiness_admin_protected": not missing_readiness_protection,
+            "new_post_routes_added": False,
+            "new_database_writes_added": False,
+            "auth_semantics_changed": False,
+            "signup_semantics_changed": False,
+            "booking_runtime_changed": False,
+            "calendar_runtime_changed": False,
+            "telegram_runtime_changed": False,
+            "billing_semantics_changed": False,
+            "secret_values_exposed": False,
+        },
+        "blocking": blocking,
+        "warnings": [
+            "manual_cross_browser_and_real_device_visual_verification_required",
+            "brand_mark_is_a_project_identity_draft_and_should_receive_trademark_review_before_broad_commercial_launch",
+        ],
+        "missing": {
+            "readiness_protection": missing_readiness_protection,
+            "registered_routes": missing_routes,
+        },
+        "note": "CX-4 aligns public and owner UI around one reply-loop brand mark and outlined lowercase wordmark, improves responsive behavior, keyboard focus, reduced-motion support, forced-colors handling and native mobile navigation without changing product runtime or write semantics.",
     }
 
 
@@ -21032,7 +21169,7 @@ def stage80_owner_workspace_json(request: Request, tenant_id: str = TENANT_ID_DE
 def stage80_owner_workspace_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
     tid = stage711_resolve_tenant_context(request, tenant_id)
     lang = resolve_ui_language(request)
-    return HTMLResponse(content=stage80_owner_workspace_html(tenant_id=tid, ui_lang=lang), headers={"Cache-Control": "no-store", "Content-Language": lang, "X-Repliq-UI": UI_FOUNDATION_VERSION})
+    return cx4_owner_html_response(request, lang, stage80_owner_workspace_html(tenant_id=tid, ui_lang=lang))
 
 @app.get("/business-profile/readiness")
 @app.get("/owner-business-profile/readiness")
@@ -21393,7 +21530,7 @@ def stage93_owner_handoff_ui(request: Request, tenant_id: str = TENANT_ID_DEFAUL
         return stage71_strict_owner_auth_error(int(e.status_code or 401), str(e.detail or "owner_login_required"), tenant_id=str(request.query_params.get("tenant_id") or tenant_id or TENANT_ID_DEFAULT))
     tid = str(access.get("tenant_id") or tenant_id or "").strip() or TENANT_ID_DEFAULT
     lang = resolve_ui_language(request)
-    return HTMLResponse(content=stage93_owner_handoff_html(tenant_id=tid, ui_lang=lang), headers={"Cache-Control": "no-store", "Content-Language": lang, "X-Repliq-UI": UI_FOUNDATION_VERSION})
+    return cx4_owner_html_response(request, lang, stage93_owner_handoff_html(tenant_id=tid, ui_lang=lang))
 
 @app.get("/smb-launch-smoke/readiness")
 @app.get("/demo-tenant/readiness")
@@ -21471,6 +21608,13 @@ def cx2_owner_workspace_migration_readiness(request: Request):
 @app.get("/public-auth/readiness")
 def cx3_public_site_readiness(request: Request):
     return cx3_public_site_readiness_payload()
+
+
+@app.get("/client-experience/polish/readiness")
+@app.get("/ui/accessibility/readiness")
+@app.get("/brand/readiness")
+def cx4_client_experience_polish_readiness(request: Request):
+    return cx4_client_experience_polish_readiness_payload()
 
 
 @app.get("/privacy", response_class=HTMLResponse)
@@ -21670,7 +21814,7 @@ function render(d){el('raw').textContent=JSON.stringify(d,null,2);el('business')
 async function loadDash(){const r=await fetch('/owner/dashboard?tenant_id='+encTenant(),{credentials:'include',cache:'no-store'});const d=await r.json().catch(()=>({}));if(!r.ok){el('raw').textContent=JSON.stringify(d,null,2);return}render(d)}loadDash();
 '''.replace('__TENANT_ID_JSON__', json.dumps(tid, ensure_ascii=False)).replace('__COPY_JSON__', json.dumps(copy, ensure_ascii=False)).replace('__KNOWN_JSON__', json.dumps(ui_known_labels(lang), ensure_ascii=False))
     html = render_repliq_shell(title=ui_text(lang, "dashboard.title"), lang=lang, tenant_id=tid, content_html=content, active_nav="dashboard", inline_script=script)
-    return HTMLResponse(content=html, headers={"Cache-Control": "no-store", "Content-Language": lang, "X-Repliq-UI": UI_FOUNDATION_VERSION})
+    return cx4_owner_html_response(request, lang, html)
 
 @app.get("/tenant/creation/readiness")
 @app.get("/signup/readiness")

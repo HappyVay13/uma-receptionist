@@ -1948,3 +1948,46 @@ Expected verification:
 - RU/EN remains selected across every public menu transition and page reload.
 - CX-3 readiness reports `stage=CX-3.2` and `cx3_ready=true`.
 - `/dialogue/qa` remains 50/50 passed.
+
+
+## CX-3.2 Verification Update
+
+Status: deployed, verified and closed.
+
+Verified by user:
+- `/dialogue/qa` = 50/50 passed.
+- Public LV/RU/EN switching works.
+- Public mobile navigation works.
+- RU/EN no longer fall back to LV during public navigation.
+- Signup/auth/runtime baseline remains intact.
+
+## CX-4 — Responsive / Accessibility / Brand Polish
+
+Status: implemented in archive, awaiting deploy verification.
+
+Scope:
+- Replaces the generic rounded-square `R` with a custom reply-loop R/Q/message monogram while retaining the established violet identity.
+- Adds an outlined lowercase `repliq` wordmark with an accented final `q`; no runtime font download is required for the wordmark.
+- Uses the same brand lockup in public and owner shells.
+- Adds shared SVG mark/lockup assets and an updated favicon.
+- Adds skip links, focus-visible states, semantic active navigation, reduced-motion and forced-colors support.
+- Refines public and owner layouts at desktop, tablet and mobile widths.
+- Converts owner mobile navigation to native `details/summary`.
+- Carries owner `ui_lang` through navigation and persists the non-sensitive UI language cookie.
+
+Runtime preservation:
+- Existing signup/login/magic-login/logout POST handler source remains unchanged.
+- No POST routes, schema migrations, business writes or external sends are added.
+- Booking, Calendar, Telegram, billing, analytics, QA and LLM runtime are unchanged.
+
+Expected verification:
+- `/dialogue/qa` remains 50/50 passed.
+- CX-1, CX-2 and CX-3 readiness remain `ready`.
+- CX-4 readiness reports `stage=CX-4`, `cx4_ready=true`, `blocking=[]`.
+- Public and owner pages have no horizontal overflow at 375/390/768/desktop widths.
+- Keyboard focus and skip links work.
+- Public and owner mobile menus remain usable.
+- LV/RU/EN persists across public and owner navigation.
+
+Next phase after verification:
+- CX-5 — Client Experience Readiness Lock.

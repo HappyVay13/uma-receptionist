@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented in archive, awaiting deploy verification.
+Deployed, verified and closed.
 
 ## Production issue
 

@@ -3,12 +3,14 @@ from __future__ import annotations
 import html
 import json
 import urllib.parse
+
+from repliq.brand import brand_mark_glyph_html, brand_wordmark_html
 from typing import Any, Dict, Iterable, Optional
 
 UI_LANG_COOKIE = "repliq_ui_lang"
 UI_SUPPORTED_LANGUAGES = ("lv", "ru", "en")
 UI_DEFAULT_LANGUAGE = "en"
-UI_FOUNDATION_VERSION = "cx2.0"
+UI_FOUNDATION_VERSION = "cx4.0"
 
 _UI_TEXT: Dict[str, Dict[str, str]] = {
     "en": {
@@ -22,6 +24,7 @@ _UI_TEXT: Dict[str, Dict[str, str]] = {
         "nav.logout": "Log out",
         "nav.open_menu": "Open menu",
         "nav.aria": "Owner navigation",
+        "a11y.skip": "Skip to main content",
         "language.label": "Interface language",
         "language.lv": "LV",
         "language.ru": "RU",
@@ -109,6 +112,7 @@ _UI_TEXT: Dict[str, Dict[str, str]] = {
         "nav.logout": "Izrakstīties",
         "nav.open_menu": "Atvērt izvēlni",
         "nav.aria": "Īpašnieka navigācija",
+        "a11y.skip": "Pāriet uz galveno saturu",
         "language.label": "Saskarnes valoda",
         "language.lv": "LV",
         "language.ru": "RU",
@@ -196,6 +200,7 @@ _UI_TEXT: Dict[str, Dict[str, str]] = {
         "nav.logout": "Выйти",
         "nav.open_menu": "Открыть меню",
         "nav.aria": "Навигация владельца",
+        "a11y.skip": "Перейти к основному содержимому",
         "language.label": "Язык интерфейса",
         "language.lv": "LV",
         "language.ru": "RU",
@@ -405,6 +410,31 @@ CX1_UI_CSS = r"""
 
 """
 
+# CX-4 shared brand, responsive and accessibility refinements.
+CX1_UI_CSS += r"""
+:root{
+  --rq-text:#17142b;--rq-muted:#625f70;--rq-border:#e7e4ee;--rq-bg:#f7f6fa;
+  --rq-primary:#6757f5;--rq-primary-dark:#5748dc;--rq-primary-soft:#efedff;
+  --rq-display:"Inter Display","Segoe UI Variable Display","SF Pro Display",Inter,ui-sans-serif,system-ui,sans-serif;
+  --rq-text-font:Inter,"Segoe UI Variable Text","SF Pro Text",ui-sans-serif,system-ui,sans-serif;
+}
+html{scroll-padding-top:88px}body.rq-body{font-family:var(--rq-text-font);overflow-x:hidden;text-rendering:optimizeLegibility}.rq-body h1,.rq-body h2,.rq-body h3,.rq-body h4{font-family:var(--rq-display)}
+.rq-skip-link{position:fixed;left:16px;top:12px;z-index:220;transform:translateY(-160%);background:#17142b;color:#fff;padding:11px 14px;border-radius:11px;text-decoration:none;font-weight:850;box-shadow:0 12px 30px rgba(23,20,43,.25)}.rq-skip-link:focus{transform:translateY(0)}
+.rq-brand{gap:10px;min-height:44px}.rq-brand-symbol{width:40px;height:40px;border-radius:14px;display:grid;place-items:center;background:linear-gradient(145deg,var(--rq-primary),#9a5cff);box-shadow:0 10px 24px rgba(103,87,245,.25);flex:none;transition:transform .18s ease}.rq-brand-symbol svg{width:100%;height:100%;display:block}.rq-brand-wordmark{width:92px;height:auto;display:block;color:var(--rq-text);fill:currentColor;overflow:visible}.rq-brand-wordmark path{fill:currentColor}.rq-brand-wordmark .repliq-wordmark-accent{fill:var(--rq-primary)}.rq-brand-copy{display:grid;gap:2px}.rq-brand-tagline{margin:0;font-size:10px;line-height:1.2}.rq-brand:hover .rq-brand-symbol{transform:translateY(-1px) rotate(-2deg)}
+.rq-topbar-inner{min-height:76px}.rq-sidebar a{min-height:42px;display:flex;align-items:center}.rq-sidebar a.active{box-shadow:inset 3px 0 0 var(--rq-primary)}
+.rq-lang a{border:0;background:transparent;color:#667085;padding:7px 8px;border-radius:8px;font-size:12px;font-weight:800;cursor:pointer;text-decoration:none;min-width:36px;min-height:36px;display:grid;place-items:center}.rq-lang a.active{background:#fff;color:var(--rq-primary);box-shadow:0 1px 4px rgba(16,24,40,.12)}
+.rq-mobile-menu{display:none;margin-left:auto}.rq-mobile-menu>summary{list-style:none;border:1px solid var(--rq-border);background:#fff;width:42px;height:42px;border-radius:12px;cursor:pointer;display:grid;place-items:center;font-size:0}.rq-mobile-menu>summary::-webkit-details-marker{display:none}.rq-mobile-menu>summary::before{content:"";width:19px;height:14px;background:linear-gradient(currentColor 0 0) top/100% 2px no-repeat,linear-gradient(currentColor 0 0) center/100% 2px no-repeat,linear-gradient(currentColor 0 0) bottom/100% 2px no-repeat}.rq-mobile-menu[open]>summary::before{height:2px;background:currentColor;transform:rotate(45deg)}.rq-mobile-menu[open]>summary::after{content:"";position:absolute;width:19px;height:2px;background:currentColor;transform:rotate(-45deg)}.rq-mobile-menu[open] .rq-mobile-nav{display:grid}.rq-mobile-nav{max-height:calc(100dvh - 90px);overflow:auto;overscroll-behavior:contain}
+.rq-button,.rq-input,.rq-select,button,input,select,textarea{font-family:var(--rq-text-font)}.rq-button{min-height:42px}.rq-input,select,textarea{min-height:44px}.rq-card{box-shadow:0 14px 40px rgba(23,20,43,.055)}.rq-page-title{font-weight:760}.rq-details summary{min-height:44px;display:flex;align-items:center}.rq-details pre{overflow-wrap:anywhere}.rq-table-wrap,.rq-legacy-main .table-wrap{display:block;width:100%;max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}.rq-legacy-main table{max-width:100%}.rq-table-wrap>table{display:table;max-width:none}.rq-legacy-main img,.rq-legacy-main svg,.rq-legacy-main canvas{max-width:100%}
+.rq-body :where(a,button,input,select,textarea,summary,[tabindex]):focus-visible{outline:3px solid rgba(103,87,245,.42);outline-offset:3px}.rq-body :where(input,select,textarea):focus-visible{outline:none;border-color:var(--rq-primary);box-shadow:0 0 0 4px rgba(103,87,245,.15)}.rq-main:focus{outline:none}.rq-sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}
+@media(max-width:1120px){.rq-sidebar{width:226px}.rq-main{min-width:0}.rq-grid-3{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:980px){.rq-menu-button{display:none!important}.rq-mobile-menu{display:block}.rq-top-actions{gap:7px}.rq-mobile-nav{position:fixed;left:12px;right:12px;top:82px;max-width:none;margin:0;padding:12px;border:1px solid var(--rq-border);background:#fff;border-radius:16px;box-shadow:0 24px 60px rgba(23,20,43,.16);z-index:90}.rq-mobile-nav:not(.open){display:none}.rq-mobile-menu[open] .rq-mobile-nav{display:grid;grid-template-columns:1fr 1fr;gap:8px}.rq-mobile-group{min-width:0}.rq-mobile-nav a{min-height:42px;display:flex;align-items:center}.rq-app-layout{display:block}.rq-sidebar{display:none}.rq-main{max-width:900px}.rq-grid-3{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:680px){.rq-topbar-inner{min-height:68px}.rq-brand-symbol{width:36px;height:36px;border-radius:12px}.rq-brand-wordmark{width:83px}.rq-brand-tagline{display:none}.rq-lang a{padding:6px;min-width:33px;min-height:36px;font-size:11px}.rq-mobile-menu>summary{width:39px;height:39px}.rq-mobile-nav{top:74px}.rq-mobile-menu[open] .rq-mobile-nav{grid-template-columns:1fr}.rq-main{padding:20px 14px 42px}.rq-card{padding:16px}.rq-auth-card{padding:20px}.rq-page-title{font-size:32px}.rq-grid-2,.rq-grid-3{grid-template-columns:1fr}.rq-actions>.rq-button{max-width:100%}.rq-legacy-main input,.rq-legacy-main select,.rq-legacy-main textarea,.rq-legacy-main button{max-width:100%}.rq-legacy-main [style*="min-width"]{min-width:0!important}}
+@media(max-width:420px){.rq-topbar-inner{padding:0 11px;gap:7px}.rq-brand-symbol{width:34px;height:34px}.rq-brand-wordmark{width:78px}.rq-lang a{min-width:29px;padding:5px}.rq-mobile-menu>summary{width:37px;height:37px}.rq-main{padding-left:11px;padding-right:11px}.rq-card{border-radius:15px}}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}.rq-body *, .rq-body *::before,.rq-body *::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}.rq-brand:hover .rq-brand-symbol{transform:none}}
+@media(forced-colors:active){.rq-brand-symbol,.rq-button{forced-color-adjust:auto}.rq-body :focus-visible{outline:3px solid Highlight}.rq-lang a.active{outline:1px solid CanvasText}}
+"""
+
+
 CX1_UI_JS = r"""
 (function(){
   const cookieName='repliq_ui_lang';
@@ -479,32 +509,32 @@ def ui_known_labels(lang: str) -> Dict[str, str]:
 def _owner_navigation_groups(lang: str, tenant_q: str) -> list[tuple[str, list[tuple[str, str, str]]]]:
     return [
         (ui_text(lang, "nav.group_overview"), [
-            ("dashboard", ui_text(lang, "nav.dashboard"), f"/owner/dashboard/ui?tenant_id={tenant_q}"),
-            ("get_started", ui_text(lang, "nav.get_started"), f"/owner/get-started/ui?tenant_id={tenant_q}"),
-            ("workspace", ui_text(lang, "nav.workspace"), f"/owner/workspace/ui?tenant_id={tenant_q}"),
+            ("dashboard", ui_text(lang, "nav.dashboard"), f"/owner/dashboard/ui?tenant_id={tenant_q}&ui_lang={lang}"),
+            ("get_started", ui_text(lang, "nav.get_started"), f"/owner/get-started/ui?tenant_id={tenant_q}&ui_lang={lang}"),
+            ("workspace", ui_text(lang, "nav.workspace"), f"/owner/workspace/ui?tenant_id={tenant_q}&ui_lang={lang}"),
         ]),
         (ui_text(lang, "nav.group_setup"), [
-            ("business_profile", ui_text(lang, "nav.business_profile"), f"/owner/business-profile/ui?tenant_id={tenant_q}"),
-            ("services", ui_text(lang, "nav.services"), f"/owner/services/ui?tenant_id={tenant_q}"),
-            ("knowledge", ui_text(lang, "nav.knowledge"), f"/owner/business-memory/ui?tenant_id={tenant_q}"),
-            ("price_consistency", ui_text(lang, "nav.price_consistency"), f"/owner/price-consistency/ui?tenant_id={tenant_q}"),
-            ("calendar", ui_text(lang, "nav.calendar"), f"/owner/calendar/ui?tenant_id={tenant_q}"),
-            ("telegram", ui_text(lang, "nav.telegram"), f"/owner/telegram/ui?tenant_id={tenant_q}"),
+            ("business_profile", ui_text(lang, "nav.business_profile"), f"/owner/business-profile/ui?tenant_id={tenant_q}&ui_lang={lang}"),
+            ("services", ui_text(lang, "nav.services"), f"/owner/services/ui?tenant_id={tenant_q}&ui_lang={lang}"),
+            ("knowledge", ui_text(lang, "nav.knowledge"), f"/owner/business-memory/ui?tenant_id={tenant_q}&ui_lang={lang}"),
+            ("price_consistency", ui_text(lang, "nav.price_consistency"), f"/owner/price-consistency/ui?tenant_id={tenant_q}&ui_lang={lang}"),
+            ("calendar", ui_text(lang, "nav.calendar"), f"/owner/calendar/ui?tenant_id={tenant_q}&ui_lang={lang}"),
+            ("telegram", ui_text(lang, "nav.telegram"), f"/owner/telegram/ui?tenant_id={tenant_q}&ui_lang={lang}"),
         ]),
         (ui_text(lang, "nav.group_operations"), [
-            ("preview", ui_text(lang, "nav.preview"), f"/owner/client-preview/ui?tenant_id={tenant_q}"),
-            ("analytics", ui_text(lang, "nav.analytics"), f"/owner/analytics/ui?tenant_id={tenant_q}"),
-            ("followups", ui_text(lang, "nav.followups"), f"/owner/follow-ups/ui?tenant_id={tenant_q}"),
+            ("preview", ui_text(lang, "nav.preview"), f"/owner/client-preview/ui?tenant_id={tenant_q}&ui_lang={lang}"),
+            ("analytics", ui_text(lang, "nav.analytics"), f"/owner/analytics/ui?tenant_id={tenant_q}&ui_lang={lang}"),
+            ("followups", ui_text(lang, "nav.followups"), f"/owner/follow-ups/ui?tenant_id={tenant_q}&ui_lang={lang}"),
         ]),
         (ui_text(lang, "nav.group_launch"), [
-            ("launch_review", ui_text(lang, "nav.launch_review"), f"/owner/launch-review/ui?tenant_id={tenant_q}"),
-            ("health", ui_text(lang, "nav.health"), f"/owner/setup-health/ui?tenant_id={tenant_q}"),
-            ("launch_smoke", ui_text(lang, "nav.launch_smoke"), f"/owner/launch-smoke/ui?tenant_id={tenant_q}"),
-            ("readiness", ui_text(lang, "nav.readiness"), f"/owner/readiness-lock/ui?tenant_id={tenant_q}"),
+            ("launch_review", ui_text(lang, "nav.launch_review"), f"/owner/launch-review/ui?tenant_id={tenant_q}&ui_lang={lang}"),
+            ("health", ui_text(lang, "nav.health"), f"/owner/setup-health/ui?tenant_id={tenant_q}&ui_lang={lang}"),
+            ("launch_smoke", ui_text(lang, "nav.launch_smoke"), f"/owner/launch-smoke/ui?tenant_id={tenant_q}&ui_lang={lang}"),
+            ("readiness", ui_text(lang, "nav.readiness"), f"/owner/readiness-lock/ui?tenant_id={tenant_q}&ui_lang={lang}"),
         ]),
         (ui_text(lang, "nav.group_account"), [
-            ("account", ui_text(lang, "nav.account"), f"/owner/account/ui?tenant_id={tenant_q}"),
-            ("billing", ui_text(lang, "nav.billing"), f"/owner/billing/ui?tenant_id={tenant_q}"),
+            ("account", ui_text(lang, "nav.account"), f"/owner/account/ui?tenant_id={tenant_q}&ui_lang={lang}"),
+            ("billing", ui_text(lang, "nav.billing"), f"/owner/billing/ui?tenant_id={tenant_q}&ui_lang={lang}"),
         ]),
     ]
 
@@ -530,7 +560,7 @@ def render_repliq_shell(
     sidebar_html = "".join(
         '<div class="rq-sidebar-group"><div class="rq-sidebar-title">' + html.escape(group_label) + '</div>'
         + "".join(
-            f'<a class="{"active" if key == active_nav else ""}" href="{href}">{html.escape(label)}</a>'
+            f'<a class="{"active" if key == active_nav else ""}" href="{href}"{" aria-current=\"page\"" if key == active_nav else ""}>{html.escape(label)}</a>'
             for key, label, href in items
         )
         + '</div>'
@@ -539,44 +569,42 @@ def render_repliq_shell(
     mobile_nav_html = "".join(
         '<div class="rq-mobile-group"><div class="rq-mobile-group-title">' + html.escape(group_label) + '</div>'
         + "".join(
-            f'<a class="{"active" if key == active_nav else ""}" href="{href}">{html.escape(label)}</a>'
+            f'<a class="{"active" if key == active_nav else ""}" href="{href}"{" aria-current=\"page\"" if key == active_nav else ""}>{html.escape(label)}</a>'
             for key, label, href in items
         )
         + '</div>'
         for group_label, items in groups
     )
     if owner_navigation:
-        mobile_nav_html += f'<a href="/owner/logout">{html.escape(ui_text(normalized, "nav.logout"))}</a>'
+        mobile_nav_html += f'<a href="/owner/logout?ui_lang={normalized}">{html.escape(ui_text(normalized, "nav.logout"))}</a>'
     lang_buttons = "".join(
-        f'<button type="button" class="{"active" if code == normalized else ""}" data-rq-lang="{code}" aria-label="{html.escape(ui_text(normalized, "language.label"))}: {code.upper()}">{html.escape(ui_text(normalized, f"language.{code}"))}</button>'
+        f'<a class="{"active" if code == normalized else ""}" href="?tenant_id={tenant_q}&ui_lang={code}" aria-current="{"true" if code == normalized else "false"}" aria-label="{html.escape(ui_text(normalized, "language.label"))}: {code.upper()}">{html.escape(ui_text(normalized, f"language.{code}"))}</a>'
         for code in UI_SUPPORTED_LANGUAGES
     )
-    brand_href = '/owner/dashboard/ui?tenant_id=' + tenant_q if owner_navigation else '/launch'
-    logout_link = f'<a class="rq-logout" href="/owner/logout">{html.escape(ui_text(normalized, "nav.logout"))}</a>' if owner_navigation else ''
-    menu_button = f'<button class="rq-menu-button" type="button" data-rq-mobile-menu aria-expanded="false" aria-label="{html.escape(ui_text(normalized, "nav.open_menu"))}">☰</button>' if owner_navigation else ''
-    mobile_nav = f'<nav class="rq-mobile-nav" data-rq-mobile-nav>{mobile_nav_html}</nav>' if owner_navigation else ''
+    brand_href = '/owner/dashboard/ui?tenant_id=' + tenant_q + '&ui_lang=' + normalized if owner_navigation else '/launch?ui_lang=' + normalized
+    logout_link = f'<a class="rq-logout" href="/owner/logout?ui_lang={normalized}">{html.escape(ui_text(normalized, "nav.logout"))}</a>' if owner_navigation else ''
+    mobile_menu = f'<details class="rq-mobile-menu"><summary aria-label="{html.escape(ui_text(normalized, "nav.open_menu"))}">☰</summary><nav class="rq-mobile-nav" data-rq-mobile-nav>{mobile_nav_html}</nav></details>' if owner_navigation else ''
     topbar = f"""
 <header class="rq-topbar">
   <div class="rq-topbar-inner">
-    <a class="rq-brand" href="{brand_href}">
-      <span class="rq-logo">R</span><span><span class="rq-brand-name">{html.escape(ui_text(normalized, 'app.name'))}</span><span class="rq-brand-tagline">{html.escape(ui_text(normalized, 'app.tagline'))}</span></span>
+    <a class="rq-brand" href="{brand_href}" aria-label="Repliq">
+      <span class="rq-brand-symbol">{brand_mark_glyph_html()}</span><span class="rq-brand-copy">{brand_wordmark_html(class_name="rq-brand-wordmark")}<span class="rq-brand-tagline">{html.escape(ui_text(normalized, 'app.tagline'))}</span></span><span class="rq-sr-only">Repliq</span>
     </a>
     <div class="rq-top-actions">
       <div class="rq-lang" aria-label="{html.escape(ui_text(normalized, 'language.label'))}">{lang_buttons}</div>
       {logout_link}
-      {menu_button}
+      {mobile_menu}
     </div>
   </div>
-  {mobile_nav}
 </header>"""
     if owner_navigation and not auth_layout:
         page_body = (
             f'{topbar}<div class="rq-app-layout"><aside class="rq-sidebar" aria-label="{html.escape(ui_text(normalized, "nav.aria"))}">{sidebar_html}</aside>'
-            f'<main class="rq-main">{content_html}</main></div><footer class="rq-footer">Repliq · {UI_FOUNDATION_VERSION}</footer>'
+            f'<main id="main-content" tabindex="-1" class="rq-main">{content_html}</main></div><footer class="rq-footer">Repliq · {UI_FOUNDATION_VERSION}</footer>'
         )
     else:
         main_class = "rq-main rq-auth-main" if auth_layout else "rq-main"
-        page_body = f'{topbar}<main class="{main_class}">{content_html}</main><footer class="rq-footer">Repliq · {UI_FOUNDATION_VERSION}</footer>'
+        page_body = f'{topbar}<main id="main-content" tabindex="-1" class="{main_class}">{content_html}</main><footer class="rq-footer">Repliq · {UI_FOUNDATION_VERSION}</footer>'
     script = f'<script src="/assets/repliq-ui.js?v={UI_FOUNDATION_VERSION}"></script>'
     if inline_script:
         script += f"<script>{inline_script}</script>"
@@ -592,12 +620,15 @@ def render_repliq_shell(
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <meta name="color-scheme" content="light"/>
+  <meta name="theme-color" content="#6757f5"/>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml"/>
   <title>{html.escape(title)} · Repliq</title>
   {extra_head_before_css}
   <link rel="stylesheet" href="/assets/repliq-ui.css?v={UI_FOUNDATION_VERSION}"/>
   {extra_head}
 </head>
 <body class="rq-body" {body_attrs}>
+<a class="rq-skip-link" href="#main-content">{html.escape(ui_text(normalized, "a11y.skip"))}</a>
 <div class="rq-shell">{page_body}</div>
 {script}
 </body></html>"""

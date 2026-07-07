@@ -1,6 +1,6 @@
 # Post-Stage 95 — Client Experience / Localization / Visual Polish Roadmap
 
-Status: active. Stage 95 technical core, CX-1 and CX-2 are deployed and verified; CX-3 is deployed with CX-3.1 hotfix implemented and awaiting verification.
+Status: active. Stage 95 and CX-1 through CX-3.2 are deployed and verified. CX-4 is implemented in the current archive and awaits deploy verification.
 
 ## Boundary
 
@@ -63,13 +63,24 @@ The polished client launch must remain false until this phase is deployed and ve
 
 - CX-1 — Shared UI Shell / Localization Foundation: deployed, verified and closed.
 - CX-2 — Owner Workspace Full Migration: deployed, verified and closed.
-- CX-3 — Public Website / Signup / Authentication: deployed; public language/mobile navigation regression found.
-- CX-3.1 — Public Language Switcher / Mobile Menu Hotfix: implemented in archive, awaiting deploy verification.
-- CX-4 — Responsive / Accessibility / Brand Polish: not started.
+- CX-3 — Public Website / Signup / Authentication: deployed and closed after CX-3.1/CX-3.2 hotfix verification.
+- CX-3.1 — Public Language Switcher / Mobile Menu Hotfix: deployed, verified and closed.
+- CX-3.2 — Public UI Language Persistence / Navigation Hotfix: deployed, verified and closed.
+- CX-4 — Responsive / Accessibility / Brand Polish: implemented in archive, awaiting deploy verification.
 - CX-5 — Client Experience Readiness Lock: not started.
 
 ## CX-3.2 hotfix status update
 
-- CX-3.2 — Public UI Language Persistence / Navigation Hotfix: implemented in archive, awaiting deploy verification.
-- It fixes intermittent fallback to LV by persisting the resolved UI language server-side and carrying `ui_lang` through critical public navigation links.
-- CX-4 remains the next phase only after CX-3.2 verification.
+- CX-3.2 — Public UI Language Persistence / Navigation Hotfix: deployed, verified and closed.
+- User verification confirmed `/dialogue/qa = 50/50 passed`, stable LV/RU/EN switching, mobile navigation and language persistence.
+- CX-4 is the active implementation phase; CX-5 remains the final readiness lock.
+
+
+## CX-4 implementation status update
+
+- Shared reply-loop mark and outlined lowercase wordmark added to public and owner shells.
+- Shared brand SVG assets and favicon added.
+- Public and owner responsive breakpoints, focus states, skip links, reduced-motion and forced-colors handling added.
+- Owner mobile navigation moved to native `details/summary`.
+- No runtime/write/auth semantics changed.
+- CX-4 awaits deploy and real-device verification before closure.

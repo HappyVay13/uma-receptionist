@@ -1113,3 +1113,26 @@ Stage 87 owner launch-review pages must not perform deep cross-stage readiness f
 - Existing signup/login/magic-login/logout POST handlers, auth boundaries, rate limits, CSRF behavior and session semantics must remain unchanged.
 - No new POST routes, write paths, schema changes or auth bypasses are allowed.
 - Protected regression baseline remains `/dialogue/qa = 50/50 passed`.
+
+
+## CX-4 — Responsive / Accessibility / Brand Polish Rules
+
+- CX-4 is a presentation/accessibility phase only; it must not alter product runtime or duplicate business logic.
+- Public and owner shells must use the same Repliq mark and wordmark source from `repliq/brand.py`.
+- Brand assets must remain read-only, same-origin and free of tenant, user, token or secret data.
+- The wordmark must remain runtime-font-independent; do not add bundled font files.
+- Essential navigation and mobile menus must remain usable without JavaScript where native HTML can provide the behavior.
+- Public and owner pages must expose a skip link, a main landmark and visible keyboard focus states.
+- Reduced-motion and forced-colors users must receive usable fallbacks.
+- Mobile controls must remain practically tappable and layouts must not introduce horizontal page overflow.
+- UI language remains separate from tenant/business language and may persist only as `lv`, `ru` or `en` in `repliq_ui_lang`.
+- Existing POST handlers for signup, login, magic login and logout must remain unchanged.
+- CX-4 readiness aliases remain Stage 61/62 admin-protected:
+  - `/client-experience/polish/readiness`
+  - `/ui/accessibility/readiness`
+  - `/brand/readiness`
+- No new POST routes, write paths, schema changes, external sends or auth bypasses are allowed.
+- Booking, slots, parsing, confirmation, cancel/reschedule, Calendar, Telegram, billing, analytics, follow-ups, QA, LLM and voice runtime remain out of scope.
+- Protected regression baseline remains `/dialogue/qa = 50/50 passed`.
+- `client_experience_polish_complete=false` remains explicit until CX-5.
+- `enterprise_saas_ready=false` remains explicit.
