@@ -1923,3 +1923,28 @@ Expected verification:
 - CX-3 readiness reports `stage=CX-3.1` and `cx3_ready=true`.
 - Language switching works on all public pages even when public JavaScript is disabled.
 - The mobile menu stays open until the user selects a link or closes the native disclosure.
+
+## CX-3.2 — Public UI Language Persistence / Navigation Hotfix
+
+Status: implemented in archive; awaiting deploy verification.
+
+Production issue reported after CX-3.1:
+- The selected RU/EN interface language could intermittently return to LV when navigating through public menu items.
+
+Exact cause:
+- CX-3.1 rendered server-side language links but did not persist the resolved language in `repliq_ui_lang` on the response.
+- Product/How/Security links opened `/` without `ui_lang`, so the resolver used browser `Accept-Language` and selected LV on Latvian devices.
+
+Correction:
+- Every public HTML response now persists the resolved UI language in a first-party cookie.
+- All public Product/How/Security menu links explicitly carry the current language.
+- Public assets are versioned as `cx3.2`.
+
+Runtime preservation:
+- Signup, owner login, magic login and logout POST implementations remain unchanged.
+- No database, booking, Calendar, Telegram, billing, analytics, follow-up, dialogue or QA runtime behavior changes.
+
+Expected verification:
+- RU/EN remains selected across every public menu transition and page reload.
+- CX-3 readiness reports `stage=CX-3.2` and `cx3_ready=true`.
+- `/dialogue/qa` remains 50/50 passed.

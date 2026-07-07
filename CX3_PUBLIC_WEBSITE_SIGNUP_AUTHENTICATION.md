@@ -96,3 +96,19 @@ Updated readiness expectation:
 - `public_language_switcher_no_js_required=true`
 - `mobile_menu_native_details_ready=true`
 - `public_asset_cache_busted_for_hotfix=true`
+
+## CX-3.2 hotfix update
+
+CX-3.1 fixed direct language switching and mobile-menu behavior, but it did not persist the selected language server-side. Public links that opened the root page without `ui_lang` could therefore fall back to the browser language.
+
+CX-3.2:
+- sets `repliq_ui_lang` on every public HTML response;
+- includes the active language in Product, How it works and Security links on desktop and mobile;
+- bumps the public UI version to `cx3.2`;
+- preserves all existing POST/auth/runtime behavior.
+
+Updated readiness expectation:
+- `stage=CX-3.2`
+- `public_language_cookie_server_persisted=true`
+- `public_navigation_language_explicit=true`
+- `public_asset_cache_busted_for_hotfix=true`

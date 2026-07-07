@@ -1103,3 +1103,13 @@ Stage 87 owner launch-review pages must not perform deep cross-stage readiness f
 - Existing `POST /public/signup`, `POST /owner/login`, `POST /owner/magic-login` and `POST /owner/logout` implementations must remain unchanged.
 - No new POST routes, write paths, schema changes or auth bypasses are allowed.
 - Protected regression baseline remains `/dialogue/qa = 50/50 passed`.
+
+## CX-3.2 — Public UI Language Persistence / Navigation Hotfix Rules
+
+- A server-resolved public UI language must be persisted in the first-party `repliq_ui_lang` cookie on every public HTML response.
+- The language cookie may contain only `lv`, `ru`, or `en`; it must not contain tenant, user, token or session data.
+- Public internal navigation must either include the current `ui_lang` explicitly or rely on the persisted first-party language cookie; critical menu links must do both where practical.
+- URL fragments must be formed as `/?ui_lang=<lang>#fragment`, not as a language-less root link.
+- Existing signup/login/magic-login/logout POST handlers, auth boundaries, rate limits, CSRF behavior and session semantics must remain unchanged.
+- No new POST routes, write paths, schema changes or auth bypasses are allowed.
+- Protected regression baseline remains `/dialogue/qa = 50/50 passed`.

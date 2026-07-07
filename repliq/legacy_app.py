@@ -6290,9 +6290,9 @@ def cx3_public_site_readiness_payload() -> Dict[str, Any]:
     warnings.append("privacy_and_terms_require_legal_entity_specific_review_before_broad_commercial_launch")
     return {
         "ok": True,
-        "stage": "CX-3.1",
-        "previous_stage": "CX-3",
-        "purpose": "Public Language Switcher / Mobile Menu Hotfix",
+        "stage": "CX-3.2",
+        "previous_stage": "CX-3.1",
+        "purpose": "Public UI Language Persistence / Navigation Hotfix",
         "status": "ready" if ready else "blocked",
         "cx3_ready": bool(ready),
         "public_website_ready": bool(ready),
@@ -6305,7 +6305,9 @@ def cx3_public_site_readiness_payload() -> Dict[str, Any]:
         "responsive_public_navigation_ready": True,
         "public_language_switcher_no_js_required": True,
         "mobile_menu_native_details_ready": True,
-        "public_asset_cache_busted_for_hotfix": CX3_PUBLIC_UI_VERSION == "cx3.1",
+        "public_asset_cache_busted_for_hotfix": CX3_PUBLIC_UI_VERSION == "cx3.2",
+        "public_language_cookie_server_persisted": True,
+        "public_navigation_language_explicit": True,
         "public_favicon_ready": "/favicon.svg" in registered_paths,
         "supported_ui_languages": list(UI_SUPPORTED_LANGUAGES),
         "ui_language_cookie": UI_LANG_COOKIE,
@@ -20967,6 +20969,27 @@ def stage78_public_saas_final_readiness(request: Request, tenant_id: str = TENAN
     return stage78_final_public_saas_readiness_payload(tid, days=days)
 
 
+def cx32_public_html_response(request: Request, lang: str, content: str) -> HTMLResponse:
+    normalized = str(lang or "en").strip().lower()
+    if normalized not in UI_SUPPORTED_LANGUAGES:
+        normalized = "en"
+    response = HTMLResponse(content=content, headers=public_response_headers(normalized))
+    try:
+        secure_cookie = str(request.url.scheme or "").lower() == "https"
+    except Exception:
+        secure_cookie = False
+    response.set_cookie(
+        key=UI_LANG_COOKIE,
+        value=normalized,
+        max_age=365 * 24 * 60 * 60,
+        path="/",
+        secure=secure_cookie,
+        httponly=False,
+        samesite="lax",
+    )
+    return response
+
+
 @app.get("/", response_class=HTMLResponse)
 @app.get("/home", response_class=HTMLResponse)
 @app.get("/launch", response_class=HTMLResponse)
@@ -20975,7 +20998,7 @@ def stage78_public_saas_final_readiness(request: Request, tenant_id: str = TENAN
 @app.get("/public/launch/ui", response_class=HTMLResponse)
 def stage79_public_launch_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT):
     lang = resolve_public_language(request)
-    return HTMLResponse(content=render_home_page(lang, language_urls=public_language_urls(request)), headers=public_response_headers(lang))
+    return cx32_public_html_response(request, lang, render_home_page(lang, language_urls=public_language_urls(request)))
 
 
 @app.get("/launch-ux/readiness")
@@ -21454,27 +21477,27 @@ def cx3_public_site_readiness(request: Request):
 @app.get("/privacy-policy", response_class=HTMLResponse)
 def cx3_privacy_page(request: Request):
     lang = resolve_public_language(request)
-    return HTMLResponse(content=render_legal_page(lang, "privacy", language_urls=public_language_urls(request)), headers=public_response_headers(lang))
+    return cx32_public_html_response(request, lang, render_legal_page(lang, "privacy", language_urls=public_language_urls(request)))
 
 
 @app.get("/terms", response_class=HTMLResponse)
 @app.get("/terms-of-service", response_class=HTMLResponse)
 def cx3_terms_page(request: Request):
     lang = resolve_public_language(request)
-    return HTMLResponse(content=render_legal_page(lang, "terms", language_urls=public_language_urls(request)), headers=public_response_headers(lang))
+    return cx32_public_html_response(request, lang, render_legal_page(lang, "terms", language_urls=public_language_urls(request)))
 
 
 @app.get("/contact", response_class=HTMLResponse)
 def cx3_contact_page(request: Request):
     lang = resolve_public_language(request)
     contact_email = safe_public_email(os.getenv("REPLIQ_PUBLIC_CONTACT_EMAIL", "") or os.getenv("REPLIQ_PUBLIC_SUPPORT_EMAIL", ""))
-    return HTMLResponse(content=render_contact_page(lang, contact_email=contact_email, language_urls=public_language_urls(request)), headers=public_response_headers(lang))
+    return cx32_public_html_response(request, lang, render_contact_page(lang, contact_email=contact_email, language_urls=public_language_urls(request)))
 
 
 @app.get("/support", response_class=HTMLResponse)
 def cx3_support_page(request: Request):
     lang = resolve_public_language(request)
-    return HTMLResponse(content=render_support_page(lang, language_urls=public_language_urls(request)), headers=public_response_headers(lang))
+    return cx32_public_html_response(request, lang, render_support_page(lang, language_urls=public_language_urls(request)))
 
 
 @app.post("/owner/magic-link/bootstrap")
@@ -21528,7 +21551,7 @@ def stage76_owner_magic_login_get(request: Request, token: str = "", tenant_id: 
         stage71_set_owner_session_cookie(response, owner_email=owner_email, tenant_id=tenant_id_final, role="owner")
         return response
     lang = resolve_public_language(request)
-    return HTMLResponse(content=render_magic_login_page(lang, tid_hint, next_path, language_urls=public_language_urls(request)), headers=public_response_headers(lang))
+    return cx32_public_html_response(request, lang, render_magic_login_page(lang, tid_hint, next_path, language_urls=public_language_urls(request)))
 
 
 @app.post("/owner/magic-login")
@@ -21563,7 +21586,7 @@ def owner_login_ui(request: Request, tenant_id: str = TENANT_ID_DEFAULT, next: s
     tenant_id_clean = stage711_resolve_tenant_context(request, tenant_id)
     next_path = stage62_safe_local_path(next or f"/owner/dashboard/ui?tenant_id={tenant_id_clean}", tenant_id_clean)
     lang = resolve_public_language(request)
-    return HTMLResponse(content=render_login_page(lang, tenant_id_clean, next_path, language_urls=public_language_urls(request)), headers=public_response_headers(lang))
+    return cx32_public_html_response(request, lang, render_login_page(lang, tenant_id_clean, next_path, language_urls=public_language_urls(request)))
 
 
 @app.post("/owner/login")
@@ -21594,7 +21617,7 @@ async def owner_login_submit(request: Request):
 @app.get("/owner/logout", response_class=HTMLResponse)
 def owner_logout_ui(request: Request):
     lang = resolve_public_language(request)
-    response = HTMLResponse(content=render_logout_page(lang, language_urls=public_language_urls(request)), headers=public_response_headers(lang))
+    response = cx32_public_html_response(request, lang, render_logout_page(lang, language_urls=public_language_urls(request)))
     stage71_clear_owner_session_cookie(response)
     stage62_clear_admin_session_cookies(response)
     return response
@@ -24798,7 +24821,7 @@ loadWizard();
 def stage72_public_signup_ui(request: Request):
     lang = resolve_public_language(request)
     readiness = stage72_public_signup_readiness_payload()
-    return HTMLResponse(content=render_signup_page(lang, readiness, language_urls=public_language_urls(request)), headers=public_response_headers(lang))
+    return cx32_public_html_response(request, lang, render_signup_page(lang, readiness, language_urls=public_language_urls(request)))
 
 
 @app.post("/public/signup")

@@ -67,3 +67,9 @@ The polished client launch must remain false until this phase is deployed and ve
 - CX-3.1 — Public Language Switcher / Mobile Menu Hotfix: implemented in archive, awaiting deploy verification.
 - CX-4 — Responsive / Accessibility / Brand Polish: not started.
 - CX-5 — Client Experience Readiness Lock: not started.
+
+## CX-3.2 hotfix status update
+
+- CX-3.2 — Public UI Language Persistence / Navigation Hotfix: implemented in archive, awaiting deploy verification.
+- It fixes intermittent fallback to LV by persisting the resolved UI language server-side and carrying `ui_lang` through critical public navigation links.
+- CX-4 remains the next phase only after CX-3.2 verification.
