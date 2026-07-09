@@ -1,5 +1,7 @@
 # CX-4.1 — Public Header Section Active State Hotfix
 
+Status: deployed, verified and closed.
+
 ## Scope
 Fixes the public header active underline for the landing-page section links Product, How it works, and Security in LV/RU/EN.
 
@@ -15,3 +17,7 @@ The home page was rendered with `active="product"`, so Product received server-s
 
 ## Boundaries
 No route, POST handler, auth, signup, owner session, booking, calendar, Telegram, billing, database, or orchestration semantics were changed.
+
+## Verification result
+
+User confirmed `/dialogue/qa = 50/50 passed` and all remaining CX-4.1 checks normal across LV/RU/EN.

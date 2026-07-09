@@ -1,6 +1,6 @@
 # CX-4 — Responsive / Accessibility / Brand Polish
 
-Status: implemented in archive; awaiting deploy verification.
+Status: deployed, verified and closed after CX-4.1.
 
 ## Purpose
 
@@ -119,17 +119,12 @@ Unchanged:
 
 No new POST routes or database writes were added.
 
-## Manual verification still required
+## Verification result
 
-- Chrome and Edge desktop;
-- Firefox desktop;
-- Android Chrome;
-- iOS Safari when available;
-- 375, 390, 768 and desktop widths;
-- keyboard-only navigation;
-- mobile menu open/close behavior;
-- LV/RU/EN persistence across public and owner navigation;
-- `/dialogue/qa = 50/50 passed`.
+- User confirmed `/dialogue/qa = 50/50 passed`.
+- Responsive public and owner UI checks passed.
+- Keyboard/focus, mobile menu, LV/RU/EN persistence, brand assets and auth-boundary checks passed.
+- The only production issue was the public header section underline, fixed and verified in CX-4.1.
 
 The brand mark is a project identity draft. A trademark/name-conflict review remains appropriate before broad commercial launch.
 

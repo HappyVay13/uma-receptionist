@@ -1963,7 +1963,7 @@ Verified by user:
 
 ## CX-4 — Responsive / Accessibility / Brand Polish
 
-Status: implemented in archive, awaiting deploy verification.
+Status: deployed, verified and closed after CX-4.1.
 
 Scope:
 - Replaces the generic rounded-square `R` with a custom reply-loop R/Q/message monogram while retaining the established violet identity.
@@ -1993,4 +1993,27 @@ Next phase after verification:
 - CX-5 — Client Experience Readiness Lock.
 
 ## CX-4.1 — Public Header Section Active State Hotfix
-Implemented after production verification of CX-4. Fixes fragment-aware active underline state for Product, How it works and Security across LV/RU/EN. Awaiting deploy verification.
+
+Status: deployed, verified and closed.
+
+Fixes fragment-aware active underline state for Product, How it works and Security across LV/RU/EN. User confirmed `/dialogue/qa = 50/50 passed` and all remaining checks normal.
+
+
+## CX-5 — Client Experience Readiness Lock
+
+Status: implemented in archive; awaiting deploy verification.
+
+Scope:
+- Adds admin-protected GET aliases `/client-experience/final-readiness`, `/client-experience/readiness-lock` and `/polished-client-launch/readiness`.
+- Aggregates CX-1 through CX-4.1 readiness into one final client-experience lock.
+- Validates public route openness, owner-session protection, no owner/admin overlap, LV/RU/EN scope and preserved GET/POST contracts for signup/login/magic-login/logout.
+- Reports `client_experience_polish_complete=true` and `polished_client_launch_ready=true` only when all gates are healthy.
+- Keeps `enterprise_saas_ready=false`.
+
+Runtime preservation:
+- Adds no POST route, database write, external send, schema migration or background job.
+- Booking, dialogue, Calendar, Telegram, billing, analytics, QA, LLM and auth implementations remain unchanged.
+- `/dialogue/qa` remains a manual operator regression and is expected to remain 50/50 passed.
+
+Next planned product phase after verification:
+- Repliq Pulse architecture and integration planning.

@@ -1,6 +1,6 @@
 # Post-Stage 95 — Client Experience / Localization / Visual Polish Roadmap
 
-Status: active. Stage 95 and CX-1 through CX-3.2 are deployed and verified. CX-4 is implemented in the current archive and awaits deploy verification.
+Status: active final lock. Stage 95 and CX-1 through CX-4.1 are deployed, verified and closed. CX-5 is implemented in the current archive and awaits deploy verification.
 
 ## Boundary
 
@@ -66,14 +66,15 @@ The polished client launch must remain false until this phase is deployed and ve
 - CX-3 — Public Website / Signup / Authentication: deployed and closed after CX-3.1/CX-3.2 hotfix verification.
 - CX-3.1 — Public Language Switcher / Mobile Menu Hotfix: deployed, verified and closed.
 - CX-3.2 — Public UI Language Persistence / Navigation Hotfix: deployed, verified and closed.
-- CX-4 — Responsive / Accessibility / Brand Polish: implemented in archive, awaiting deploy verification.
-- CX-5 — Client Experience Readiness Lock: not started.
+- CX-4 — Responsive / Accessibility / Brand Polish: deployed, verified and closed after CX-4.1.
+- CX-4.1 — Public Header Section Active State Hotfix: deployed, verified and closed.
+- CX-5 — Client Experience Readiness Lock: implemented in archive, awaiting deploy verification.
 
 ## CX-3.2 hotfix status update
 
 - CX-3.2 — Public UI Language Persistence / Navigation Hotfix: deployed, verified and closed.
 - User verification confirmed `/dialogue/qa = 50/50 passed`, stable LV/RU/EN switching, mobile navigation and language persistence.
-- CX-4 is the active implementation phase; CX-5 remains the final readiness lock.
+- CX-4 and CX-4.1 are closed; CX-5 is the active final readiness lock.
 
 
 ## CX-4 implementation status update
@@ -83,7 +84,17 @@ The polished client launch must remain false until this phase is deployed and ve
 - Public and owner responsive breakpoints, focus states, skip links, reduced-motion and forced-colors handling added.
 - Owner mobile navigation moved to native `details/summary`.
 - No runtime/write/auth semantics changed.
-- CX-4 awaits deploy and real-device verification before closure.
+- CX-4 responsive, accessibility and brand behavior was deployed and verified.
 
 ### CX-4.1 status
-Implemented: public landing header now tracks Product / How it works / Security from the URL fragment in LV/RU/EN. Awaiting deploy verification before CX-4 closure.
+Deployed, verified and closed. Public landing header tracks Product / How it works / Security from the URL fragment in LV/RU/EN. User verification confirmed `/dialogue/qa = 50/50 passed` and all remaining checks normal.
+
+## CX-5 implementation status update
+
+- Adds one admin-protected aggregate client-experience readiness lock through three GET aliases.
+- Aggregates CX-1 through CX-4.1 readiness gates.
+- Verifies public/owner route separation, owner-session protection, LV/RU/EN scope and preserved GET/POST method contracts for signup/login/magic-login/logout.
+- Sets `client_experience_polish_complete=true` only in the CX-5 final payload when all gates are ready.
+- Keeps `enterprise_saas_ready=false`.
+- Adds no POST routes, writes, schema changes or runtime behavior changes.
+- Awaits deploy and operator verification before the client-experience phase is closed.

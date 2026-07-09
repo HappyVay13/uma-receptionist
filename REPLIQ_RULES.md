@@ -1139,3 +1139,22 @@ Stage 87 owner launch-review pages must not perform deep cross-stage readiness f
 
 ## CX-4.1 boundary
 Public header section active-state changes must remain presentation-only. Do not change public POST handlers, auth/session semantics, tenant writes, dialogue, booking, Calendar, Telegram, billing or orchestration.
+
+
+## CX-5 — Client Experience Readiness Lock Rules
+
+- CX-5 is the final read-only lock for the post-Stage-95 client-experience phase.
+- CX-5 readiness aliases must remain Stage 61/62 admin-protected:
+  - `/client-experience/final-readiness`
+  - `/client-experience/readiness-lock`
+  - `/polished-client-launch/readiness`
+- CX-5 must aggregate the existing CX-1 through CX-4.1 readiness gates rather than duplicate or replace their implementations.
+- CX-5 may set `client_experience_polish_complete=true` and `polished_client_launch_ready=true` only when all prior CX gates, route inventories, auth boundaries, language scope and public auth method contracts are healthy.
+- CX-5 must remain GET/read-only and must not add POST routes, CSRF write paths, tenant writes, database schema changes, background jobs or external sends.
+- Public client-facing routes must remain public. Owner workspace routes must remain Stage 71 owner-session-bound and must not become Stage 61 admin-only routes.
+- `/public/signup`, `/owner/login`, `/owner/magic-login` and `/owner/logout` must preserve their existing GET and POST methods and existing handler semantics.
+- UI language remains separate from tenant/business language and the supported UI scope remains exactly LV/RU/EN.
+- CX-5 must not execute `/dialogue/qa` automatically; the expected protected operator baseline remains 50/50 passed.
+- Booking, slots, date/time parsing, side questions, confirmation, cancellation, rescheduling, Google Calendar, Telegram, billing, analytics, follow-ups, QA evaluator, LLM orchestration and voice runtime remain out of scope.
+- `enterprise_saas_ready=false` remains explicit.
+- CX-5 closure requires deploy verification. After closure, the planned next product phase is Repliq Pulse architecture and integration planning.

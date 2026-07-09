@@ -61,3 +61,14 @@ New protected surfaces:
 - `POST /tenant/business-memory/update`
 
 The builder is intended for business facts such as address, working hours, cancellation rules, price clarifications, and FAQ lines. Runtime receptionist logic is unchanged; saved memory fields are consumed by the existing FAQ/side-question flow.
+
+
+## CX-5 — Client Experience Readiness Lock
+
+Admin-protected read-only aliases:
+
+- `/client-experience/final-readiness`
+- `/client-experience/readiness-lock`
+- `/polished-client-launch/readiness`
+
+CX-5 aggregates CX-1 through CX-4.1 and validates the final LV/RU/EN public/owner client-experience route, auth-boundary, responsive/accessibility/brand and public auth method contracts. It adds no write route or runtime behavior change. Expected protected regression after deploy: `/dialogue/qa = 50/50 passed`.

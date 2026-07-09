@@ -502,6 +502,9 @@ STAGE61_PROTECTED_EXACT_PATHS = {
     "/client-experience/polish/readiness",
     "/ui/accessibility/readiness",
     "/brand/readiness",
+    "/client-experience/final-readiness",
+    "/client-experience/readiness-lock",
+    "/polished-client-launch/readiness",
     "/access/readiness",
     "/admin/access/readiness",
     "/admin/access/enforcement",
@@ -6489,6 +6492,184 @@ def cx4_client_experience_polish_readiness_payload() -> Dict[str, Any]:
             "registered_routes": missing_routes,
         },
         "note": "CX-4 aligns public and owner UI around one reply-loop brand mark and outlined lowercase wordmark, improves responsive behavior, keyboard focus, reduced-motion support, forced-colors handling and native mobile navigation without changing product runtime or write semantics.",
+    }
+
+
+# -------------------------
+# CX-5: CLIENT EXPERIENCE READINESS LOCK
+# -------------------------
+CX5_READINESS_PATHS = {
+    "/client-experience/final-readiness",
+    "/client-experience/readiness-lock",
+    "/polished-client-launch/readiness",
+}
+CX5_PUBLIC_AUTH_METHODS = {
+    "/public/signup": {"GET", "POST"},
+    "/owner/login": {"GET", "POST"},
+    "/owner/magic-login": {"GET", "POST"},
+    "/owner/logout": {"GET", "POST"},
+}
+CX5_EXPECTED_UI_LANGUAGES = {"lv", "ru", "en"}
+
+
+def cx5_route_method_inventory(paths: set[str]) -> Dict[str, List[str]]:
+    inventory: Dict[str, set[str]] = {path: set() for path in paths}
+    for route in app.routes:
+        route_path = str(getattr(route, "path", "") or "")
+        if route_path not in inventory:
+            continue
+        methods = getattr(route, "methods", set()) or set()
+        inventory[route_path].update(
+            str(method or "").upper()
+            for method in methods
+            if str(method or "").upper() not in {"HEAD", "OPTIONS"}
+        )
+    return {path: sorted(methods) for path, methods in sorted(inventory.items())}
+
+
+def cx5_client_experience_readiness_payload() -> Dict[str, Any]:
+    registered_paths = {str(getattr(route, "path", "") or "") for route in app.routes}
+    phase_payloads = {
+        "cx1": cx1_client_experience_foundation_readiness_payload(),
+        "cx2": cx2_owner_workspace_migration_readiness_payload(),
+        "cx3": cx3_public_site_readiness_payload(),
+        "cx4": cx4_client_experience_polish_readiness_payload(),
+    }
+    phase_gates = {
+        key: {
+            "stage": str(payload.get("stage") or key.upper()),
+            "status": str(payload.get("status") or "blocked"),
+            "ready": bool(payload.get(f"{key}_ready")),
+            "blocking": list(payload.get("blocking") or []),
+        }
+        for key, payload in phase_payloads.items()
+    }
+    missing_readiness_protection = sorted(path for path in CX5_READINESS_PATHS if path not in STAGE61_PROTECTED_EXACT_PATHS)
+    missing_routes = sorted(path for path in CX5_READINESS_PATHS if path not in registered_paths)
+
+    public_paths = set(CX3_PUBLIC_UI_PATHS)
+    owner_paths = (set(CX1_PILOT_UI_PATHS) - {"/owner/login"}) | set(CX2_MIGRATED_UI_PATHS)
+    missing_public_routes = sorted(path for path in public_paths if path not in registered_paths)
+    missing_owner_routes = sorted(path for path in owner_paths if path not in registered_paths)
+    public_admin_overlap = sorted(path for path in public_paths if path in STAGE61_PROTECTED_EXACT_PATHS)
+    public_owner_overlap = sorted(path for path in public_paths if path in STAGE71_OWNER_PROTECTED_EXACT_PATHS)
+    owner_missing_protection = sorted(path for path in owner_paths if path not in STAGE71_OWNER_PROTECTED_EXACT_PATHS)
+    owner_admin_overlap = sorted(path for path in owner_paths if path in STAGE61_PROTECTED_EXACT_PATHS)
+
+    route_methods = cx5_route_method_inventory(set(CX5_PUBLIC_AUTH_METHODS))
+    auth_method_mismatches = {
+        path: {
+            "expected": sorted(expected),
+            "actual": route_methods.get(path, []),
+        }
+        for path, expected in sorted(CX5_PUBLIC_AUTH_METHODS.items())
+        if set(route_methods.get(path, [])) != set(expected)
+    }
+    cx5_write_methods = cx5_route_method_inventory(set(CX5_READINESS_PATHS))
+    readiness_write_routes = {
+        path: methods
+        for path, methods in cx5_write_methods.items()
+        if any(method in {"POST", "PUT", "PATCH", "DELETE"} for method in methods)
+    }
+
+    language_set = {str(lang or "").strip().lower() for lang in UI_SUPPORTED_LANGUAGES}
+    language_contract_ready = language_set == CX5_EXPECTED_UI_LANGUAGES
+    previous_phases_ready = all(bool(gate.get("ready")) and not gate.get("blocking") for gate in phase_gates.values())
+    public_header_active_state_ready = bool(phase_payloads["cx4"].get("public_header_section_active_state_ready"))
+
+    blocking: List[str] = []
+    if missing_readiness_protection:
+        blocking.append("cx5_readiness_not_admin_protected")
+    if missing_routes:
+        blocking.append("cx5_readiness_routes_missing")
+    if not previous_phases_ready:
+        blocking.append("cx5_previous_phase_gate_blocked")
+    if missing_public_routes or missing_owner_routes:
+        blocking.append("cx5_client_facing_route_inventory_incomplete")
+    if public_admin_overlap or public_owner_overlap:
+        blocking.append("cx5_public_route_auth_boundary_regression")
+    if owner_missing_protection or owner_admin_overlap:
+        blocking.append("cx5_owner_route_auth_boundary_regression")
+    if auth_method_mismatches:
+        blocking.append("cx5_public_auth_method_contract_changed")
+    if readiness_write_routes:
+        blocking.append("cx5_readiness_write_route_detected")
+    if not language_contract_ready:
+        blocking.append("cx5_ui_language_contract_incomplete")
+    if not public_header_active_state_ready:
+        blocking.append("cx5_public_header_active_state_incomplete")
+
+    ready = not blocking
+    return {
+        "ok": True,
+        "stage": "CX-5",
+        "previous_stage": "CX-4.1",
+        "purpose": "Client Experience Readiness Lock",
+        "status": "ready" if ready else "blocked",
+        "cx5_ready": bool(ready),
+        "client_experience_readiness_locked": bool(ready),
+        "client_experience_polish_complete": bool(ready),
+        "polished_client_launch_ready": bool(ready),
+        "shared_public_experience_ready": bool(ready and phase_gates["cx3"]["ready"]),
+        "shared_owner_experience_ready": bool(ready and phase_gates["cx2"]["ready"]),
+        "responsive_accessibility_brand_ready": bool(ready and phase_gates["cx4"]["ready"]),
+        "public_header_section_active_state_ready": public_header_active_state_ready,
+        "supported_ui_languages": sorted(language_set),
+        "ui_language_contract_ready": language_contract_ready,
+        "ui_language_separate_from_business_language": True,
+        "phase_gates": phase_gates,
+        "route_inventory": {
+            "public_client_routes": len(public_paths),
+            "owner_client_routes": len(owner_paths),
+            "cx5_readiness_routes": sorted(CX5_READINESS_PATHS),
+            "public_auth_methods": route_methods,
+        },
+        "auth_boundaries": {
+            "public_routes_remain_public": not public_admin_overlap and not public_owner_overlap,
+            "owner_routes_remain_owner_session_bound": not owner_missing_protection,
+            "owner_routes_not_admin_overlapped": not owner_admin_overlap,
+            "cx5_readiness_admin_protected": not missing_readiness_protection,
+            "public_auth_method_contract_preserved": not auth_method_mismatches,
+        },
+        "protected_regression_baseline_expected": "50/50 passed",
+        "operator_regression_execution": "manual_after_deploy",
+        "deployment_verification_required": True,
+        "next_product_phase": "Repliq_Pulse_architecture_and_integration_planning",
+        "enterprise_saas_ready": False,
+        "security": {
+            "readiness_admin_protected": not missing_readiness_protection,
+            "read_only_readiness_stage": not readiness_write_routes,
+            "new_post_routes_added": False,
+            "new_database_writes_added": False,
+            "auth_semantics_changed": False,
+            "signup_semantics_changed": False,
+            "booking_runtime_changed": False,
+            "calendar_runtime_changed": False,
+            "telegram_runtime_changed": False,
+            "billing_semantics_changed": False,
+            "qa_evaluator_changed": False,
+            "llm_orchestration_changed": False,
+            "secret_values_exposed": False,
+        },
+        "blocking": blocking,
+        "warnings": [
+            "deploy_and_operator_verification_required_before_closing_cx5",
+            "privacy_terms_and_brand_require_legal_or_trademark_review_before_broad_commercial_launch",
+            "enterprise_saas_ready_remains_false",
+        ],
+        "missing": {
+            "readiness_protection": missing_readiness_protection,
+            "registered_readiness_routes": missing_routes,
+            "public_routes": missing_public_routes,
+            "owner_routes": missing_owner_routes,
+            "owner_protection": owner_missing_protection,
+            "public_admin_overlap": public_admin_overlap,
+            "public_owner_overlap": public_owner_overlap,
+            "owner_admin_overlap": owner_admin_overlap,
+            "auth_method_mismatches": auth_method_mismatches,
+            "readiness_write_routes": readiness_write_routes,
+        },
+        "note": "CX-5 aggregates the deployed CX-1 through CX-4.1 client-experience layers into one read-only readiness lock. It validates route presence, LV/RU/EN UI scope, public/owner auth boundaries and preserved public auth method contracts without changing receptionist runtime or executing dialogue regression automatically.",
     }
 
 
@@ -21616,6 +21797,13 @@ def cx3_public_site_readiness(request: Request):
 @app.get("/brand/readiness")
 def cx4_client_experience_polish_readiness(request: Request):
     return cx4_client_experience_polish_readiness_payload()
+
+
+@app.get("/client-experience/final-readiness")
+@app.get("/client-experience/readiness-lock")
+@app.get("/polished-client-launch/readiness")
+def cx5_client_experience_readiness(request: Request):
+    return cx5_client_experience_readiness_payload()
 
 
 @app.get("/privacy", response_class=HTMLResponse)
