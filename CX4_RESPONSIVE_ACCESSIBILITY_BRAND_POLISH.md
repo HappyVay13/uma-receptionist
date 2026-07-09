@@ -132,3 +132,6 @@ No new POST routes or database writes were added.
 - `/dialogue/qa = 50/50 passed`.
 
 The brand mark is a project identity draft. A trademark/name-conflict review remains appropriate before broad commercial launch.
+
+## CX-4.1 follow-up
+Production verification found that only Product and Support displayed the active header underline. CX-4.1 adds fragment-aware active state for Product, How it works and Security without changing runtime behavior.

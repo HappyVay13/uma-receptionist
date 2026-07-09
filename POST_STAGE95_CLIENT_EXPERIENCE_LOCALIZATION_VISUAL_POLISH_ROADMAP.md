@@ -84,3 +84,6 @@ The polished client launch must remain false until this phase is deployed and ve
 - Owner mobile navigation moved to native `details/summary`.
 - No runtime/write/auth semantics changed.
 - CX-4 awaits deploy and real-device verification before closure.
+
+### CX-4.1 status
+Implemented: public landing header now tracks Product / How it works / Security from the URL fragment in LV/RU/EN. Awaiting deploy verification before CX-4 closure.

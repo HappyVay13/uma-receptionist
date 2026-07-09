@@ -14,7 +14,7 @@ from repliq.ui_foundation import (
     resolve_ui_language,
 )
 
-CX3_PUBLIC_UI_VERSION = "cx4.0"
+CX3_PUBLIC_UI_VERSION = "cx4.1"
 
 _PUBLIC_TEXT: Dict[str, Dict[str, str]] = {
     "en": {
@@ -699,6 +699,24 @@ PUBLIC_UI_JS = r"""
     if(link&&link.href){window.location.assign(link.href);return;}
     const url=new URL(window.location.href);url.searchParams.set('ui_lang',lang);window.location.assign(url.toString());
   }
+  const sectionNames=['product','how','security'];
+  function currentSection(){
+    const hash=String(window.location.hash||'').replace(/^#/,'');
+    if(sectionNames.includes(hash))return hash;
+    if(window.location.pathname==='/'||window.location.pathname==='/home'||window.location.pathname==='/launch'||window.location.pathname==='/launch/ui'||window.location.pathname==='/public/launch'||window.location.pathname==='/public/launch/ui')return 'product';
+    return '';
+  }
+  function syncSectionNavigation(section){
+    document.querySelectorAll('[data-rp-section]').forEach(link=>{
+      const active=Boolean(section)&&link.getAttribute('data-rp-section')===section;
+      if(active)link.setAttribute('aria-current','page');else link.removeAttribute('aria-current');
+    });
+  }
+  syncSectionNavigation(currentSection());
+  window.addEventListener('hashchange',()=>syncSectionNavigation(currentSection()));
+  document.querySelectorAll('[data-rp-section]').forEach(link=>link.addEventListener('click',()=>{
+    const section=link.getAttribute('data-rp-section')||'';if(section)syncSectionNavigation(section);
+  }));
   document.querySelectorAll('[data-rp-mobile-nav] a').forEach(link=>link.addEventListener('click',()=>{
     const menu=link.closest('details');if(menu)menu.removeAttribute('open');
   }));
@@ -775,8 +793,8 @@ def render_public_shell(
     lang_buttons = _language_buttons(normalized, language_urls)
     header = f'''<header class="rp-header"><div class="rp-container rp-header-inner">
 <a class="rp-brand" href="/?ui_lang={normalized}" aria-label="Repliq"><span class="rp-brand-symbol">{brand_mark_glyph_html()}</span>{brand_wordmark_html(class_name="rp-brand-wordmark")}<span class="rp-sr-only">Repliq</span></a>
-<nav class="rp-nav" aria-label="{html.escape(public_text(normalized,"nav.primary"))}"><a href="/?ui_lang={normalized}#product"{nav_class("product")}>{html.escape(public_text(normalized,"nav.product"))}</a><a href="/?ui_lang={normalized}#how"{nav_class("how")}>{html.escape(public_text(normalized,"nav.how"))}</a><a href="/?ui_lang={normalized}#security"{nav_class("security")}>{html.escape(public_text(normalized,"nav.security"))}</a><a href="/support?ui_lang={normalized}"{nav_class("support")}>{html.escape(public_text(normalized,"nav.support"))}</a></nav>
-<div class="rp-actions"><div class="rp-lang" aria-label="{html.escape(public_text(normalized,"nav.language"))}">{lang_buttons}</div><a class="rp-button rp-button-ghost" href="/owner/login?ui_lang={normalized}">{html.escape(public_text(normalized,"nav.login"))}</a><a class="rp-button rp-button-primary" href="/public/signup?ui_lang={normalized}">{html.escape(public_text(normalized,"nav.signup"))}</a><details class="rp-mobile-menu"><summary aria-label="{html.escape(public_text(normalized,"nav.open"))}">☰</summary><nav class="rp-mobile-nav" data-rp-mobile-nav><a href="/?ui_lang={normalized}#product">{html.escape(public_text(normalized,"nav.product"))}</a><a href="/?ui_lang={normalized}#how">{html.escape(public_text(normalized,"nav.how"))}</a><a href="/?ui_lang={normalized}#security">{html.escape(public_text(normalized,"nav.security"))}</a><a href="/support?ui_lang={normalized}">{html.escape(public_text(normalized,"nav.support"))}</a><a href="/owner/login?ui_lang={normalized}">{html.escape(public_text(normalized,"nav.login"))}</a><a href="/public/signup?ui_lang={normalized}">{html.escape(public_text(normalized,"nav.signup"))}</a></nav></details></div></div></header>'''
+<nav class="rp-nav" aria-label="{html.escape(public_text(normalized,"nav.primary"))}"><a href="/?ui_lang={normalized}#product" data-rp-section="product"{nav_class("product")}>{html.escape(public_text(normalized,"nav.product"))}</a><a href="/?ui_lang={normalized}#how" data-rp-section="how"{nav_class("how")}>{html.escape(public_text(normalized,"nav.how"))}</a><a href="/?ui_lang={normalized}#security" data-rp-section="security"{nav_class("security")}>{html.escape(public_text(normalized,"nav.security"))}</a><a href="/support?ui_lang={normalized}"{nav_class("support")}>{html.escape(public_text(normalized,"nav.support"))}</a></nav>
+<div class="rp-actions"><div class="rp-lang" aria-label="{html.escape(public_text(normalized,"nav.language"))}">{lang_buttons}</div><a class="rp-button rp-button-ghost" href="/owner/login?ui_lang={normalized}">{html.escape(public_text(normalized,"nav.login"))}</a><a class="rp-button rp-button-primary" href="/public/signup?ui_lang={normalized}">{html.escape(public_text(normalized,"nav.signup"))}</a><details class="rp-mobile-menu"><summary aria-label="{html.escape(public_text(normalized,"nav.open"))}">☰</summary><nav class="rp-mobile-nav" data-rp-mobile-nav><a href="/?ui_lang={normalized}#product" data-rp-section="product">{html.escape(public_text(normalized,"nav.product"))}</a><a href="/?ui_lang={normalized}#how" data-rp-section="how">{html.escape(public_text(normalized,"nav.how"))}</a><a href="/?ui_lang={normalized}#security" data-rp-section="security">{html.escape(public_text(normalized,"nav.security"))}</a><a href="/support?ui_lang={normalized}">{html.escape(public_text(normalized,"nav.support"))}</a><a href="/owner/login?ui_lang={normalized}">{html.escape(public_text(normalized,"nav.login"))}</a><a href="/public/signup?ui_lang={normalized}">{html.escape(public_text(normalized,"nav.signup"))}</a></nav></details></div></div></header>'''
     footer = f'''<footer class="rp-footer"><div class="rp-container"><div class="rp-footer-grid"><div><a class="rp-brand" href="/?ui_lang={normalized}" aria-label="Repliq"><span class="rp-brand-symbol">{brand_mark_glyph_html()}</span>{brand_wordmark_html(class_name="rp-brand-wordmark")}<span class="rp-sr-only">Repliq</span></a><p class="rp-footer-note">{html.escape(public_text(normalized,"footer.note"))}</p></div><div><h4>{html.escape(public_text(normalized,"footer.product"))}</h4><div class="rp-footer-links"><a href="/?ui_lang={normalized}">{html.escape(public_text(normalized,"footer.home"))}</a><a href="/public/signup?ui_lang={normalized}">{html.escape(public_text(normalized,"footer.signup"))}</a><a href="/support?ui_lang={normalized}">{html.escape(public_text(normalized,"footer.support"))}</a></div></div><div><h4>{html.escape(public_text(normalized,"footer.company"))}</h4><div class="rp-footer-links"><a href="/privacy?ui_lang={normalized}">{html.escape(public_text(normalized,"footer.privacy"))}</a><a href="/terms?ui_lang={normalized}">{html.escape(public_text(normalized,"footer.terms"))}</a><a href="/contact?ui_lang={normalized}">{html.escape(public_text(normalized,"footer.contact"))}</a></div></div><div><h4>{html.escape(public_text(normalized,"footer.account"))}</h4><div class="rp-footer-links"><a href="/owner/login?ui_lang={normalized}">{html.escape(public_text(normalized,"footer.login"))}</a><a href="/owner/magic-login?ui_lang={normalized}">{html.escape(public_text(normalized,"footer.magic"))}</a></div></div></div><div class="rp-footer-bottom"><span>© Repliq</span><span>{html.escape(public_text(normalized,"legal.updated"))} · {CX3_PUBLIC_UI_VERSION}</span></div></div></footer>'''
     scripts = f'<script src="/assets/repliq-public.js?v={CX3_PUBLIC_UI_VERSION}"></script>'
     if inline_script:

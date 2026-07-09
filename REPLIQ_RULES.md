@@ -1136,3 +1136,6 @@ Stage 87 owner launch-review pages must not perform deep cross-stage readiness f
 - Protected regression baseline remains `/dialogue/qa = 50/50 passed`.
 - `client_experience_polish_complete=false` remains explicit until CX-5.
 - `enterprise_saas_ready=false` remains explicit.
+
+## CX-4.1 boundary
+Public header section active-state changes must remain presentation-only. Do not change public POST handlers, auth/session semantics, tenant writes, dialogue, booking, Calendar, Telegram, billing or orchestration.

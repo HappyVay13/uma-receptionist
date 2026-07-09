@@ -1991,3 +1991,6 @@ Expected verification:
 
 Next phase after verification:
 - CX-5 — Client Experience Readiness Lock.
+
+## CX-4.1 — Public Header Section Active State Hotfix
+Implemented after production verification of CX-4. Fixes fragment-aware active underline state for Product, How it works and Security across LV/RU/EN. Awaiting deploy verification.

@@ -6347,7 +6347,7 @@ def cx3_public_site_readiness_payload() -> Dict[str, Any]:
         "responsive_public_navigation_ready": True,
         "public_language_switcher_no_js_required": True,
         "mobile_menu_native_details_ready": True,
-        "public_asset_cache_busted_for_hotfix": CX3_PUBLIC_UI_VERSION in {"cx3.2", "cx4.0"},
+        "public_asset_cache_busted_for_hotfix": CX3_PUBLIC_UI_VERSION in {"cx3.2", "cx4.0", "cx4.1"},
         "public_language_cookie_server_persisted": True,
         "public_navigation_language_explicit": True,
         "public_favicon_ready": "/favicon.svg" in registered_paths,
@@ -6445,20 +6445,21 @@ def cx4_client_experience_polish_readiness_payload() -> Dict[str, Any]:
         blocking.append("cx4_routes_or_assets_missing")
     if not all(accessibility_checks.values()):
         blocking.append("cx4_accessibility_foundation_incomplete")
-    if CX3_PUBLIC_UI_VERSION != "cx4.0" or UI_FOUNDATION_VERSION != "cx4.0" or BRAND_VERSION != "cx4.0":
+    if CX3_PUBLIC_UI_VERSION not in {"cx4.0", "cx4.1"} or UI_FOUNDATION_VERSION != "cx4.0" or BRAND_VERSION != "cx4.0":
         blocking.append("cx4_version_alignment_incomplete")
     ready = not blocking
     return {
         "ok": True,
-        "stage": "CX-4",
-        "previous_stage": "CX-3.2",
-        "purpose": "Responsive / Accessibility / Brand Polish",
+        "stage": "CX-4.1",
+        "previous_stage": "CX-4",
+        "purpose": "Public Header Section Active State Hotfix",
         "status": "ready" if ready else "blocked",
         "cx4_ready": bool(ready),
         "responsive_public_ui_ready": bool(ready),
         "responsive_owner_ui_ready": bool(ready),
         "accessibility_foundation_ready": all(accessibility_checks.values()),
         "brand_identity_ready": all(bool(value) for key, value in brand_checks.items() if key not in {"brand_version", "public_ui_version", "owner_ui_version"}),
+        "public_header_section_active_state_ready": "data-rp-section" in PUBLIC_UI_JS and "syncSectionNavigation" in PUBLIC_UI_JS,
         "shared_brand_assets_ready": all(path in registered_paths for path in CX4_BRAND_ASSET_PATHS),
         "supported_ui_languages": list(UI_SUPPORTED_LANGUAGES),
         "accessibility": accessibility_checks,
