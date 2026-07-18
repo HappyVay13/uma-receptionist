@@ -72,3 +72,11 @@ Admin-protected read-only aliases:
 - `/polished-client-launch/readiness`
 
 CX-5 aggregates CX-1 through CX-4.1 and validates the final LV/RU/EN public/owner client-experience route, auth-boundary, responsive/accessibility/brand and public auth method contracts. It adds no write route or runtime behavior change. Expected protected regression after deploy: `/dialogue/qa = 50/50 passed`.
+
+## R16 — Receptionist → Pulse Production Booking Event Publisher
+
+R16 adds a persistent booking-event outbox for the existing Pulse R11 webhook contract.
+It publishes only successful create/reschedule/cancel operations, signs each delivery,
+retries transient failures with stable event identity, and preserves tenant/version
+ordering. Deployment settings and rollback procedures are documented in
+`R16_PULSE_BOOKING_EVENT_RUNBOOK.md`.

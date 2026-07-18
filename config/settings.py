@@ -127,5 +127,44 @@ BUSINESS_MIN_NOTICE_MINUTES = int((os.getenv("BIZ_MIN_NOTICE_MINUTES", "0") or "
 BUSINESS_BUFFER_MINUTES = int((os.getenv("BIZ_BUFFER_MINUTES", "0") or "0").strip())
 
 
+def _env_bool(name: str, default: str = "false") -> bool:
+    return (os.getenv(name, default) or default).strip().lower() in ("1", "true", "yes", "on")
+
+
+# R16 — durable Receptionist -> Pulse booking-event publisher.
+PULSE_RECEPTIONIST_PUBLISHER_ENABLED = _env_bool("PULSE_RECEPTIONIST_PUBLISHER_ENABLED", "false")
+PULSE_RECEPTIONIST_WEBHOOK_URL = os.getenv("PULSE_RECEPTIONIST_WEBHOOK_URL", "").strip()
+PULSE_RECEPTIONIST_WEBHOOK_SIGNING_SECRET = os.getenv(
+    "PULSE_RECEPTIONIST_WEBHOOK_SIGNING_SECRET", ""
+).strip()
+PULSE_RECEPTIONIST_REQUEST_TIMEOUT_SECONDS = float(
+    os.getenv("PULSE_RECEPTIONIST_REQUEST_TIMEOUT_SECONDS", "5") or "5"
+)
+PULSE_RECEPTIONIST_MAX_ATTEMPTS = int(
+    os.getenv("PULSE_RECEPTIONIST_MAX_ATTEMPTS", "8") or "8"
+)
+PULSE_RECEPTIONIST_RETRY_BASE_SECONDS = int(
+    os.getenv("PULSE_RECEPTIONIST_RETRY_BASE_SECONDS", "30") or "30"
+)
+PULSE_RECEPTIONIST_RETRY_MAX_SECONDS = int(
+    os.getenv("PULSE_RECEPTIONIST_RETRY_MAX_SECONDS", "3600") or "3600"
+)
+PULSE_RECEPTIONIST_POLL_SECONDS = float(
+    os.getenv("PULSE_RECEPTIONIST_POLL_SECONDS", "5") or "5"
+)
+PULSE_RECEPTIONIST_BATCH_SIZE = int(
+    os.getenv("PULSE_RECEPTIONIST_BATCH_SIZE", "20") or "20"
+)
+PULSE_RECEPTIONIST_LEASE_SECONDS = int(
+    os.getenv("PULSE_RECEPTIONIST_LEASE_SECONDS", "60") or "60"
+)
+PULSE_RECEPTIONIST_WORKER_ENABLED = _env_bool(
+    "PULSE_RECEPTIONIST_WORKER_ENABLED", "true"
+)
+PULSE_RECEPTIONIST_ALLOW_INSECURE_HTTP = _env_bool(
+    "PULSE_RECEPTIONIST_ALLOW_INSECURE_HTTP", "false"
+)
+
+
 def get_sentry_middleware_class():
     return _SENTRY_MIDDLEWARE_CLASS

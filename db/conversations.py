@@ -1,5 +1,6 @@
 import json
 import re
+from datetime import datetime
 from typing import Any, Dict
 
 from sqlalchemy import text
@@ -8,6 +9,12 @@ from config.settings import TENANT_ID_DEFAULT
 from core.language import get_lang
 from core.parsing_time import sanitize_conversation_time_text
 from db.database import engine
+from integrations.pulse_booking_events import (
+    PendingBookingEvent,
+    enqueue_booking_event,
+    publisher_config_from_settings,
+    wake_default_worker,
+)
 
 
 def norm_user_key(phone: str) -> str:
@@ -78,19 +85,58 @@ def db_get_or_create_conversation(
     }
 
 
+def _pending_booking_event(value: Any) -> PendingBookingEvent:
+    if isinstance(value, PendingBookingEvent):
+        return value
+    if not isinstance(value, dict):
+        raise ValueError("pending Pulse event metadata must be a mapping")
+    occurred_at = value.get("occurred_at")
+    starts_at = value.get("starts_at")
+    if isinstance(occurred_at, str):
+        occurred_at = datetime.fromisoformat(occurred_at.replace("Z", "+00:00"))
+    if isinstance(starts_at, str) and starts_at:
+        starts_at = datetime.fromisoformat(starts_at.replace("Z", "+00:00"))
+    return PendingBookingEvent(
+        event_type=str(value.get("event_type") or ""),
+        tenant_id=str(value.get("tenant_id") or ""),
+        booking_ref=str(value.get("booking_ref") or ""),
+        starts_at=starts_at,
+        service_ref=(str(value.get("service_ref")).strip() if value.get("service_ref") else None),
+        location_ref=(str(value.get("location_ref")).strip() if value.get("location_ref") else None),
+        occurred_at=occurred_at,
+    )
+
+
 def db_save_conversation(tenant_id: str, user_key: str, c: Dict[str, Any]) -> None:
+    """Persist conversation state and an optional R16 event atomically.
+
+    The booking flow attaches ``_pulse_outbox_event`` only after Google Calendar has
+    confirmed create/update/delete. When Pulse publishing is enabled, the final local
+    conversation state and immutable outbox row commit in the same DB transaction.
+    No HTTP request is performed here.
+    """
+
     tenant_id = (tenant_id or "").strip() or TENANT_ID_DEFAULT
     user_key = norm_user_key(user_key)
     pending_json = (
         json.dumps(c["pending"], ensure_ascii=False) if c.get("pending") else None
     )
+    pulse_event_value = c.get("_pulse_outbox_event")
+    publisher_config = publisher_config_from_settings()
+    pulse_event = (
+        _pending_booking_event(pulse_event_value)
+        if pulse_event_value and publisher_config.enabled
+        else None
+    )
+
     with engine.begin() as conn:
         conn.execute(
             text(
                 """
             UPDATE conversations
             SET lang_lock=:lang, state=:state, service=:service, name=:name,
-                datetime_iso=:dtiso, time_text=:tt, pending_json=:pj, updated_at=NOW()
+                datetime_iso=:dtiso, time_text=:tt, pending_json=:pj,
+                updated_at=NOW()
             WHERE tenant_id=:tid AND user_key=:uk
         """
             ),
@@ -106,3 +152,15 @@ def db_save_conversation(tenant_id: str, user_key: str, c: Dict[str, Any]) -> No
                 "pj": pending_json,
             },
         )
+        if pulse_event is not None:
+            if pulse_event.tenant_id.strip() != tenant_id:
+                raise ValueError("Pulse event tenant does not match conversation tenant")
+            enqueue_booking_event(
+                conn,
+                pulse_event,
+                max_attempts=publisher_config.max_attempts,
+            )
+
+    c.pop("_pulse_outbox_event", None)
+    if pulse_event is not None:
+        wake_default_worker()

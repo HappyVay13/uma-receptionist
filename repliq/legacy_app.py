@@ -163,6 +163,13 @@ from db.conversations import db_get_or_create_conversation, db_save_conversation
 from db.runtime_tables import ensure_call_logs_table, ensure_phone_routes_table, ensure_usage_events_table
 from integrations.twilio_client import send_message
 from integrations.twilio_validation import install_twilio_signature_middleware
+from integrations.pulse_booking_events import (
+    PulseBookingOutbox,
+    ensure_pulse_outbox_tables,
+    install_default_worker,
+    publisher_config_from_settings,
+    stop_default_worker,
+)
 from channels.telegram import (
     handle_telegram_incoming,
     telegram_config_status,
@@ -173,6 +180,7 @@ from channels.telegram import (
 log = logging.getLogger("repliq")
 
 app = FastAPI()
+_pulse_booking_outbox: Optional[PulseBookingOutbox] = None
 _sentry_middleware_class = get_sentry_middleware_class()
 if _sentry_middleware_class is not None:
     app.add_middleware(_sentry_middleware_class)
@@ -674,6 +682,9 @@ STAGE61_PROTECTED_EXACT_PATHS = {
     "/onboarding/finish",
     "/onboarding/ui",
     "/onboarding/create_tenant",
+    "/internal/pulse/outbox",
+    "/internal/pulse/outbox/retry",
+    "/internal/pulse/outbox/dispatch",
 }
 
 
@@ -1040,6 +1051,8 @@ STAGE74_ADMIN_BROWSER_WRITE_PATHS = {
     "/dev_understand",
     "/dev_focus_test",
     "/dev/dialogue-simulate",
+    "/internal/pulse/outbox/retry",
+    "/internal/pulse/outbox/dispatch",
 }
 STAGE74_OWNER_BROWSER_WRITE_PATHS = {
     "/owner/demo/preview",
@@ -13317,12 +13330,7 @@ def create_calendar_event(
         "end": {"dateTime": dt_end.isoformat(), "timeZone": "Europe/Riga"},
     }
     try:
-        return (
-            svc.events()
-            .insert(calendarId=calendar_id, body=event)
-            .execute()
-            .get("htmlLink")
-        )
+        return svc.events().insert(calendarId=calendar_id, body=event).execute()
     except Exception as e:
         log.error("Create calendar event failed: %s", e)
         return None
@@ -13359,6 +13367,93 @@ def update_calendar_event(
     except Exception as e:
         log.error("Update calendar event failed: %s", e)
         return None
+
+
+def pulse_booking_ref_from_calendar_result(event_result: Any) -> str:
+    if isinstance(event_result, dict):
+        event_id = str(event_result.get("id") or "").strip()
+        if event_id:
+            return event_id
+        raw = str(event_result.get("htmlLink") or event_result.get("iCalUID") or "").strip()
+    else:
+        raw = str(event_result or "").strip()
+    if not raw:
+        return ""
+    # Backward-compatible fallback for legacy/mocked Calendar responses that only
+    # expose a stable link. The raw link is not persisted or sent to Pulse.
+    return "gcal_" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:48]
+
+
+def attach_pulse_booking_event(
+    c: Dict[str, Any],
+    *,
+    event_type: str,
+    tenant_id: str,
+    booking_ref: str,
+    starts_at: Optional[datetime],
+    service_ref: Optional[str],
+) -> None:
+    """Attach non-PII metadata for atomic persistence by db_save_conversation.
+
+    Stage 35 regression runs use a synthetic Calendar fixture. Those events are
+    intentionally excluded so QA/test traffic can never enter the production Pulse
+    integration inbox.
+    """
+    if stage35_calendar_safe_mode_active():
+        return
+    tenant_clean = str(tenant_id or "").strip()
+    booking_clean = str(booking_ref or "").strip()
+    if not tenant_clean or not booking_clean:
+        raise ValueError("Pulse booking event requires tenant and booking references")
+    c["_pulse_outbox_event"] = {
+        "event_type": str(event_type or "").strip(),
+        "tenant_id": tenant_clean,
+        "booking_ref": booking_clean,
+        # Receptionist currently has one authoritative calendar/location per tenant.
+        # The deterministic tenant-scoped external location ref avoids exposing a
+        # calendar address and is what Pulse must bind for R16.
+        "location_ref": tenant_clean,
+        "starts_at": starts_at,
+        "service_ref": str(service_ref or "").strip() or None,
+        "occurred_at": now_ts(),
+    }
+
+
+def cancel_authoritative_booking(
+    c: Dict[str, Any],
+    *,
+    tenant_id: str,
+    calendar_id: str,
+    calendar_event: Dict[str, Any],
+    service_account_json: Optional[str] = None,
+) -> bool:
+    """Delete the authoritative Calendar booking and attach its R11 event.
+
+    No Pulse HTTP request occurs here. The caller persists the final conversation
+    state and outbox row atomically with ``db_save_conversation``.
+    """
+
+    event_id = str((calendar_event or {}).get("id") or "").strip()
+    if not event_id:
+        return False
+    deleted = delete_calendar_event(calendar_id, event_id, service_account_json)
+    if not deleted:
+        return False
+    cancelled_starts_at = parse_dt_any_tz(
+        str(((calendar_event or {}).get("start") or {}).get("dateTime") or "").strip()
+    )
+    c["pending"] = None
+    c["state"] = STATE_CANCELLED
+    c["datetime_iso"] = None
+    attach_pulse_booking_event(
+        c,
+        event_type="booking.cancelled",
+        tenant_id=tenant_id,
+        booking_ref=event_id,
+        starts_at=cancelled_starts_at,
+        service_ref=c.get("service"),
+    )
+    return True
 
 
 # -------------------------
@@ -15269,12 +15364,41 @@ def book_appointment_for_datetime(
     # normalize_booking_state reopen AWAITING_DATE/AWAITING_CONFIRM on the next
     # turn, which causes repeated confirmation loops after the user says "yes".
     was_rescheduled = bool(pending.get("reschedule_event_id"))
+    authoritative_booking_ref = (
+        str(pending.get("reschedule_event_id") or "").strip()
+        if was_rescheduled
+        else pulse_booking_ref_from_calendar_result(event_result)
+    )
+    if not authoritative_booking_ref:
+        # A successful Google response without an event ID cannot satisfy the R11
+        # stable aggregate-reference contract. Treat it as a booking failure rather
+        # than inventing a parallel booking identifier.
+        pending["confirm_slot_iso"] = dt_start.isoformat()
+        c["pending"] = pending
+        c["state"] = STATE_AWAITING_CONFIRM
+        c["name"] = final_name
+        c["service"] = pending.get("service") or final_service_key
+        c["datetime_iso"] = dt_start.isoformat()
+        return {
+            "status": "booking_failed",
+            "reply_voice": t(lang, "booking_failed"),
+            "msg_out": t(lang, "booking_failed"),
+            "lang": lang,
+        }
     c["pending"] = None
     c["state"] = STATE_BOOKED
     c["name"] = final_name
     c["service"] = final_service_key or str((final_service_item or {}).get("key") or "").strip()
     c["datetime_iso"] = dt_start.isoformat()
     c["time_text"] = None
+    attach_pulse_booking_event(
+        c,
+        event_type="booking.rescheduled" if was_rescheduled else "booking.created",
+        tenant_id=tenant_id,
+        booking_ref=authoritative_booking_ref,
+        starts_at=dt_start,
+        service_ref=c.get("service"),
+    )
     return {
         "status": "booked",
         "reply_voice": t(lang, "rescheduled_voice", when=format_dt_short(dt_start)) if was_rescheduled else t(lang, "booking_confirmed"),
@@ -17005,17 +17129,20 @@ def handle_user_text(
                 "msg_out": t(lang, "no_active_booking"),
                 "lang": lang,
             }
-        deleted = delete_calendar_event(settings["calendar_id"], ev["id"], settings.get("service_account_json"))
-        if not deleted:
+        cancelled = cancel_authoritative_booking(
+            c,
+            tenant_id=tenant_id,
+            calendar_id=settings["calendar_id"],
+            calendar_event=ev,
+            service_account_json=settings.get("service_account_json"),
+        )
+        if not cancelled:
             return {
                 "status": "cancel_failed",
                 "reply_voice": t(lang, "cancel_failed"),
                 "msg_out": t(lang, "cancel_failed"),
                 "lang": lang,
             }
-        c["pending"] = None
-        c["state"] = STATE_CANCELLED
-        c["datetime_iso"] = None
         db_save_conversation(tenant_id, user_key, c)
         return {
             "status": "cancelled",
@@ -18356,14 +18483,36 @@ def get_voice_token(client_id: str = "default", tenant_id: str = ""):
 
 @app.on_event("startup")
 def _startup():
+    global _pulse_booking_outbox
     ensure_tenant_row(TENANT_ID_DEFAULT)
     ensure_call_logs_table()
     ensure_phone_routes_table()
     ensure_dialogue_audit_table()
+    ensure_pulse_outbox_tables(engine)
+    pulse_config = publisher_config_from_settings()
+    pulse_config.validate()
+    _pulse_booking_outbox = PulseBookingOutbox(engine, pulse_config)
+    install_default_worker(_pulse_booking_outbox).start()
+
+
+@app.on_event("shutdown")
+def _shutdown():
+    stop_default_worker()
+
+
+def pulse_booking_outbox_service() -> PulseBookingOutbox:
+    global _pulse_booking_outbox
+    if _pulse_booking_outbox is None:
+        ensure_pulse_outbox_tables(engine)
+        config = publisher_config_from_settings()
+        config.validate()
+        _pulse_booking_outbox = PulseBookingOutbox(engine, config)
+    return _pulse_booking_outbox
 
 
 @app.get("/health")
 def health():
+    pulse_config = publisher_config_from_settings()
     return {
         "status": "ok",
         "tz": str(TZ),
@@ -18371,6 +18520,50 @@ def health():
         "allow_default_tenant_fallback": ALLOW_DEFAULT_TENANT_FALLBACK,
         "twilio_validate_signature": TWILIO_VALIDATE_SIGNATURE,
         "google_oauth_ready": oauth_ready(),
+        "pulse_booking_publisher_enabled": bool(pulse_config.enabled),
+        "pulse_booking_worker_enabled": bool(pulse_config.worker_enabled),
+        "pulse_booking_secret_configured": bool(pulse_config.signing_secret),
+        "pulse_booking_secret_exposed": False,
+    }
+
+
+@app.get("/internal/pulse/outbox")
+def pulse_outbox_status():
+    return pulse_booking_outbox_service().status_summary()
+
+
+@app.post("/internal/pulse/outbox/retry")
+def pulse_outbox_retry(payload: Optional[Dict[str, Any]] = Body(default=None)):
+    event_id = str((payload or {}).get("event_id") or "").strip() or None
+    count = pulse_booking_outbox_service().retry_failed(event_id=event_id)
+    return {
+        "ok": True,
+        "retried": count,
+        "event_id": event_id,
+        "event_identity_preserved": True,
+        "secret_exposed": False,
+    }
+
+
+@app.post("/internal/pulse/outbox/dispatch")
+def pulse_outbox_dispatch(payload: Optional[Dict[str, Any]] = Body(default=None)):
+    raw_limit = (payload or {}).get("limit")
+    limit = max(1, min(int(raw_limit or 20), 200))
+    results = pulse_booking_outbox_service().dispatch_due(limit=limit)
+    return {
+        "ok": True,
+        "processed": len(results),
+        "results": [
+            {
+                "event_id": item.event_id,
+                "status": item.status,
+                "attempt_count": item.attempt_count,
+                "http_status": item.http_status,
+                "error_category": item.error_category,
+            }
+            for item in results
+        ],
+        "secret_exposed": False,
     }
 
 
