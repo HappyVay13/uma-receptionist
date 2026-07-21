@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import create_engine, event as sqlalchemy_event, text
@@ -77,6 +77,8 @@ def state() -> dict:
             "booking_ref": "google-event-atomic",
             "location_ref": "clinic_demo",
             "starts_at": datetime(2026, 7, 19, 9, 0, tzinfo=UTC),
+            "ends_at": datetime(2026, 7, 19, 10, 0, tzinfo=UTC),
+            "duration_minutes": 60,
             "service_ref": "consultation",
             "occurred_at": datetime(2026, 7, 18, 10, 0, tzinfo=UTC),
         },

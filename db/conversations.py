@@ -92,15 +92,20 @@ def _pending_booking_event(value: Any) -> PendingBookingEvent:
         raise ValueError("pending Pulse event metadata must be a mapping")
     occurred_at = value.get("occurred_at")
     starts_at = value.get("starts_at")
+    ends_at = value.get("ends_at")
     if isinstance(occurred_at, str):
         occurred_at = datetime.fromisoformat(occurred_at.replace("Z", "+00:00"))
     if isinstance(starts_at, str) and starts_at:
         starts_at = datetime.fromisoformat(starts_at.replace("Z", "+00:00"))
+    if isinstance(ends_at, str) and ends_at:
+        ends_at = datetime.fromisoformat(ends_at.replace("Z", "+00:00"))
     return PendingBookingEvent(
         event_type=str(value.get("event_type") or ""),
         tenant_id=str(value.get("tenant_id") or ""),
         booking_ref=str(value.get("booking_ref") or ""),
         starts_at=starts_at,
+        ends_at=ends_at,
+        duration_minutes=(int(value.get("duration_minutes")) if value.get("duration_minutes") is not None else None),
         service_ref=(str(value.get("service_ref")).strip() if value.get("service_ref") else None),
         location_ref=(str(value.get("location_ref")).strip() if value.get("location_ref") else None),
         occurred_at=occurred_at,
@@ -108,7 +113,7 @@ def _pending_booking_event(value: Any) -> PendingBookingEvent:
 
 
 def db_save_conversation(tenant_id: str, user_key: str, c: Dict[str, Any]) -> None:
-    """Persist conversation state and an optional R16 event atomically.
+    """Persist conversation state and an optional Pulse booking event atomically.
 
     The booking flow attaches ``_pulse_outbox_event`` only after Google Calendar has
     confirmed create/update/delete. When Pulse publishing is enabled, the final local

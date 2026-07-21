@@ -1,7 +1,7 @@
-"""Durable Receptionist -> Pulse booking-event publisher (R16).
+"""Durable Receptionist -> Pulse booking-event publisher (R19).
 
 The module deliberately keeps Pulse delivery outside the authoritative booking flow.
-Booking code stores an immutable R11 envelope in a database outbox in the same local
+Booking code stores an immutable versioned envelope in a database outbox in the same local
 transaction that persists the final conversation state. A worker later signs and sends
 that exact body. Transient failures are retried with bounded exponential backoff; the
 same event ID and body are reused for every attempt.
@@ -26,7 +26,10 @@ from sqlalchemy.engine import Connection
 
 log = logging.getLogger("repliq.pulse_outbox")
 
-R11_SCHEMA_VERSION = "2026-07-14"
+LEGACY_R11_SCHEMA_VERSION = "2026-07-14"
+R19_SCHEMA_VERSION = "2026-07-22"
+# Backward-compatible import name used by the existing publisher/tests. New events use R19.
+R11_SCHEMA_VERSION = R19_SCHEMA_VERSION
 R11_EVENT_TYPES = frozenset(
     {"booking.created", "booking.rescheduled", "booking.cancelled"}
 )
@@ -138,6 +141,8 @@ class PendingBookingEvent:
     tenant_id: str
     booking_ref: str
     starts_at: Optional[datetime]
+    ends_at: Optional[datetime]
+    duration_minutes: Optional[int]
     service_ref: Optional[str]
     location_ref: Optional[str]
     occurred_at: datetime
@@ -156,8 +161,26 @@ class PendingBookingEvent:
                 raise ValueError("location_ref is required for created/rescheduled events")
             if self.starts_at is None:
                 raise ValueError("starts_at is required for created/rescheduled events")
+            if self.ends_at is None:
+                raise ValueError("ends_at is required for created/rescheduled events")
+            if self.duration_minutes is None:
+                raise ValueError("duration_minutes is required for created/rescheduled events")
+        if self.starts_at is not None:
             if self.starts_at.tzinfo is None or self.starts_at.utcoffset() is None:
                 raise ValueError("starts_at must be timezone-aware")
+        if self.ends_at is not None:
+            if self.ends_at.tzinfo is None or self.ends_at.utcoffset() is None:
+                raise ValueError("ends_at must be timezone-aware")
+        if self.duration_minutes is not None:
+            if not (1 <= int(self.duration_minutes) <= 1440):
+                raise ValueError("duration_minutes must be between 1 and 1440")
+        if self.starts_at is not None and self.ends_at is not None:
+            if self.ends_at <= self.starts_at:
+                raise ValueError("ends_at must be after starts_at")
+            if self.duration_minutes is not None:
+                actual_seconds = int((self.ends_at - self.starts_at).total_seconds())
+                if actual_seconds != int(self.duration_minutes) * 60:
+                    raise ValueError("duration_minutes must match starts_at/ends_at")
 
 
 @dataclass(frozen=True, slots=True)
@@ -302,7 +325,7 @@ def enqueue_booking_event(
     *,
     max_attempts: int,
 ) -> Optional[str]:
-    """Persist one immutable R11 event using an existing DB transaction.
+    """Persist one immutable R19 event using an existing DB transaction.
 
     Returns the event ID. The caller intentionally skips creation when the integration
     is disabled; when enabled, configuration is validated before this function is used.
@@ -325,6 +348,8 @@ def enqueue_booking_event(
         "booking_ref": booking_ref,
         "location_ref": str(event.location_ref).strip() if event.location_ref else None,
         "starts_at": _iso(event.starts_at),
+        "ends_at": _iso(event.ends_at),
+        "duration_minutes": int(event.duration_minutes) if event.duration_minutes is not None else None,
         "service_ref": str(event.service_ref).strip() if event.service_ref else None,
     }
     payload = {

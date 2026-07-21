@@ -14,7 +14,7 @@ def test_create_reschedule_cancel_application_flows_emit_one_versioned_event_eac
 import json
 import sys
 import types
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from sqlalchemy import event as sqlalchemy_event, text
 
 
@@ -105,6 +105,8 @@ try:
         tenant_id="clinic_demo",
         booking_ref="stage35-dummy-event",
         starts_at=datetime(2026, 7, 20, 8, 0, tzinfo=UTC),
+        ends_at=datetime(2026, 7, 20, 8, 30, tzinfo=UTC),
+        duration_minutes=30,
         service_ref="consultation",
     )
     assert "_pulse_outbox_event" not in qa_state
@@ -202,6 +204,7 @@ assert legacy.cancel_authoritative_booking(
     calendar_event={
         "id": "google-event-r16-e2e",
         "start": {"dateTime": slot_2.isoformat()},
+        "end": {"dateTime": (slot_2 + timedelta(minutes=30)).isoformat()},
     },
     service_account_json=None,
 ) is True
@@ -230,9 +233,12 @@ assert conversation[0] == legacy.STATE_CANCELLED
 assert conversation[1] is None
 for row in rows:
     payload = json.loads(row["payload_json"])
-    assert payload["schema_version"] == "2026-07-14"
+    assert payload["schema_version"] == "2026-07-22"
     assert payload["tenant_ref"] == "clinic_demo"
     assert payload["booking"]["booking_ref"] == "google-event-r16-e2e"
+    if payload["event_type"] in {"booking.created", "booking.rescheduled"}:
+        assert payload["booking"]["duration_minutes"] == 30
+        assert payload["booking"]["ends_at"] is not None
     assert "private-link" not in row["payload_json"]
 print(json.dumps({"events": len(rows), "versions": [r["aggregate_version"] for r in rows], "qa_cases": qa_matrix['total']}))
 '''

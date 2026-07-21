@@ -13391,6 +13391,8 @@ def attach_pulse_booking_event(
     tenant_id: str,
     booking_ref: str,
     starts_at: Optional[datetime],
+    ends_at: Optional[datetime],
+    duration_minutes: Optional[int],
     service_ref: Optional[str],
 ) -> None:
     """Attach non-PII metadata for atomic persistence by db_save_conversation.
@@ -13414,6 +13416,8 @@ def attach_pulse_booking_event(
         # calendar address and is what Pulse must bind for R16.
         "location_ref": tenant_clean,
         "starts_at": starts_at,
+        "ends_at": ends_at,
+        "duration_minutes": int(duration_minutes) if duration_minutes is not None else None,
         "service_ref": str(service_ref or "").strip() or None,
         "occurred_at": now_ts(),
     }
@@ -13442,6 +13446,14 @@ def cancel_authoritative_booking(
     cancelled_starts_at = parse_dt_any_tz(
         str(((calendar_event or {}).get("start") or {}).get("dateTime") or "").strip()
     )
+    cancelled_ends_at = parse_dt_any_tz(
+        str(((calendar_event or {}).get("end") or {}).get("dateTime") or "").strip()
+    )
+    cancelled_duration_minutes = None
+    if cancelled_starts_at is not None and cancelled_ends_at is not None:
+        seconds = int((cancelled_ends_at - cancelled_starts_at).total_seconds())
+        if seconds > 0 and seconds % 60 == 0:
+            cancelled_duration_minutes = seconds // 60
     c["pending"] = None
     c["state"] = STATE_CANCELLED
     c["datetime_iso"] = None
@@ -13451,6 +13463,8 @@ def cancel_authoritative_booking(
         tenant_id=tenant_id,
         booking_ref=event_id,
         starts_at=cancelled_starts_at,
+        ends_at=cancelled_ends_at,
+        duration_minutes=cancelled_duration_minutes,
         service_ref=c.get("service"),
     )
     return True
@@ -15397,6 +15411,8 @@ def book_appointment_for_datetime(
         tenant_id=tenant_id,
         booking_ref=authoritative_booking_ref,
         starts_at=dt_start,
+        ends_at=dt_start + timedelta(minutes=duration_min),
+        duration_minutes=duration_min,
         service_ref=c.get("service"),
     )
     return {
