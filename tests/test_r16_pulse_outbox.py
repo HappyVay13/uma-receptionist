@@ -83,14 +83,11 @@ def event(
     booking_ref: str = "google-event-100",
     starts_at: datetime | None = datetime(2026, 7, 19, 9, 0, tzinfo=UTC),
 ) -> PendingBookingEvent:
-    ends_at = starts_at + timedelta(minutes=60) if starts_at is not None else None
     return PendingBookingEvent(
         event_type=event_type,
         tenant_id=tenant_id,
         booking_ref=booking_ref,
         starts_at=starts_at,
-        ends_at=ends_at,
-        duration_minutes=60 if starts_at is not None else None,
         service_ref="consultation",
         location_ref=tenant_id if event_type != "booking.cancelled" else None,
         occurred_at=START,
@@ -99,15 +96,13 @@ def event(
 
 def enqueue(engine, value: PendingBookingEvent | None = None, max_attempts: int = 3) -> str:
     with engine.begin() as conn:
-        event_id = str(
+        return str(
             enqueue_booking_event(
                 conn,
                 value or event(),
                 max_attempts=max_attempts,
             )
         )
-    make_due(engine, event_id)
-    return event_id
 
 
 def row(engine, event_id: str) -> dict:
@@ -192,7 +187,7 @@ def test_exact_r11_payload_versions_and_tenant_isolation(engine) -> None:
         "aggregate_version",
         "booking",
     }
-    assert payload["schema_version"] == R11_SCHEMA_VERSION == "2026-07-22"
+    assert payload["schema_version"] == R11_SCHEMA_VERSION == "2026-07-14"
     assert payload["event_id"] == first
     assert payload["event_type"] == "booking.created"
     assert payload["tenant_ref"] == "clinic_demo"
@@ -200,8 +195,6 @@ def test_exact_r11_payload_versions_and_tenant_isolation(engine) -> None:
     assert payload["booking"] == {
         "booking_ref": "google-event-100",
         "location_ref": "clinic_demo",
-        "duration_minutes": 60,
-        "ends_at": "2026-07-19T10:00:00Z",
         "service_ref": "consultation",
         "starts_at": "2026-07-19T09:00:00Z",
     }
@@ -219,8 +212,6 @@ def test_cancel_contract_allows_optional_location_and_start(engine) -> None:
     assert payload["event_type"] == "booking.cancelled"
     assert payload["booking"]["location_ref"] is None
     assert payload["booking"]["starts_at"] is None
-    assert payload["booking"]["ends_at"] is None
-    assert payload["booking"]["duration_minutes"] is None
 
 
 def test_event_and_version_roll_back_together(engine) -> None:

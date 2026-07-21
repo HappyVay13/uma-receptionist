@@ -73,20 +73,6 @@ Admin-protected read-only aliases:
 
 CX-5 aggregates CX-1 through CX-4.1 and validates the final LV/RU/EN public/owner client-experience route, auth-boundary, responsive/accessibility/brand and public auth method contracts. It adds no write route or runtime behavior change. Expected protected regression after deploy: `/dialogue/qa = 50/50 passed`.
 
-## R19 — Booking End-Time Contract Publisher
-
-R19 extends the durable signed Pulse booking event with authoritative service timing:
-
-```text
-starts_at
-ends_at
-duration_minutes
-```
-
-Created and rescheduled events use contract version `2026-07-22`. Cancellation includes timing when Google Calendar provides it, but timing remains optional for cancellation. The publisher still writes the immutable event to the existing local outbox in the same transaction as the final conversation state. Signature, retry, ordering, tenant isolation and non-blocking delivery behavior are unchanged.
-
-Deploy Pulse 0.19.0 first because it accepts both the legacy and R19 contracts. See `R19_PULSE_BOOKING_END_TIME_RUNBOOK.md` and `REPLIQ_RECEPTIONIST_R19_COMPLETION_REPORT.md`.
-
 ## R16 — Receptionist → Pulse Production Booking Event Publisher
 
 R16 adds a persistent booking-event outbox for the existing Pulse R11 webhook contract.
