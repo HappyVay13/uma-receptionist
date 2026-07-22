@@ -96,13 +96,17 @@ def event(
 
 def enqueue(engine, value: PendingBookingEvent | None = None, max_attempts: int = 3) -> str:
     with engine.begin() as conn:
-        return str(
+        event_id = str(
             enqueue_booking_event(
                 conn,
                 value or event(),
                 max_attempts=max_attempts,
             )
         )
+    # The test clock is fixed in July 2026 while CURRENT_TIMESTAMP follows wall time.
+    # Make the inserted row explicitly due so delivery tests remain deterministic.
+    make_due(engine, event_id)
+    return event_id
 
 
 def row(engine, event_id: str) -> dict:

@@ -14,7 +14,7 @@ def test_create_reschedule_cancel_application_flows_emit_one_versioned_event_eac
 import json
 import sys
 import types
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from sqlalchemy import event as sqlalchemy_event, text
 
 
@@ -202,6 +202,7 @@ assert legacy.cancel_authoritative_booking(
     calendar_event={
         "id": "google-event-r16-e2e",
         "start": {"dateTime": slot_2.isoformat()},
+        "end": {"dateTime": (slot_2 + timedelta(minutes=30)).isoformat()},
     },
     service_account_json=None,
 ) is True
@@ -230,9 +231,11 @@ assert conversation[0] == legacy.STATE_CANCELLED
 assert conversation[1] is None
 for row in rows:
     payload = json.loads(row["payload_json"])
-    assert payload["schema_version"] == "2026-07-14"
+    assert payload["schema_version"] == "2026-07-22"
     assert payload["tenant_ref"] == "clinic_demo"
     assert payload["booking"]["booking_ref"] == "google-event-r16-e2e"
+    assert payload["booking"]["duration_minutes"] == 30
+    assert payload["booking"]["ends_at"] is not None
     assert "private-link" not in row["payload_json"]
 print(json.dumps({"events": len(rows), "versions": [r["aggregate_version"] for r in rows], "qa_cases": qa_matrix['total']}))
 '''

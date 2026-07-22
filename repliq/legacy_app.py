@@ -164,6 +164,7 @@ from db.runtime_tables import ensure_call_logs_table, ensure_phone_routes_table,
 from integrations.twilio_client import send_message
 from integrations.twilio_validation import install_twilio_signature_middleware
 from integrations.pulse_booking_events import (
+    R19_SCHEMA_VERSION,
     PulseBookingOutbox,
     ensure_pulse_outbox_tables,
     install_default_worker,
@@ -13392,6 +13393,8 @@ def attach_pulse_booking_event(
     booking_ref: str,
     starts_at: Optional[datetime],
     service_ref: Optional[str],
+    ends_at: Optional[datetime] = None,
+    duration_minutes: Optional[int] = None,
 ) -> None:
     """Attach non-PII metadata for atomic persistence by db_save_conversation.
 
@@ -13415,6 +13418,11 @@ def attach_pulse_booking_event(
         "location_ref": tenant_clean,
         "starts_at": starts_at,
         "service_ref": str(service_ref or "").strip() or None,
+        "contract_version": R19_SCHEMA_VERSION,
+        "ends_at": ends_at,
+        "duration_minutes": (
+            int(duration_minutes) if duration_minutes is not None else None
+        ),
         "occurred_at": now_ts(),
     }
 
@@ -13442,6 +13450,14 @@ def cancel_authoritative_booking(
     cancelled_starts_at = parse_dt_any_tz(
         str(((calendar_event or {}).get("start") or {}).get("dateTime") or "").strip()
     )
+    cancelled_ends_at = parse_dt_any_tz(
+        str(((calendar_event or {}).get("end") or {}).get("dateTime") or "").strip()
+    )
+    cancelled_duration_minutes = None
+    if cancelled_starts_at is not None and cancelled_ends_at is not None:
+        seconds = int((cancelled_ends_at - cancelled_starts_at).total_seconds())
+        if seconds > 0 and seconds % 60 == 0:
+            cancelled_duration_minutes = seconds // 60
     c["pending"] = None
     c["state"] = STATE_CANCELLED
     c["datetime_iso"] = None
@@ -13452,6 +13468,8 @@ def cancel_authoritative_booking(
         booking_ref=event_id,
         starts_at=cancelled_starts_at,
         service_ref=c.get("service"),
+        ends_at=cancelled_ends_at,
+        duration_minutes=cancelled_duration_minutes,
     )
     return True
 
@@ -15398,6 +15416,8 @@ def book_appointment_for_datetime(
         booking_ref=authoritative_booking_ref,
         starts_at=dt_start,
         service_ref=c.get("service"),
+        ends_at=dt_start + timedelta(minutes=duration_min),
+        duration_minutes=duration_min,
     )
     return {
         "status": "booked",

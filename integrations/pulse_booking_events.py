@@ -26,7 +26,11 @@ from sqlalchemy.engine import Connection
 
 log = logging.getLogger("repliq.pulse_outbox")
 
-R11_SCHEMA_VERSION = "2026-07-14"
+LEGACY_R11_SCHEMA_VERSION = "2026-07-14"
+R19_SCHEMA_VERSION = "2026-07-22"
+SUPPORTED_SCHEMA_VERSIONS = frozenset({LEGACY_R11_SCHEMA_VERSION, R19_SCHEMA_VERSION})
+# Preserve the existing public constant for legacy callers and tests.
+R11_SCHEMA_VERSION = LEGACY_R11_SCHEMA_VERSION
 R11_EVENT_TYPES = frozenset(
     {"booking.created", "booking.rescheduled", "booking.cancelled"}
 )
@@ -141,10 +145,16 @@ class PendingBookingEvent:
     service_ref: Optional[str]
     location_ref: Optional[str]
     occurred_at: datetime
+    contract_version: str = LEGACY_R11_SCHEMA_VERSION
+    ends_at: Optional[datetime] = None
+    duration_minutes: Optional[int] = None
 
     def validate(self) -> None:
+        contract_version = str(self.contract_version or "").strip()
+        if contract_version not in SUPPORTED_SCHEMA_VERSIONS:
+            raise ValueError(f"unsupported Pulse booking contract version: {contract_version}")
         if self.event_type not in R11_EVENT_TYPES:
-            raise ValueError(f"unsupported R11 event type: {self.event_type}")
+            raise ValueError(f"unsupported booking event type: {self.event_type}")
         if not str(self.tenant_id or "").strip():
             raise ValueError("tenant_id is required")
         if not str(self.booking_ref or "").strip():
@@ -156,8 +166,32 @@ class PendingBookingEvent:
                 raise ValueError("location_ref is required for created/rescheduled events")
             if self.starts_at is None:
                 raise ValueError("starts_at is required for created/rescheduled events")
+            if contract_version == R19_SCHEMA_VERSION:
+                if self.ends_at is None:
+                    raise ValueError("ends_at is required by the R19 contract")
+                if self.duration_minutes is None:
+                    raise ValueError("duration_minutes is required by the R19 contract")
+        if self.starts_at is not None:
             if self.starts_at.tzinfo is None or self.starts_at.utcoffset() is None:
                 raise ValueError("starts_at must be timezone-aware")
+        if self.ends_at is not None:
+            if self.ends_at.tzinfo is None or self.ends_at.utcoffset() is None:
+                raise ValueError("ends_at must be timezone-aware")
+            if self.starts_at is None:
+                raise ValueError("ends_at requires starts_at")
+        if self.duration_minutes is not None:
+            duration = int(self.duration_minutes)
+            if not (1 <= duration <= 1440):
+                raise ValueError("duration_minutes must be between 1 and 1440")
+            if self.ends_at is None:
+                raise ValueError("duration_minutes requires ends_at")
+        if self.starts_at is not None and self.ends_at is not None:
+            if self.ends_at <= self.starts_at:
+                raise ValueError("ends_at must be after starts_at")
+            if self.duration_minutes is not None:
+                actual_seconds = int((self.ends_at - self.starts_at).total_seconds())
+                if actual_seconds != int(self.duration_minutes) * 60:
+                    raise ValueError("duration_minutes must match starts_at/ends_at")
 
 
 @dataclass(frozen=True, slots=True)
@@ -302,13 +336,14 @@ def enqueue_booking_event(
     *,
     max_attempts: int,
 ) -> Optional[str]:
-    """Persist one immutable R11 event using an existing DB transaction.
+    """Persist one immutable versioned event using an existing DB transaction.
 
     Returns the event ID. The caller intentionally skips creation when the integration
     is disabled; when enabled, configuration is validated before this function is used.
     """
 
     event.validate()
+    schema_version = str(event.contract_version).strip()
     tenant_id = str(event.tenant_id).strip()
     booking_ref = str(event.booking_ref).strip()
     event_type = str(event.event_type).strip()
@@ -316,7 +351,7 @@ def enqueue_booking_event(
         conn, tenant_id=tenant_id, booking_ref=booking_ref
     )
     identity_material = (
-        f"{R11_SCHEMA_VERSION}|{tenant_id}|{booking_ref}|"
+        f"{schema_version}|{tenant_id}|{booking_ref}|"
         f"{aggregate_version}|{event_type}"
     ).encode("utf-8")
     event_id = "repliq_" + hashlib.sha256(identity_material).hexdigest()[:48]
@@ -327,8 +362,13 @@ def enqueue_booking_event(
         "starts_at": _iso(event.starts_at),
         "service_ref": str(event.service_ref).strip() if event.service_ref else None,
     }
+    if schema_version == R19_SCHEMA_VERSION:
+        booking_payload["ends_at"] = _iso(event.ends_at)
+        booking_payload["duration_minutes"] = (
+            int(event.duration_minutes) if event.duration_minutes is not None else None
+        )
     payload = {
-        "schema_version": R11_SCHEMA_VERSION,
+        "schema_version": schema_version,
         "event_id": event_id,
         "event_type": event_type,
         "occurred_at": _iso(event.occurred_at),
@@ -358,7 +398,7 @@ def enqueue_booking_event(
             "booking_ref": booking_ref,
             "event_type": event_type,
             "aggregate_version": aggregate_version,
-            "schema_version": R11_SCHEMA_VERSION,
+            "schema_version": schema_version,
             "payload_json": body.decode("utf-8"),
             "payload_sha256": digest,
             "status": OUTBOX_PENDING,
